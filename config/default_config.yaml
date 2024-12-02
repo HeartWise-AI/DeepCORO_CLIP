@@ -1,0 +1,59 @@
+# Training parameters
+epochs: 20
+batch_size: 8
+num_workers: 8
+lr: 0.000025
+debug: false
+temp: 0.1
+
+# Data parameters
+data_filename: data/reports/reports_sampled_1000.csv
+root: "."
+target_label: Report
+datapoint_loc_label: FileName
+frames: 16
+
+# Model parameters
+model_name: mvit
+pretrained: true
+
+# Optimization parameters
+optimizer: AdamW
+weight_decay: 0.00000232512540062325
+scheduler_type: step
+lr_step_period: 15
+factor: 0.3
+
+# Distributed training
+gpu: null  # Set to GPU index for single GPU training
+local_rank: -1
+
+# Logging parameters
+project: filtered_deepRV_mvit_sweep
+entity: mhi_ai
+tag: filtered_deepRV_mvit_sweep
+
+# Additional parameters
+output_dir: outputs
+seed: 0
+use_amp: true
+device: cuda
+period: 1
+
+# Metrics control
+metrics_control:
+  optim_thresh: g_mean
+  plot_pred_distribution: true
+  plot_metrics_moving_thresh: true
+  n_bootstrap: 100
+  q_bootstrap: 0.05
+
+# Data augmentation
+rand_augment: true
+resize: 224
+apply_mask: false
+view_count: null
+
+# Checkpointing
+save_best: loss
+resume: false

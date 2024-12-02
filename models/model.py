@@ -110,11 +110,19 @@ class VideoEncoder(nn.Module):
             self.proj = nn.Identity()
         else:
             raise ValueError(f"Unsupported backbone: {backbone}")
-
+        ### Freeze
         # Freeze the weights of the pretrained model except the head
+        frozen_layers = []
+        unfrozen_layers = []
         for name, param in self.model.named_parameters():
             if not name.startswith("head"):
                 param.requires_grad = False
+                frozen_layers.append(name)
+            else:
+                unfrozen_layers.append(name)
+
+        print(f"Frozen layers: {frozen_layers}")
+        print(f"Unfrozen layers: {unfrozen_layers}")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass of the video encoder.

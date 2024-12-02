@@ -54,6 +54,7 @@ class WandbLogger:
         **kwargs,
     ) -> None:
         """Log metrics for a training batch.
+        Only logs essential training metrics (loss, lr) for continuous monitoring.
 
         Args:
             loss: Training loss value
@@ -69,7 +70,7 @@ class WandbLogger:
 
         self.step += 1
         metrics = {
-            "train/batch_loss": loss,
+            "train/loss": loss,
             "train/epoch": epoch,
             "train/batch": batch_idx,
             "train/progress": (batch_idx + 1) / num_batches,
@@ -78,9 +79,10 @@ class WandbLogger:
             "train/global_step": self.step,
         }
 
-        # Add any additional metrics
+        # Add any additional metrics that should be logged continuously
         for key, value in kwargs.items():
-            metrics[f"train/{key}"] = value
+            if key.startswith("continuous_"):
+                metrics[f"train/{key.replace('continuous_', '')}"] = value
 
         wandb.log(metrics, step=self.step)
 
@@ -90,15 +92,25 @@ class WandbLogger:
         train_loss: float,
         val_loss: Optional[float] = None,
         learning_rate: Optional[float] = None,
+        recall_metrics: Optional[Dict[str, float]] = None,
+        mrr_metrics: Optional[Dict[str, float]] = None,
+        video_norm: Optional[float] = None,
+        text_norm: Optional[float] = None,
+        alignment_score: Optional[float] = None,
         **kwargs,
     ) -> None:
-        """Log metrics for a training epoch.
+        """Log comprehensive metrics at the end of each epoch.
 
         Args:
             epoch: Current epoch number
             train_loss: Average training loss for the epoch
             val_loss: Optional validation loss
             learning_rate: Optional current learning rate
+            recall_metrics: Optional dictionary of Recall@K metrics
+            mrr_metrics: Optional dictionary of MRR metrics
+            video_norm: Optional average L2 norm of video embeddings
+            text_norm: Optional average L2 norm of text embeddings
+            alignment_score: Optional average cosine similarity of positive pairs
             **kwargs: Additional metrics to log
         """
         if self.mode == "disabled":
@@ -107,14 +119,31 @@ class WandbLogger:
         self.epoch = epoch
         metrics = {
             "epoch": epoch,
-            "train/epoch_loss": train_loss,
+            "epoch/train_loss": train_loss,
         }
 
         if val_loss is not None:
-            metrics["val/epoch_loss"] = val_loss
+            metrics["epoch/val_loss"] = val_loss
 
         if learning_rate is not None:
-            metrics["train/epoch_lr"] = learning_rate
+            metrics["epoch/learning_rate"] = learning_rate
+
+        # Add retrieval metrics if provided
+        if recall_metrics:
+            for metric_name, value in recall_metrics.items():
+                metrics[f"epoch/retrieval/{metric_name}"] = value
+
+        if mrr_metrics:
+            for metric_name, value in mrr_metrics.items():
+                metrics[f"epoch/retrieval/{metric_name}"] = value
+
+        # Add embedding metrics if provided
+        if video_norm is not None:
+            metrics["epoch/embeddings/video_norm"] = video_norm
+        if text_norm is not None:
+            metrics["epoch/embeddings/text_norm"] = text_norm
+        if alignment_score is not None:
+            metrics["epoch/embeddings/alignment_score"] = alignment_score
 
         # Add any additional metrics
         for key, value in kwargs.items():
@@ -185,6 +214,72 @@ class WandbLogger:
         """Finish logging and close wandb run."""
         if self.mode != "disabled":
             wandb.finish()
+
+    def log_retrieval_metrics(
+        self,
+        recall_metrics: Dict[str, float],
+        mrr_metrics: Dict[str, float],
+        split: str = "train",
+        **kwargs,
+    ) -> None:
+        """Log detailed retrieval metrics at epoch end.
+
+        Args:
+            recall_metrics: Dictionary containing Recall@K metrics for V2T and T2V
+            mrr_metrics: Dictionary containing MRR metrics for V2T and T2V
+            split: Data split (train/val)
+            **kwargs: Additional metrics to log
+        """
+        if self.mode == "disabled":
+            return
+
+        metrics = {}
+
+        # Log Recall@K metrics
+        for metric_name, value in recall_metrics.items():
+            metrics[f"{split}/retrieval/{metric_name}"] = value
+
+        # Log MRR metrics
+        for metric_name, value in mrr_metrics.items():
+            metrics[f"{split}/retrieval/{metric_name}"] = value
+
+        # Add any additional metrics
+        for key, value in kwargs.items():
+            metrics[f"{split}/retrieval/{key}"] = value
+
+        wandb.log(metrics, step=self.step)
+
+    def log_embedding_stats(
+        self,
+        video_norm: float,
+        text_norm: float,
+        alignment_score: float,
+        split: str = "train",
+        **kwargs,
+    ) -> None:
+        """Log detailed embedding statistics at epoch end.
+
+        Args:
+            video_norm: Average L2 norm of video embeddings
+            text_norm: Average L2 norm of text embeddings
+            alignment_score: Average cosine similarity of positive pairs
+            split: Data split (train/val)
+            **kwargs: Additional embedding metrics to log
+        """
+        if self.mode == "disabled":
+            return
+
+        metrics = {
+            f"{split}/embeddings/video_norm": video_norm,
+            f"{split}/embeddings/text_norm": text_norm,
+            f"{split}/embeddings/alignment_score": alignment_score,
+        }
+
+        # Add any additional metrics
+        for key, value in kwargs.items():
+            metrics[f"{split}/embeddings/{key}"] = value
+
+        wandb.log(metrics, step=self.step)
 
 
 def create_logger(

@@ -1,0 +1,61 @@
+{
+  "model": "DeepCORO_CLIP",
+  "acceptsMultipleVideos": true,
+  "structure": {
+    "sections": [
+      {
+        "title": "Dataset",
+        "content": "Trained on over 12 million echocardiography videos paired with text reports from 275,442 studies. Accepts multiple videos from the same exam."
+      },
+      {
+        "title": "Encoders",
+        "subsections": [
+          {
+            "title": "Video Encoder",
+            "content": "Utilizes Multiscale Vision Transformer (mVIT) pretrained on the Kinetics dataset. Processes 16-frame clips to capture temporal dynamics, generating a 512-dimensional embedding."
+          },
+          {
+            "title": "Text Encoder",
+            "content": "Based on BioMedBERT, trained on PubMed abstracts, modified to produce 512-dimensional embeddings."
+          }
+        ]
+      },
+      {
+        "title": "Contrastive Training",
+        "content": "Aligns video clips and corresponding text reports in a joint embedding space using contrastive loss. Uses batches of 32 video-report pairs."
+      },
+      {
+        "title": "Multiple Instance Learning (MIL)",
+        "content": "Employs an anatomical attention mechanism to identify the importance of each video and its view for specific anatomical interpretations. Utilizes a view classifier trained on 58 echocardiographic views."
+      },
+      {
+        "title": "Retrieval-Augmented Interpretation",
+        "content": "Leverages historical report embeddings to retrieve and weight the most relevant reports based on anatomical attention, synthesizing insights from multiple views and videos."
+      },
+      {
+        "title": "Inference Pipeline",
+        "steps": [
+          "Categorize videos into views.",
+          "Generate embeddings using the video encoder.",
+          "Apply anatomical attention to aggregate information.",
+          "Produce a comprehensive study-level interpretation."
+        ]
+      },
+      {
+        "title": "Fine-Tuning",
+        "content": "Pretrained on the entire dataset for 60 epochs. Fine-tuned for 20 epochs on a refined dataset excluding less relevant modalities."
+      },
+      {
+        "title": "Augmentations",
+        "techniques": [
+          "RandAugment",
+          "RandomErasing"
+        ]
+      },
+      {
+        "title": "Evaluation",
+        "content": "Validated through cross-modal retrieval tasks (video-to-text and text-to-video). Outperformed previous models on internal and external test sets."
+      }
+    ]
+  }
+}

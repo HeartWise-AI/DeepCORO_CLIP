@@ -14,7 +14,7 @@ repos:
           - id: absolufy-imports
 
     - repo: 'https://github.com/pre-commit/pre-commit-hooks'
-      rev: v4.5.0
+      rev: v5.0.0
       hooks:
           - id: trailing-whitespace
           - id: end-of-file-fixer
@@ -25,7 +25,7 @@ repos:
           - id: debug-statements
 
     - repo: 'https://github.com/asottile/pyupgrade'
-      rev: v3.7.0
+      rev: v3.19.0
       hooks:
           - id: pyupgrade
             args:
@@ -33,7 +33,7 @@ repos:
                 - '--keep-runtime-typing'
 
     - repo: 'https://github.com/myint/autoflake'
-      rev: v2.1.1
+      rev: v2.3.1
       hooks:
           - id: autoflake
             args:
@@ -45,7 +45,7 @@ repos:
                 - '--remove-duplicate-keys'
 
     - repo: 'https://github.com/pycqa/isort'
-      rev: 5.12.0
+      rev: 5.13.2
       hooks:
           - id: isort
             args:
@@ -60,7 +60,7 @@ repos:
             types: [pyi]
 
     - repo: 'https://github.com/psf/black'
-      rev: 23.12.1
+      rev: 24.10.0
       hooks:
           - id: black
             args:
@@ -69,7 +69,7 @@ repos:
                 - __init__.py
 
     - repo: 'https://github.com/asottile/blacken-docs'
-      rev: 1.14.0
+      rev: 1.19.1
       hooks:
           - id: blacken-docs
             args:
@@ -83,7 +83,7 @@ repos:
           - id: yesqa
 
     - repo: 'https://github.com/executablebooks/mdformat'
-      rev: 0.7.16
+      rev: 0.7.19
       hooks:
           - id: mdformat
             additional_dependencies:
@@ -92,7 +92,7 @@ repos:
             exclude: CHANGELOG.md
 
     - repo: https://github.com/nbQA-dev/nbQA
-      rev: 1.7.1
+      rev: 1.9.1
       hooks:
           - id: nbqa-black
             name: nbqa-black
@@ -104,18 +104,24 @@ repos:
             additional_dependencies: [ruff==0.1.11]
 
     - repo: https://github.com/astral-sh/ruff-pre-commit
-      rev: v0.1.11
+      rev: v0.8.1
       hooks:
           - id: ruff
             args: [--fix, --exit-non-zero-on-fix]
 
     - repo: https://github.com/pre-commit/mirrors-mypy
-      rev: v1.8.0
+      rev: v1.13.0
       hooks:
           - id: mypy
-            additional_dependencies: [types-all]
+            additional_dependencies:
+                - types-PyYAML
+                - types-requests
+                - types-setuptools
+                - types-toml
+                - types-urllib3
+                - types-python-dateutil
 
     - repo: https://github.com/kynan/nbstripout
-      rev: 0.6.1
+      rev: 0.8.1
       hooks:
           - id: nbstripout

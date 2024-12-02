@@ -1,6 +1,5 @@
 default_language_version:
     python: python3
-
 ci:
     autofix_commit_msg: "🎨 [pre-commit.ci] Auto format from pre-commit.com hooks"
     autoupdate_commit_msg: '⬆ [pre-commit.ci] pre-commit autoupdate'
@@ -8,41 +7,11 @@ ci:
     autoupdate_schedule: quarterly
 
 repos:
+    # Import handling
     - repo: 'https://github.com/MarcoGorelli/absolufy-imports'
       rev: v0.3.1
       hooks:
           - id: absolufy-imports
-
-    - repo: 'https://github.com/pre-commit/pre-commit-hooks'
-      rev: v5.0.0
-      hooks:
-          - id: trailing-whitespace
-          - id: end-of-file-fixer
-          - id: check-yaml
-          - id: check-added-large-files
-          - id: check-toml
-          - id: check-merge-conflict
-          - id: debug-statements
-
-    - repo: 'https://github.com/asottile/pyupgrade'
-      rev: v3.19.0
-      hooks:
-          - id: pyupgrade
-            args:
-                - '--py38-plus'
-                - '--keep-runtime-typing'
-
-    - repo: 'https://github.com/myint/autoflake'
-      rev: v2.3.1
-      hooks:
-          - id: autoflake
-            args:
-                - '--recursive'
-                - '--in-place'
-                - '--expand-star-imports'
-                - '--exclude'
-                - __init__.py
-                - '--remove-duplicate-keys'
 
     - repo: 'https://github.com/pycqa/isort'
       rev: 5.13.2
@@ -59,14 +28,14 @@ repos:
             name: isort (pyi)
             types: [pyi]
 
+    # Code formatting
     - repo: 'https://github.com/psf/black'
       rev: 24.10.0
       hooks:
           - id: black
             args:
                 - '--line-length=98'
-                - '--exclude'
-                - __init__.py
+                - '--exclude=^__init__\.py$'
 
     - repo: 'https://github.com/asottile/blacken-docs'
       rev: 1.19.1
@@ -75,22 +44,39 @@ repos:
             args:
                 - '--line-length=98'
             additional_dependencies:
-                - black==22.3.0
+                - black==24.10.0
 
-    - repo: 'https://github.com/asottile/yesqa'
-      rev: v1.5.0
+    # Code upgrades
+    - repo: 'https://github.com/asottile/pyupgrade'
+      rev: v3.19.0
       hooks:
-          - id: yesqa
+          - id: pyupgrade
+            args:
+                - '--py38-plus'
+                - '--keep-runtime-typing'
 
+    - repo: 'https://github.com/myint/autoflake'
+      rev: v2.3.1
+      hooks:
+          - id: autoflake
+            args:
+                - '--recursive'
+                - '--in-place'
+                - '--expand-star-imports'
+                - '--exclude=^__init__\.py$'
+                - '--remove-duplicate-keys'
+
+    # Documentation formatting
     - repo: 'https://github.com/executablebooks/mdformat'
       rev: 0.7.19
       hooks:
           - id: mdformat
             additional_dependencies:
                 - mdformat-gfm
-                - mdformat_frontmatter
+                - mdformat-frontmatter
             exclude: CHANGELOG.md
 
+    # Notebook handling
     - repo: https://github.com/nbQA-dev/nbQA
       rev: 1.9.1
       hooks:
@@ -100,28 +86,25 @@ repos:
             args: [--py38-plus]
           - id: nbqa-isort
             name: nbqa-isort
-          - id: nbqa-ruff
-            additional_dependencies: [ruff==0.1.11]
-
-    - repo: https://github.com/astral-sh/ruff-pre-commit
-      rev: v0.8.1
-      hooks:
-          - id: ruff
-            args: [--fix, --exit-non-zero-on-fix]
-
-    - repo: https://github.com/pre-commit/mirrors-mypy
-      rev: v1.13.0
-      hooks:
-          - id: mypy
-            additional_dependencies:
-                - types-PyYAML
-                - types-requests
-                - types-setuptools
-                - types-toml
-                - types-urllib3
-                - types-python-dateutil
 
     - repo: https://github.com/kynan/nbstripout
       rev: 0.8.1
       hooks:
           - id: nbstripout
+
+    # Miscellaneous checks
+    - repo: 'https://github.com/pre-commit/pre-commit-hooks'
+      rev: v5.0.0
+      hooks:
+          - id: trailing-whitespace
+          - id: end-of-file-fixer
+          - id: check-yaml
+          - id: check-added-large-files
+          - id: check-toml
+          - id: check-merge-conflict
+          - id: debug-statements
+
+    - repo: 'https://github.com/asottile/yesqa'
+      rev: v1.5.0
+      hooks:
+          - id: yesqa

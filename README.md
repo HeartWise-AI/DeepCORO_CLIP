@@ -27,10 +27,14 @@ DeepCORO_CLIP is trained on over 12 million echocardiography videos paired with 
 pip install -r requirements.txt
 ```
 
-2. Prepare data:
+2. Login to Weights & Biases:
 
 ```bash
-python scripts/preprocess_data.py
+# Login to your wandb account
+wandb login
+
+# If you don't have an account, sign up at https://wandb.ai
+# After signing up, get your API key from https://wandb.ai/settings
 ```
 
 3. Train model:
@@ -189,54 +193,222 @@ Code formatting is automatically handled by pre-commit hooks. Configuration can 
 - `pyproject.toml` for Black and Ruff settings
 - `.pre-commit-config.yaml` for git hooks
 
-## Pre-commit Configuration
+## Training Options
 
-repos:
+### Single GPU vs Multi-GPU Training
 
-- repo: https://github.com/pre-commit/pre-commit-hooks
-  rev: v4.5.0
-  hooks:
+The model can be trained in two modes:
 
-  - id: trailing-whitespace
-  - id: end-of-file-fixer
-  - id: check-yaml
-  - id: check-added-large-files
-  - id: check-toml
-  - id: check-merge-conflict
-  - id: debug-statements
+1. **Single GPU Training** (Recommended for most users)
 
-- repo: https://github.com/psf/black
-  rev: 23.12.1
-  hooks:
+   - Uses one GPU for training
+   - Simpler setup and debugging
+   - Lower memory requirements
+   - Slower training but more stable
 
-  - id: black
-    language_version: python3.11
+1. **Multi-GPU Training** (For large-scale training)
 
-- repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.1.11
-  hooks:
+   - Uses multiple GPUs with Distributed Data Parallel (DDP)
+   - Faster training through data parallelism
+   - Higher memory requirements
+   - More complex setup and potential synchronization issues
 
-  - id: ruff
-    args: [--fix, --exit-non-zero-on-fix]
+### How to Run Training
 
-- repo: https://github.com/pre-commit/mirrors-mypy
-  rev: v1.8.0
-  hooks:
+#### Force Single GPU Training (Recommended)
 
-  - id: mypy
-    additional_dependencies: [types-all]
+```bash
+# Method 1: Set CUDA_VISIBLE_DEVICES
+CUDA_VISIBLE_DEVICES=0 python scripts/train_model.py
 
-- repo: https://github.com/nbQA-dev/nbQA
-  rev: 1.7.1
-  hooks:
+# Method 2: Use specific GPU index
+python scripts/train_model.py --gpu 0
+```
 
-  - id: nbqa-black
-    additional_dependencies: [black==23.12.1]
-  - id: nbqa-ruff
-    additional_dependencies: [ruff==0.1.11]
+#### Multi-GPU Training (Advanced)
 
-- repo: https://github.com/kynan/nbstripout
-  rev: 0.6.1
-  hooks:
+```bash
+# Use all available GPUs
+python scripts/train_model.py
 
-  - id: nbstripout
+# Use specific GPUs
+CUDA_VISIBLE_DEVICES=0,1 python scripts/train_model.py
+```
+
+### Memory Requirements
+
+- Single GPU: Minimum 12GB VRAM
+- Multi-GPU: Minimum 8GB VRAM per GPU
+
+### Performance Comparison
+
+- Single GPU:
+
+  - Batch size: 32
+  - Training time: ~2 days
+  - Memory usage: ~10GB VRAM
+
+- Multi-GPU (2 GPUs):
+
+  - Batch size: 32 per GPU (64 total)
+  - Training time: ~1 day
+  - Memory usage: ~8GB VRAM per GPU
+
+### Tips for GPU Selection
+
+1. For research and development:
+
+   - Use single GPU for easier debugging
+   - Better reproducibility
+   - More stable training
+
+1. For production training:
+
+   - Use multi-GPU when you need faster training
+   - Ensure all GPUs are identical models
+   - Monitor GPU memory usage
+
+1. For limited GPU memory:
+
+   - Force single GPU mode
+   - Reduce batch size
+   - Use gradient accumulation
+
+### Common Issues
+
+1. Out of Memory (OOM):
+
+   - Reduce batch size
+   - Use gradient accumulation
+   - Force single GPU mode
+
+1. GPU Selection:
+
+   - Use `CUDA_VISIBLE_DEVICES` to select specific GPUs
+   - Monitor GPU usage with `nvidia-smi`
+
+1. Training Speed:
+
+   - Multi-GPU isn't always faster due to overhead
+   - Start with single GPU and scale up if needed
+
+### Command-Line Arguments
+
+The training script supports various command-line arguments to customize the training process:
+
+```bash
+python scripts/train_model.py [OPTIONS]
+
+Options:
+  --gpu INTEGER        GPU index to use (forces single GPU training)
+  --batch-size INTEGER Default: 32. Batch size per GPU
+  --num-workers INTEGER Default: 4. Number of data loading workers
+  --epochs INTEGER     Default: 50. Number of epochs to train
+  --lr FLOAT          Default: 1e-4. Learning rate
+```
+
+#### Examples
+
+1. Basic training with defaults:
+
+```bash
+python scripts/train_model.py
+```
+
+2. Training with specific GPU and batch size:
+
+```bash
+python scripts/train_model.py --gpu 0 --batch-size 16
+```
+
+3. Full configuration:
+
+```bash
+python scripts/train_model.py \
+    --gpu 0 \
+    --batch-size 16 \
+    --epochs 50 \
+    --lr 1e-4 \
+    --num-workers 4
+```
+
+#### Recommended Batch Sizes by GPU Memory
+
+| GPU Memory | Recommended Batch Size | Command           |
+| ---------- | ---------------------- | ----------------- |
+| 8GB        | 4-8                    | `--batch-size 8`  |
+| 12GB       | 8-16                   | `--batch-size 16` |
+| 16GB       | 16-24                  | `--batch-size 24` |
+| 24GB+      | 24-32                  | `--batch-size 32` |
+
+#### Tips for Training Configuration
+
+1. **Batch Size Selection**:
+
+   - Start with a smaller batch size and increase if memory allows
+   - Larger batch sizes generally allow faster training but require more memory
+   - If you get OOM (Out of Memory) errors, reduce the batch size
+
+1. **Number of Workers**:
+
+   - Rule of thumb: use `num_workers = 4 * num_gpus`
+   - Reduce if you get memory or file handle errors
+   - Example: `--num-workers 2` for slower storage systems
+
+1. **Learning Rate**:
+
+   - Default (1e-4) works well for most cases
+   - For larger batch sizes, consider scaling up: `lr = 1e-4 * (batch_size/32)`
+   - Example: `--lr 2e-4` for batch size 64
+
+1. **Number of Epochs**:
+
+   - Default (50) is good for most cases
+   - Increase for better performance: `--epochs 100`
+   - Decrease for quick experiments: `--epochs 10`
+
+#### Example Configurations
+
+1. **Quick Testing**:
+
+```bash
+python scripts/train_model.py --gpu 0 --batch-size 8 --epochs 5 --num-workers 2
+```
+
+2. **Standard Training**:
+
+```bash
+python scripts/train_model.py --gpu 0 --batch-size 16 --epochs 50 --num-workers 4
+```
+
+3. **Production Training** (large GPU):
+
+```bash
+python scripts/train_model.py --gpu 0 --batch-size 32 --epochs 100 --num-workers 8
+```
+
+4. **Memory-Limited Setup**:
+
+```bash
+python scripts/train_model.py --gpu 0 --batch-size 4 --epochs 50 --num-workers 2
+```
+
+#### Monitoring Training
+
+1. **GPU Memory Usage**:
+
+```bash
+nvidia-smi -l 1  # Monitor GPU usage every second
+```
+
+2. **Training Progress**:
+
+- Progress bar shows current epoch and batch
+- Loss values are printed every 10 batches
+- Checkpoints are saved every 5 epochs
+
+3. **WandB Logging**:
+
+- Training metrics are logged to Weights & Biases
+- Includes loss, learning rate, batch size
+- Access via WandB dashboard

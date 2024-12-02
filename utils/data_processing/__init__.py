@@ -6,9 +6,9 @@ import numpy as np
 import torch
 from torchvision.transforms import v2
 
-from utils.data_processing.video import Video, load_video
+from utils.data_processing.video import Video
 
-__all__ = ["Video", "get_mean_and_std", "format_mean_std", "load_video"]
+__all__ = ["Video", "get_mean_and_std", "format_mean_std"]
 
 
 def get_mean_and_std(

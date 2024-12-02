@@ -47,8 +47,7 @@ python scripts/train_model.py
 
 Multi-GPU training (2 GPUs):
 
-```bash
-CUDA_VISIBLE_DEVICES=0,1 python -m torch.distributed.launch --nproc_per_node=2 scripts/train_model.py
+```torchrun --nproc_per_node=2 scripts/train_model.py --batch-size 16
 ```
 
 ## Model Architecture

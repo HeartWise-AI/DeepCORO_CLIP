@@ -3,28 +3,36 @@
 import argparse
 import os
 import sys
+import time
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, List, Tuple
 
 import numpy as np
 import pandas as pd
-import timm
 import torch
 import torch.distributed as dist
+import torch.multiprocessing as mp
 import torch.nn as nn
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.nn.parallel.distributed import _find_tensors
 from torch.utils.data import DataLoader, DistributedSampler
 from tqdm import tqdm
-from transformers import AutoModel, AutoTokenizer
+
+import wandb
 
 # Add project root to path
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.append(project_root)
 
-from utils.data_processing.video import StatsDataset, Video, VideoDataset, load_video
+from models.model import TextEncoder, VideoEncoder, contrastive_loss
+from utils.data_processing.video import (
+    StatsDataset,
+    Video,
+    VideoDataset,
+    custom_collate_fn,
+    load_video,
+)
 from utils.logging import create_logger
 
 
@@ -38,37 +46,53 @@ def parse_args():
         "--num-workers", type=int, default=4, help="Number of data loading workers"
     )
     parser.add_argument("--epochs", type=int, default=50, help="Number of epochs to train")
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
+    parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate")
     parser.add_argument(
-        "--local_rank", type=int, default=-1, help="Local rank for distributed training"
+        "--local_rank",
+        "--local-rank",
+        type=int,
+        default=-1,
+        help="Local rank for distributed training",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--debug", action="store_true", help="Enable debug mode with model weight biases"
+    )
+    parser.add_argument(
+        "--temp", type=float, default=0.1, help="Temperature for contrastive loss"
+    )
+    args = parser.parse_args()
+
+    # Also check environment variable as recommended by PyTorch
+    if args.local_rank == -1:
+        args.local_rank = int(os.environ.get("LOCAL_RANK", -1))
+
+    return args
 
 
-def custom_collate_fn(
-    batch: List[Tuple[np.ndarray, Any, str]]
-) -> Tuple[torch.Tensor, List[Any], List[str]]:
+def custom_collate_fn(batch):
     """Custom collate function to handle video and text data.
 
     Args:
         batch: List of tuples (video, encoded_text, path)
+        Each video has shape [F, H, W, C]
     Returns:
-        videos: Tensor of shape (batch_size, channels, frames, height, width)
+        videos: Tensor of shape (batch_size, C, F, H, W) for MViT compatibility
         encoded_texts: Dictionary with input_ids and attention_mask tensors
         paths: List of file paths
     """
-    videos, encoded_texts, paths = zip(*batch, strict=False)
+    videos, encoded_texts, paths = zip(*batch)
 
-    # Stack videos - they should all have the same shape after preprocessing
-    videos = torch.stack([torch.from_numpy(v) for v in videos])
+    # Stack videos - handle both tensor and numpy inputs
+    videos = torch.stack([torch.from_numpy(v) for v in videos])  # Shape: [B, F, H, W, C]
+
+    # Permute dimensions from [B, F, H, W, C] to [B, C, F, H, W] for MViT
+    videos = videos.permute(0, 4, 1, 2, 3)
 
     # Combine encoded texts
     if encoded_texts[0] is not None:
         combined_texts = {
-            "input_ids": torch.cat([text["input_ids"] for text in encoded_texts], dim=0),
-            "attention_mask": torch.cat(
-                [text["attention_mask"] for text in encoded_texts], dim=0
-            ),
+            "input_ids": torch.stack([text["input_ids"] for text in encoded_texts]),
+            "attention_mask": torch.stack([text["attention_mask"] for text in encoded_texts]),
         }
     else:
         combined_texts = None
@@ -76,91 +100,16 @@ def custom_collate_fn(
     return videos, combined_texts, paths
 
 
-class VideoEncoder(nn.Module):
-    def __init__(self, input_channels=1):  # Default to 1 for grayscale
-        super().__init__()
-        self.input_channels = input_channels
-
-        # Convert grayscale to 3 channels if needed
-        if input_channels == 1:
-            self.to_rgb = nn.Sequential(
-                # First expand to 3 channels
-                nn.Conv3d(1, 3, kernel_size=1, bias=False),
-                nn.BatchNorm3d(3),
-                nn.ReLU(inplace=True),
-            )
-        else:
-            self.to_rgb = None
-
-        # MViT outputs 512 dimensions directly to match text encoder
-        self.mvit = timm.create_model("mvitv2_base", pretrained=True, num_classes=512)
-
-        # Modify first conv layer to accept video input
-        first_conv = self.mvit.patch_embed.proj
-        self.mvit.patch_embed.proj = nn.Conv2d(
-            3 * 32,  # 3 channels * num_frames
-            first_conv.out_channels,
-            kernel_size=first_conv.kernel_size,
-            stride=first_conv.stride,
-            padding=first_conv.padding,
-        )
-
-    def forward(self, x):
-        # Input shape: [batch_size, channels, frames, height, width]
-        # x is already in the correct format [B, C, T, H, W]
-
-        # Convert grayscale to RGB if needed
-        if self.to_rgb is not None:
-            # Take only the first channel if input has 3 channels
-            if x.shape[1] == 3:
-                x = x[:, 0:1]
-            x = self.to_rgb(x)  # [B, 3, T, H, W]
-
-        B, C, T, H, W = x.shape
-
-        # Reshape for MViT: [batch_size, T*C, H, W]
-        x = x.permute(0, 2, 1, 3, 4)  # [B, T, C, H, W]
-        x = x.reshape(B, T * C, H, W)  # [B, T*C, H, W]
-
-        # Get features from MViT (outputs [B, 512] directly)
-        x = self.mvit(x)
-
-        return x
-
-
-class TextEncoder(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.bert = AutoModel.from_pretrained(
-            "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext"
-        )
-        self.proj = nn.Linear(768, 512)
-
-    def forward(self, input_ids, attention_mask):
-        features = self.bert(
-            input_ids=input_ids, attention_mask=attention_mask
-        ).last_hidden_state[:, 0]
-        return self.proj(features)
-
-
-def contrastive_loss(video_emb, text_emb, temperature=0.07):
-    """Compute contrastive loss between video and text embeddings."""
-    video_emb = nn.functional.normalize(video_emb, dim=1)
-    text_emb = nn.functional.normalize(text_emb, dim=1)
-
-    logits = torch.matmul(video_emb, text_emb.t()) / temperature
-    labels = torch.arange(len(video_emb)).to(video_emb.device)
-
-    loss = (nn.CrossEntropyLoss()(logits, labels) + nn.CrossEntropyLoss()(logits.t(), labels)) / 2
-    return loss
-
-
 def setup_ddp(rank, world_size):
     """Initialize DDP process group with proper error handling"""
     try:
         # Set the device
         if torch.cuda.is_available():
-            torch.cuda.set_device(rank)
+            # Remove any CUDA_VISIBLE_DEVICES restriction
+            if "CUDA_VISIBLE_DEVICES" in os.environ:
+                del os.environ["CUDA_VISIBLE_DEVICES"]
+
+            torch.cuda.set_device(rank)  # Set to use the correct GPU
             device = torch.device(f"cuda:{rank}")
         else:
             device = torch.device("cpu")
@@ -179,6 +128,12 @@ def setup_ddp(rank, world_size):
         if not dist.is_initialized():
             raise RuntimeError("Failed to initialize process group")
 
+        if rank == 0:
+            print(f"Initialized process group: rank {rank} on device {device}")
+            print(f"Number of GPUs available: {torch.cuda.device_count()}")
+            for i in range(torch.cuda.device_count()):
+                print(f"GPU {i}: {torch.cuda.get_device_name(i)}")
+
         return device
 
     except Exception as e:
@@ -196,18 +151,36 @@ def cleanup_ddp():
 
 
 def train_epoch(
-    video_encoder, text_encoder, dataloader, optimizer, device, logger, rank=0, world_size=1
+    video_encoder,
+    text_encoder,
+    dataloader,
+    optimizer,
+    device,
+    logger,
+    rank=0,
+    world_size=1,
+    epoch=0,
 ):
     """Training epoch with proper DDP synchronization"""
     video_encoder.train()
     text_encoder.train()
+
+    # Print GPU information at the start of each epoch
+    if rank == 0:
+        print(f"\nGPU Usage for Epoch {epoch}:")
+        for i in range(torch.cuda.device_count()):
+            print(f"GPU {i}: {torch.cuda.get_device_name(i)}")
+            print(
+                f"Memory allocated on GPU {i}: {torch.cuda.memory_allocated(i) / 1024**2:.2f} MB"
+            )
+            print(f"Memory cached on GPU {i}: {torch.cuda.memory_reserved(i) / 1024**2:.2f} MB")
 
     total_loss = 0.0
     num_batches = 0
 
     # Use different progress bars for main process vs others
     if rank == 0:
-        progress = tqdm(dataloader, desc=f"Epoch {logger.epoch if logger else 0}")
+        progress = tqdm(dataloader, desc=f"Epoch {epoch}")
     else:
         progress = dataloader
 
@@ -218,7 +191,17 @@ def train_epoch(
 
             # Skip batch if no text data
             if encoded_texts is None:
+                if rank == 0:
+                    print(f"Skipping batch {batch_idx} due to missing text data")
                 continue
+
+            # Print device information for first batch
+            if batch_idx == 0:
+                print(f"Rank {rank} - Processing on device: {device}")
+                print(f"Rank {rank} - Video tensor device: {videos.device}")
+                print(f"Rank {rank} - Text tensor device: {encoded_texts['input_ids'].device}")
+                print(f"Rank {rank} - Text tensor shape: {encoded_texts['input_ids'].shape}")
+                print(f"Rank {rank} - Text tensor max value: {encoded_texts['input_ids'].max()}")
 
             # Zero gradients for every batch
             optimizer.zero_grad()
@@ -232,15 +215,28 @@ def train_epoch(
             video_features = video_encoder(videos)
             text_features = text_encoder(input_ids, attention_mask)
 
+            # Print shapes for debugging
+            if batch_idx == 0:
+                print(f"Rank {rank} - Video features shape: {video_features.shape}")
+                print(f"Rank {rank} - Text features shape: {text_features.shape}")
+
             # Compute loss
             loss = contrastive_loss(video_features, text_features)
+
+            # Check for invalid loss
+            if not torch.isfinite(loss):
+                if rank == 0:
+                    print(f"Warning: Batch {batch_idx} - Invalid loss value: {loss.item()}")
+                    print(f"  video_features norm: {torch.norm(video_features)}")
+                    print(f"  text_features norm: {torch.norm(text_features)}")
+                continue
 
             # Backward pass
             loss.backward()
 
             # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(video_encoder.parameters(), max_norm=1.0)
-            torch.nn.utils.clip_grad_norm_(text_encoder.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(video_encoder.parameters(), max_norm=5.0)
+            torch.nn.utils.clip_grad_norm_(text_encoder.parameters(), max_norm=5.0)
 
             # Step optimizer
             optimizer.step()
@@ -249,12 +245,39 @@ def train_epoch(
             total_loss += loss.item()
             num_batches += 1
 
-            # Log progress (now updated every step)
+            # Log progress and metrics on rank 0
             if rank == 0:
-                progress.set_postfix({"loss": loss.item()})
+                progress.set_postfix(
+                    {
+                        "loss": f"{loss.item():.4f}",
+                        "avg_loss": f"{(total_loss/num_batches):.4f}",
+                        "device": str(device),
+                    }
+                )
+
+                # Log to wandb
+                wandb.log(
+                    {
+                        "batch_loss": loss.item(),
+                        "batch_avg_loss": total_loss / num_batches,
+                        "batch": batch_idx + len(dataloader) * epoch,
+                        "video_features_norm": torch.norm(video_features).item(),
+                        "text_features_norm": torch.norm(text_features).item(),
+                        "epoch": epoch,
+                        "gpu_memory": {
+                            f"gpu_{i}": torch.cuda.memory_allocated(i) / 1024**2
+                            for i in range(torch.cuda.device_count())
+                        },
+                    }
+                )
 
         except RuntimeError as e:
-            print(f"Error in batch {batch_idx} on rank {rank}: {str(e)}")
+            print(f"Error in batch {batch_idx} on rank {rank} (device {device}): {str(e)}")
+            print(f"Debug info:")
+            print(f"  Video shape: {videos.shape}")
+            print(f"  Input IDs shape: {input_ids.shape}")
+            print(f"  Input IDs max value: {input_ids.max().item()}")
+            print(f"  Attention mask shape: {attention_mask.shape}")
             continue
 
     # Average loss across all processes
@@ -266,11 +289,28 @@ def train_epoch(
 
     avg_loss = total_loss / num_batches if num_batches > 0 else float("inf")
 
-    # Only print on main process
+    # Log epoch metrics on rank 0
     if rank == 0:
-        print(f"\nEpoch {logger.epoch if logger else 0} - Average Loss: {avg_loss:.4f}")
+        print(f"\nEpoch {epoch} - Average Loss: {avg_loss:.4f}")
+        print(f"Processed {num_batches} batches")
+        wandb.log({"epoch": epoch, "epoch_avg_loss": avg_loss, "num_batches": num_batches})
 
     return avg_loss
+
+
+def remove_model_biases(model):
+    """Initialize model weights properly for training."""
+    for name, param in model.named_parameters():
+        if "bias" in name:
+            nn.init.zeros_(param.data)
+        elif "weight" in name:
+            if len(param.shape) > 1:
+                # For weight matrices, use Xavier initialization
+                nn.init.xavier_uniform_(param.data)
+            else:
+                # For 1D weights (like in LayerNorm), use normal initialization
+                nn.init.normal_(param.data, mean=0.0, std=0.02)
+    return model
 
 
 def main(rank=0, world_size=1, args=None):
@@ -278,39 +318,86 @@ def main(rank=0, world_size=1, args=None):
     if args is None:
         args = parse_args()
 
+    logger = None
     try:
-        # Initialize DDP if using multiple GPUs
-        if world_size > 1:
-            device = setup_ddp(rank, world_size)
-        else:
-            device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
+        # Determine if we're doing distributed training
+        is_distributed = world_size > 1 and args.gpu is None
 
-        # Initialize logger only on rank 0
-        logger = create_logger(args) if rank == 0 else None
+        # Set up device and initialize process group first
+        if is_distributed:
+            # Only initialize process group for distributed training
+            device = setup_ddp(rank, world_size)
+            # Disable wandb for non-zero ranks
+            if rank != 0:
+                os.environ["WANDB_MODE"] = "disabled"
+        else:
+            # Single GPU setup - no DDP needed
+            if args.gpu is not None:
+                device = torch.device(f"cuda:{args.gpu}")
+            else:
+                device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+        # Initialize wandb only on rank 0 (both for distributed and single GPU)
+        should_log = rank == 0  # Only log on rank 0, regardless of distributed mode
+
+        if should_log:
+            # Ensure wandb is not already initialized
+            try:
+                wandb.finish()
+            except:
+                pass
+
+            # Set unique run ID to prevent multiple runs
+            os.environ["WANDB_RUN_ID"] = f"run_{int(time.time())}"
+
+            wandb.init(
+                project="DeepCORO_CLIP",
+                config={
+                    "batch_size": args.batch_size,
+                    "learning_rate": args.lr,
+                    "epochs": args.epochs,
+                    "num_workers": args.num_workers,
+                    "debug_mode": args.debug,
+                    "world_size": world_size,
+                    "distributed": is_distributed,
+                    "device": str(device),
+                    "rank": rank,
+                },
+            )
+            logger = create_logger(args)
 
         # Create models
         video_encoder = VideoEncoder().to(device)
         text_encoder = TextEncoder().to(device)
 
-        # Convert BatchNorm to SyncBatchNorm for multi-GPU training
-        if world_size > 1:
+        # Remove model biases if not in debug mode
+        if not args.debug:
+            if should_log:
+                print("Debug mode disabled - Removing model biases and setting uniform weights")
+            video_encoder = remove_model_biases(video_encoder)
+            text_encoder = remove_model_biases(text_encoder)
+        elif should_log:
+            print("Debug mode enabled - Keeping original model weights and biases")
+
+        # Set up distributed training if needed
+        if is_distributed:
+            # Convert BatchNorm to SyncBatchNorm for multi-GPU training
             video_encoder = nn.SyncBatchNorm.convert_sync_batchnorm(video_encoder)
             text_encoder = nn.SyncBatchNorm.convert_sync_batchnorm(text_encoder)
 
-        # Wrap models with DDP if using multiple GPUs
-        if world_size > 1:
+            # Wrap models with DDP
             video_encoder = DDP(
                 video_encoder,
                 device_ids=[rank],
                 output_device=rank,
-                find_unused_parameters=False,
+                find_unused_parameters=True,
                 broadcast_buffers=True,
             )
             text_encoder = DDP(
                 text_encoder,
                 device_ids=[rank],
                 output_device=rank,
-                find_unused_parameters=False,
+                find_unused_parameters=True,
                 broadcast_buffers=True,
             )
 
@@ -321,13 +408,16 @@ def main(rank=0, world_size=1, args=None):
             split="train",
             target_label="Report",
             datapoint_loc_label="FileName",
+            num_frames=16,
+            backbone="mvit",
             mean=[0.485, 0.456, 0.406],
             std=[0.229, 0.224, 0.225],
             normalize=True,
-            debug=rank == 0,
+            debug=should_log,
+            batch_size=args.batch_size,
         )
 
-        if rank == 0:
+        if should_log:
             print(f"Dataset size: {len(train_dataset)}")
 
         # Create sampler and dataloader
@@ -335,7 +425,7 @@ def main(rank=0, world_size=1, args=None):
             DistributedSampler(
                 train_dataset, num_replicas=world_size, rank=rank, shuffle=True, seed=42
             )
-            if world_size > 1
+            if is_distributed
             else None
         )
 
@@ -368,21 +458,22 @@ def main(rank=0, world_size=1, args=None):
                 optimizer=optimizer,
                 device=device,
                 logger=logger,
-                rank=rank,
-                world_size=world_size,
+                rank=rank if is_distributed else 0,
+                world_size=world_size if is_distributed else 1,
+                epoch=epoch,
             )
 
-            # Save checkpoints only on rank 0
-            if rank == 0:
+            # Save checkpoints only on main process
+            if should_log:
                 checkpoint = {
                     "video_encoder": (
                         video_encoder.module.state_dict()
-                        if world_size > 1
+                        if is_distributed
                         else video_encoder.state_dict()
                     ),
                     "text_encoder": (
                         text_encoder.module.state_dict()
-                        if world_size > 1
+                        if is_distributed
                         else text_encoder.state_dict()
                     ),
                     "optimizer": optimizer.state_dict(),
@@ -396,40 +487,35 @@ def main(rank=0, world_size=1, args=None):
                     checkpoint_path = checkpoint_dir / f"checkpoint_epoch_{epoch+1}.pt"
                     torch.save(checkpoint, checkpoint_path)
                     print(f"Saved checkpoint for epoch {epoch+1}")
+                    wandb.save(str(checkpoint_path))
 
     except Exception as e:
         print(f"Error on rank {rank}: {str(e)}")
         raise e
 
     finally:
-        # Cleanup
-        if rank == 0 and logger:
+        if logger:
             logger.finish()
-
-        if world_size > 1:
+        if is_distributed:
             cleanup_ddp()
 
 
 if __name__ == "__main__":
     args = parse_args()
 
-    # Force single GPU if specified
     if args.gpu is not None:
+        # Use specified GPU
         os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
         main(rank=0, world_size=1, args=args)
     else:
-        # Multi-GPU setup
-        world_size = torch.cuda.device_count()
-        if world_size > 1:
-            # Set environment variables
-            os.environ["WORLD_SIZE"] = str(world_size)
-            os.environ["MASTER_ADDR"] = "localhost"
-            os.environ["MASTER_PORT"] = "12355"
-
-            # Launch processes
-            import torch.multiprocessing as mp
-
-            mp.spawn(main, args=(world_size, args), nprocs=world_size, join=True)
-        else:
-            # Single GPU setup
+        # Default to GPU 0 for single GPU mode
+        if torch.cuda.device_count() == 1:
+            os.environ["CUDA_VISIBLE_DEVICES"] = "0"
             main(rank=0, world_size=1, args=args)
+        else:
+            # Multi-GPU mode - remove any GPU restrictions
+            if "CUDA_VISIBLE_DEVICES" in os.environ:
+                del os.environ["CUDA_VISIBLE_DEVICES"]
+            main(rank=0, world_size=1, args=args)
+
+    # Multi-GPU mode must be explicitly triggered using torchrun or torch.distributed.launch

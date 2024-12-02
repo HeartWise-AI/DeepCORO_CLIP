@@ -2,7 +2,7 @@ import collections
 import os
 import pathlib
 import sys
-from typing import Optional
+from typing import Any, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -21,6 +21,8 @@ if dir1 not in sys.path:
 
 import orion
 
+from models.model import get_tokenizer
+
 
 def load_video(
     video_path,
@@ -36,28 +38,17 @@ def load_video(
     pad=None,
     video_transforms=None,
     rand_augment=False,
+    backbone="default",
 ):
     """
     Load and process a video with center cropping and optional augmentations.
-
-    Args:
-        video_path (str): Path to the video file
-        split (str): Dataset split ('train', 'val', 'test', 'external_test', 'clinical_test')
-        n_frames (int): Number of frames to extract
-        period (int): Sampling period for frames
-        resize (int): Size to resize frames to
-        apply_mask (bool): Whether to apply masking
-        normalize (bool): Whether to normalize the video
-        mean (float or list): Mean for normalization (per channel)
-        std (float or list): Standard deviation for normalization (per channel)
-        noise (float): Fraction of pixels to black out
-        pad (int): Padding size
-        video_transforms (list): List of video transforms
-        rand_augment (bool): Whether to apply random augmentation
-
-    Returns:
-        np.ndarray: Processed video array
+    Returns tensor in format [F, H, W, C].
     """
+    # Force 16 frames for MViT backbone
+    if backbone.lower() == "mvit":
+        n_frames = 16
+        period = 1
+
     try:
         # First try loading with Orion
         video = orion.utils.loadvideo(video_path)
@@ -78,73 +69,66 @@ def load_video(
             ret, frame = cap.read()
             if not ret:
                 break
-            # Convert BGR to grayscale if it's color
             if len(frame.shape) == 3:
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             frames.append(frame)
         cap.release()
 
         if not frames:
             raise ValueError(f"No frames could be read from video: {video_path}")
 
-        # Stack frames into array [num_frames, height, width]
         video = np.stack(frames, axis=0).astype(np.float32)
-        # Add channel dimension [num_frames, channels, height, width]
-        video = np.expand_dims(video, axis=1)
+        if len(video.shape) == 3:
+            video = np.expand_dims(video, axis=-1)
 
-    # Convert mean and std to lists if they're not already
-    if isinstance(mean, (int, float)):
-        mean = [float(mean)]
-    if isinstance(std, (int, float)):
-        std = [float(std)]
-
-    # Handle masking if required
-    if apply_mask:
-        path = video_path.rsplit("/", 2)
-        mask_filename = f"{path[0]}/mask/{path[2]}"
-        mask_filename = mask_filename.split(".avi")[0] + ".npy"
-
-        if os.path.exists(mask_filename):
-            mask = np.load(mask_filename).transpose(2, 0, 1)
-            length = video.shape[2]
-
-            # Fix mask shapes
-            if mask.shape[1] < length:
-                mask = np.pad(mask, [(0, 0), (length - mask.shape[1], 0), (0, 0)])
-            if mask.shape[2] < length:
-                mask = np.pad(mask, [(0, 0), (0, 0), (length - mask.shape[2], 0)])
-            if mask.shape[1] > length:
-                mask = mask[:, :length, :]
-            if mask.shape[2] > length:
-                mask = mask[:, :, :length]
-
-            # Apply mask to each frame
-            for ind in range(video.shape[0]):
-                video[ind, :, :, :] = video[ind, :, :, :] * mask
-
-    # Add noise if specified
-    if noise is not None:
-        n = video.shape[1] * video.shape[2] * video.shape[3]
-        ind = np.random.choice(n, round(noise * n), replace=False)
-        f = ind % video.shape[1]
-        ind //= video.shape[1]
-        i = ind % video.shape[2]
-        ind //= video.shape[2]
-        j = ind
-        video[:, f, i, j] = 0
-
-    # Convert to torch tensor for transforms
+    # Convert to torch tensor
     video = torch.from_numpy(video)
 
-    # Resize if specified
+    # Ensure video is in [F, C, H, W] format for transforms
+    if video.shape[-1] in [1, 3]:  # If channel is last dimension
+        video = video.permute(0, 3, 1, 2)
+
+    # Resize spatial dimensions
     if resize is not None:
         video = v2.Resize((resize, resize), antialias=True)(video)
 
-    # Apply normalization if specified
+    # Handle frame sampling
+    t, c, h, w = video.shape
+
+    if backbone.lower() == "mvit":
+        # For MViT, always sample exactly 16 frames
+        if t < 16:
+            # If too few frames, repeat the last frame
+            last_frame = video[-1:].repeat(16 - t, 1, 1, 1)
+            video = torch.cat([video, last_frame], dim=0)
+        elif t > 16:
+            # If too many frames, sample evenly
+            indices = torch.linspace(0, t - 1, 16).long()
+            video = video[indices]
+
+        # Verify we have exactly 16 frames
+        if video.shape[0] != 16:
+            raise ValueError(f"Expected 16 frames, got {video.shape[0]}")
+    else:
+        # For other backbones, maintain original frame count
+        target_frames = n_frames
+        if t < target_frames:
+            # Repeat last frame if needed
+            last_frame = video[-1:].repeat(target_frames - t, 1, 1, 1)
+            video = torch.cat([video, last_frame], dim=0)
+        elif t > target_frames:
+            indices = torch.linspace(0, t - 1, target_frames).long()
+            video = video[indices]
+
+    # Apply normalization
     if normalize:
+        if isinstance(mean, (int, float)):
+            mean = [float(mean)] * c
+        if isinstance(std, (int, float)):
+            std = [float(std)] * c
         video = v2.Normalize(mean=mean, std=std)(video)
 
-    # Apply video transforms if specified
+    # Apply transforms
     if video_transforms is not None:
         transforms = v2.RandomApply(torch.nn.ModuleList(video_transforms), p=0.5)
         scripted_transforms = torch.jit.script(transforms)
@@ -153,37 +137,23 @@ def load_video(
         except RuntimeError as e:
             print(f"Error applying transforms to video {video_path}: {str(e)}")
 
-    # Apply random augmentation if specified
     if rand_augment:
         raug = [v2.RandAugment(magnitude=9, num_layers=2, prob=0.5)]
         raug_composed = v2.Compose(raug)
         video = raug_composed(video)
 
-    # Convert back to numpy and handle frame ordering
-    video = video.permute(1, 0, 2, 3).numpy()
+    # Final verification
+    t, c, h, w = video.shape
+    expected_frames = 16 if backbone.lower() == "mvit" else n_frames
 
-    # Center crop/pad frames
-    c, f, h, w = video.shape
-    target_frames = n_frames * period
+    if t != expected_frames:
+        raise ValueError(f"Expected {expected_frames} frames, got {t}")
+    if h != resize or w != resize:
+        raise ValueError(f"Expected spatial dimensions {resize}x{resize}, got {h}x{w}")
 
-    if f < target_frames:
-        # Pad if video is too short
-        padding = target_frames - f
-        pad_left = padding // 2
-        pad_right = padding - pad_left
-        video = np.pad(video, ((0, 0), (pad_left, pad_right), (0, 0), (0, 0)), mode="constant")
-    else:
-        # Center crop
-        start_frame = (f - target_frames) // 2
-        video = video[:, start_frame : start_frame + target_frames : period, :, :]
-
-    # Add padding if specified
-    if pad is not None:
-        c, l, h, w = video.shape
-        temp = np.zeros((c, l, h + 2 * pad, w + 2 * pad), dtype=video.dtype)
-        temp[:, :, pad:-pad, pad:-pad] = video
-        i, j = np.random.randint(0, 2 * pad, 2)
-        video = temp[:, :, i : (i + h), j : (j + w)]
+    # Permute the tensor to have the shape [F, H, W, C]
+    video = video.permute(0, 2, 3, 1)
+    video = video.numpy()
 
     return video
 
@@ -325,7 +295,11 @@ class Video(torch.utils.data.Dataset):
 
             if self.target_label is not None:
                 text = self.outcome[index]
-                # Tokenize text
+                # Ensure text is a string
+                if not isinstance(text, str):
+                    text = str(text)
+
+                # Tokenize text with shared configuration
                 encoded = self.tokenizer(
                     text,
                     padding="max_length",
@@ -333,6 +307,14 @@ class Video(torch.utils.data.Dataset):
                     truncation=True,
                     return_tensors="pt",
                 )
+
+                # Remove batch dimension from tokenizer output and reshape to [sequence_length]
+                encoded = {k: v.squeeze(0) for k, v in encoded.items()}
+
+                # Move tensors to device if specified
+                if hasattr(self, "device"):
+                    encoded = {k: v.to(self.device) for k, v in encoded.items()}
+
                 return video, encoded, video_fname
             return video, None, video_fname
 
@@ -375,7 +357,7 @@ class StatsDataset(Video):
 
 
 class VideoDataset(Video):
-    """Dataset class for video-text pairs."""
+    """Dataset class for video-text pairs with configurable backbone support."""
 
     def __init__(
         self,
@@ -385,63 +367,34 @@ class VideoDataset(Video):
         target_label,
         datapoint_loc_label="target_video_path",
         num_frames=32,
+        backbone="default",
+        debug_mode=False,
+        normalize=True,
+        mean=None,
+        std=None,
         **kwargs,
     ):
-        # Add debug print to see data file structure
-        data_path = os.path.join(root, data_filename)
-        if os.path.exists(data_path):
-            df = pd.read_csv(data_path, sep="α")
-            print(f"Available columns in {data_filename}:")
-            print(df.columns.tolist())
-        else:
-            print(f"Data file not found: {data_path}")
+        # Set default period
+        period = kwargs.pop("period", 1)
 
-        stats_dataset = None
-        # First create a temporary instance without normalization to calculate stats
-        if "mean" not in kwargs or "std" not in kwargs:
-            print("Creating temporary dataset to calculate mean and std...")
-            stats_dataset = StatsDataset(
-                root=root,
-                data_filename=data_filename,
-                split=split,
-                target_label=target_label,
-                datapoint_loc_label=datapoint_loc_label,
-                num_frames=num_frames,
-            )
+        # Force 16 frames for MViT backbone
+        if backbone.lower() == "mvit":
+            num_frames = 16
+            period = 1
+            print(f"Using MViT backbone - forcing exactly {num_frames} frames with period=1")
+            if "length" in kwargs:
+                kwargs["length"] = 16
 
-            if len(stats_dataset) == 0:
-                raise ValueError("No valid videos found in the dataset!")
+        self.debug_mode = debug_mode
+        self.backbone = backbone
+        self.num_frames = num_frames
+        self.batch_size = kwargs.pop("batch_size", 16)
+        self.failed_videos = []
 
-            # Sample only 1000 videos max
-            if len(stats_dataset) > 1000:
-                indices = np.random.choice(len(stats_dataset), 1000, replace=False)
-                stats_dataset = torch.utils.data.Subset(stats_dataset, indices)
-                print(f"Sampled {len(stats_dataset)} videos for mean and std calculation")
-            # Calculate mean and std from the dataset
-            print("Calculating dataset mean and std...")
-            mean, std = get_mean_and_std(
-                dataset=stats_dataset,
-                samples=None,  # Use all samples
-                batch_size=8,
-                num_workers=4,
-            )
-        else:
-            mean = kwargs.pop("mean")
-            std = kwargs.pop("std")
-
-        # Convert mean and std to lists if they're not already
-        if isinstance(mean, (int, float)):
-            mean = [float(mean)]
-        if isinstance(std, (int, float)):
-            std = [float(std)]
-
-        print(f"Dataset mean: {mean}")
-        print(f"Dataset std: {std}")
-
-        # Remove normalize from kwargs if it exists to avoid duplicate argument
+        # Remove normalize from kwargs if it exists to avoid duplicate
         kwargs.pop("normalize", None)
 
-        # Now initialize the actual dataset with the calculated statistics
+        # Initialize parent class
         super().__init__(
             root=root,
             data_filename=data_filename,
@@ -449,84 +402,140 @@ class VideoDataset(Video):
             target_label=target_label,
             datapoint_loc_label=datapoint_loc_label,
             resize=224,
-            length=num_frames,  # Use the same number of frames
-            period=1,
-            normalize=True,
+            length=num_frames,
+            period=period,
+            normalize=normalize,
             mean=mean,
             std=std,
             **kwargs,
         )
 
-        # Store the calculated statistics
-        self.calculated_mean = mean
-        self.calculated_std = std
-        self.num_frames = num_frames
-        # Store valid indices from stats dataset if present else default to full dataset
-        if stats_dataset is not None:
-            self.valid_indices = getattr(
-                stats_dataset, "valid_indices", range(len(stats_dataset))
-            )
-        else:
-            self.valid_indices = range(len(self.fnames))
-        print(f"Using {len(self.valid_indices)} valid videos for training")
-
         # Initialize tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext",
-            use_fast=True,
-            model_max_length=512,
-            padding_side="right",
-            truncation_side="right",
+        try:
+            self.tokenizer = get_tokenizer()
+            print("Tokenizer initialized successfully")
+        except Exception as e:
+            print(f"Error initializing tokenizer: {str(e)}")
+            raise RuntimeError("Failed to initialize tokenizer") from e
+
+        # Double-check frame count for MViT
+        if self.backbone.lower() == "mvit":
+            if self.num_frames != 16 or self.period != 1:
+                raise ValueError(
+                    f"MViT requires exactly 16 frames with period=1, but got frames={self.num_frames}, period={self.period}"
+                )
+
+        # Initialize valid_indices
+        if self.debug_mode:
+            self._validate_all_videos()
+        else:
+            self.valid_indices = list(range(len(self.fnames)))
+
+    def _validate_all_videos(self):
+        """Pre-validate all videos to catch any issues early."""
+        print("Validating all videos in dataset...")
+        valid_indices = []
+
+        for idx in range(len(self.fnames)):
+            try:
+                video_fname = self.fnames[idx]
+                # Try loading video without full processing
+                video = orion.utils.loadvideo(video_fname)
+                if isinstance(video, (int, float)):
+                    raise ValueError(f"Invalid video data for {video_fname}")
+                valid_indices.append(idx)
+            except Exception as e:
+                print(f"Warning: Failed to load video {video_fname}: {str(e)}")
+                self.failed_videos.append((video_fname, str(e)))
+
+        self.valid_indices = valid_indices
+        print(f"Found {len(valid_indices)} valid videos out of {len(self.fnames)}")
+        if self.failed_videos:
+            print(f"Failed to load {len(self.failed_videos)} videos")
+
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, Optional[dict], str]:
+        max_retries = 3
+        last_exception = None
+
+        for retry in range(max_retries):
+            try:
+                actual_idx = self.valid_indices[index]
+                video_fname = self.fnames[actual_idx]
+
+                # Load video (returns tensor directly)
+                video = load_video(
+                    video_fname,
+                    split=self.split,
+                    n_frames=16 if self.backbone.lower() == "mvit" else self.num_frames,
+                    period=1 if self.backbone.lower() == "mvit" else self.period,
+                    resize=self.resize,
+                    apply_mask=self.apply_mask,
+                    normalize=self.normalize,
+                    mean=self.mean,
+                    std=self.std,
+                    noise=self.noise,
+                    pad=self.pad,
+                    video_transforms=self.video_transforms,
+                    rand_augment=self.rand_augment,
+                    backbone=self.backbone,
+                )
+
+                # Ensure video is in correct format [T, C, H, W]
+                if self.backbone.lower() == "mvit":
+                    if video.shape[0] != 16:
+                        raise ValueError(f"Expected 16 frames, got {video.shape[0]}")
+
+                if self.target_label is not None:
+                    text = self.outcome[actual_idx]
+                    if not isinstance(text, str):
+                        text = str(text)
+
+                    try:
+                        encoded = self.tokenizer(
+                            text,
+                            padding="max_length",
+                            max_length=512,
+                            truncation=True,
+                            return_tensors="pt",
+                        )
+                        encoded = {k: v.squeeze(0) for k, v in encoded.items()}
+
+                        if hasattr(self, "device"):
+                            encoded = {k: v.to(self.device) for k, v in encoded.items()}
+
+                        return video, encoded, video_fname
+                    except Exception as e:
+                        print(f"Error tokenizing text for {video_fname}: {str(e)}")
+                        raise
+
+                return video, None, video_fname
+
+            except Exception as e:
+                last_exception = e
+                if retry < max_retries - 1:
+                    print(f"Retry {retry + 1}/{max_retries} for index {index} due to: {str(e)}")
+                    continue
+                else:
+                    next_index = (index + 1) % len(self.valid_indices)
+                    print(
+                        f"All retries failed for index {index}, trying next video at index {next_index}"
+                    )
+                    return self.__getitem__(next_index)
+
+        raise RuntimeError(
+            f"Failed to load video after {max_retries} retries. Last error: {str(last_exception)}"
         )
 
     def __len__(self):
         return len(self.valid_indices)
 
-    def __getitem__(self, index: int) -> tuple[np.ndarray, Optional[dict], str]:
-        # Get the actual index from valid indices
-        actual_idx = self.valid_indices[index]
-
-        # Find filename of video
-        video_fname = self.fnames[actual_idx]
-
-        try:
-            # Load and preprocess video
-            video = load_video(
-                video_fname,
-                split=self.split,
-                n_frames=self.num_frames,
-                period=self.period,
-                resize=self.resize,
-                apply_mask=self.apply_mask,
-                normalize=self.normalize,
-                mean=self.mean,
-                std=self.std,
-                noise=self.noise,
-                pad=self.pad,
-                video_transforms=self.video_transforms,
-                rand_augment=self.rand_augment,
-            ).astype(np.float32)
-
-            if self.target_label is not None:
-                text = self.outcome[actual_idx]
-                # Tokenize text
-                encoded = self.tokenizer(
-                    text,
-                    padding="max_length",
-                    max_length=512,
-                    truncation=True,
-                    return_tensors="pt",
-                )
-                return video, encoded, video_fname
-            return video, None, video_fname
-
-        except Exception as e:
-            print(f"Error loading video {video_fname}: {str(e)}")
-            # Try the next valid index
-            if index + 1 < len(self.valid_indices):
-                return self.__getitem__(index + 1)
-            else:
-                raise e from None
+    def remove_invalid_video(self, index: int):
+        """Remove a video from valid_indices if it's found to be invalid during training."""
+        if index in self.valid_indices:
+            self.valid_indices.remove(index)
+            print(
+                f"Removed invalid video at index {index}. Remaining valid videos: {len(self.valid_indices)}"
+            )
 
 
 def _defaultdict_of_lists():
@@ -539,3 +548,33 @@ def format_mean_std(input_value):
     if isinstance(input_value, (int, float)):
         return [float(input_value)]
     return input_value
+
+
+def custom_collate_fn(
+    batch: List[Tuple[np.ndarray, Any, str]]
+) -> Tuple[torch.Tensor, dict, List[str]]:
+    """Custom collate function to handle video and text data.
+
+    Args:
+        batch: List of tuples (video, encoded_text, path)
+    Returns:
+        videos: Tensor of shape (batch_size, channels, frames, height, width)
+        encoded_texts: Dictionary with input_ids and attention_mask tensors
+        paths: List of file paths
+    """
+    videos, encoded_texts, paths = zip(*batch)
+
+    # Stack videos
+    videos = torch.stack([torch.from_numpy(v) for v in videos])
+
+    # Combine encoded texts
+    if encoded_texts[0] is not None:
+        # Stack text tensors along batch dimension
+        combined_texts = {
+            "input_ids": torch.stack([text["input_ids"] for text in encoded_texts]),
+            "attention_mask": torch.stack([text["attention_mask"] for text in encoded_texts]),
+        }
+    else:
+        combined_texts = None
+
+    return videos, combined_texts, paths

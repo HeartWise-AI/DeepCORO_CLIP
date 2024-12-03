@@ -231,6 +231,14 @@ def setup_training(args, rank=0):
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Set up device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Initialize wandb if on rank 0
+    wandb_run = None
+    if rank == 0:
+        wandb_run = create_logger(args)
+
     # Calculate dataset statistics (only on rank 0)
     if rank == 0:
         print("\n=== Calculating Dataset Statistics ===")
@@ -320,7 +328,9 @@ def setup_training(args, rank=0):
         mean=(
             mean.tolist() if mean is not None else [0.485, 0.456, 0.406]
         ),  # ImageNet defaults if no stats
-        std=std.tolist() if std is not None else [0.229, 0.224, 0.225],
+        std=(
+            std.tolist() if std is not None else [0.229, 0.224, 0.225]
+        ),  # ImageNet defaults if no stats
     )
 
     val_dataset = VideoDataset(
@@ -335,7 +345,6 @@ def setup_training(args, rank=0):
         std=std.tolist() if std is not None else [0.229, 0.224, 0.225],
     )
 
-    # Ensure validation set exists
     if len(val_dataset) == 0:
         raise ValueError(
             "No validation samples found! Please ensure your dataset has a validation split."
@@ -436,6 +445,8 @@ def setup_training(args, rank=0):
         "val_loader": val_loader,
         "train_dataset": train_dataset,
         "val_dataset": val_dataset,
+        "device": device,
+        "wandb_run": wandb_run,
     }
 
 
@@ -909,94 +920,52 @@ def save_checkpoint(model_dict, metrics_dict, output_path, is_best=False):
 
 
 def main(rank=0, world_size=1, args=None):
-    """Main training function with proper DDP setup"""
-    if args is None:
-        args = parse_args()
-
-    wandb_run = None
+    """Main training function."""
     try:
-        # Determine if we're doing distributed training
-        is_distributed = world_size > 1 and args.gpu is None
-
-        # Set up device and initialize process group first
-        if is_distributed:
-            device = setup_ddp(rank, world_size)
-            if rank != 0:
-                os.environ["WANDB_MODE"] = "disabled"
-        else:
-            if args.gpu is not None:
-                device = torch.device(f"cuda:{args.gpu}")
-            else:
-                device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-        # Initialize wandb only on rank 0
-        if rank == 0:
-            wandb_run = wandb.init(
-                project=args.project,
-                entity=args.entity,
-                name=args.tag,
-                config=args,
-            )
-            # Generate output directory name using run ID
-            output_dir = generate_output_dir_name(args, wandb_run.id)
-            args.output_dir = os.path.join(args.output_dir, output_dir)
-            print(f"\nOutput directory: {args.output_dir}")
-
-        # Set up training components
+        # Setup training
         training_setup = setup_training(args, rank=rank)
-        training_setup["device"] = device
+        is_distributed = world_size > 1
 
-        # Initialize gradient scaler for AMP if enabled
-        scaler = torch.amp.GradScaler("cuda") if args.use_amp else None
-        if rank == 0 and args.use_amp:
-            print("\nUsing Automatic Mixed Precision training")
-
-        # Initialize best loss tracking
-        best_loss = float("inf")
+        # Initialize tracking variables
         best_val_loss = float("inf")
+        best_epoch = -1
 
         # Training loop
         for epoch in range(args.epochs):
+            if rank == 0:
+                print(f"\nEpoch {epoch + 1}/{args.epochs}")
+
             # Training phase
             train_loss, train_metrics = train_epoch(
                 video_encoder=training_setup["video_encoder"],
                 text_encoder=training_setup["text_encoder"],
                 dataloader=training_setup["train_loader"],
                 optimizer=training_setup["optimizer"],
-                device=device,
-                wandb_run=wandb_run,
-                rank=rank if is_distributed else 0,
-                world_size=world_size if is_distributed else 1,
+                device=training_setup["device"],
+                wandb_run=training_setup["wandb_run"],
+                rank=rank,
+                world_size=world_size,
                 epoch=epoch,
-                scaler=scaler,
             )
 
             # Validation phase
-            with torch.no_grad():
-                val_loss, val_metrics, val_examples = validate_epoch(
-                    video_encoder=training_setup["video_encoder"],
-                    text_encoder=training_setup["text_encoder"],
-                    dataloader=training_setup["val_loader"],
-                    device=device,
-                    wandb_run=wandb_run,
-                    rank=rank,
-                    world_size=world_size,
-                    epoch=epoch,
-                )
-
-            # Update best losses
-            best_loss = min(best_loss, train_loss)
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                best_epoch = epoch
+            val_loss, val_metrics, val_examples = validate_epoch(
+                video_encoder=training_setup["video_encoder"],
+                text_encoder=training_setup["text_encoder"],
+                dataloader=training_setup["val_loader"],
+                device=training_setup["device"],
+                wandb_run=training_setup["wandb_run"],
+                rank=rank,
+                world_size=world_size,
+                epoch=epoch,
+            )
 
             # Log metrics and examples
-            if rank == 0 and wandb_run is not None:
+            if rank == 0 and training_setup["wandb_run"] is not None:
                 # Log metrics
-                wandb_run.log(
+                training_setup["wandb_run"].log(
                     {
                         "train/loss": train_loss,
-                        "train/best_loss": best_loss,
                         "train/learning_rate": training_setup["optimizer"].param_groups[0]["lr"],
                         **{f"train/{k}": v for k, v in train_metrics.items()},
                         "val/loss": val_loss,
@@ -1004,15 +973,6 @@ def main(rank=0, world_size=1, args=None):
                         **{f"val/{k}": v for k, v in val_metrics.items()},
                     }
                 )
-
-                # Log qualitative examples from validation if loss improved
-                if val_loss < best_val_loss:
-                    wandb_run.log_validation_examples(
-                        val_best_videos=val_examples["best_videos"],
-                        val_best_reports=val_examples["best_reports"],
-                        val_worst_videos=val_examples["worst_videos"],
-                        val_worst_reports=val_examples["worst_reports"],
-                    )
 
             # Step scheduler if it exists
             if training_setup["scheduler"] is not None:
@@ -1033,14 +993,22 @@ def main(rank=0, world_size=1, args=None):
                         else training_setup["text_encoder"].state_dict()
                     ),
                     "optimizer": training_setup["optimizer"].state_dict(),
+                    "scheduler": (
+                        training_setup["scheduler"].state_dict()
+                        if training_setup["scheduler"] is not None
+                        else None
+                    ),
+                    "epoch": epoch,
                 }
 
                 # Prepare metrics
                 metrics_dict = {
                     "train_loss": train_loss,
                     "val_loss": val_loss,
-                    "best_loss": best_loss,
                     "best_val_loss": best_val_loss,
+                    "best_epoch": best_epoch,
+                    **train_metrics,
+                    **val_metrics,
                 }
 
                 # Create checkpoints directory
@@ -1050,29 +1018,126 @@ def main(rank=0, world_size=1, args=None):
                 # Save latest checkpoint
                 latest_path = checkpoint_dir / "latest.pt"
                 save_checkpoint(model_dict, metrics_dict, latest_path)
+                print(f"\nSaved latest checkpoint at epoch {epoch + 1}")
 
-                # Save best checkpoint if current validation loss is better
+                # Save best checkpoint if validation loss improved
                 if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    best_epoch = epoch
                     best_path = checkpoint_dir / "best.pt"
                     save_checkpoint(model_dict, metrics_dict, best_path, is_best=True)
                     print(
-                        f"\nNew best validation loss: {val_loss:.4f} (previous: {best_val_loss:.4f})"
+                        f"\nNew best model saved! Val Loss: {val_loss:.4f} (previous: {best_val_loss:.4f})"
                     )
 
-                    if wandb_run is not None:
+                    # Save to wandb if available
+                    if training_setup["wandb_run"] is not None:
                         wandb.save(str(best_path))
-
-                    best_val_loss = val_loss  # Update best_val_loss after saving
 
     except Exception as e:
         print(f"Error on rank {rank}: {str(e)}")
         raise e
 
     finally:
-        if wandb_run is not None:
+        if training_setup["wandb_run"] is not None:
             wandb.finish()
         if is_distributed:
             cleanup_ddp()
+
+
+def convert_to_mp4(input_path):
+    """Convert video to MP4 format for wandb logging with reduced size.
+
+    Args:
+        input_path: Path to input video file
+
+    Returns:
+        str: Path to converted MP4 file or None if conversion fails
+    """
+    import os
+    import subprocess
+    import tempfile
+
+    # Create temporary file with .mp4 extension
+    temp_fd, temp_path = tempfile.mkstemp(suffix=".mp4")
+    os.close(temp_fd)
+
+    try:
+        # Convert to MP4 using ffmpeg with reduced quality and size
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-i",
+                input_path,
+                "-c:v",
+                "libx264",
+                "-crf",
+                "35",  # Higher CRF = lower quality/size
+                "-preset",
+                "veryfast",  # Faster encoding
+                "-vf",
+                "scale=320:-1",  # Reduce resolution to 320p width
+                "-r",
+                "15",  # Reduce framerate to 15fps
+                "-y",
+                temp_path,
+            ],
+            check=True,
+            capture_output=True,
+        )
+        return temp_path
+    except subprocess.CalledProcessError as e:
+        print(f"Warning: Failed to convert video {input_path} to MP4: {e.stderr.decode()}")
+        os.unlink(temp_path)
+        return None
+
+
+def get_best_and_worst_retrievals(similarity_matrix, paths, reports, k=2):
+    """Get the best and worst retrievals based on similarity scores, along with their top text matches.
+
+    Args:
+        similarity_matrix: Tensor of shape (num_videos, num_queries)
+        paths: List of video paths
+        reports: List of report texts
+        k: Number of best/worst examples to return
+
+    Returns:
+        tuple: (best_indices, worst_indices, best_scores, worst_scores, best_text_indices, worst_text_indices)
+    """
+    # Get mean similarity score for each video-query pair
+    mean_similarities = similarity_matrix.mean(dim=1)
+
+    # Adjust k to not exceed batch size
+    k = min(k, len(mean_similarities))
+
+    # Get indices of best and worst k videos
+    best_values, best_indices = torch.topk(mean_similarities, k=k)
+    worst_values, worst_indices = torch.topk(mean_similarities, k=k, largest=False)
+
+    # Get top-5 text matches for each video
+    best_text_indices = []
+    worst_text_indices = []
+
+    for idx in best_indices:
+        # Get top N text matches for this video, where N is min(5, batch_size)
+        n_texts = min(5, similarity_matrix.size(1))
+        _, top_n_texts = torch.topk(similarity_matrix[idx], k=n_texts)
+        best_text_indices.append(top_n_texts)
+
+    for idx in worst_indices:
+        # Get top N text matches for this video, where N is min(5, batch_size)
+        n_texts = min(5, similarity_matrix.size(1))
+        _, top_n_texts = torch.topk(similarity_matrix[idx], k=n_texts)
+        worst_text_indices.append(top_n_texts)
+
+    return (
+        best_indices,
+        worst_indices,
+        best_values,
+        worst_values,
+        best_text_indices,
+        worst_text_indices,
+    )
 
 
 def validate_epoch(
@@ -1112,6 +1177,9 @@ def validate_epoch(
     val_worst_videos = []
     val_worst_reports = []
     val_worst_scores = []
+
+    # Track temporary files for cleanup
+    temp_files = []
 
     # Use different progress bars for main process vs others
     if rank == 0:
@@ -1172,12 +1240,23 @@ def validate_epoch(
                 worst_scores,
                 best_text_indices,
                 worst_text_indices,
-            ) = get_best_and_worst_retrievals(similarity_matrix, paths, reports, k=2)
+            ) = get_best_and_worst_retrievals(
+                similarity_matrix,
+                paths,
+                reports,
+                k=min(2, batch_size),  # Adjust k based on batch size
+            )
 
             # Update best/worst lists if we find better examples
             for i, (idx, score) in enumerate(zip(best_indices, best_scores)):
                 if len(val_best_scores) < 2 or score > min(val_best_scores):
                     video_similarities = similarity_matrix[idx]
+                    n_texts = min(
+                        5, similarity_matrix.size(1)
+                    )  # Adjust number of predictions based on batch size
+                    top_5_text_indices = torch.argsort(video_similarities, descending=True)[
+                        :n_texts
+                    ]
                     top_5_text_indices = torch.argsort(video_similarities, descending=True)[:5]
                     predicted_reports = [
                         reports[text_idx.item()] for text_idx in top_5_text_indices
@@ -1270,9 +1349,81 @@ def validate_epoch(
 
         # Log best and worst examples
         if wandb_run is not None:
-            wandb_run.log_validation_examples(
-                val_best_videos, val_best_reports, val_worst_videos, val_worst_reports
-            )
+            # Log videos and reports directly to wandb
+            for i, (video_path, report_data) in enumerate(zip(val_best_videos, val_best_reports)):
+                try:
+                    # Convert video to MP4 with reduced quality
+                    mp4_path = convert_to_mp4(video_path)
+                    if mp4_path:
+                        temp_files.append(mp4_path)
+
+                        # Create HTML report with ground truth, predictions, and similarity score
+                        report_html = "<br>".join(
+                            [
+                                f"<b>Similarity Score:</b> {report_data['similarity_score']:.3f}",
+                                f"<b>Ground Truth:</b> {report_data['ground_truth']}",
+                                "<b>Top Retrieved Reports:</b>",
+                                *[
+                                    f"{j+1}. {text}"
+                                    for j, text in enumerate(report_data["predicted"][:3])
+                                ],  # Only show top 3 predictions
+                            ]
+                        )
+
+                        # Log video and report
+                        wandb.log(
+                            {
+                                f"qualitative/good_retrieval": wandb.Video(
+                                    mp4_path, caption=f"Good Validation Retrieval"
+                                ),
+                                f"qualitative/good_reports": wandb.Html(report_html),
+                            },
+                            step=wandb_run.step,
+                        )
+                except Exception as e:
+                    print(f"Warning: Failed to log good validation video {video_path}: {str(e)}")
+
+            for i, (video_path, report_data) in enumerate(
+                zip(val_worst_videos, val_worst_reports)
+            ):
+                try:
+                    # Convert video to MP4 with reduced quality
+                    mp4_path = convert_to_mp4(video_path)
+                    if mp4_path:
+                        temp_files.append(mp4_path)
+
+                        # Create HTML report with fewer predictions
+                        report_html = "<br>".join(
+                            [
+                                f"<b>Similarity Score:</b> {report_data['similarity_score']:.3f}",
+                                f"<b>Ground Truth:</b> {report_data['ground_truth']}",
+                                "<b>Top Retrieved Reports:</b>",
+                                *[
+                                    f"{j+1}. {text}"
+                                    for j, text in enumerate(report_data["predicted"][:3])
+                                ],  # Only show top 3 predictions
+                            ]
+                        )
+
+                        # Log video and report
+                        wandb.log(
+                            {
+                                f"qualitative/bad_retrieval": wandb.Video(
+                                    mp4_path, caption=f"Bad Validation Retrieval"
+                                ),
+                                f"qualitative/bad_reports": wandb.Html(report_html),
+                            },
+                            step=wandb_run.step,
+                        )
+                except Exception as e:
+                    print(f"Warning: Failed to log bad validation video {video_path}: {str(e)}")
+
+            # Clean up temporary files
+            for temp_file in temp_files:
+                try:
+                    os.unlink(temp_file)
+                except Exception as e:
+                    print(f"Warning: Failed to delete temporary file {temp_file}: {str(e)}")
 
     # Return validation loss, metrics, and best/worst examples
     return (

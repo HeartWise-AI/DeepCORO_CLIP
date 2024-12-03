@@ -253,7 +253,8 @@ def setup_training(args, rank=0):
         )
 
         # Create subset indices for statistics calculation
-        num_stats_samples = min(100, len(stats_dataset))
+        num_stats_samples = min(100, 1000)
+        print(f"Stats dataset length: {len(stats_dataset)}")
         if len(stats_dataset) > num_stats_samples:
             # Use evenly spaced indices
             indices = torch.linspace(0, len(stats_dataset) - 1, num_stats_samples).long().tolist()

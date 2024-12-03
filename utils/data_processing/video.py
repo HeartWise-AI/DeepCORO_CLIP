@@ -19,8 +19,6 @@ dir1 = os.path.dirname(dir2)
 if dir1 not in sys.path:
     sys.path.append(dir1)
 
-import orion
-
 from models.model import get_tokenizer
 
 
@@ -49,39 +47,26 @@ def load_video(
         n_frames = 16
         period = 1
 
-    try:
-        # First try loading with Orion
-        video = orion.utils.loadvideo(video_path)
-        if video is None:
-            raise ValueError("Orion loader returned None")
-        if isinstance(video, (int, float)):
-            raise ValueError("Orion loader returned a scalar instead of video array")
-        if len(video.shape) < 3:
-            raise ValueError(f"Invalid video shape: {video.shape}")
-        video = video.astype(np.float32)
-    except Exception as e:
-        print(f"Orion loader failed for {video_path}: {str(e)}")
-        print("Attempting to load with OpenCV...")
 
-        # Fallback to OpenCV
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            raise ValueError(f"Failed to open video file: {video_path}")
+    # Fallback to OpenCV
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError(f"Failed to open video file: {video_path}")
 
-        frames = []
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            if len(frame.shape) == 3:
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frames.append(frame)
-        cap.release()
+    frames = []
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        if len(frame.shape) == 3:
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frames.append(frame)
+    cap.release()
 
-        if not frames:
-            raise ValueError(f"No frames could be read from video: {video_path}")
+    if not frames:
+        raise ValueError(f"No frames could be read from video: {video_path}")
 
-        video = np.stack(frames, axis=0).astype(np.float32)
+    video = np.stack(frames, axis=0).astype(np.float32)
 
     # Ensure video has correct number of dimensions
     if len(video.shape) == 3:  # [F, H, W] -> [F, H, W, C]
@@ -409,6 +394,7 @@ class StatsDataset(torch.utils.data.Dataset):
         datapoint_loc_label="target_video_path",
         num_frames=32,
         backbone="default",
+        max_samples=128,
     ):
         self.folder = pathlib.Path(root)
         self.filename = data_filename
@@ -419,9 +405,17 @@ class StatsDataset(torch.utils.data.Dataset):
         self.target_label = target_label
         self.num_frames = 16 if backbone.lower() == "mvit" else num_frames
         self.backbone = backbone
+        self.max_samples = max_samples
 
         # Load data
         self.fnames, self.outcome, _ = self.load_data(split, target_label)
+
+        # Limit the number of samples if max_samples is specified
+        if self.max_samples and len(self.fnames) > self.max_samples:
+            self.fnames = self.fnames[:self.max_samples]
+            if self.outcome:
+                self.outcome = self.outcome[:self.max_samples]
+            print(f"Limited dataset to {self.max_samples} samples")
 
     def load_data(self, split, target_label):
         """Load data from CSV file and filter by split."""

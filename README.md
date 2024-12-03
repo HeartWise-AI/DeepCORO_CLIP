@@ -19,6 +19,14 @@ DeepCORO_CLIP is trained on over 12 million echocardiography videos paired with 
 - `logs/`: Training and evaluation logs
 - `reports/`: Documentation and results
 
+## Build System
+
+This project uses modern Python packaging tools:
+- `pyproject.toml` for build configuration and package metadata
+- `requirements.txt` for dependency management
+- Hatch as the build backend
+
+
 ## Setup
 
 1. Install dependencies:

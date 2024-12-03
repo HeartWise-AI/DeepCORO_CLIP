@@ -1,6 +1,6 @@
 # Training parameters
 epochs: 20
-batch_size: 24
+batch_size: 48
 num_workers: 24
 lr: 0.000025
 debug: false

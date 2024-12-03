@@ -705,46 +705,37 @@ def train_epoch(
             input_ids = encoded_texts["input_ids"].to(device, non_blocking=True)
             attention_mask = encoded_texts["attention_mask"].to(device, non_blocking=True)
 
+            # Clear gradients
+            optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
+
             # Forward passes with optional AMP
             if scaler is not None:
                 with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
                     video_features = video_encoder(videos)
                     text_features = text_encoder(input_ids, attention_mask)
-                    # Compute similarity matrix for metrics
                     normalized_video = nn.functional.normalize(video_features, dim=1)
                     normalized_text = nn.functional.normalize(text_features, dim=1)
                     similarity_matrix = torch.matmul(normalized_video, normalized_text.t())
-                    # Compute loss
                     loss = contrastive_loss(video_features, text_features)
 
                 # Backward pass with AMP
                 scaler.scale(loss).backward()
-                # Gradient clipping with AMP
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(video_encoder.parameters(), max_norm=5.0)
                 torch.nn.utils.clip_grad_norm_(text_encoder.parameters(), max_norm=5.0)
-                # Step optimizer with AMP
                 scaler.step(optimizer)
                 scaler.update()
             else:
-                # Regular forward pass without AMP
                 video_features = video_encoder(videos)
                 text_features = text_encoder(input_ids, attention_mask)
-                # Compute similarity matrix for metrics
                 normalized_video = nn.functional.normalize(video_features, dim=1)
                 normalized_text = nn.functional.normalize(text_features, dim=1)
                 similarity_matrix = torch.matmul(normalized_video, normalized_text.t())
-                # Compute loss
                 loss = contrastive_loss(video_features, text_features)
-                # Regular backward pass
                 loss.backward()
-                # Gradient clipping
                 torch.nn.utils.clip_grad_norm_(video_encoder.parameters(), max_norm=5.0)
                 torch.nn.utils.clip_grad_norm_(text_encoder.parameters(), max_norm=5.0)
-                # Step optimizer
                 optimizer.step()
-
-            optimizer.zero_grad()
 
             # Update metrics
             total_loss += loss.item()
@@ -752,18 +743,14 @@ def train_epoch(
 
             # Update progress bar
             if rank == 0:
-                progress.set_postfix(
-                    {
-                        "train_loss": f"{loss.item():.4f}",
-                        "avg_train_loss": f"{(total_loss/num_batches):.4f}",
-                    }
-                )
+                progress.set_postfix({
+                    "train_loss": f"{loss.item():.4f}",
+                    "avg_train_loss": f"{(total_loss/num_batches):.4f}",
+                })
 
             # Compute metrics only if we have enough items for k=5
             if videos.size(0) >= 5:
-                recall_metrics = compute_recall_at_k(
-                    similarity_matrix, k_values=[1, min(5, videos.size(0))]
-                )
+                recall_metrics = compute_recall_at_k(similarity_matrix, k_values=[1, min(5, videos.size(0))])
                 mrr_metrics = compute_mrr(similarity_matrix)
                 norm_metrics = compute_embedding_norms(video_features, text_features)
                 alignment_score = compute_alignment_score(video_features, text_features)
@@ -776,10 +763,11 @@ def train_epoch(
                 epoch_metrics["video_norm"] += norm_metrics["video_norm"]
                 epoch_metrics["text_norm"] += norm_metrics["text_norm"]
                 epoch_metrics["alignment_score"] += alignment_score
-            else:
-                print(
-                    f"Skipping metrics for batch {batch_idx} due to small batch size ({videos.size(0)})"
-                )
+
+            # Explicitly clear tensors from GPU memory
+            del videos, input_ids, attention_mask, video_features, text_features
+            del normalized_video, normalized_text, similarity_matrix, loss
+            torch.cuda.empty_cache()  # Clear GPU cache
 
         except Exception as e:
             print(f"Error in training batch {batch_idx} on rank {rank}: {str(e)}")
@@ -1188,149 +1176,136 @@ def validate_epoch(
     else:
         progress = dataloader
 
-    for batch_idx, batch in enumerate(progress):
-        try:
-            # Unpack batch
-            videos, encoded_texts, paths = batch
-            reports = dataloader.dataset.get_reports(paths)
-            if videos is None or encoded_texts is None:
-                print(f"Skipping invalid batch {batch_idx}")
-                continue
+    with torch.no_grad():  # Add no_grad context
+        for batch_idx, batch in enumerate(progress):
+            try:
+                # Unpack batch
+                videos, encoded_texts, paths = batch
+                reports = dataloader.dataset.get_reports(paths)
+                if videos is None or encoded_texts is None:
+                    print(f"Skipping invalid batch {batch_idx}")
+                    continue
 
-            # Get batch size for this batch
-            batch_size = videos.size(0)
-            if batch_size < 2:  # Need at least 2 samples for contrastive loss
-                print(f"Skipping batch {batch_idx} - too few samples ({batch_size})")
-                continue
+                # Get batch size for this batch
+                batch_size = videos.size(0)
+                if batch_size < 2:  # Need at least 2 samples for contrastive loss
+                    print(f"Skipping batch {batch_idx} - too few samples ({batch_size})")
+                    continue
 
-            # Move data to device and ensure float32
-            videos = videos.to(device, non_blocking=True).float()
-            input_ids = encoded_texts["input_ids"].to(device, non_blocking=True)
-            attention_mask = encoded_texts["attention_mask"].to(device, non_blocking=True)
+                # Move data to device and ensure float32
+                videos = videos.to(device, non_blocking=True).float()
+                input_ids = encoded_texts["input_ids"].to(device, non_blocking=True)
+                attention_mask = encoded_texts["attention_mask"].to(device, non_blocking=True)
 
-            # Forward pass
-            video_features = video_encoder(videos)
-            text_features = text_encoder(input_ids, attention_mask)
+                # Forward pass
+                video_features = video_encoder(videos)
+                text_features = text_encoder(input_ids, attention_mask)
 
-            # Compute similarity matrix for metrics
-            normalized_video = nn.functional.normalize(video_features, dim=1)
-            normalized_text = nn.functional.normalize(text_features, dim=1)
-            similarity_matrix = torch.matmul(normalized_video, normalized_text.t())
+                # Compute similarity matrix for metrics
+                normalized_video = nn.functional.normalize(video_features, dim=1)
+                normalized_text = nn.functional.normalize(text_features, dim=1)
+                similarity_matrix = torch.matmul(normalized_video, normalized_text.t())
 
-            # Compute loss
-            loss = contrastive_loss(video_features, text_features)
+                # Compute loss
+                loss = contrastive_loss(video_features, text_features)
 
-            # Update metrics
-            total_loss += loss.item()
-            num_batches += 1
+                # Update metrics
+                total_loss += loss.item()
+                num_batches += 1
 
-            # Update progress bar
-            if rank == 0:
-                progress.set_postfix(
-                    {
-                        "val_loss": f"{loss.item():.4f}",
-                        "avg_val_loss": f"{(total_loss/num_batches):.4f}",
-                    }
+                # Update progress bar
+                if rank == 0:
+                    progress.set_postfix(
+                        {
+                            "val_loss": f"{loss.item():.4f}",
+                            "avg_val_loss": f"{(total_loss/num_batches):.4f}",
+                        }
+                    )
+
+                # Store best and worst examples if this batch has better examples
+                (
+                    best_indices,
+                    worst_indices,
+                    best_scores,
+                    worst_scores,
+                    best_text_indices,
+                    worst_text_indices,
+                ) = get_best_and_worst_retrievals(
+                    similarity_matrix,
+                    paths,
+                    reports,
+                    k=min(2, batch_size),  # Adjust k based on batch size
                 )
 
-            # Store best and worst examples if this batch has better examples
-            (
-                best_indices,
-                worst_indices,
-                best_scores,
-                worst_scores,
-                best_text_indices,
-                worst_text_indices,
-            ) = get_best_and_worst_retrievals(
-                similarity_matrix,
-                paths,
-                reports,
-                k=min(2, batch_size),  # Adjust k based on batch size
-            )
+                # Update best/worst lists if we find better examples
+                for i, (idx, score) in enumerate(zip(best_indices, best_scores)):
+                    if len(val_best_scores) < 2 or score > min(val_best_scores):
+                        video_similarities = similarity_matrix[idx]
+                        n_texts = min(5, similarity_matrix.size(1))
+                        top_5_text_indices = torch.argsort(video_similarities, descending=True)[:n_texts]
+                        predicted_reports = [reports[text_idx.item()] for text_idx in top_5_text_indices]
 
-            # Update best/worst lists if we find better examples
-            for i, (idx, score) in enumerate(zip(best_indices, best_scores)):
-                if len(val_best_scores) < 2 or score > min(val_best_scores):
-                    video_similarities = similarity_matrix[idx]
-                    n_texts = min(
-                        5, similarity_matrix.size(1)
-                    )  # Adjust number of predictions based on batch size
-                    top_5_text_indices = torch.argsort(video_similarities, descending=True)[
-                        :n_texts
-                    ]
-                    top_5_text_indices = torch.argsort(video_similarities, descending=True)[:5]
-                    predicted_reports = [
-                        reports[text_idx.item()] for text_idx in top_5_text_indices
-                    ]
-
-                    val_best_videos.append(str(paths[idx]))
-                    val_best_reports.append(
-                        {
+                        val_best_videos.append(str(paths[idx]))
+                        val_best_reports.append({
                             "ground_truth": reports[idx],
                             "predicted": predicted_reports,
                             "similarity_score": score.item(),
-                        }
-                    )
-                    val_best_scores.append(score.item())
+                        })
+                        val_best_scores.append(score.item())
 
-                    # Keep only top 2
-                    if len(val_best_scores) > 2:
-                        min_idx = val_best_scores.index(min(val_best_scores))
-                        val_best_videos.pop(min_idx)
-                        val_best_reports.pop(min_idx)
-                        val_best_scores.pop(min_idx)
+                        # Keep only top 2
+                        if len(val_best_scores) > 2:
+                            min_idx = val_best_scores.index(min(val_best_scores))
+                            val_best_videos.pop(min_idx)
+                            val_best_reports.pop(min_idx)
+                            val_best_scores.pop(min_idx)
 
-            for i, (idx, score) in enumerate(zip(worst_indices, worst_scores)):
-                if len(val_worst_scores) < 2 or score < max(val_worst_scores):
-                    video_similarities = similarity_matrix[idx]
-                    top_5_text_indices = torch.argsort(video_similarities, descending=True)[:5]
-                    predicted_reports = [
-                        reports[text_idx.item()] for text_idx in top_5_text_indices
-                    ]
+                for i, (idx, score) in enumerate(zip(worst_indices, worst_scores)):
+                    if len(val_worst_scores) < 2 or score < max(val_worst_scores):
+                        video_similarities = similarity_matrix[idx]
+                        top_5_text_indices = torch.argsort(video_similarities, descending=True)[:5]
+                        predicted_reports = [reports[text_idx.item()] for text_idx in top_5_text_indices]
 
-                    val_worst_videos.append(str(paths[idx]))
-                    val_worst_reports.append(
-                        {
+                        val_worst_videos.append(str(paths[idx]))
+                        val_worst_reports.append({
                             "ground_truth": reports[idx],
                             "predicted": predicted_reports,
                             "similarity_score": score.item(),
-                        }
-                    )
-                    val_worst_scores.append(score.item())
+                        })
+                        val_worst_scores.append(score.item())
 
-                    # Keep only bottom 2
-                    if len(val_worst_scores) > 2:
-                        max_idx = val_worst_scores.index(max(val_worst_scores))
-                        val_worst_videos.pop(max_idx)
-                        val_worst_reports.pop(max_idx)
-                        val_worst_scores.pop(max_idx)
+                        # Keep only bottom 2
+                        if len(val_worst_scores) > 2:
+                            max_idx = val_worst_scores.index(max(val_worst_scores))
+                            val_worst_videos.pop(max_idx)
+                            val_worst_reports.pop(max_idx)
+                            val_worst_scores.pop(max_idx)
 
-            # Compute metrics only if we have enough items for k=5
-            if batch_size >= 5:
-                recall_metrics = compute_recall_at_k(
-                    similarity_matrix, k_values=[1, min(5, batch_size)]
-                )
-                mrr_metrics = compute_mrr(similarity_matrix)
-                norm_metrics = compute_embedding_norms(video_features, text_features)
-                alignment_score = compute_alignment_score(video_features, text_features)
+                # Compute metrics only if we have enough items for k=5
+                if batch_size >= 5:
+                    recall_metrics = compute_recall_at_k(similarity_matrix, k_values=[1, min(5, batch_size)])
+                    mrr_metrics = compute_mrr(similarity_matrix)
+                    norm_metrics = compute_embedding_norms(video_features, text_features)
+                    alignment_score = compute_alignment_score(video_features, text_features)
 
-                # Update epoch metric accumulators
-                for metric_name, value in recall_metrics.items():
-                    epoch_metrics[metric_name] += value
-                for metric_name, value in mrr_metrics.items():
-                    epoch_metrics[metric_name] += value
-                epoch_metrics["video_norm"] += norm_metrics["video_norm"]
-                epoch_metrics["text_norm"] += norm_metrics["text_norm"]
-                epoch_metrics["alignment_score"] += alignment_score
-            else:
-                print(
-                    f"Skipping metrics for batch {batch_idx} due to small batch size ({batch_size})"
-                )
+                    # Update epoch metric accumulators
+                    for metric_name, value in recall_metrics.items():
+                        epoch_metrics[metric_name] += value
+                    for metric_name, value in mrr_metrics.items():
+                        epoch_metrics[metric_name] += value
+                    epoch_metrics["video_norm"] += norm_metrics["video_norm"]
+                    epoch_metrics["text_norm"] += norm_metrics["text_norm"]
+                    epoch_metrics["alignment_score"] += alignment_score
 
-        except Exception as e:
-            print(f"Error in validation batch {batch_idx} on rank {rank}: {str(e)}")
-            print(f"Batch size: {batch_size if 'batch_size' in locals() else 'unknown'}")
-            continue
+                # Explicitly clear tensors from GPU memory
+                del videos, input_ids, attention_mask, video_features, text_features
+                del normalized_video, normalized_text, similarity_matrix, loss
+                torch.cuda.empty_cache()  # Clear GPU cache
+
+            except Exception as e:
+                print(f"Error in validation batch {batch_idx} on rank {rank}: {str(e)}")
+                print(f"Batch size: {batch_size if 'batch_size' in locals() else 'unknown'}")
+                continue
 
     # Average loss and metrics
     if world_size > 1:

@@ -82,10 +82,20 @@ repos:
       hooks:
           - id: nbqa-black
             name: nbqa-black
+            args:
+                - '--line-length=98'
+                - '--exclude=^__init__\.py$'
+            additional_dependencies:
+                - black==24.10.0
           - id: nbqa-pyupgrade
             args: [--py38-plus]
           - id: nbqa-isort
             name: nbqa-isort
+            args:
+                - '--profile=black'
+                - '--line-length=98'
+            additional_dependencies:
+                - isort==5.13.2
 
     - repo: https://github.com/kynan/nbstripout
       rev: 0.8.1

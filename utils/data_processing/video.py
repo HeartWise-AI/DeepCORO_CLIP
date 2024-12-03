@@ -52,8 +52,12 @@ def load_video(
     try:
         # First try loading with Orion
         video = orion.utils.loadvideo(video_path)
+        if video is None:
+            raise ValueError("Orion loader returned None")
         if isinstance(video, (int, float)):
             raise ValueError("Orion loader returned a scalar instead of video array")
+        if len(video.shape) < 3:
+            raise ValueError(f"Invalid video shape: {video.shape}")
         video = video.astype(np.float32)
     except Exception as e:
         print(f"Orion loader failed for {video_path}: {str(e)}")
@@ -78,8 +82,12 @@ def load_video(
             raise ValueError(f"No frames could be read from video: {video_path}")
 
         video = np.stack(frames, axis=0).astype(np.float32)
-        if len(video.shape) == 3:
-            video = np.expand_dims(video, axis=-1)
+
+    # Ensure video has correct number of dimensions
+    if len(video.shape) == 3:  # [F, H, W] -> [F, H, W, C]
+        video = np.expand_dims(video, axis=-1)
+    elif len(video.shape) != 4:  # Must be [F, H, W, C]
+        raise ValueError(f"Invalid video shape after loading: {video.shape}")
 
     # Convert to torch tensor
     video = torch.from_numpy(video)
@@ -105,10 +113,6 @@ def load_video(
             # If too many frames, sample evenly
             indices = torch.linspace(0, t - 1, 16).long()
             video = video[indices]
-
-        # Verify we have exactly 16 frames
-        if video.shape[0] != 16:
-            raise ValueError(f"Expected 16 frames, got {video.shape[0]}")
     else:
         # For other backbones, maintain original frame count
         target_frames = n_frames
@@ -120,12 +124,21 @@ def load_video(
             indices = torch.linspace(0, t - 1, target_frames).long()
             video = video[indices]
 
-    # Apply normalization
+    # Apply normalization with default values if none provided
     if normalize:
+        if mean is None or std is None:
+            raise ValueError("Mean and standard deviation must be provided for normalization.")
+
+        # Convert scalar values to lists
         if isinstance(mean, (int, float)):
             mean = [float(mean)] * c
         if isinstance(std, (int, float)):
             std = [float(std)] * c
+
+        # Ensure we have the right number of channels
+        mean = mean[:c]
+        std = std[:c]
+
         video = v2.Normalize(mean=mean, std=std)(video)
 
     # Apply transforms
@@ -135,7 +148,7 @@ def load_video(
         try:
             video = scripted_transforms(video)
         except RuntimeError as e:
-            print(f"Error applying transforms to video {video_path}: {str(e)}")
+            print(f"Warning: Error applying transforms to video {video_path}: {str(e)}")
 
     if rand_augment:
         raug = [v2.RandAugment(magnitude=9, num_layers=2, prob=0.5)]
@@ -151,11 +164,9 @@ def load_video(
     if h != resize or w != resize:
         raise ValueError(f"Expected spatial dimensions {resize}x{resize}, got {h}x{w}")
 
-    # Permute the tensor to have the shape [F, H, W, C]
-    video = video.permute(0, 2, 3, 1)
-    video = video.numpy()
-
-    return video
+    # Return video in [F, H, W, C] format
+    video = video.permute(0, 2, 3, 1).contiguous()
+    return video.numpy()
 
 
 class Video(torch.utils.data.Dataset):
@@ -242,9 +253,22 @@ class Video(torch.utils.data.Dataset):
                 self.weight_list[np.where(labels == label)] = weight
 
     def load_data(self, split, target_label):
+        """Load data from CSV file and filter by split.
+
+        Args:
+            split: Which split to load ('train', 'val', or 'all')
+            target_label: Column name(s) for target values
+
+        Returns:
+            tuple: (fnames, outcomes, target_index)
+        """
         # Read the "α" separated file using pandas
         file_path = os.path.join(self.folder, self.filename)
         data = pd.read_csv(file_path, sep="α", engine="python")
+
+        # Print available splits for debugging
+        print(f"\nAvailable splits in dataset:")
+        print(data["Split"].value_counts())
 
         filename_index = data.columns.get_loc(self.datapoint_loc_label)
         split_index = data.columns.get_loc("Split")
@@ -255,14 +279,38 @@ class Video(torch.utils.data.Dataset):
 
         self.fnames = []
         self.outcome = []
+
+        # Track counts for debugging
+        total_rows = 0
+        valid_files = 0
+        split_matches = 0
+
         # Iterate through rows using iterrows
         for index, row in data.iterrows():
+            total_rows += 1
             file_name = row.iloc[filename_index]
-            file_mode = row.iloc[split_index].lower()
+            file_mode = str(row.iloc[split_index]).lower().strip()
 
-            if split in ["all", file_mode] and os.path.exists(file_name):
-                self.fnames.append(file_name)
-                self.outcome.append(row.iloc[target_index])
+            if os.path.exists(file_name):
+                valid_files += 1
+                if split in ["all", file_mode]:
+                    split_matches += 1
+                    self.fnames.append(file_name)
+                    self.outcome.append(row.iloc[target_index])
+
+        # Print debugging information
+        print(f"\nDataset loading statistics for split '{split}':")
+        print(f"Total rows in CSV: {total_rows}")
+        print(f"Valid files found: {valid_files}")
+        print(f"Matching split '{split}': {split_matches}")
+        print(f"Final dataset size: {len(self.fnames)}")
+
+        if len(self.fnames) == 0:
+            raise ValueError(
+                f"No samples found for split '{split}'. "
+                f"Available splits are: {data['Split'].unique()}. "
+                "Please check your data split assignments."
+            )
 
         return self.fnames, self.outcome, target_index
 
@@ -330,7 +378,26 @@ class Video(torch.utils.data.Dataset):
         return len(self.fnames)
 
 
-class StatsDataset(Video):
+def stats_collate_fn(batch):
+    """Custom collate function for StatsDataset that only handles video tensors.
+
+    Args:
+        batch: List of video tensors
+
+    Returns:
+        Stacked video tensors
+    """
+    # Filter out None values
+    valid_samples = [item for item in batch if item[0] is not None]
+    if not valid_samples:
+        raise RuntimeError("No valid samples in batch")
+
+    # Extract videos and stack them
+    videos = torch.stack([torch.from_numpy(sample[0]) for sample in valid_samples])
+    return videos
+
+
+class StatsDataset(torch.utils.data.Dataset):
     """Dataset class for calculating mean and std statistics."""
 
     def __init__(
@@ -341,19 +408,71 @@ class StatsDataset(Video):
         target_label,
         datapoint_loc_label="target_video_path",
         num_frames=32,
+        backbone="default",
     ):
-        super().__init__(
-            root=root,
-            data_filename=data_filename,
-            split=split,
-            target_label=target_label,
-            datapoint_loc_label=datapoint_loc_label,
-            resize=224,
-            length=num_frames,
-            period=1,
-            normalize=False,  # Don't normalize when calculating stats
-        )
-        self.valid_indices = range(len(self.fnames))
+        self.folder = pathlib.Path(root)
+        self.filename = data_filename
+        self.datapoint_loc_label = datapoint_loc_label
+        self.split = split
+        if not isinstance(target_label, list):
+            target_label = [target_label]
+        self.target_label = target_label
+        self.num_frames = 16 if backbone.lower() == "mvit" else num_frames
+        self.backbone = backbone
+
+        # Load data
+        self.fnames, self.outcome, _ = self.load_data(split, target_label)
+
+    def load_data(self, split, target_label):
+        """Load data from CSV file and filter by split."""
+        # Read the "α" separated file using pandas
+        file_path = os.path.join(self.folder, self.filename)
+        data = pd.read_csv(file_path, sep="α", engine="python")
+
+        filename_index = data.columns.get_loc(self.datapoint_loc_label)
+        split_index = data.columns.get_loc("Split")
+        if target_label is None:
+            target_index = None
+        else:
+            target_index = data.columns.get_loc(target_label[0])
+
+        fnames = []
+        outcome = []
+        # Iterate through rows using iterrows
+        for index, row in data.iterrows():
+            file_name = row.iloc[filename_index]
+            file_mode = str(row.iloc[split_index]).lower().strip()
+
+            if split in ["all", file_mode] and os.path.exists(file_name):
+                fnames.append(file_name)
+                if target_index is not None:
+                    outcome.append(row.iloc[target_index])
+
+        return fnames, outcome, target_index
+
+    def __getitem__(self, index):
+        """Get a single item from the dataset.
+
+        Returns:
+            tuple: (video tensor, None, filename) - None is included for compatibility
+        """
+        video_fname = self.fnames[index]
+        try:
+            # Load video with proper frame count and backbone settings
+            video = load_video(
+                video_fname,
+                split=self.split,
+                n_frames=self.num_frames,
+                normalize=False,  # Don't normalize when calculating stats
+                backbone=self.backbone,  # Pass backbone parameter
+            )
+            return video, None, video_fname
+        except Exception as e:
+            print(f"Error loading video {video_fname}: {str(e)}")
+            return None, None, video_fname
+
+    def __len__(self):
+        return len(self.fnames)
 
 
 class VideoDataset(Video):
@@ -454,88 +573,110 @@ class VideoDataset(Video):
             print(f"Failed to load {len(self.failed_videos)} videos")
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, Optional[dict], str]:
-        max_retries = 3
-        last_exception = None
+        """Get a single item from the dataset.
 
-        for retry in range(max_retries):
-            try:
-                actual_idx = self.valid_indices[index]
-                video_fname = self.fnames[actual_idx]
+        Args:
+            index: Index of the item to get
 
-                # Load video (returns tensor directly)
-                video = load_video(
-                    video_fname,
-                    split=self.split,
-                    n_frames=16 if self.backbone.lower() == "mvit" else self.num_frames,
-                    period=1 if self.backbone.lower() == "mvit" else self.period,
-                    resize=self.resize,
-                    apply_mask=self.apply_mask,
-                    normalize=self.normalize,
-                    mean=self.mean,
-                    std=self.std,
-                    noise=self.noise,
-                    pad=self.pad,
-                    video_transforms=self.video_transforms,
-                    rand_augment=self.rand_augment,
-                    backbone=self.backbone,
-                )
+        Returns:
+            tuple: (video tensor, encoded text dict, file path)
 
-                # Ensure video is in correct format [T, C, H, W]
-                if self.backbone.lower() == "mvit":
-                    if video.shape[0] != 16:
-                        raise ValueError(f"Expected 16 frames, got {video.shape[0]}")
+        Raises:
+            RuntimeError: If video cannot be loaded
+        """
+        actual_idx = self.valid_indices[index]
+        video_fname = self.fnames[actual_idx]
 
-                if self.target_label is not None:
-                    text = self.outcome[actual_idx]
-                    if not isinstance(text, str):
-                        text = str(text)
+        try:
+            # Load video (returns tensor directly)
+            video = load_video(
+                video_fname,
+                split=self.split,
+                n_frames=16 if self.backbone.lower() == "mvit" else self.num_frames,
+                period=1 if self.backbone.lower() == "mvit" else self.period,
+                resize=self.resize,
+                apply_mask=self.apply_mask,
+                normalize=self.normalize,
+                mean=self.mean,
+                std=self.std,
+                noise=self.noise,
+                pad=self.pad,
+                video_transforms=self.video_transforms,
+                rand_augment=self.rand_augment,
+                backbone=self.backbone,
+            )
 
-                    try:
-                        encoded = self.tokenizer(
-                            text,
-                            padding="max_length",
-                            max_length=512,
-                            truncation=True,
-                            return_tensors="pt",
-                        )
-                        encoded = {k: v.squeeze(0) for k, v in encoded.items()}
+            # Ensure video is in correct format [T, C, H, W]
+            if self.backbone.lower() == "mvit":
+                if video.shape[0] != 16:
+                    raise ValueError(f"Expected 16 frames, got {video.shape[0]}")
 
-                        if hasattr(self, "device"):
-                            encoded = {k: v.to(self.device) for k, v in encoded.items()}
+            if self.target_label is not None:
+                text = self.outcome[actual_idx]
+                if not isinstance(text, str):
+                    text = str(text)
 
-                        return video, encoded, video_fname
-                    except Exception as e:
-                        print(f"Error tokenizing text for {video_fname}: {str(e)}")
-                        raise
-
-                return video, None, video_fname
-
-            except Exception as e:
-                last_exception = e
-                if retry < max_retries - 1:
-                    print(f"Retry {retry + 1}/{max_retries} for index {index} due to: {str(e)}")
-                    continue
-                else:
-                    next_index = (index + 1) % len(self.valid_indices)
-                    print(
-                        f"All retries failed for index {index}, trying next video at index {next_index}"
+                try:
+                    encoded = self.tokenizer(
+                        text,
+                        padding="max_length",
+                        max_length=512,
+                        truncation=True,
+                        return_tensors="pt",
                     )
-                    return self.__getitem__(next_index)
+                    encoded = {k: v.squeeze(0) for k, v in encoded.items()}
 
-        raise RuntimeError(
-            f"Failed to load video after {max_retries} retries. Last error: {str(last_exception)}"
-        )
+                    if hasattr(self, "device"):
+                        encoded = {k: v.to(self.device) for k, v in encoded.items()}
+
+                    return video, encoded, video_fname
+                except Exception as e:
+                    raise RuntimeError(f"Failed to tokenize text for {video_fname}: {str(e)}")
+
+            return video, None, video_fname
+
+        except Exception as e:
+            # Remove the invalid video from the dataset
+            self.remove_invalid_video(index)
+            raise RuntimeError(f"Failed to load video {video_fname}: {str(e)}")
+
+    def remove_invalid_video(self, index: int):
+        """Remove a video from valid_indices if it's found to be invalid during training.
+
+        Args:
+            index: Index to remove from valid_indices
+        """
+        if index in self.valid_indices:
+            invalid_path = self.fnames[self.valid_indices[index]]
+            self.valid_indices.remove(index)
+            print(
+                f"Removed invalid video at index {index} ({invalid_path}). "
+                f"Remaining valid videos: {len(self.valid_indices)}"
+            )
 
     def __len__(self):
         return len(self.valid_indices)
 
-    def remove_invalid_video(self, index: int):
-        """Remove a video from valid_indices if it's found to be invalid during training."""
-        if index in self.valid_indices:
-            self.valid_indices.remove(index)
-            print(
-                f"Removed invalid video at index {index}. Remaining valid videos: {len(self.valid_indices)}"
-            )
+    def get_reports(self, video_paths):
+        """Get report texts for given video paths.
+
+        Args:
+            video_paths: List of video file paths
+
+        Returns:
+            List of corresponding report texts
+        """
+        reports = []
+        for path in video_paths:
+            # Find the index in self.fnames that matches this path
+            try:
+                idx = self.fnames.index(str(path))
+                reports.append(str(self.outcome[idx]))
+            except ValueError:
+                # If path not found, use empty string
+                print(f"Warning: No report found for video {path}")
+                reports.append("")
+        return reports
 
 
 def _defaultdict_of_lists():

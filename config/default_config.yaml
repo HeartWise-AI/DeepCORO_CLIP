@@ -1,13 +1,13 @@
 # Training parameters
 epochs: 20
-batch_size: 8
-num_workers: 8
+batch_size: 32
+num_workers: 32
 lr: 0.000025
 debug: false
 temp: 0.1
 
 # Data parameters
-data_filename: data/reports/reports_sampled_1000.csv
+data_filename: data/reports/reports_with_splits.csv
 root: "."
 target_label: Report
 datapoint_loc_label: FileName
@@ -29,9 +29,9 @@ gpu: null  # Set to GPU index for single GPU training
 local_rank: -1
 
 # Logging parameters
-project: filtered_deepRV_mvit_sweep
+project: deepCORO_CLIP
 entity: mhi_ai
-tag: filtered_deepRV_mvit_sweep
+tag: deepCORO_CLIP
 
 # Additional parameters
 output_dir: outputs

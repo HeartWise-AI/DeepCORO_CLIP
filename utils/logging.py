@@ -4,6 +4,9 @@ import os
 from datetime import datetime
 from typing import Any, Dict, Optional
 
+import imageio
+import torch
+
 import wandb
 
 
@@ -280,6 +283,189 @@ class WandbLogger:
             metrics[f"{split}/embeddings/{key}"] = value
 
         wandb.log(metrics, step=self.step)
+
+    def log_validation_examples(
+        self,
+        val_best_videos,
+        val_best_reports,
+        val_worst_videos,
+        val_worst_reports,
+    ) -> None:
+        """Log validation video examples with their reports.
+
+        Args:
+            val_best_videos: List of paths to best performing videos
+            val_best_reports: List of report data for best videos
+            val_worst_videos: List of paths to worst performing videos
+            val_worst_reports: List of report data for worst videos
+        """
+        if self.mode == "disabled":
+            return
+
+        # Track temporary files for cleanup
+        temp_files = []
+
+        # Log best retrievals
+        for i, (video_path, report_data) in enumerate(zip(val_best_videos, val_best_reports)):
+            try:
+                # Convert video for wandb
+                mp4_path, is_temp = convert_video_for_wandb(video_path)
+                if is_temp:
+                    temp_files.append(mp4_path)
+
+                # Create HTML report with ground truth and predictions
+                report_html = "<br>".join(
+                    [
+                        f"<b>Ground Truth:</b> {report_data['ground_truth']}",
+                        "<b>Top 5 Retrieved Reports:</b>",
+                        *[f"{j+1}. {text}" for j, text in enumerate(report_data["predicted"])],
+                    ]
+                )
+
+                # Log video and metrics
+                wandb.log(
+                    {
+                        f"qualitative/good_retrieval_{i}": wandb.Video(
+                            mp4_path,
+                            caption=f"Good Validation Retrieval {i+1} (Similarity: {report_data['similarity_score']:.3f})",
+                        ),
+                        f"qualitative/good_reports_{i}": wandb.Html(report_html),
+                        f"qualitative/good_similarity_{i}": report_data["similarity_score"],
+                    },
+                    step=self.step,
+                )
+
+                print(
+                    f"\nLogged good validation example {i+1} (Similarity: {report_data['similarity_score']:.3f})"
+                )
+            except Exception as e:
+                print(f"Warning: Failed to log good validation video {video_path}: {str(e)}")
+
+        # Log worst retrievals
+        for i, (video_path, report_data) in enumerate(zip(val_worst_videos, val_worst_reports)):
+            try:
+                # Convert video for wandb
+                mp4_path, is_temp = convert_video_for_wandb(video_path)
+                if is_temp:
+                    temp_files.append(mp4_path)
+
+                # Create HTML report with ground truth and predictions
+                report_html = "<br>".join(
+                    [
+                        f"<b>Ground Truth:</b> {report_data['ground_truth']}",
+                        "<b>Top 5 Retrieved Reports:</b>",
+                        *[f"{j+1}. {text}" for j, text in enumerate(report_data["predicted"])],
+                    ]
+                )
+
+                # Log video and metrics
+                wandb.log(
+                    {
+                        f"qualitative/bad_retrieval_{i}": wandb.Video(
+                            mp4_path,
+                            caption=f"Bad Validation Retrieval {i+1} (Similarity: {report_data['similarity_score']:.3f})",
+                        ),
+                        f"qualitative/bad_reports_{i}": wandb.Html(report_html),
+                        f"qualitative/bad_similarity_{i}": report_data["similarity_score"],
+                    },
+                    step=self.step,
+                )
+
+                print(
+                    f"\nLogged bad validation example {i+1} (Similarity: {report_data['similarity_score']:.3f})"
+                )
+            except Exception as e:
+                print(f"Warning: Failed to log bad validation video {video_path}: {str(e)}")
+
+        # Clean up temporary files
+        for temp_file in temp_files:
+            cleanup_temp_video(temp_file)
+
+
+def convert_video_for_wandb(video_path):
+    """Convert video to MP4 format for wandb logging if needed.
+
+    Args:
+        video_path: Path to input video
+
+    Returns:
+        tuple: (output_path, is_temp) where is_temp indicates if the file needs cleanup
+    """
+    # If already MP4, return as is
+    if video_path.lower().endswith(".mp4"):
+        return video_path, False
+
+    import subprocess
+    import tempfile
+
+    # Create temporary MP4 file
+    temp_fd, temp_path = tempfile.mkstemp(suffix=".mp4")
+    os.close(temp_fd)
+
+    try:
+        # Convert to MP4 using ffmpeg
+        subprocess.run(
+            ["ffmpeg", "-i", video_path, "-c:v", "libx264", "-preset", "fast", "-y", temp_path],
+            check=True,
+            capture_output=True,
+        )
+        return temp_path, True
+    except subprocess.CalledProcessError as e:
+        print(f"Warning: Failed to convert video {video_path}: {e.stderr.decode()}")
+        os.unlink(temp_path)
+        return video_path, False
+
+
+def cleanup_temp_video(video_path):
+    """Delete temporary video file if it exists."""
+    try:
+        if os.path.exists(video_path):
+            os.remove(video_path)
+    except Exception as e:
+        print(f"Warning: Failed to delete temporary video {video_path}: {str(e)}")
+
+
+def get_best_and_worst_retrievals(similarity_matrix, paths, reports, k=2):
+    """Get the best and worst retrievals based on similarity scores, along with their top text matches.
+
+    Args:
+        similarity_matrix: Tensor of shape (num_videos, num_queries)
+        paths: List of video paths
+        reports: List of report texts
+        k: Number of best/worst examples to return
+
+    Returns:
+        tuple: (best_indices, worst_indices, best_scores, worst_scores, best_text_indices, worst_text_indices)
+    """
+    # Get mean similarity score for each video-query pair
+    mean_similarities = similarity_matrix.mean(dim=1)
+
+    # Get indices of best and worst k videos
+    best_values, best_indices = torch.topk(mean_similarities, k=k)
+    worst_values, worst_indices = torch.topk(mean_similarities, k=k, largest=False)
+
+    # Get top-5 text matches for each video
+    best_text_indices = []
+    worst_text_indices = []
+
+    for idx in best_indices:
+        # Get top 5 text matches for this video
+        _, top_5_texts = torch.topk(similarity_matrix[idx], k=5)
+        best_text_indices.append(top_5_texts)
+
+    for idx in worst_indices:
+        # Get top 5 text matches for this video
+        _, top_5_texts = torch.topk(similarity_matrix[idx], k=5)
+        worst_text_indices.append(top_5_texts)
+
+    return (
+        best_indices,
+        worst_indices,
+        best_values,
+        worst_values,
+        best_text_indices,
+        worst_text_indices,
+    )
 
 
 def create_logger(

@@ -1081,54 +1081,6 @@ def convert_to_mp4(input_path):
         return None
 
 
-def get_best_and_worst_retrievals(similarity_matrix, paths, reports, k=2):
-    """Get the best and worst retrievals based on similarity scores, along with their top text matches.
-
-    Args:
-        similarity_matrix: Tensor of shape (num_videos, num_queries)
-        paths: List of video paths
-        reports: List of report texts
-        k: Number of best/worst examples to return
-
-    Returns:
-        tuple: (best_indices, worst_indices, best_scores, worst_scores, best_text_indices, worst_text_indices)
-    """
-    # Get mean similarity score for each video-query pair
-    mean_similarities = similarity_matrix.mean(dim=1)
-
-    # Adjust k to not exceed batch size
-    k = min(k, len(mean_similarities))
-
-    # Get indices of best and worst k videos
-    best_values, best_indices = torch.topk(mean_similarities, k=k)
-    worst_values, worst_indices = torch.topk(mean_similarities, k=k, largest=False)
-
-    # Get top-5 text matches for each video
-    best_text_indices = []
-    worst_text_indices = []
-
-    for idx in best_indices:
-        # Get top N text matches for this video, where N is min(5, batch_size)
-        n_texts = min(5, similarity_matrix.size(1))
-        _, top_n_texts = torch.topk(similarity_matrix[idx], k=n_texts)
-        best_text_indices.append(top_n_texts)
-
-    for idx in worst_indices:
-        # Get top N text matches for this video, where N is min(5, batch_size)
-        n_texts = min(5, similarity_matrix.size(1))
-        _, top_n_texts = torch.topk(similarity_matrix[idx], k=n_texts)
-        worst_text_indices.append(top_n_texts)
-
-    return (
-        best_indices,
-        worst_indices,
-        best_values,
-        worst_values,
-        best_text_indices,
-        worst_text_indices,
-    )
-
-
 def validate_epoch(
     video_encoder,
     text_encoder,

@@ -12,6 +12,7 @@ root: "."
 target_label: Report
 datapoint_loc_label: FileName
 frames: 16
+num_workers: 8
 
 # Model parameters
 model_name: mvit

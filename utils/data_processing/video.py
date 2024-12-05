@@ -3,7 +3,6 @@ import os
 import pathlib
 import sys
 from typing import Any, List, Optional, Tuple
-import concurrent.futures
 
 import cv2
 import numpy as np
@@ -21,35 +20,6 @@ if dir1 not in sys.path:
     sys.path.append(dir1)
 
 from models.model import get_tokenizer
-
-
-def load_frames_async(video_path):
-    """
-    Load video frames asynchronously using ThreadPoolExecutor.
-    Returns a list of frames.
-    """
-    def read_frame(cap):
-        ret, frame = cap.read()
-        if not ret:
-            return None
-        if len(frame.shape) == 3:
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        return frame
-
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise ValueError(f"Failed to open video file: {video_path}")
-
-    frames = []
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        futures = [executor.submit(read_frame, cap) for _ in range(int(cap.get(cv2.CAP_PROP_FRAME_COUNT)))]
-        for future in concurrent.futures.as_completed(futures):
-            frame = future.result()
-            if frame is not None:
-                frames.append(frame)
-
-    cap.release()
-    return frames
 
 
 def load_video(
@@ -77,8 +47,21 @@ def load_video(
         n_frames = 16
         period = 1
 
-    # Load frames asynchronously
-    frames = load_frames_async(video_path)
+
+    # Fallback to OpenCV
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError(f"Failed to open video file: {video_path}")
+
+    frames = []
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        if len(frame.shape) == 3:
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frames.append(frame)
+    cap.release()
 
     if not frames:
         raise ValueError(f"No frames could be read from video: {video_path}")

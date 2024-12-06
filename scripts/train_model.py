@@ -43,6 +43,10 @@ from utils.logging import (
     get_best_and_worst_retrievals,
 )
 
+# Add these imports at the top
+import socket
+from datetime import datetime
+
 
 def load_config(config_path: str) -> Dict[str, Any]:
     """Load configuration from YAML file.
@@ -197,6 +201,15 @@ def parse_args():
         type=str,
         default="outputs",
         help="Directory to save model checkpoints and logs",
+    )
+
+    # Add selected_gpus argument
+    parser.add_argument(
+        '--selected_gpus', 
+        type=int, 
+        nargs='+', 
+        default=[0, 1, 2, 3], 
+        help='List of GPUs to use'
     )
 
     args = parser.parse_args()
@@ -384,7 +397,6 @@ def setup_training(args, rank=0):
     text_encoder = TextEncoder()
 
     # Move models to device first
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     video_encoder = video_encoder.to(device)
     text_encoder = text_encoder.to(device)
 
@@ -437,6 +449,58 @@ def setup_training(args, rank=0):
         )
         print("===========================\n")
 
+    # Initialize distributed training if using multiple GPUs
+    if len(args.selected_gpus) > 1:
+        # Set device for this process
+        torch.cuda.set_device(rank)
+        device = torch.device(f'cuda:{rank}')
+        
+        # Wrap models in DistributedDataParallel
+        video_encoder = DDP(
+            video_encoder.to(device), 
+            device_ids=[rank], 
+            find_unused_parameters=True
+        )
+        text_encoder = DDP(
+            text_encoder.to(device), 
+            device_ids=[rank], 
+            find_unused_parameters=True
+        )
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        video_encoder = video_encoder.to(device)
+        text_encoder = text_encoder.to(device)
+
+    # Create data samplers for distributed training
+    train_sampler = None
+    val_sampler = None
+    if len(args.selected_gpus) > 1:
+        train_sampler = DistributedSampler(train_dataset)
+        val_sampler = DistributedSampler(val_dataset, shuffle=False)
+
+    # Update dataloaders with samplers
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=(train_sampler is None),
+        num_workers=args.num_workers,
+        pin_memory=True,
+        sampler=train_sampler,
+        drop_last=True,
+        collate_fn=custom_collate_fn,
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=True,
+        sampler=val_sampler,
+        drop_last=False,
+        collate_fn=custom_collate_fn,
+    )
+
     return {
         "video_encoder": video_encoder,
         "text_encoder": text_encoder,
@@ -448,6 +512,8 @@ def setup_training(args, rank=0):
         "val_dataset": val_dataset,
         "device": device,
         "wandb_run": wandb_run,
+        "train_sampler": train_sampler,
+        "val_sampler": val_sampler,
     }
 
 
@@ -531,54 +597,37 @@ def custom_collate_fn(batch):
     return videos, combined_texts, paths
 
 
-def setup_ddp(rank, world_size):
-    """Initialize DDP process group with proper error handling"""
-    try:
+def setup_ddp(rank, world_size, args):
+    """Initialize DDP process group."""
+    if world_size > 1:
+        # Set environment variables required for distributed training
+        os.environ['MASTER_ADDR'] = '127.0.0.1'  # localhost
+        os.environ['MASTER_PORT'] = str(29500 + int(datetime.now().strftime('%H%M%S')) % 1000)  # Dynamic port
+        os.environ['WORLD_SIZE'] = str(world_size)
+        os.environ['RANK'] = str(rank)
+        
         # Set the device
-        if torch.cuda.is_available():
-            # Remove any CUDA_VISIBLE_DEVICES restriction
-            if "CUDA_VISIBLE_DEVICES" in os.environ:
-                del os.environ["CUDA_VISIBLE_DEVICES"]
-
-            torch.cuda.set_device(rank)  # Set to use the correct GPU
-            device = torch.device(f"cuda:{rank}")
-        else:
-            device = torch.device("cpu")
-
+        torch.cuda.set_device(rank)
+        
         # Initialize process group
-        init_method = "env://"  # Using environment variables for initialization
         dist.init_process_group(
-            backend="nccl" if torch.cuda.is_available() else "gloo",
-            init_method=init_method,
+            backend='nccl',
+            init_method='env://',
             world_size=world_size,
             rank=rank,
-            timeout=timedelta(minutes=30),
+            timeout=timedelta(minutes=30)
         )
-
-        # Verify initialization
-        if not dist.is_initialized():
-            raise RuntimeError("Failed to initialize process group")
-
-        if rank == 0:
-            print(f"Initialized process group: rank {rank} on device {device}")
-            print(f"Number of GPUs available: {torch.cuda.device_count()}")
-            for i in range(torch.cuda.device_count()):
-                print(f"GPU {i}: {torch.cuda.get_device_name(i)}")
-
-        return device
-
-    except Exception as e:
-        print(f"Error in DDP setup on rank {rank}: {str(e)}")
-        raise e
+        
+        print(f"Initialized process group: rank {rank}/{world_size}")
+    
+    device = torch.device(f'cuda:{rank}' if torch.cuda.is_available() else 'cpu')
+    return device
 
 
 def cleanup_ddp():
-    """Clean up DDP process group with proper error handling"""
+    """Clean up DDP process group."""
     if dist.is_initialized():
-        try:
-            dist.destroy_process_group()
-        except Exception as e:
-            print(f"Error in DDP cleanup: {str(e)}")
+        dist.destroy_process_group()
 
 
 def compute_recall_at_k(similarity_matrix, k_values=[1, 5]):
@@ -908,130 +957,83 @@ def save_checkpoint(model_dict, metrics_dict, output_path, is_best=False):
     print(f"Saved checkpoint to {output_path}")
 
 
-def main(rank=0, world_size=1, args=None):
-    """Main training function."""
+def main_worker(rank, world_size, args):
+    """Main worker function for distributed training."""
     try:
-        # Setup training
-        training_setup = setup_training(args, rank=rank)
-        is_distributed = world_size > 1
-
-        # Initialize tracking variables
-        best_val_loss = float("inf")
-        best_epoch = -1
-
+        # Setup DDP
+        device = setup_ddp(rank, world_size, args)
+        
+        # Setup training components
+        training_setup = setup_training(args, rank)
+        
         # Training loop
+        best_val_loss = float('inf')
         for epoch in range(args.epochs):
-            if rank == 0:
-                print(f"\nEpoch {epoch + 1}/{args.epochs}")
-
+            if world_size > 1:
+                training_setup["train_loader"].sampler.set_epoch(epoch)
+            
             # Training phase
             train_loss, train_metrics = train_epoch(
                 video_encoder=training_setup["video_encoder"],
                 text_encoder=training_setup["text_encoder"],
                 dataloader=training_setup["train_loader"],
                 optimizer=training_setup["optimizer"],
-                device=training_setup["device"],
-                wandb_run=training_setup["wandb_run"],
+                device=device,
+                wandb_run=training_setup["wandb_run"] if rank == 0 else None,
                 rank=rank,
                 world_size=world_size,
-                epoch=epoch,
+                epoch=epoch
             )
-
+            
             # Validation phase
             val_loss, val_metrics, val_examples = validate_epoch(
                 video_encoder=training_setup["video_encoder"],
                 text_encoder=training_setup["text_encoder"],
                 dataloader=training_setup["val_loader"],
-                device=training_setup["device"],
-                wandb_run=training_setup["wandb_run"],
+                device=device,
+                wandb_run=training_setup["wandb_run"] if rank == 0 else None,
                 rank=rank,
                 world_size=world_size,
-                epoch=epoch,
+                epoch=epoch
             )
-
-            # Log metrics and examples
-            if rank == 0 and training_setup["wandb_run"] is not None:
+            
+            # Logging and checkpointing only on rank 0
+            if rank == 0:
                 # Log metrics
-                training_setup["wandb_run"].log(
-                    {
+                if training_setup["wandb_run"] is not None:
+                    training_setup["wandb_run"].log({
                         "train/loss": train_loss,
-                        "train/learning_rate": training_setup["optimizer"].param_groups[0]["lr"],
                         **{f"train/{k}": v for k, v in train_metrics.items()},
                         "val/loss": val_loss,
-                        "val/best_loss": best_val_loss,
-                        **{f"val/{k}": v for k, v in val_metrics.items()},
+                        **{f"val/{k}": v for k, v in val_metrics.items()}
+                    })
+                
+                # Save checkpoint if validation loss improved
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    checkpoint = {
+                        'video_encoder': training_setup["video_encoder"].module.state_dict() 
+                            if world_size > 1 else training_setup["video_encoder"].state_dict(),
+                        'text_encoder': training_setup["text_encoder"].module.state_dict() 
+                            if world_size > 1 else training_setup["text_encoder"].state_dict(),
+                        'optimizer': training_setup["optimizer"].state_dict(),
+                        'epoch': epoch,
+                        'val_loss': val_loss
                     }
-                )
-
+                    torch.save(checkpoint, f'{args.output_dir}/best_model.pt')
+            
             # Step scheduler if it exists
             if training_setup["scheduler"] is not None:
                 training_setup["scheduler"].step()
-
-            # Save checkpoints only on main process
-            if rank == 0:
-                # Prepare model states
-                model_dict = {
-                    "video_encoder": (
-                        training_setup["video_encoder"].module.state_dict()
-                        if is_distributed
-                        else training_setup["video_encoder"].state_dict()
-                    ),
-                    "text_encoder": (
-                        training_setup["text_encoder"].module.state_dict()
-                        if is_distributed
-                        else training_setup["text_encoder"].state_dict()
-                    ),
-                    "optimizer": training_setup["optimizer"].state_dict(),
-                    "scheduler": (
-                        training_setup["scheduler"].state_dict()
-                        if training_setup["scheduler"] is not None
-                        else None
-                    ),
-                    "epoch": epoch,
-                }
-
-                # Prepare metrics
-                metrics_dict = {
-                    "train_loss": train_loss,
-                    "val_loss": val_loss,
-                    "best_val_loss": best_val_loss,
-                    "best_epoch": best_epoch,
-                    **train_metrics,
-                    **val_metrics,
-                }
-
-                # Create checkpoints directory
-                checkpoint_dir = Path(args.output_dir) / "checkpoints"
-                checkpoint_dir.mkdir(parents=True, exist_ok=True)
-
-                # Save latest checkpoint
-                latest_path = checkpoint_dir / "latest.pt"
-                save_checkpoint(model_dict, metrics_dict, latest_path)
-                print(f"\nSaved latest checkpoint at epoch {epoch + 1}")
-
-                # Save best checkpoint if validation loss improved
-                if val_loss < best_val_loss:
-                    best_val_loss = val_loss
-                    best_epoch = epoch
-                    best_path = checkpoint_dir / "best.pt"
-                    save_checkpoint(model_dict, metrics_dict, best_path, is_best=True)
-                    print(
-                        f"\nNew best model saved! Val Loss: {val_loss:.4f} (previous: {best_val_loss:.4f})"
-                    )
-
-                    # Save to wandb if available
-                    if training_setup["wandb_run"] is not None:
-                        wandb.save(str(best_path))
-
+                
     except Exception as e:
         print(f"Error on rank {rank}: {str(e)}")
         raise e
-
+    
     finally:
-        if training_setup["wandb_run"] is not None:
+        if rank == 0 and training_setup.get("wandb_run") is not None:
             wandb.finish()
-        if is_distributed:
-            cleanup_ddp()
+        cleanup_ddp()
 
 
 def convert_to_mp4(input_path):
@@ -1418,20 +1420,35 @@ def validate_epoch(
 
 if __name__ == "__main__":
     args = parse_args()
-
+    
+    # Get the list of selected GPUs
+    selected_gpus = args.selected_gpus
+    world_size = len(selected_gpus)
+    
+    # Configure visible GPUs
+    os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, selected_gpus))
+    
+    # Set default timeout minutes
+    os.environ['NCCL_TIMEOUT_MINUTES'] = '30'
+    
     if args.gpu is not None:
-        # Use specified GPU
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
-        main(rank=0, world_size=1, args=args)
+        # Single GPU mode
+        print(f"Using single GPU mode with GPU {args.gpu}")
+        main_worker(rank=0, world_size=1, args=args)
     else:
-        # Default to GPU 0 for single GPU mode
-        if torch.cuda.device_count() == 1:
-            os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-            main(rank=0, world_size=1, args=args)
+        # Multi-GPU mode
+        if world_size > 1:
+            print(f"Using multi-GPU mode with GPUs: {selected_gpus}")
+            # Initialize multiprocessing method to spawn
+            mp.set_start_method('spawn', force=True)
+            mp.spawn(
+                main_worker,
+                args=(world_size, args),
+                nprocs=world_size,
+                join=True
+            )
         else:
-            # Multi-GPU mode - remove any GPU restrictions
-            if "CUDA_VISIBLE_DEVICES" in os.environ:
-                del os.environ["CUDA_VISIBLE_DEVICES"]
-            main(rank=0, world_size=1, args=args)
+            print(f"Using single GPU mode with GPU {selected_gpus[0]}")
+            main_worker(rank=0, world_size=1, args=args)
 
     # Multi-GPU mode must be explicitly triggered using torchrun or torch.distributed.launch

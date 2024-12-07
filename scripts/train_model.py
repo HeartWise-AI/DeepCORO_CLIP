@@ -1059,15 +1059,11 @@ def convert_to_mp4(input_path):
                 "-i",
                 input_path,
                 "-c:v",
-                "libx264",
-                "-crf",
-                "35",  # Higher CRF = lower quality/size
-                "-preset",
-                "veryfast",  # Faster encoding
+                "mpeg4",  # H.265 codec
                 "-vf",
-                "scale=320:-1",  # Reduce resolution to 320p width
+                "scale=320:-1",
                 "-r",
-                "15",  # Reduce framerate to 15fps
+                "15",
                 "-y",
                 temp_path,
             ],

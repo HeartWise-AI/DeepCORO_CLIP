@@ -418,30 +418,36 @@ class StatsDataset(torch.utils.data.Dataset):
             print(f"Limited dataset to {self.max_samples} samples")
 
     def load_data(self, split, target_label):
-        """Load data from CSV file and filter by split."""
-        # Read the "α" separated file using pandas
+        """Load data from CSV file and filter by split, stopping early after max_samples."""
         file_path = os.path.join(self.folder, self.filename)
-        data = pd.read_csv(file_path, sep="α", engine="python")
-
-        filename_index = data.columns.get_loc(self.datapoint_loc_label)
-        split_index = data.columns.get_loc("Split")
-        if target_label is None:
-            target_index = None
-        else:
-            target_index = data.columns.get_loc(target_label[0])
-
+    
+        # First, just read the header to identify column indices
+        header_data = pd.read_csv(file_path, sep="α", engine="python", nrows=0)
+        filename_index = header_data.columns.get_loc(self.datapoint_loc_label)
+        split_index = header_data.columns.get_loc("Split")
+    
+        target_index = None
+        if target_label is not None:
+            target_index = header_data.columns.get_loc(target_label[0])
+    
         fnames = []
         outcome = []
-        # Iterate through rows using iterrows
-        for index, row in data.iterrows():
-            file_name = row.iloc[filename_index]
-            file_mode = str(row.iloc[split_index]).lower().strip()
-
-            if split in ["all", file_mode] and os.path.exists(file_name):
-                fnames.append(file_name)
-                if target_index is not None:
-                    outcome.append(row.iloc[target_index])
-
+    
+        # Read in chunks to avoid processing the entire file upfront
+        for chunk in pd.read_csv(file_path, sep="α", engine="python", chunksize=10000):
+            for index, row in chunk.iterrows():
+                file_name = row.iloc[filename_index]
+                file_mode = str(row.iloc[split_index]).lower().strip()
+    
+                if split in ["all", file_mode] and os.path.exists(file_name):
+                    fnames.append(file_name)
+                    if target_index is not None:
+                        outcome.append(row.iloc[target_index])
+    
+                    # Stop early once we have enough samples
+                    if self.max_samples and len(fnames) >= self.max_samples:
+                        return fnames, outcome, target_index
+    
         return fnames, outcome, target_index
 
     def __getitem__(self, index):

@@ -12,6 +12,7 @@ import torch.utils.data
 import torchvision
 from torchvision.transforms import v2
 from transformers import AutoTokenizer
+from torch.utils.data import Dataset
 
 # Global variable for directory paths
 dir2 = os.path.abspath("/volume/DeepCORO_CLIP/orion")
@@ -378,7 +379,35 @@ class VideoDataset(torch.utils.data.Dataset):
                 print(f"Warning: No report found for video {path}")
                 reports.append("")
         return reports
+    def get_all_reports(self):
+        """
+        Return all reports (text outcomes) from the dataset as a list of strings.
+        """
+        return [str(o) for o in self.outcome]
 
+
+
+class SimpleTextDataset(Dataset):
+    """Allow me to encode all reportsi n the valdiation dataset at once for validation metrics"""
+    def __init__(self, texts, tokenizer):
+        self.texts = texts
+        self.tokenizer = tokenizer
+
+    def __len__(self):
+        return len(self.texts)
+
+    def __getitem__(self, idx):
+        text = self.texts[idx]
+        encoded = self.tokenizer(
+            text,
+            padding="max_length",
+            truncation=True,
+            max_length=512,
+            return_tensors="pt",
+        )
+        # Squeeze to remove batch dimension
+        encoded = {k: v.squeeze(0) for k, v in encoded.items()}
+        return encoded
 
 class StatsDataset(torch.utils.data.Dataset):
     """Dataset class for calculating mean and std statistics without the Video base class."""

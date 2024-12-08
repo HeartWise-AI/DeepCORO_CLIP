@@ -25,7 +25,7 @@ lr_step_period: 5
 factor: 0.3
 
 # Distributed training
-gpu: 1  # Set to GPU index for single GPU training
+gpu: 2  # Set to GPU index for single GPU training
 local_rank: -1
 
 # Logging parameters

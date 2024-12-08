@@ -313,12 +313,19 @@ class WandbLogger:
                 if is_temp:
                     temp_files.append(mp4_path)
 
-                # Create HTML report with ground truth and predictions
+                # Create HTML report with ground truth and unique predictions
+                unique_predicted_reports = []
+                seen_reports = set()
+                for text in report_data["predicted"]:
+                    if text not in seen_reports:
+                        unique_predicted_reports.append(text)
+                        seen_reports.add(text)
+
                 report_html = "<br>".join(
                     [
                         f"<b>Ground Truth:</b> {report_data['ground_truth']}",
                         "<b>Top 5 Retrieved Reports:</b>",
-                        *[f"{j+1}. {text}" for j, text in enumerate(report_data["predicted"])],
+                        *[f"{j+1}. {text}" for j, text in enumerate(unique_predicted_reports)],
                     ]
                 )
 
@@ -349,12 +356,19 @@ class WandbLogger:
                 if is_temp:
                     temp_files.append(mp4_path)
 
-                # Create HTML report with ground truth and predictions
+                # Create HTML report with ground truth and unique predictions
+                unique_predicted_reports = []
+                seen_reports = set()
+                for text in report_data["predicted"]:
+                    if text not in seen_reports:
+                        unique_predicted_reports.append(text)
+                        seen_reports.add(text)
+
                 report_html = "<br>".join(
                     [
                         f"<b>Ground Truth:</b> {report_data['ground_truth']}",
                         "<b>Top 5 Retrieved Reports:</b>",
-                        *[f"{j+1}. {text}" for j, text in enumerate(report_data["predicted"])],
+                        *[f"{j+1}. {text}" for j, text in enumerate(unique_predicted_reports)],
                     ]
                 )
 
@@ -440,6 +454,9 @@ def get_best_and_worst_retrievals(similarity_matrix, paths, reports, k=2):
     # Get mean similarity score for each video-query pair
     mean_similarities = similarity_matrix.mean(dim=1)
 
+    # Adjust k to not exceed batch size
+    k = min(k, len(mean_similarities))
+
     # Get indices of best and worst k videos
     best_values, best_indices = torch.topk(mean_similarities, k=k)
     worst_values, worst_indices = torch.topk(mean_similarities, k=k, largest=False)
@@ -449,14 +466,32 @@ def get_best_and_worst_retrievals(similarity_matrix, paths, reports, k=2):
     worst_text_indices = []
 
     for idx in best_indices:
-        # Get top 5 text matches for this video
-        _, top_5_texts = torch.topk(similarity_matrix[idx], k=5)
-        best_text_indices.append(top_5_texts)
+        # Get top N text matches for this video, where N is min(5, batch_size)
+        n_texts = min(5, similarity_matrix.size(1))
+        top_n_texts = torch.topk(similarity_matrix[idx], k=n_texts)[1]
+        unique_texts = []
+        seen_texts = set()
+        for text_idx in top_n_texts:
+            if text_idx.item() not in seen_texts:
+                unique_texts.append(text_idx)
+                seen_texts.add(text_idx.item())
+            if len(unique_texts) == 5:
+                break
+        best_text_indices.append(torch.tensor(unique_texts))
 
     for idx in worst_indices:
-        # Get top 5 text matches for this video
-        _, top_5_texts = torch.topk(similarity_matrix[idx], k=5)
-        worst_text_indices.append(top_5_texts)
+        # Get top N text matches for this video, where N is min(5, batch_size)
+        n_texts = min(5, similarity_matrix.size(1))
+        top_n_texts = torch.topk(similarity_matrix[idx], k=n_texts)[1]
+        unique_texts = []
+        seen_texts = set()
+        for text_idx in top_n_texts:
+            if text_idx.item() not in seen_texts:
+                unique_texts.append(text_idx)
+                seen_texts.add(text_idx.item())
+            if len(unique_texts) == 5:
+                break
+        worst_text_indices.append(torch.tensor(unique_texts))
 
     return (
         best_indices,

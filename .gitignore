@@ -8,6 +8,7 @@ build/
 develop-eggs/
 dist/
 downloads/
+outputs/
 eggs/
 .eggs/
 lib/
@@ -19,7 +20,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-
+core.*
 # Virtual Environment
 .env
 .venv

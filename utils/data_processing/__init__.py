@@ -6,18 +6,19 @@ import numpy as np
 import torch
 from torchvision.transforms import v2
 
-from utils.data_processing.video import Video
-
-__all__ = ["Video", "get_mean_and_std", "format_mean_std"]
+__all__ = ["get_mean_and_std", "format_mean_std"]
 
 
 def get_mean_and_std(
-    dataset: Video, samples: Optional[int] = None, batch_size: int = 8, num_workers: int = 4
+    dataset: torch.utils.data.Dataset, 
+    samples: Optional[int] = None, 
+    batch_size: int = 8, 
+    num_workers: int = 4
 ) -> Tuple[List[float], List[float]]:
     """Calculate mean and standard deviation of a video dataset.
 
     Args:
-        dataset: Video dataset to calculate statistics for
+        dataset: A PyTorch dataset that returns (video, _, _) where video is a NumPy array
         samples: Number of samples to use (None for all)
         batch_size: Batch size for processing
         num_workers: Number of workers for data loading
@@ -38,8 +39,10 @@ def get_mean_and_std(
     n_samples = 0
 
     for batch, _, _ in dataloader:
+        # batch is [B, T, H, W, C] as numpy arrays from load_video
         batch = torch.from_numpy(batch)
         batch_samples = batch.size(0)
+        # Reshape to [B, C, T*H*W]
         batch = batch.view(batch_samples, batch.size(1), -1)
         mean += batch.mean(2).sum(0)
         std += batch.std(2).sum(0)

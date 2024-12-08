@@ -30,7 +30,6 @@ if project_root not in sys.path:
 from models.model import TextEncoder, VideoEncoder, contrastive_loss
 from utils.data_processing.video import (
     StatsDataset,
-    Video,
     VideoDataset,
     custom_collate_fn,
     load_video,

@@ -7,7 +7,7 @@ debug: false
 temp: 0.07
 
 # Data parameters
-data_filename: data/reports/reports_no_conclusion_with_splits.csv
+data_filename: data/reports/reports_with_splits_1000.csv
 root: "."
 target_label: Report
 datapoint_loc_label: FileName

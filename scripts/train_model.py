@@ -473,13 +473,8 @@ def compute_mrr(similarity_matrix, global_gt_indices):
     v2t_ranks = (similarity_matrix >= target_scores).sum(1).float()
     v2t_mrr = (1 / v2t_ranks).mean().item()
 
-    # Text to Video
-    #target_scores_t = similarity_matrix.t().gather(1, global_gt_indices.unsqueeze(1))
-    #t2v_ranks = (similarity_matrix.t() >= target_scores_t).sum(1).float()
-    #t2v_mrr = (1 / t2v_ranks).mean().item()
-    t2v_mrr = 0
 
-    return {"MRR_V2T": v2t_mrr, "MRR_T2V": t2v_mrr}
+    return {"MRR_V2T": v2t_mrr}
 
 
 def compute_embedding_norms(video_features, text_features):
@@ -901,10 +896,7 @@ def validate_epoch(
     epoch_metrics = {
         "Recall@1_V2T": 0.0,
         "Recall@5_V2T": 0.0,
-        "Recall@1_T2V": 0.0,
-        "Recall@5_T2V": 0.0,
         "MRR_V2T": 0.0,
-        "MRR_T2V": 0.0,
         "video_norm": 0.0,
         "text_norm": 0.0,
         "alignment_score": 0.0,
@@ -1121,12 +1113,7 @@ def validate_epoch(
             "epoch": epoch
         })
 
-    # Save all_text_embeddings and all_reports again if needed
-    if text_embedding_pickle_path is not None:
-        with open(text_embedding_pickle_path, "wb") as f:
-            pickle.dump((all_reports, all_text_embeddings.cpu()), f)
-        if rank == 0:
-            print(f"Saved text embeddings and reports to {text_embedding_pickle_path}")
+
 
     avg_text_embedding = all_text_embeddings.mean(dim=0)
     if rank == 0:

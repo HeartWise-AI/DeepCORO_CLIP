@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "deepcoro_clip2"
+name = "deepcoro_clip"
 version = "0.1.0"
-description = "Deep learning model for echocardiography video interpretation using contrastive learning"
+description = "Deep learning model for angiogram video interpretation using contrastive learning"
 readme = "README.md"
 requires-python = ">=3.8"
 license = "MIT"

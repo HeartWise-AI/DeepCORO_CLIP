@@ -876,7 +876,6 @@ def get_best_and_worst_retrievals(similarity_matrix, paths, reports, k=2):
     )
 
 
-
 def validate_epoch(
     video_encoder,
     text_encoder,
@@ -1079,33 +1078,49 @@ def validate_epoch(
         mp4_path = convert_to_mp4(val_best_videos[0])
         if mp4_path:
             wandb_run.log({
-                "qualitative/good_retrieval": wandb.Video(mp4_path, caption=f"Sim: {val_best_reports[0]['similarity_score']:.3f}"),
+                f"qualitative/good_retrieval": wandb.Video(
+                    mp4_path,
+                    caption=f"Sim: {val_best_reports[0]['similarity_score']:.3f}"
+                ),
                 "epoch": epoch
-            }, step=epoch)
+            })
 
-        predicted_html = "<br>".join([f"{i+1}. {text}" for i, text in enumerate(val_best_reports[0]["predicted"])])
-        ground_truth_html = f"<b>Ground Truth:</b> {val_best_reports[0]['ground_truth']}<br><b>Top 5 Predicted:</b><br>{predicted_html}"
+        predicted_html = "<br>".join(
+            [f"{i+1}. {text}" for i, text in enumerate(val_best_reports[0]["predicted"])]
+        )
+        ground_truth_html = (
+            f"<b>Ground Truth:</b> {val_best_reports[0]['ground_truth']}<br>"
+            f"<b>Top 5 Predicted:</b><br>{predicted_html}"
+        )
         wandb_run.log({
-            "qualitative/good_retrieval_text": wandb.Html(ground_truth_html),
+            f"qualitative/good_retrieval_text": wandb.Html(ground_truth_html),
             "epoch": epoch
-        }, step=epoch)
+        })
 
     # Similarly for worst retrieval
     if val_worst_videos and val_worst_reports and wandb_run is not None:
         mp4_path = convert_to_mp4(val_worst_videos[0])
         if mp4_path:
             wandb_run.log({
-                "qualitative/bad_retrieval": wandb.Video(mp4_path, caption=f"Sim: {val_worst_reports[0]['similarity_score']:.3f}"),
+                f"qualitative/bad_retrieval": wandb.Video(
+                    mp4_path,
+                    caption=f"Sim: {val_worst_reports[0]['similarity_score']:.3f}"
+                ),
                 "epoch": epoch
-            }, step=epoch)
+            })
 
-        predicted_html = "<br>".join([f"{i+1}. {text}" for i, text in enumerate(val_worst_reports[0]["predicted"])])
-        ground_truth_html = f"<b>Ground Truth:</b> {val_worst_reports[0]['ground_truth']}<br><b>Top 5 Predicted:</b><br>{predicted_html}"
+        predicted_html = "<br>".join(
+            [f"{i+1}. {text}" for i, text in enumerate(val_worst_reports[0]["predicted"])]
+        )
+        ground_truth_html = (
+            f"<b>Ground Truth:</b> {val_worst_reports[0]['ground_truth']}<br>"
+            f"<b>Top 5 Predicted:</b><br>{predicted_html}"
+        )
         wandb_run.log({
-            "qualitative/bad_retrieval_text": wandb.Html(ground_truth_html),
+            f"qualitative/bad_retrieval_text": wandb.Html(ground_truth_html),
             "epoch": epoch
-        }, step=epoch)
-        
+        })
+
     # Save all_text_embeddings and all_reports again if needed
     if text_embedding_pickle_path is not None:
         with open(text_embedding_pickle_path, "wb") as f:
@@ -1119,9 +1134,9 @@ def validate_epoch(
         print(f"Validation Loss: {avg_loss:.4f}")
 
         if wandb_run is not None:
-            wandb_run.log({"val/avg_loss": avg_loss})
+            wandb_run.log({"val/avg_loss": avg_loss, "epoch": epoch})
             for metric_name, val in epoch_metrics.items():
-                wandb_run.log({f"val/{metric_name}": val})
+                wandb_run.log({f"val/{metric_name}": val, "epoch": epoch})
 
     return avg_loss, epoch_metrics, {
         "best_videos": val_best_videos,

@@ -1,159 +1,71 @@
 # DeepCORO_CLIP
 
-A deep learning model for echocardiography video interpretation using contrastive learning and multiple instance learning.
-
-## Overview
-
-DeepCORO_CLIP is trained on over 12 million echocardiography videos paired with text reports from 275,442 studies. It uses a Multiscale Vision Transformer (mVIT) for video encoding and BioMedBERT for text encoding, combined with anatomical attention mechanisms for comprehensive study-level interpretation.
-
-## Project Structure
-
-- `data/`: Raw and processed datasets
-- `models/`: Model architectures and checkpoints
-- `training/`: Training scripts and logs
-- `inference/`: Inference pipeline
-- `evaluation/`: Model evaluation tools
-- `utils/`: Utility functions
-- `scripts/`: High-level execution scripts
-- `experiments/`: Experimental configurations
-- `logs/`: Training and evaluation logs
-- `reports/`: Documentation and results
-
-## Build System
-
-This project uses modern Python packaging tools:
-- `pyproject.toml` for build configuration and package metadata
-- `requirements.txt` for dependency management
-- Hatch as the build backend
-
-
-## Setup
-
-1. Install dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-2. Login to Weights & Biases:
-
-```bash
-# Login to your wandb account
-wandb login
-
-# If you don't have an account, sign up at https://wandb.ai
-# After signing up, get your API key from https://wandb.ai/settings
-```
-
-3. Train model:
-
-Single GPU training:
-
-```bash
-python scripts/train_model.py
-```
-
-Multi-GPU training (2 GPUs):
-
-```torchrun --nproc_per_node=2 scripts/train_model.py --batch-size 16
-```
-
-## Model Architecture
-
-- Video Encoder: mVIT (512-dim embeddings)
-- Text Encoder: Modified BioMedBERT (512-dim embeddings)
-- Multiple Instance Learning with anatomical attention
-- Retrieval-augmented interpretation system
-
-## Training Process
-
-- Contrastive learning with 32 video-report pairs per batch
-- 60 epochs pretraining
-- 20 epochs fine-tuning
-- Augmentations: RandAugment, RandomErasing
-
-## Evaluation
-
-Evaluated through cross-modal retrieval tasks:
-
-- Video-to-text retrieval
-- Text-to-video retrieval
+DeepCORO_CLIP is a deep learning model for echocardiography video interpretation using contrastive learning. It leverages a Multiscale Vision Transformer (mVIT) for video encoding and BioMedBERT for text encoding, trained on millions of video-report pairs.
 
 ## Environment Setup
 
 ### Prerequisites
 
-- CUDA-capable GPU
-- [uv](https://github.com/astral-sh/uv) - Fast Python package installer
-- Python 3.11+
+- **CUDA-capable GPU**
+- **Python 3.11+**
+- **[uv](https://github.com/astral-sh/uv)** (optional) or `pip` for installing dependencies
 
-### Installation
+### Steps
 
-1. Clone the repository:
+1. **Clone the Repository**:
+    ```bash
+    git clone https://github.com/yourusername/DeepCORO_CLIP.git
+    cd DeepCORO_CLIP
+    ```
 
-```bash
-git clone https://github.com/yourusername/DeepCORO_CLIP.git
-cd DeepCORO_CLIP
-```
+2. **Create & Activate Virtual Environment** (do this every time you start):
+    ```bash
+    python3 -m venv .venv
+    source .venv/bin/activate  # On Linux/Mac
+    # or
+    .venv\Scripts\activate     # On Windows
+    ```
 
-2. Install uv if you haven't already:
+3. **Install Dependencies**:
+    ```uv sync
+    ```
 
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
+4. **Log into Weights & Biases (optional)**:
+    ```bash
+    wandb login
+    ```
 
-3. Create and activate a new virtual environment:
+## Configuration Files
 
-```bash
-uv venv
-source .venv/bin/activate  # On Linux/Mac
-# or
-.venv\Scripts\activate  # On Windows
-```
+Training parameters (batch size, epochs, model name, data paths) are defined in YAML config files under `config/`.
 
-4. Install dependencies using uv:
+**Example: `config/default_config.yaml`**:
+```yaml
+# Training parameters
+epochs: 50
+batch_size: 32
+num_workers: 4
+lr: 5e-5
+debug: false
+temp: 0.1
 
-```bash
-# Install base dependencies
-uv pip install -e .
+# Data parameters
+data_filename: processed/reports/reports_sampled_1000.csv
+root: data/
+target_label: Report
+datapoint_loc_label: FileName
+frames: 16
 
-# Install development dependencies (optional)
-uv pip install -e ".[dev]"
-```
+# Model parameters
+model_name: mvit_v2_s
+pretrained: true
 
-5. Install PyTorch with CUDA support:
+# Logging parameters
+project: deepcoro_clip
+entity: your_wandb_entity
+tag: experiment_tag
+output_dir: outputs
 
-```bash
-uv pip install torch==2.4.0 torchvision==0.19.0 torchaudio --index-url https://download.pytorch.org/whl/cu121
-```
-
-### Alternative Installation with Mamba/Conda
-
-If you prefer using Mamba or Conda:
-
-1. Create and activate environment:
-
-```bash
-# Using mamba (recommended)
-mamba create -n deepcoro_clip python=3.11
-mamba activate deepcoro_clip
-
-# Or using conda
-conda create -n deepcoro_clip python=3.11
-conda activate deepcoro_clip
-```
-
-2. Install PyTorch with CUDA:
-
-```bash
-mamba install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia
-```
-
-3. Install remaining dependencies:
-
-```bash
-uv pip install -e ".[dev]"
-```
 
 ### Development Setup
 
@@ -187,36 +99,27 @@ pre-commit run
 
 The hooks will automatically run on `git commit`. You can temporarily skip them with `git commit --no-verify`.
 
-### Code Style
 
-This project follows:
 
-- Black code style
-- Ruff for linting
-- Type hints for all functions
+## Training
 
-Code formatting is automatically handled by pre-commit hooks. Configuration can be found in:
+### Use Config Files
 
-- `pyproject.toml` for Black and Ruff settings
-- `.pre-commit-config.yaml` for git hooks
+- **Run with default config**:
+    ```bash
+    python scripts/train_model.py --config config/default_config.yaml
+    ```
 
-## Training Options
+- **Override config values with CLI arguments**:
+    ```bash
+    python scripts/train_model.py --config config/default_config.yaml --batch-size 16 --lr 0.0001
+    ```
 
-### Using Configuration Files
+### Single GPU Training
 
-The training script supports YAML configuration files for easier experiment management. You can specify all training parameters in a YAML file instead of using command-line arguments.
-
-1. **Basic Usage with Config File**:
-
+Ideal for development and debugging:
 ```bash
-python scripts/train_model.py --config config/default_config.yaml
-```
-
-2. **Override Config with Command Line**:
-   You can override config file values with command-line arguments:
-
-```bash
-python scripts/train_model.py --config config/default_config.yaml --batch-size 16 --lr 0.0001
+python scripts/train_model.py --config config/default_config.yaml --gpu 0
 ```
 
 3. **Example Config File Structure** (`config/default_config.yaml`):
@@ -271,27 +174,6 @@ The model can be trained in two modes:
    - Higher memory requirements
    - More complex setup and potential synchronization issues
 
-### How to Run Training
-
-#### Force Single GPU Training (Recommended)
-
-```bash
-# Method 1: Set CUDA_VISIBLE_DEVICES
-CUDA_VISIBLE_DEVICES=0 python scripts/train_model.py
-
-# Method 2: Use specific GPU index
-python scripts/train_model.py --gpu 0
-```
-
-#### Multi-GPU Training (Advanced)
-
-```bash
-# Use all available GPUs
-python scripts/train_model.py
-
-# Use specific GPUs
-CUDA_VISIBLE_DEVICES=0,1 python scripts/train_model.py
-```
 
 ### Memory Requirements
 
@@ -311,26 +193,6 @@ CUDA_VISIBLE_DEVICES=0,1 python scripts/train_model.py
   - Batch size: 32 per GPU (64 total)
   - Training time: ~1 day
   - Memory usage: ~8GB VRAM per GPU
-
-### Tips for GPU Selection
-
-1. For research and development:
-
-   - Use single GPU for easier debugging
-   - Better reproducibility
-   - More stable training
-
-1. For production training:
-
-   - Use multi-GPU when you need faster training
-   - Ensure all GPUs are identical models
-   - Monitor GPU memory usage
-
-1. For limited GPU memory:
-
-   - Force single GPU mode
-   - Reduce batch size
-   - Use gradient accumulation
 
 ### Common Issues
 
@@ -365,30 +227,6 @@ Options:
   --lr FLOAT          Default: 1e-4. Learning rate
 ```
 
-#### Examples
-
-1. Basic training with defaults:
-
-```bash
-python scripts/train_model.py
-```
-
-2. Training with specific GPU and batch size:
-
-```bash
-python scripts/train_model.py --gpu 0 --batch-size 16
-```
-
-3. Full configuration:
-
-```bash
-python scripts/train_model.py \
-    --gpu 0 \
-    --batch-size 16 \
-    --epochs 50 \
-    --lr 1e-4 \
-    --num-workers 4
-```
 
 #### Recommended Batch Sizes by GPU Memory
 
@@ -425,31 +263,7 @@ python scripts/train_model.py \
    - Increase for better performance: `--epochs 100`
    - Decrease for quick experiments: `--epochs 10`
 
-#### Example Configurations
 
-1. **Quick Testing**:
-
-```bash
-python scripts/train_model.py --gpu 0 --batch-size 8 --epochs 5 --num-workers 2
-```
-
-2. **Standard Training**:
-
-```bash
-python scripts/train_model.py --gpu 0 --batch-size 16 --epochs 50 --num-workers 4
-```
-
-3. **Production Training** (large GPU):
-
-```bash
-python scripts/train_model.py --gpu 0 --batch-size 32 --epochs 100 --num-workers 8
-```
-
-4. **Memory-Limited Setup**:
-
-```bash
-python scripts/train_model.py --gpu 0 --batch-size 4 --epochs 50 --num-workers 2
-```
 
 #### Monitoring Training
 

@@ -290,15 +290,9 @@ class WandbLogger:
         val_best_reports,
         val_worst_videos,
         val_worst_reports,
+        epoch: int
     ) -> None:
-        """Log validation video examples with their reports.
-
-        Args:
-            val_best_videos: List of paths to best performing videos
-            val_best_reports: List of report data for best videos
-            val_worst_videos: List of paths to worst performing videos
-            val_worst_reports: List of report data for worst videos
-        """
+        """Log validation video examples with their reports, keyed by epoch."""
         if self.mode == "disabled":
             return
 
@@ -308,76 +302,87 @@ class WandbLogger:
         # Log best retrievals
         for i, (video_path, report_data) in enumerate(zip(val_best_videos, val_best_reports)):
             try:
-                # Convert video for wandb
                 mp4_path, is_temp = convert_video_for_wandb(video_path)
                 if is_temp:
                     temp_files.append(mp4_path)
 
-                # Create HTML report with ground truth and predictions
+                unique_predicted_reports = []
+                seen_reports = set()
+                for text in report_data["predicted"]:
+                    if text not in seen_reports:
+                        unique_predicted_reports.append(text)
+                        seen_reports.add(text)
+
                 report_html = "<br>".join(
                     [
                         f"<b>Ground Truth:</b> {report_data['ground_truth']}",
                         "<b>Top 5 Retrieved Reports:</b>",
-                        *[f"{j+1}. {text}" for j, text in enumerate(report_data["predicted"])],
+                        *[f"{j+1}. {text}" for j, text in enumerate(unique_predicted_reports)],
                     ]
                 )
 
-                # Log video and metrics
+                # Include epoch in the keys for uniqueness
                 wandb.log(
                     {
-                        f"qualitative/good_retrieval_{i}": wandb.Video(
+                        f"qualitative/good_retrieval_epoch_{epoch}_{i}": wandb.Video(
                             mp4_path,
                             caption=f"Good Validation Retrieval {i+1} (Similarity: {report_data['similarity_score']:.3f})",
                         ),
-                        f"qualitative/good_reports_{i}": wandb.Html(report_html),
-                        f"qualitative/good_similarity_{i}": report_data["similarity_score"],
+                        f"qualitative/good_reports_epoch_{epoch}_{i}": wandb.Html(report_html),
+                        f"qualitative/good_similarity_epoch_{epoch}_{i}": report_data["similarity_score"],
+                        "epoch": epoch
                     },
-                    step=self.step,
+                    step=epoch,  # Use epoch as step
                 )
 
                 print(
-                    f"\nLogged good validation example {i+1} (Similarity: {report_data['similarity_score']:.3f})"
+                    f"\nLogged good validation example {i+1} at epoch {epoch} (Similarity: {report_data['similarity_score']:.3f})"
                 )
+
             except Exception as e:
                 print(f"Warning: Failed to log good validation video {video_path}: {str(e)}")
 
         # Log worst retrievals
         for i, (video_path, report_data) in enumerate(zip(val_worst_videos, val_worst_reports)):
             try:
-                # Convert video for wandb
                 mp4_path, is_temp = convert_video_for_wandb(video_path)
                 if is_temp:
                     temp_files.append(mp4_path)
 
-                # Create HTML report with ground truth and predictions
+                unique_predicted_reports = []
+                seen_reports = set()
+                for text in report_data["predicted"]:
+                    if text not in seen_reports:
+                        unique_predicted_reports.append(text)
+                        seen_reports.add(text)
+
                 report_html = "<br>".join(
                     [
                         f"<b>Ground Truth:</b> {report_data['ground_truth']}",
                         "<b>Top 5 Retrieved Reports:</b>",
-                        *[f"{j+1}. {text}" for j, text in enumerate(report_data["predicted"])],
+                        *[f"{j+1}. {text}" for j, text in enumerate(unique_predicted_reports)],
                     ]
                 )
 
-                # Log video and metrics
                 wandb.log(
                     {
-                        f"qualitative/bad_retrieval_{i}": wandb.Video(
+                        f"qualitative/bad_retrieval_epoch_{epoch}_{i}": wandb.Video(
                             mp4_path,
                             caption=f"Bad Validation Retrieval {i+1} (Similarity: {report_data['similarity_score']:.3f})",
                         ),
-                        f"qualitative/bad_reports_{i}": wandb.Html(report_html),
-                        f"qualitative/bad_similarity_{i}": report_data["similarity_score"],
+                        f"qualitative/bad_reports_epoch_{epoch}_{i}": wandb.Html(report_html),
+                        f"qualitative/bad_similarity_epoch_{epoch}_{i}": report_data["similarity_score"],
+                        "epoch": epoch
                     },
-                    step=self.step,
+                    step=epoch,  # Use epoch as step
                 )
 
                 print(
-                    f"\nLogged bad validation example {i+1} (Similarity: {report_data['similarity_score']:.3f})"
+                    f"\nLogged bad validation example {i+1} at epoch {epoch} (Similarity: {report_data['similarity_score']:.3f})"
                 )
             except Exception as e:
                 print(f"Warning: Failed to log bad validation video {video_path}: {str(e)}")
 
-        # Clean up temporary files
         for temp_file in temp_files:
             cleanup_temp_video(temp_file)
 
@@ -440,6 +445,9 @@ def get_best_and_worst_retrievals(similarity_matrix, paths, reports, k=2):
     # Get mean similarity score for each video-query pair
     mean_similarities = similarity_matrix.mean(dim=1)
 
+    # Adjust k to not exceed batch size
+    k = min(k, len(mean_similarities))
+
     # Get indices of best and worst k videos
     best_values, best_indices = torch.topk(mean_similarities, k=k)
     worst_values, worst_indices = torch.topk(mean_similarities, k=k, largest=False)
@@ -449,14 +457,32 @@ def get_best_and_worst_retrievals(similarity_matrix, paths, reports, k=2):
     worst_text_indices = []
 
     for idx in best_indices:
-        # Get top 5 text matches for this video
-        _, top_5_texts = torch.topk(similarity_matrix[idx], k=5)
-        best_text_indices.append(top_5_texts)
+        # Get top N text matches for this video, where N is min(5, batch_size)
+        n_texts = min(5, similarity_matrix.size(1))
+        top_n_texts = torch.topk(similarity_matrix[idx], k=n_texts)[1]
+        unique_texts = []
+        seen_texts = set()
+        for text_idx in top_n_texts:
+            if text_idx.item() not in seen_texts:
+                unique_texts.append(text_idx)
+                seen_texts.add(text_idx.item())
+            if len(unique_texts) == 5:
+                break
+        best_text_indices.append(torch.tensor(unique_texts))
 
     for idx in worst_indices:
-        # Get top 5 text matches for this video
-        _, top_5_texts = torch.topk(similarity_matrix[idx], k=5)
-        worst_text_indices.append(top_5_texts)
+        # Get top N text matches for this video, where N is min(5, batch_size)
+        n_texts = min(5, similarity_matrix.size(1))
+        top_n_texts = torch.topk(similarity_matrix[idx], k=n_texts)[1]
+        unique_texts = []
+        seen_texts = set()
+        for text_idx in top_n_texts:
+            if text_idx.item() not in seen_texts:
+                unique_texts.append(text_idx)
+                seen_texts.add(text_idx.item())
+            if len(unique_texts) == 5:
+                break
+        worst_text_indices.append(torch.tensor(unique_texts))
 
     return (
         best_indices,

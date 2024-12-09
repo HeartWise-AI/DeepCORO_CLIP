@@ -4,10 +4,10 @@ batch_size: 32
 num_workers: 16
 lr: 0.000025
 debug: false
-temp: 0.1
+temp: 0.07
 
 # Data parameters
-data_filename: data/reports/reports_with_splits.csv
+data_filename: data/reports/reports_with_splits_1000.csv
 root: "."
 target_label: Report
 datapoint_loc_label: FileName
@@ -19,13 +19,13 @@ pretrained: true
 
 # Optimization parameters
 optimizer: AdamW
-weight_decay: 0.00000232512540062325
-scheduler_type: step
-lr_step_period: 15
+weight_decay: 0.000001
+scheduler_type: cosine
+lr_step_period: 5
 factor: 0.3
 
 # Distributed training
-gpu: null  # Set to GPU index for single GPU training
+gpu: 2  # Set to GPU index for single GPU training
 local_rank: -1
 
 # Logging parameters

@@ -102,7 +102,10 @@ repos:
       hooks:
           - id: nbstripout
 
-
+    - repo: https://github.com/srstevenson/nb-clean
+      rev: 3.1.0
+      hooks:
+        - id: nb-clean
     # Miscellaneous checks
     - repo: 'https://github.com/pre-commit/pre-commit-hooks'
       rev: v5.0.0

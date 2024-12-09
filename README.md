@@ -27,16 +27,10 @@ DeepCORO_CLIP is a deep learning model for echocardiography video interpretation
     ```
 
 3. **Install Dependencies**:
-    ```bash
-    pip install -r requirements.txt
+    ```uv sync
     ```
 
-4. **Install PyTorch with CUDA**:
-    ```bash
-    pip install torch==2.4.0 torchvision==0.19.0 torchaudio --index-url https://download.pytorch.org/whl/cu121
-    ```
-
-5. **Log into Weights & Biases (optional)**:
+4. **Log into Weights & Biases (optional)**:
     ```bash
     wandb login
     ```

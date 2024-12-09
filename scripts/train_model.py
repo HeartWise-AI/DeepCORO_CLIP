@@ -24,6 +24,7 @@ if project_root not in sys.path:
     sys.path.append(project_root)
 
 from models.model import TextEncoder, VideoEncoder, contrastive_loss
+
 from utils.data_processing.video import (
     StatsDataset,
     VideoDataset,
@@ -31,6 +32,7 @@ from utils.data_processing.video import (
     custom_collate_fn,
     load_video,
     stats_collate_fn,
+    convert_to_mp4
 )
 from utils.logging import (
     cleanup_temp_video,
@@ -445,61 +447,37 @@ def cleanup_ddp():
         except Exception as e:
             print(f"Error in DDP cleanup: {str(e)}")
 
-
-def compute_recall_at_k(similarity_matrix, k_values=[1, 5]):
-    """Compute Recall@K for both V2T and T2V."""
+def compute_recall_at_k(similarity_matrix, global_gt_indices, k_values=[1, 5]):
     batch_size = similarity_matrix.shape[0]
     metrics = {}
 
-    # For each k
     for k in k_values:
-        # Video to Text (V2T)
         v2t_topk = torch.topk(similarity_matrix, k, dim=1)[1]
-        v2t_correct = v2t_topk == torch.arange(
-            batch_size, device=similarity_matrix.device
-        ).unsqueeze(1)
+        v2t_correct = v2t_topk == global_gt_indices.unsqueeze(1)
         v2t_recall = (v2t_correct.sum(dim=1) > 0).float().mean().item()
         metrics[f"Recall@{k}_V2T"] = v2t_recall
-
-        # Text to Video (T2V)
-        t2v_topk = torch.topk(similarity_matrix.t(), k, dim=1)[1]
-        t2v_correct = t2v_topk == torch.arange(
-            batch_size, device=similarity_matrix.device
-        ).unsqueeze(1)
-        t2v_recall = (t2v_correct.sum(dim=1) > 0).float().mean().item()
-        metrics[f"Recall@{k}_T2V"] = t2v_recall
+        ## A report text can haev multiple video ground truths so cant calculate t2v
+        #t2v_topk = torch.topk(similarity_matrix.t(), k, dim=1)[1]
+        #t2v_correct = t2v_topk == global_gt_indices.unsqueeze(1)
+        #t2v_recall = (t2v_correct.sum(dim=1) > 0).float().mean().item()
+        #metrics[f"Recall@{k}_T2V"] = t2v_recall
 
     return metrics
 
-
-def compute_mrr(similarity_matrix):
-    """Compute Mean Reciprocal Rank for both V2T and T2V."""
+def compute_mrr(similarity_matrix, global_gt_indices):
     batch_size = similarity_matrix.shape[0]
     device = similarity_matrix.device
 
-    # Video to Text (V2T)
-    v2t_ranks = (
-        (
-            similarity_matrix
-            >= similarity_matrix.gather(1, torch.arange(batch_size, device=device).unsqueeze(1))
-        )
-        .sum(1)
-        .float()
-    )
+    # Video to Text
+    target_scores = similarity_matrix.gather(1, global_gt_indices.unsqueeze(1))
+    v2t_ranks = (similarity_matrix >= target_scores).sum(1).float()
     v2t_mrr = (1 / v2t_ranks).mean().item()
 
-    # Text to Video (T2V)
-    t2v_ranks = (
-        (
-            similarity_matrix.t()
-            >= similarity_matrix.t().gather(
-                1, torch.arange(batch_size, device=device).unsqueeze(1)
-            )
-        )
-        .sum(1)
-        .float()
-    )
-    t2v_mrr = (1 / t2v_ranks).mean().item()
+    # Text to Video
+    #target_scores_t = similarity_matrix.t().gather(1, global_gt_indices.unsqueeze(1))
+    #t2v_ranks = (similarity_matrix.t() >= target_scores_t).sum(1).float()
+    #t2v_mrr = (1 / t2v_ranks).mean().item()
+    t2v_mrr = 0
 
     return {"MRR_V2T": v2t_mrr, "MRR_T2V": t2v_mrr}
 
@@ -511,12 +489,43 @@ def compute_embedding_norms(video_features, text_features):
     return {"video_norm": video_norms, "text_norm": text_norms}
 
 
-def compute_alignment_score(video_features, text_features):
-    """Compute average cosine similarity of positive pairs."""
-    normalized_video = nn.functional.normalize(video_features, dim=1)
-    normalized_text = nn.functional.normalize(text_features, dim=1)
-    alignment_scores = torch.sum(normalized_video * normalized_text, dim=1)
-    return alignment_scores.mean().item()
+def compute_alignment_score(
+    video_features,
+    text_features,
+    all_video_embeddings=None,
+    all_text_embeddings=None,
+    global_ground_truth_indices_tensor=None
+):
+    """
+    Compute average cosine similarity of positive pairs.
+    
+    Parameters:
+    - video_features: torch.Tensor (batch local video embeddings)
+    - text_features: torch.Tensor (batch local text embeddings)
+    - all_video_embeddings: torch.Tensor of all validation video embeddings [N_videos, dim] (optional)
+    - all_text_embeddings: torch.Tensor of all global text embeddings [N_texts, dim] (optional)
+    - global_ground_truth_indices_tensor: torch.Tensor of global GT indices for each video (optional)
+    
+    If all_video_embeddings, all_text_embeddings, and global_ground_truth_indices_tensor 
+    are provided, compute global alignment using global embeddings.
+    
+    Otherwise, compute local alignment score assuming a one-to-one mapping between 
+    video_features[i] and text_features[i].
+    """
+    if all_video_embeddings is not None and all_text_embeddings is not None and global_ground_truth_indices_tensor is not None:
+        # Global alignment scenario (for validation)
+        correct_text_embeddings = all_text_embeddings[global_ground_truth_indices_tensor]
+        normalized_video = nn.functional.normalize(all_video_embeddings, dim=1)
+        normalized_text = nn.functional.normalize(correct_text_embeddings, dim=1)
+        alignment_scores = (normalized_video * normalized_text).sum(dim=1)
+        return alignment_scores.mean().item()
+    else:
+        # Local alignment scenario (for training)
+        normalized_video = nn.functional.normalize(video_features, dim=1)
+        normalized_text = nn.functional.normalize(text_features, dim=1)
+        alignment_scores = (normalized_video * normalized_text).sum(dim=1)
+        return alignment_scores.mean().item()
+
 
 
 def train_epoch(
@@ -531,7 +540,7 @@ def train_epoch(
     epoch=0,
     scaler=None,
 ):
-    """Training epoch with proper DDP synchronization"""
+    """Training epoch with local metrics only."""
     video_encoder.train()
     text_encoder.train()
 
@@ -540,12 +549,6 @@ def train_epoch(
 
     # Initialize metric accumulators
     epoch_metrics = {
-        "Recall@1_V2T": 0.0,
-        "Recall@5_V2T": 0.0,
-        "Recall@1_T2V": 0.0,
-        "Recall@5_T2V": 0.0,
-        "MRR_V2T": 0.0,
-        "MRR_T2V": 0.0,
         "video_norm": 0.0,
         "text_norm": 0.0,
         "alignment_score": 0.0,
@@ -562,7 +565,7 @@ def train_epoch(
             # Unpack batch
             videos, encoded_texts, paths = batch
             if videos is None or encoded_texts is None:
-                print(f"Skipping invalid batch {batch_idx}")
+                # Skip invalid batch
                 continue
 
             # Move data to device and ensure float32
@@ -571,16 +574,17 @@ def train_epoch(
             attention_mask = encoded_texts["attention_mask"].to(device, non_blocking=True)
 
             # Clear gradients
-            optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
+            optimizer.zero_grad(set_to_none=True)
 
             # Forward passes with optional AMP
             if scaler is not None:
                 with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
                     video_features = video_encoder(videos)
                     text_features = text_encoder(input_ids, attention_mask)
-                    normalized_video = nn.functional.normalize(video_features, dim=1)
-                    normalized_text = nn.functional.normalize(text_features, dim=1)
-                    similarity_matrix = torch.matmul(normalized_video, normalized_text.t())
+                    similarity_matrix = torch.matmul(
+                        nn.functional.normalize(video_features, dim=1),
+                        nn.functional.normalize(text_features, dim=1).t()
+                    )
                     loss = contrastive_loss(video_features, text_features)
 
                 # Backward pass with AMP
@@ -593,9 +597,10 @@ def train_epoch(
             else:
                 video_features = video_encoder(videos)
                 text_features = text_encoder(input_ids, attention_mask)
-                normalized_video = nn.functional.normalize(video_features, dim=1)
-                normalized_text = nn.functional.normalize(text_features, dim=1)
-                similarity_matrix = torch.matmul(normalized_video, normalized_text.t())
+                similarity_matrix = torch.matmul(
+                    nn.functional.normalize(video_features, dim=1),
+                    nn.functional.normalize(text_features, dim=1).t()
+                )
                 loss = contrastive_loss(video_features, text_features)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(video_encoder.parameters(), max_norm=5.0)
@@ -606,37 +611,27 @@ def train_epoch(
             total_loss += loss.item()
             num_batches += 1
 
-            # Update progress bar
             if rank == 0:
                 progress.set_postfix({
                     "train_loss": f"{loss.item():.4f}",
-                    "avg_train_loss": f"{(total_loss/num_batches):.4f}",
+                    "avg_train_loss": f"{(total_loss / num_batches):.4f}",
                 })
 
-            # Compute metrics only if we have enough items for k=5
+            # Compute local metrics (no global embeddings or global indices)
             if videos.size(0) >= 5:
-                recall_metrics = compute_recall_at_k(similarity_matrix, k_values=[1, min(5, videos.size(0))])
-                mrr_metrics = compute_mrr(similarity_matrix)
                 norm_metrics = compute_embedding_norms(video_features, text_features)
                 alignment_score = compute_alignment_score(video_features, text_features)
 
-                # Update epoch metric accumulators
-                for metric_name, value in recall_metrics.items():
-                    epoch_metrics[metric_name] += value
-                for metric_name, value in mrr_metrics.items():
-                    epoch_metrics[metric_name] += value
                 epoch_metrics["video_norm"] += norm_metrics["video_norm"]
                 epoch_metrics["text_norm"] += norm_metrics["text_norm"]
                 epoch_metrics["alignment_score"] += alignment_score
 
-            # Explicitly clear tensors from GPU memory
-            del videos, input_ids, attention_mask, video_features, text_features
-            del normalized_video, normalized_text, similarity_matrix, loss
-            torch.cuda.empty_cache()  # Clear GPU cache
+            # Clear tensors
+            del videos, input_ids, attention_mask, video_features, text_features, similarity_matrix, loss
+            torch.cuda.empty_cache()
 
         except Exception as e:
             print(f"Error in training batch {batch_idx} on rank {rank}: {str(e)}")
-            print(f"Batch size: {videos.size(0) if 'videos' in locals() else 'unknown'}")
             continue
 
     # Average loss and metrics
@@ -648,15 +643,14 @@ def train_epoch(
     avg_loss = total_loss / num_batches if num_batches > 0 else float("inf")
 
     # Average epoch metrics
-    metric_batches = num_batches  # Number of batches that contributed to metrics
+    metric_batches = num_batches if num_batches > 0 else 1
     for metric_name in epoch_metrics:
-        epoch_metrics[metric_name] /= metric_batches if metric_batches > 0 else 1
+        epoch_metrics[metric_name] /= metric_batches
 
     if rank == 0:
         print(f"\nTraining Loss: {avg_loss:.4f}")
 
     return avg_loss, epoch_metrics
-
 
 def remove_model_biases(model):
     """Initialize model weights properly for training."""
@@ -737,26 +731,85 @@ def save_checkpoint(model_dict, metrics_dict, output_path, is_best=False):
     torch.save(checkpoint, output_path)
     print(f"Saved checkpoint to {output_path}")
 
-def precompute_text_embeddings(text_encoder, val_dataset, device, batch_size=64, num_workers=4):
+
+
+def create_global_text_pool(train_dataset, val_dataset, test_dataset=None):
     """
-    Precompute and store embeddings for all validation text data.
+    Create a global pool of text reports from train, val, and optionally test sets.
+    Ensures each report is included and assign them global indices.
+    If duplicates need to be removed, we can use a set or dict.
 
     Args:
-        text_encoder: The text encoder model.
-        val_dataset: The validation dataset, which must have a get_all_reports() method.
-        device: Torch device (e.g., 'cuda' or 'cpu')
-        batch_size: Batch size for text embedding computation
-        num_workers: Number of workers for text dataloader
+        train_dataset: Dataset instance for training set
+        val_dataset: Dataset instance for validation set
+        test_dataset: Dataset instance for test set (optional)
 
     Returns:
-        all_reports: List of all report texts from the validation dataset
-        all_text_embeddings: A torch.Tensor containing the normalized text embeddings for all reports
+        all_global_reports: A list of all reports from train, val (and test if given)
     """
-    # Get all validation reports
-    val_texts = val_dataset.get_all_reports()
+    train_reports = train_dataset.get_all_reports()
+    val_reports = val_dataset.get_all_reports()
+    test_reports = test_dataset.get_all_reports() if test_dataset is not None else []
 
-    # Create a simple dataset for text encoding
-    text_dataset = SimpleTextDataset(val_texts, val_dataset.tokenizer)
+    # If you want uniqueness:
+    # unique_reports = list(set(train_reports + val_reports + test_reports))
+    # But for consistent indexing, might need order:
+    # Use a dict to preserve order:
+    seen = {}
+    for r in train_reports:
+        if r not in seen:
+            seen[r] = len(seen)
+    for r in val_reports:
+        if r not in seen:
+            seen[r] = len(seen)
+    for r in test_reports:
+        if r not in seen:
+            seen[r] = len(seen)
+
+    # Convert keys to a list ordered by insertion
+    all_global_reports = [None]*len(seen)
+    for report, idx in seen.items():
+        all_global_reports[idx] = report
+
+    return all_global_reports
+
+def precompute_global_text_embeddings(text_encoder, all_global_reports, tokenizer, device, batch_size=64, num_workers=4):
+    """
+    Precompute embeddings for a global set of reports.
+    
+    Args:
+        text_encoder: The text encoder model
+        all_global_reports: A list of all global reports
+        tokenizer: The tokenizer associated with the text encoder
+        device: Torch device
+        batch_size: Batch size for encoding
+        num_workers: Number of workers for DataLoader
+
+    Returns:
+        all_global_reports: same list as input
+        all_global_text_embeddings: normalized embeddings for all reports
+    """
+    from torch.utils.data import Dataset, DataLoader
+
+    class GlobalTextDataset(Dataset):
+        def __init__(self, texts, tokenizer):
+            self.texts = texts
+            self.tokenizer = tokenizer
+        def __len__(self):
+            return len(self.texts)
+        def __getitem__(self, idx):
+            text = self.texts[idx]
+            encoded = self.tokenizer(
+                text,
+                padding="max_length",
+                truncation=True,
+                max_length=512,
+                return_tensors="pt",
+            )
+            encoded = {k: v.squeeze(0) for k, v in encoded.items()}
+            return encoded
+
+    text_dataset = GlobalTextDataset(all_global_reports, tokenizer)
     text_loader = DataLoader(text_dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False)
 
     all_text_embeddings = []
@@ -770,10 +823,8 @@ def precompute_text_embeddings(text_encoder, val_dataset, device, batch_size=64,
             text_features = nn.functional.normalize(text_features, dim=1)
             all_text_embeddings.append(text_features.cpu())
 
-    all_text_embeddings = torch.cat(all_text_embeddings, dim=0)
-    return val_texts, all_text_embeddings
-
-
+    all_global_text_embeddings = torch.cat(all_text_embeddings, dim=0)
+    return all_global_reports, all_global_text_embeddings
 
 
 
@@ -839,6 +890,7 @@ def validate_epoch(
     all_reports=None,
     text_embedding_pickle_path="text_embeddings.pkl",
     output_dir="outputs",
+    report_to_global_index=None,
 ):
     """Validation epoch with global retrieval computation and additional logging."""
     video_encoder.eval()
@@ -918,6 +970,17 @@ def validate_epoch(
             "worst_reports": [],
             "worst_scores": [],
         }
+    # all_paths and all_ground_truth_reports have one entry per video
+    global_ground_truth_indices = []
+    for gt_report in all_ground_truth_reports:
+        # Find the global index for the ground truth report
+        # This relies on the report_to_global_index you loaded or passed in somehow
+        # Make sure report_to_global_index is accessible here (pass it into validate_epoch or load it)
+        gt_idx = report_to_global_index[gt_report]
+        global_ground_truth_indices.append(gt_idx)
+    
+    global_ground_truth_indices_tensor = torch.tensor(global_ground_truth_indices, device=device)
+
 
     all_video_embeddings = torch.cat(all_video_embeddings, dim=0).to(device)
     all_text_embeddings = all_text_embeddings.to(device)
@@ -926,8 +989,8 @@ def validate_epoch(
 
     effective_k = min(5, similarity_matrix.size(0), similarity_matrix.size(1))
     if similarity_matrix.size(0) >= 5 and similarity_matrix.size(1) >= 5:
-        recall_metrics = compute_recall_at_k(similarity_matrix, k_values=[1, effective_k])
-        mrr_metrics = compute_mrr(similarity_matrix)
+        recall_metrics = compute_recall_at_k(similarity_matrix, global_ground_truth_indices_tensor, k_values=[1, effective_k])
+        mrr_metrics = compute_mrr(similarity_matrix, global_ground_truth_indices_tensor)
 
         max_len = min(all_video_embeddings.size(0), all_text_embeddings.size(0))
         truncated_video = all_video_embeddings[:max_len]
@@ -1010,33 +1073,39 @@ def validate_epoch(
             "similarity_score": score,
         })
 
-    def convert_to_mp4_for_logging(video_path, caption, similarity_score):
-        mp4_path = convert_to_mp4(video_path)
-        if mp4_path and wandb_run is not None:
-            wandb_run.log({
-                caption: wandb.Video(mp4_path, caption=f"{caption} (Sim: {similarity_score:.3f})")
-            })
 
     # Log the best example video and top-5 texts
     if val_best_videos and val_best_reports and wandb_run is not None:
         mp4_path = convert_to_mp4(val_best_videos[0])
         if mp4_path:
-            wandb_run.log({"qualitative/good_retrieval": wandb.Video(mp4_path, caption=f"Sim: {val_best_reports[0]['similarity_score']:.3f}")}, step=epoch)
+            wandb_run.log({
+                "qualitative/good_retrieval": wandb.Video(mp4_path, caption=f"Sim: {val_best_reports[0]['similarity_score']:.3f}"),
+                "epoch": epoch
+            }, step=epoch)
 
         predicted_html = "<br>".join([f"{i+1}. {text}" for i, text in enumerate(val_best_reports[0]["predicted"])])
         ground_truth_html = f"<b>Ground Truth:</b> {val_best_reports[0]['ground_truth']}<br><b>Top 5 Predicted:</b><br>{predicted_html}"
-        wandb_run.log({"qualitative/good_retrieval_text": wandb.Html(ground_truth_html)}, step=epoch)
+        wandb_run.log({
+            "qualitative/good_retrieval_text": wandb.Html(ground_truth_html),
+            "epoch": epoch
+        }, step=epoch)
 
     # Similarly for worst retrieval
     if val_worst_videos and val_worst_reports and wandb_run is not None:
         mp4_path = convert_to_mp4(val_worst_videos[0])
         if mp4_path:
-            wandb_run.log({"qualitative/bad_retrieval": wandb.Video(mp4_path, caption=f"Sim: {val_worst_reports[0]['similarity_score']:.3f}")}, step=epoch)
+            wandb_run.log({
+                "qualitative/bad_retrieval": wandb.Video(mp4_path, caption=f"Sim: {val_worst_reports[0]['similarity_score']:.3f}"),
+                "epoch": epoch
+            }, step=epoch)
 
         predicted_html = "<br>".join([f"{i+1}. {text}" for i, text in enumerate(val_worst_reports[0]["predicted"])])
         ground_truth_html = f"<b>Ground Truth:</b> {val_worst_reports[0]['ground_truth']}<br><b>Top 5 Predicted:</b><br>{predicted_html}"
-        wandb_run.log({"qualitative/bad_retrieval_text": wandb.Html(ground_truth_html)}, step=epoch)
-
+        wandb_run.log({
+            "qualitative/bad_retrieval_text": wandb.Html(ground_truth_html),
+            "epoch": epoch
+        }, step=epoch)
+        
     # Save all_text_embeddings and all_reports again if needed
     if text_embedding_pickle_path is not None:
         with open(text_embedding_pickle_path, "wb") as f:
@@ -1091,12 +1160,29 @@ def main(rank=0, world_size=1, args=None):
 
         is_distributed = world_size > 1
         text_encoder = training_setup["text_encoder"]
+        train_dataset = training_setup["train_dataset"]
         val_dataset = training_setup["val_dataset"]
         device = training_setup["device"]
 
         best_val_loss = float("inf")
         best_epoch = -1
 
+
+                            
+        # In main or a setup function:
+        # After loading train_dataset, val_dataset, (and test_dataset if you have one)
+        all_global_reports = create_global_text_pool(train_dataset, val_dataset, None) ##TODO : modify to also take test dataset
+        all_global_reports, all_global_text_embeddings = precompute_global_text_embeddings(
+            text_encoder, all_global_reports, train_dataset.tokenizer, device
+        )
+
+        # After all_global_reports is created:
+        report_to_global_index = {r: i for i, r in enumerate(all_global_reports)}
+        
+        with open(os.path.join(full_output_path, "global_text_embeddings.pkl"), "wb") as f:
+            pickle.dump((all_global_reports, all_global_text_embeddings, report_to_global_index), f)
+    
+           
         for epoch in range(args.epochs):
             if rank == 0:
                 print(f"\nEpoch {epoch + 1}/{args.epochs}")
@@ -1112,26 +1198,22 @@ def main(rank=0, world_size=1, args=None):
                 world_size=world_size,
                 epoch=epoch,
             )
-
-            # Precompute text embeddings
-            embeddings_path = os.path.join(full_output_path, "text_embeddings.pkl")
-            all_reports, all_text_embeddings = precompute_text_embeddings(text_encoder, val_dataset, device)
-            with open(embeddings_path, "wb") as f:
-                pickle.dump((all_reports, all_text_embeddings), f)
+            
 
             val_loss, val_metrics, val_examples = validate_epoch(
                 video_encoder=training_setup["video_encoder"],
                 text_encoder=text_encoder,
                 dataloader=training_setup["val_loader"],
                 device=device,
-                wandb_run=wandb_run,
+                wandb_run=training_setup["wandb_run"],
                 rank=0,
                 world_size=1,
                 epoch=epoch,
-                all_text_embeddings=all_text_embeddings,
-                all_reports=all_reports,
-                text_embedding_pickle_path=embeddings_path,
+                all_text_embeddings=all_global_text_embeddings,
+                all_reports=all_global_reports,
+                text_embedding_pickle_path=os.path.join(full_output_path, "global_text_embeddings.pkl"),
                 output_dir=full_output_path,
+                report_to_global_index=report_to_global_index,  # Pass it here
             )
 
             if rank == 0 and wandb_run is not None:
@@ -1208,32 +1290,7 @@ def main(rank=0, world_size=1, args=None):
             cleanup_ddp()
 
 
-def convert_to_mp4(input_path):
-    """Convert video to MP4 format for wandb logging with reduced size."""
-    import subprocess
-    import tempfile
 
-    temp_fd, temp_path = tempfile.mkstemp(suffix=".mp4")
-    os.close(temp_fd)
-
-    try:
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-i", input_path,
-                "-c:v", "mpeg4",
-                "-vf", "scale=320:-1",
-                "-r", "15",
-                "-y", temp_path,
-            ],
-            check=True,
-            capture_output=True,
-        )
-        return temp_path
-    except subprocess.CalledProcessError as e:
-        print(f"Warning: Failed to convert video {input_path} to MP4: {e.stderr.decode()}")
-        os.unlink(temp_path)
-        return None
 
 if __name__ == "__main__":
     args = parse_args()

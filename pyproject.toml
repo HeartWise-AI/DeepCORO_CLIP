@@ -110,3 +110,8 @@ ignore_missing_imports = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["utils", "models", "scripts", "config"]
+
+[tool.hatch.metadata]
+requires-external = [
+    "ffmpeg",  # Required system package
+]

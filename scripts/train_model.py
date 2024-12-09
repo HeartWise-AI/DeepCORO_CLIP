@@ -2,6 +2,7 @@
 
 import argparse
 import os
+import pickle
 import sys
 from datetime import timedelta
 from pathlib import Path
@@ -15,7 +16,7 @@ import torch.nn as nn
 import yaml
 from torch.utils.data import DataLoader, DistributedSampler
 from tqdm import tqdm
-import pickle
+
 import wandb
 
 # Add project root to path
@@ -24,15 +25,14 @@ if project_root not in sys.path:
     sys.path.append(project_root)
 
 from models.model import TextEncoder, VideoEncoder, contrastive_loss
-
 from utils.data_processing.video import (
+    SimpleTextDataset,
     StatsDataset,
     VideoDataset,
-    SimpleTextDataset,
+    convert_to_mp4,
     custom_collate_fn,
     load_video,
     stats_collate_fn,
-    convert_to_mp4
 )
 from utils.logging import (
     cleanup_temp_video,
@@ -59,23 +59,34 @@ def parse_args():
     # Training parameters
     parser.add_argument("--gpu", type=int, default=None, help="GPU index to use")
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size per GPU")
-    parser.add_argument("--num-workers", type=int, default=4, help="Number of data loading workers")
+    parser.add_argument(
+        "--num-workers", type=int, default=4, help="Number of data loading workers"
+    )
     parser.add_argument("--epochs", type=int, default=50, help="Number of epochs to train")
     parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate")
     parser.add_argument("--local_rank", "--local-rank", type=int, default=-1, help="Local rank")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
-    parser.add_argument("--temp", type=float, default=0.1, help="Temperature for contrastive loss")
+    parser.add_argument(
+        "--temp", type=float, default=0.1, help="Temperature for contrastive loss"
+    )
     parser.add_argument("--use-amp", action="store_true", help="Use AMP training")
 
     # Data parameters
-    parser.add_argument("--data-filename", type=str, default="processed/reports/reports_sampled_1000.csv", help="Data CSV")
+    parser.add_argument(
+        "--data-filename",
+        type=str,
+        default="processed/reports/reports_sampled_1000.csv",
+        help="Data CSV",
+    )
     parser.add_argument("--root", type=str, default="data/", help="Root directory")
     parser.add_argument("--target-label", type=str, default="Report", help="Target text column")
     parser.add_argument("--datapoint-loc-label", type=str, default="FileName", help="Path column")
     parser.add_argument("--frames", type=int, default=16, help="Number of frames")
 
     # Model parameters
-    parser.add_argument("--model-name", type=str, default="mvit_v2_s", help="Video backbone model name")
+    parser.add_argument(
+        "--model-name", type=str, default="mvit_v2_s", help="Video backbone model name"
+    )
     parser.add_argument("--pretrained", action="store_true", help="Use pretrained backbone")
 
     # Optimization parameters
@@ -89,7 +100,9 @@ def parse_args():
     parser.add_argument("--project", type=str, default="deepcoro_clip", help="W&B project name")
     parser.add_argument("--entity", type=str, default=None, help="W&B entity name")
     parser.add_argument("--tag", type=str, default=None, help="Additional tag")
-    parser.add_argument("--output-dir", type=str, default="outputs", help="Directory to save outputs")
+    parser.add_argument(
+        "--output-dir", type=str, default="outputs", help="Directory to save outputs"
+    )
 
     args = parser.parse_args()
 
@@ -100,6 +113,10 @@ def parse_args():
         for key, value in config.items():
             if key in args_dict and args_dict[key] == parser.get_default(key):
                 args_dict[key] = value
+        # Explicitly cast known numeric parameters to float
+        args.lr = float(args.lr)
+        args.weight_decay = float(args.weight_decay)
+        args.factor = float(args.factor)
 
     if args.local_rank == -1:
         args.local_rank = int(os.environ.get("LOCAL_RANK", -1))
@@ -112,6 +129,7 @@ def generate_output_dir_name(args, run_id):
     Generates a directory name for output based on the provided configuration.
     """
     import time
+
     current_time = time.strftime("%Y%m%d-%H%M%S")
     model_name = args.model_name.split("/")[-1]
     batch_size = args.batch_size
@@ -210,12 +228,8 @@ def setup_training(args, rank=0):
         datapoint_loc_label=args.datapoint_loc_label,
         num_frames=args.frames,
         backbone=args.model_name,
-        mean=(
-            mean.tolist() if mean is not None else [0.485, 0.456, 0.406]
-        ),
-        std=(
-            std.tolist() if std is not None else [0.229, 0.224, 0.225]
-        ),
+        mean=(mean.tolist() if mean is not None else [0.485, 0.456, 0.406]),
+        std=(std.tolist() if std is not None else [0.229, 0.224, 0.225]),
     )
 
     val_dataset = VideoDataset(
@@ -253,13 +267,17 @@ def setup_training(args, rank=0):
         collate_fn=custom_collate_fn,
     )
 
-    video_encoder = VideoEncoder(
-        backbone=args.model_name,
-        input_channels=3,
-        num_frames=args.frames,
-        pretrained=args.pretrained,
-        output_dim=512,
-    ).to(device).float()
+    video_encoder = (
+        VideoEncoder(
+            backbone=args.model_name,
+            input_channels=3,
+            num_frames=args.frames,
+            pretrained=args.pretrained,
+            output_dim=512,
+        )
+        .to(device)
+        .float()
+    )
 
     text_encoder = TextEncoder().to(device).float()
 
@@ -315,7 +333,6 @@ def setup_training(args, rank=0):
         "device": device,
         "wandb_run": wandb_run,
     }
-
 
 
 def setup_data(args):
@@ -447,6 +464,7 @@ def cleanup_ddp():
         except Exception as e:
             print(f"Error in DDP cleanup: {str(e)}")
 
+
 def compute_recall_at_k(similarity_matrix, global_gt_indices, k_values=[1, 5]):
     batch_size = similarity_matrix.shape[0]
     metrics = {}
@@ -457,12 +475,13 @@ def compute_recall_at_k(similarity_matrix, global_gt_indices, k_values=[1, 5]):
         v2t_recall = (v2t_correct.sum(dim=1) > 0).float().mean().item()
         metrics[f"Recall@{k}_V2T"] = v2t_recall
         ## A report text can haev multiple video ground truths so cant calculate t2v
-        #t2v_topk = torch.topk(similarity_matrix.t(), k, dim=1)[1]
-        #t2v_correct = t2v_topk == global_gt_indices.unsqueeze(1)
-        #t2v_recall = (t2v_correct.sum(dim=1) > 0).float().mean().item()
-        #metrics[f"Recall@{k}_T2V"] = t2v_recall
+        # t2v_topk = torch.topk(similarity_matrix.t(), k, dim=1)[1]
+        # t2v_correct = t2v_topk == global_gt_indices.unsqueeze(1)
+        # t2v_recall = (t2v_correct.sum(dim=1) > 0).float().mean().item()
+        # metrics[f"Recall@{k}_T2V"] = t2v_recall
 
     return metrics
+
 
 def compute_mrr(similarity_matrix, global_gt_indices):
     batch_size = similarity_matrix.shape[0]
@@ -472,7 +491,6 @@ def compute_mrr(similarity_matrix, global_gt_indices):
     target_scores = similarity_matrix.gather(1, global_gt_indices.unsqueeze(1))
     v2t_ranks = (similarity_matrix >= target_scores).sum(1).float()
     v2t_mrr = (1 / v2t_ranks).mean().item()
-
 
     return {"MRR_V2T": v2t_mrr}
 
@@ -489,25 +507,29 @@ def compute_alignment_score(
     text_features,
     all_video_embeddings=None,
     all_text_embeddings=None,
-    global_ground_truth_indices_tensor=None
+    global_ground_truth_indices_tensor=None,
 ):
     """
     Compute average cosine similarity of positive pairs.
-    
+
     Parameters:
     - video_features: torch.Tensor (batch local video embeddings)
     - text_features: torch.Tensor (batch local text embeddings)
     - all_video_embeddings: torch.Tensor of all validation video embeddings [N_videos, dim] (optional)
     - all_text_embeddings: torch.Tensor of all global text embeddings [N_texts, dim] (optional)
     - global_ground_truth_indices_tensor: torch.Tensor of global GT indices for each video (optional)
-    
-    If all_video_embeddings, all_text_embeddings, and global_ground_truth_indices_tensor 
+
+    If all_video_embeddings, all_text_embeddings, and global_ground_truth_indices_tensor
     are provided, compute global alignment using global embeddings.
-    
-    Otherwise, compute local alignment score assuming a one-to-one mapping between 
+
+    Otherwise, compute local alignment score assuming a one-to-one mapping between
     video_features[i] and text_features[i].
     """
-    if all_video_embeddings is not None and all_text_embeddings is not None and global_ground_truth_indices_tensor is not None:
+    if (
+        all_video_embeddings is not None
+        and all_text_embeddings is not None
+        and global_ground_truth_indices_tensor is not None
+    ):
         # Global alignment scenario (for validation)
         correct_text_embeddings = all_text_embeddings[global_ground_truth_indices_tensor]
         normalized_video = nn.functional.normalize(all_video_embeddings, dim=1)
@@ -520,7 +542,6 @@ def compute_alignment_score(
         normalized_text = nn.functional.normalize(text_features, dim=1)
         alignment_scores = (normalized_video * normalized_text).sum(dim=1)
         return alignment_scores.mean().item()
-
 
 
 def train_epoch(
@@ -578,7 +599,7 @@ def train_epoch(
                     text_features = text_encoder(input_ids, attention_mask)
                     similarity_matrix = torch.matmul(
                         nn.functional.normalize(video_features, dim=1),
-                        nn.functional.normalize(text_features, dim=1).t()
+                        nn.functional.normalize(text_features, dim=1).t(),
                     )
                     loss = contrastive_loss(video_features, text_features)
 
@@ -594,7 +615,7 @@ def train_epoch(
                 text_features = text_encoder(input_ids, attention_mask)
                 similarity_matrix = torch.matmul(
                     nn.functional.normalize(video_features, dim=1),
-                    nn.functional.normalize(text_features, dim=1).t()
+                    nn.functional.normalize(text_features, dim=1).t(),
                 )
                 loss = contrastive_loss(video_features, text_features)
                 loss.backward()
@@ -607,10 +628,12 @@ def train_epoch(
             num_batches += 1
 
             if rank == 0:
-                progress.set_postfix({
-                    "train_loss": f"{loss.item():.4f}",
-                    "avg_train_loss": f"{(total_loss / num_batches):.4f}",
-                })
+                progress.set_postfix(
+                    {
+                        "train_loss": f"{loss.item():.4f}",
+                        "avg_train_loss": f"{(total_loss / num_batches):.4f}",
+                    }
+                )
 
             # Compute local metrics (no global embeddings or global indices)
             if videos.size(0) >= 5:
@@ -622,7 +645,15 @@ def train_epoch(
                 epoch_metrics["alignment_score"] += alignment_score
 
             # Clear tensors
-            del videos, input_ids, attention_mask, video_features, text_features, similarity_matrix, loss
+            del (
+                videos,
+                input_ids,
+                attention_mask,
+                video_features,
+                text_features,
+                similarity_matrix,
+                loss,
+            )
             torch.cuda.empty_cache()
 
         except Exception as e:
@@ -646,6 +677,7 @@ def train_epoch(
         print(f"\nTraining Loss: {avg_loss:.4f}")
 
     return avg_loss, epoch_metrics
+
 
 def remove_model_biases(model):
     """Initialize model weights properly for training."""
@@ -704,7 +736,6 @@ def create_logger(args):
     return wandb.run
 
 
-
 def save_checkpoint(model_dict, metrics_dict, output_path, is_best=False):
     """
     Save model checkpoint with metrics.
@@ -725,7 +756,6 @@ def save_checkpoint(model_dict, metrics_dict, output_path, is_best=False):
     # Save checkpoint
     torch.save(checkpoint, output_path)
     print(f"Saved checkpoint to {output_path}")
-
 
 
 def create_global_text_pool(train_dataset, val_dataset, test_dataset=None):
@@ -762,16 +792,19 @@ def create_global_text_pool(train_dataset, val_dataset, test_dataset=None):
             seen[r] = len(seen)
 
     # Convert keys to a list ordered by insertion
-    all_global_reports = [None]*len(seen)
+    all_global_reports = [None] * len(seen)
     for report, idx in seen.items():
         all_global_reports[idx] = report
 
     return all_global_reports
 
-def precompute_global_text_embeddings(text_encoder, all_global_reports, tokenizer, device, batch_size=64, num_workers=4):
+
+def precompute_global_text_embeddings(
+    text_encoder, all_global_reports, tokenizer, device, batch_size=64, num_workers=4
+):
     """
     Precompute embeddings for a global set of reports.
-    
+
     Args:
         text_encoder: The text encoder model
         all_global_reports: A list of all global reports
@@ -784,14 +817,16 @@ def precompute_global_text_embeddings(text_encoder, all_global_reports, tokenize
         all_global_reports: same list as input
         all_global_text_embeddings: normalized embeddings for all reports
     """
-    from torch.utils.data import Dataset, DataLoader
+    from torch.utils.data import DataLoader, Dataset
 
     class GlobalTextDataset(Dataset):
         def __init__(self, texts, tokenizer):
             self.texts = texts
             self.tokenizer = tokenizer
+
         def __len__(self):
             return len(self.texts)
+
         def __getitem__(self, idx):
             text = self.texts[idx]
             encoded = self.tokenizer(
@@ -805,7 +840,9 @@ def precompute_global_text_embeddings(text_encoder, all_global_reports, tokenize
             return encoded
 
     text_dataset = GlobalTextDataset(all_global_reports, tokenizer)
-    text_loader = DataLoader(text_dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False)
+    text_loader = DataLoader(
+        text_dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False
+    )
 
     all_text_embeddings = []
     text_encoder.eval()
@@ -820,7 +857,6 @@ def precompute_global_text_embeddings(text_encoder, all_global_reports, tokenize
 
     all_global_text_embeddings = torch.cat(all_text_embeddings, dim=0)
     return all_global_reports, all_global_text_embeddings
-
 
 
 def get_best_and_worst_retrievals(similarity_matrix, paths, reports, k=2):
@@ -940,7 +976,15 @@ def validate_epoch(
             all_paths.extend(paths)
             all_ground_truth_reports.extend(batch_reports)
 
-            del videos, input_ids, attention_mask, video_features, text_features, normalized_video, loss
+            del (
+                videos,
+                input_ids,
+                attention_mask,
+                video_features,
+                text_features,
+                normalized_video,
+                loss,
+            )
             torch.cuda.empty_cache()
 
     if world_size > 1:
@@ -953,14 +997,18 @@ def validate_epoch(
     if num_batches == 0 or len(all_video_embeddings) == 0:
         if rank == 0:
             print("\nNo validation batches processed or no valid data.")
-        return avg_loss, epoch_metrics, {
-            "best_videos": [],
-            "best_reports": [],
-            "best_scores": [],
-            "worst_videos": [],
-            "worst_reports": [],
-            "worst_scores": [],
-        }
+        return (
+            avg_loss,
+            epoch_metrics,
+            {
+                "best_videos": [],
+                "best_reports": [],
+                "best_scores": [],
+                "worst_videos": [],
+                "worst_reports": [],
+                "worst_scores": [],
+            },
+        )
     # all_paths and all_ground_truth_reports have one entry per video
     global_ground_truth_indices = []
     for gt_report in all_ground_truth_reports:
@@ -969,9 +1017,8 @@ def validate_epoch(
         # Make sure report_to_global_index is accessible here (pass it into validate_epoch or load it)
         gt_idx = report_to_global_index[gt_report]
         global_ground_truth_indices.append(gt_idx)
-    
-    global_ground_truth_indices_tensor = torch.tensor(global_ground_truth_indices, device=device)
 
+    global_ground_truth_indices_tensor = torch.tensor(global_ground_truth_indices, device=device)
 
     all_video_embeddings = torch.cat(all_video_embeddings, dim=0).to(device)
     all_text_embeddings = all_text_embeddings.to(device)
@@ -980,7 +1027,9 @@ def validate_epoch(
 
     effective_k = min(5, similarity_matrix.size(0), similarity_matrix.size(1))
     if similarity_matrix.size(0) >= 5 and similarity_matrix.size(1) >= 5:
-        recall_metrics = compute_recall_at_k(similarity_matrix, global_ground_truth_indices_tensor, k_values=[1, effective_k])
+        recall_metrics = compute_recall_at_k(
+            similarity_matrix, global_ground_truth_indices_tensor, k_values=[1, effective_k]
+        )
         mrr_metrics = compute_mrr(similarity_matrix, global_ground_truth_indices_tensor)
 
         max_len = min(all_video_embeddings.size(0), all_text_embeddings.size(0))
@@ -1000,7 +1049,7 @@ def validate_epoch(
 
     # For logging best and worst retrieval for 1 sample
     max_scores, _ = similarity_matrix.max(dim=1)
-    k=1  # Only pick top 1 best and worst
+    k = 1  # Only pick top 1 best and worst
     best_scores, best_indices = torch.topk(max_scores, k=k)
     worst_scores, worst_indices = torch.topk(max_scores, k=k, largest=False)
 
@@ -1009,16 +1058,21 @@ def validate_epoch(
 
     import csv
 
-    with open(val_csv_path, mode="w", newline='') as csvfile:
+    with open(val_csv_path, mode="w", newline="") as csvfile:
         writer = csv.writer(csvfile)
         header = [
             "FileName",
             "ground_truth_idx",
-            "predicted_idx_1", "sim_1",
-            "predicted_idx_2", "sim_2",
-            "predicted_idx_3", "sim_3",
-            "predicted_idx_4", "sim_4",
-            "predicted_idx_5", "sim_5"
+            "predicted_idx_1",
+            "sim_1",
+            "predicted_idx_2",
+            "sim_2",
+            "predicted_idx_3",
+            "sim_3",
+            "predicted_idx_4",
+            "sim_4",
+            "predicted_idx_5",
+            "sim_5",
         ]
         writer.writerow(header)
 
@@ -1044,11 +1098,13 @@ def validate_epoch(
         top_5_text_indices = torch.argsort(similarity_matrix[idx], descending=True)[:5]
         predicted_reports = [all_reports[j.item()] for j in top_5_text_indices]
         val_best_videos.append(str(all_paths[idx]))
-        val_best_reports.append({
-            "ground_truth": all_ground_truth_reports[idx],
-            "predicted": predicted_reports,
-            "similarity_score": score,
-        })
+        val_best_reports.append(
+            {
+                "ground_truth": all_ground_truth_reports[idx],
+                "predicted": predicted_reports,
+                "similarity_score": score,
+            }
+        )
 
     val_worst_videos = []
     val_worst_reports = []
@@ -1058,24 +1114,26 @@ def validate_epoch(
         top_5_text_indices = torch.argsort(similarity_matrix[idx], descending=True)[:5]
         predicted_reports = [all_reports[j.item()] for j in top_5_text_indices]
         val_worst_videos.append(str(all_paths[idx]))
-        val_worst_reports.append({
-            "ground_truth": all_ground_truth_reports[idx],
-            "predicted": predicted_reports,
-            "similarity_score": score,
-        })
-
+        val_worst_reports.append(
+            {
+                "ground_truth": all_ground_truth_reports[idx],
+                "predicted": predicted_reports,
+                "similarity_score": score,
+            }
+        )
 
     # Log the best example video and top-5 texts
     if val_best_videos and val_best_reports and wandb_run is not None:
         mp4_path = convert_to_mp4(val_best_videos[0])
         if mp4_path:
-            wandb_run.log({
-                f"qualitative/good_retrieval": wandb.Video(
-                    mp4_path,
-                    caption=f"Sim: {val_best_reports[0]['similarity_score']:.3f}"
-                ),
-                "epoch": epoch
-            })
+            wandb_run.log(
+                {
+                    f"qualitative/good_retrieval": wandb.Video(
+                        mp4_path, caption=f"Sim: {val_best_reports[0]['similarity_score']:.3f}"
+                    ),
+                    "epoch": epoch,
+                }
+            )
 
         predicted_html = "<br>".join(
             [f"{i+1}. {text}" for i, text in enumerate(val_best_reports[0]["predicted"])]
@@ -1084,22 +1142,22 @@ def validate_epoch(
             f"<b>Ground Truth:</b> {val_best_reports[0]['ground_truth']}<br>"
             f"<b>Top 5 Predicted:</b><br>{predicted_html}"
         )
-        wandb_run.log({
-            f"qualitative/good_retrieval_text": wandb.Html(ground_truth_html),
-            "epoch": epoch
-        })
+        wandb_run.log(
+            {f"qualitative/good_retrieval_text": wandb.Html(ground_truth_html), "epoch": epoch}
+        )
 
     # Similarly for worst retrieval
     if val_worst_videos and val_worst_reports and wandb_run is not None:
         mp4_path = convert_to_mp4(val_worst_videos[0])
         if mp4_path:
-            wandb_run.log({
-                f"qualitative/bad_retrieval": wandb.Video(
-                    mp4_path,
-                    caption=f"Sim: {val_worst_reports[0]['similarity_score']:.3f}"
-                ),
-                "epoch": epoch
-            })
+            wandb_run.log(
+                {
+                    f"qualitative/bad_retrieval": wandb.Video(
+                        mp4_path, caption=f"Sim: {val_worst_reports[0]['similarity_score']:.3f}"
+                    ),
+                    "epoch": epoch,
+                }
+            )
 
         predicted_html = "<br>".join(
             [f"{i+1}. {text}" for i, text in enumerate(val_worst_reports[0]["predicted"])]
@@ -1108,12 +1166,9 @@ def validate_epoch(
             f"<b>Ground Truth:</b> {val_worst_reports[0]['ground_truth']}<br>"
             f"<b>Top 5 Predicted:</b><br>{predicted_html}"
         )
-        wandb_run.log({
-            f"qualitative/bad_retrieval_text": wandb.Html(ground_truth_html),
-            "epoch": epoch
-        })
-
-
+        wandb_run.log(
+            {f"qualitative/bad_retrieval_text": wandb.Html(ground_truth_html), "epoch": epoch}
+        )
 
     avg_text_embedding = all_text_embeddings.mean(dim=0)
     if rank == 0:
@@ -1125,15 +1180,18 @@ def validate_epoch(
             for metric_name, val in epoch_metrics.items():
                 wandb_run.log({f"val/{metric_name}": val, "epoch": epoch})
 
-    return avg_loss, epoch_metrics, {
-        "best_videos": val_best_videos,
-        "best_reports": val_best_reports,
-        "best_scores": [br["similarity_score"] for br in val_best_reports],
-        "worst_videos": val_worst_videos,
-        "worst_reports": val_worst_reports,
-        "worst_scores": [wr["similarity_score"] for wr in val_worst_reports],
-    }
-
+    return (
+        avg_loss,
+        epoch_metrics,
+        {
+            "best_videos": val_best_videos,
+            "best_reports": val_best_reports,
+            "best_scores": [br["similarity_score"] for br in val_best_reports],
+            "worst_videos": val_worst_videos,
+            "worst_reports": val_worst_reports,
+            "worst_scores": [wr["similarity_score"] for wr in val_worst_reports],
+        },
+    )
 
 
 def main(rank=0, world_size=1, args=None):
@@ -1169,22 +1227,23 @@ def main(rank=0, world_size=1, args=None):
         best_val_loss = float("inf")
         best_epoch = -1
 
-
-                            
         # In main or a setup function:
         # After loading train_dataset, val_dataset, (and test_dataset if you have one)
-        all_global_reports = create_global_text_pool(train_dataset, val_dataset, None) ##TODO : modify to also take test dataset
+        all_global_reports = create_global_text_pool(
+            train_dataset, val_dataset, None
+        )  ##TODO : modify to also take test dataset
         all_global_reports, all_global_text_embeddings = precompute_global_text_embeddings(
             text_encoder, all_global_reports, train_dataset.tokenizer, device
         )
 
         # After all_global_reports is created:
         report_to_global_index = {r: i for i, r in enumerate(all_global_reports)}
-        
+
         with open(os.path.join(full_output_path, "global_text_embeddings.pkl"), "wb") as f:
-            pickle.dump((all_global_reports, all_global_text_embeddings, report_to_global_index), f)
-    
-           
+            pickle.dump(
+                (all_global_reports, all_global_text_embeddings, report_to_global_index), f
+            )
+
         for epoch in range(args.epochs):
             if rank == 0:
                 print(f"\nEpoch {epoch + 1}/{args.epochs}")
@@ -1200,7 +1259,6 @@ def main(rank=0, world_size=1, args=None):
                 world_size=world_size,
                 epoch=epoch,
             )
-            
 
             val_loss, val_metrics, val_examples = validate_epoch(
                 video_encoder=training_setup["video_encoder"],
@@ -1213,7 +1271,9 @@ def main(rank=0, world_size=1, args=None):
                 epoch=epoch,
                 all_text_embeddings=all_global_text_embeddings,
                 all_reports=all_global_reports,
-                text_embedding_pickle_path=os.path.join(full_output_path, "global_text_embeddings.pkl"),
+                text_embedding_pickle_path=os.path.join(
+                    full_output_path, "global_text_embeddings.pkl"
+                ),
                 output_dir=full_output_path,
                 report_to_global_index=report_to_global_index,  # Pass it here
             )
@@ -1288,14 +1348,20 @@ def main(rank=0, world_size=1, args=None):
     finally:
         if training_setup is not None and training_setup["wandb_run"] is not None:
             wandb.finish()
-        if 'is_distributed' in locals() and is_distributed:
+        if "is_distributed" in locals() and is_distributed:
             cleanup_ddp()
-
-
 
 
 if __name__ == "__main__":
     args = parse_args()
+
+    num_gpus = torch.cuda.device_count()
+    if args.gpu is not None and args.gpu >= num_gpus:
+        print(
+            f"WARNING: Requested GPU index {args.gpu} is not available. "
+            f"Only {num_gpus} GPU(s) detected. Falling back to CPU."
+        )
+        args.gpu = None
 
     if args.gpu is not None:
         # Use specified GPU

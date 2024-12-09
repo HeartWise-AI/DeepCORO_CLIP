@@ -8,39 +8,57 @@ DeepCORO_CLIP is a deep learning model for echocardiography video interpretation
 
 - **CUDA-capable GPU**
 - **Python 3.11+**
-- **[uv](https://github.com/astral-sh/uv)** (optional) or `pip` for installing dependencies
+- **[uv](https://github.com/ashttps://github.com/astral-sh/uvtral-sh/uv)** (optional) or `pip` for installing dependencies
 
 ### Steps
 
 1. **Clone the Repository**:
-    ```bash
-    git clone https://github.com/yourusername/DeepCORO_CLIP.git
-    cd DeepCORO_CLIP
-    ```
 
-2. **Create & Activate Virtual Environment** (do this every time you start):
-    ```bash
-    python3 -m venv .venv
-    source .venv/bin/activate  # On Linux/Mac
-    # or
-    .venv\Scripts\activate     # On Windows
-    ```
+   ```bash
+   git clone https://github.com/yourusername/DeepCORO_CLIP.git
+   cd DeepCORO_CLIP
+   ```
 
-3. **Install Dependencies**:
-    ```uv sync
-    ```
+1. **Install Dependencies**:
+   First install uv (Mandatory):
 
-4. **Log into Weights & Biases (optional)**:
-    ```bash
-    wandb login
-    ```
+   ```bash
+   # On macOS and Linux
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+   ```
+
+   Then install dependencies:
+
+   ```bash
+   # Using uv (recommended)
+   uv sync
+
+   # Or using pip
+   pip install -r requirements.txt
+   ```
+
+1. **Activate Virtual Environment** (do this every time you start):
+
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate  # On Linux/Mac
+   # or
+   .venv\Scripts\activate     # On Windows
+   ```
+
+1. **Log into Weights & Biases (optional)**:
+
+   ```bash
+   wandb login
+   ```
 
 ## Configuration Files
 
 Training parameters (batch size, epochs, model name, data paths) are defined in YAML config files under `config/`.
 
 **Example: `config/default_config.yaml`**:
-```yaml
+
+````yaml
 # Training parameters
 epochs: 50
 batch_size: 32
@@ -67,39 +85,6 @@ tag: experiment_tag
 output_dir: outputs
 
 
-### Development Setup
-
-We use pre-commit hooks to ensure code quality and consistency. The hooks include:
-
-- Black (code formatting)
-- Ruff (linting)
-- MyPy (type checking)
-- Various file checks (YAML, TOML, trailing whitespace, etc.)
-- Jupyter notebook formatting and cleaning
-
-1. Install pre-commit hooks:
-
-```bash
-# Install pre-commit if you haven't already
-uv pip install pre-commit
-
-# Install the git hooks
-pre-commit install
-```
-
-2. (Optional) Run hooks manually:
-
-```bash
-# Run on all files
-pre-commit run --all-files
-
-# Run on staged files
-pre-commit run
-```
-
-The hooks will automatically run on `git commit`. You can temporarily skip them with `git commit --no-verify`.
-
-
 
 ## Training
 
@@ -120,7 +105,7 @@ The hooks will automatically run on `git commit`. You can temporarily skip them 
 Ideal for development and debugging:
 ```bash
 python scripts/train_model.py --config config/default_config.yaml --gpu 0
-```
+````
 
 3. **Example Config File Structure** (`config/default_config.yaml`):
 
@@ -174,11 +159,37 @@ The model can be trained in two modes:
    - Higher memory requirements
    - More complex setup and potential synchronization issues
 
+### Development Setup
 
-### Memory Requirements
+We use pre-commit hooks to ensure code quality and consistency. The hooks include:
 
-- Single GPU: Minimum 12GB VRAM
-- Multi-GPU: Minimum 8GB VRAM per GPU
+- Black (code formatting)
+- Ruff (linting)
+- MyPy (type checking)
+- Various file checks (YAML, TOML, trailing whitespace, etc.)
+- Jupyter notebook formatting and cleaning
+
+1. Install pre-commit hooks:
+
+```bash
+# Install pre-commit if you haven't already
+uv pip install pre-commit
+
+# Install the git hooks
+pre-commit install
+```
+
+2. (Optional) Run hooks manually:
+
+```bash
+# Run on all files
+pre-commit run --all-files
+
+# Run on staged files
+pre-commit run
+```
+
+The hooks will automatically run on `git commit`. You can temporarily skip them with `git commit --no-verify`.
 
 ### Performance Comparison
 
@@ -227,7 +238,6 @@ Options:
   --lr FLOAT          Default: 1e-4. Learning rate
 ```
 
-
 #### Recommended Batch Sizes by GPU Memory
 
 | GPU Memory | Recommended Batch Size | Command           |
@@ -262,8 +272,6 @@ Options:
    - Default (50) is good for most cases
    - Increase for better performance: `--epochs 100`
    - Decrease for quick experiments: `--epochs 10`
-
-
 
 #### Monitoring Training
 

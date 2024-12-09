@@ -102,6 +102,19 @@ repos:
       hooks:
           - id: nbstripout
 
+    # Notebook cleaning
+    - repo: https://github.com/srstevenson/nb-clean
+      rev: 3.2.0
+      hooks:
+          - id: nb-clean
+            args:
+                - --remove-empty-cells
+                - --preserve-cell-metadata
+                - tags
+                - caption
+                - collapsed
+                - scrolled
+
     # Miscellaneous checks
     - repo: 'https://github.com/pre-commit/pre-commit-hooks'
       rev: v5.0.0

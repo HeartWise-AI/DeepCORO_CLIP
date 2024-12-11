@@ -1,10 +1,10 @@
 # Training parameters
 epochs: 20
-batch_size: 32
+batch_size: 48
 num_workers: 24
-lr: 0.0002
+lr: 0.000025
 debug: false
-temp: 0.07
+temp: 1
 
 # Data parameters
 data_filename: data/reports/reports_sampled_1000.csv
@@ -12,13 +12,13 @@ root: "."
 target_label: Report
 datapoint_loc_label: FileName
 frames: 16
-
+stride: 2
 # Model parameters
 model_name: mvit
 pretrained: true
 
 # Optimization parameters
-optimizer: RMSprop
+optimizer: AdamW
 weight_decay: 0.000001
 scheduler_type: step
 lr_step_period: 5
@@ -31,7 +31,7 @@ local_rank: -1
 # Logging parameters
 project: deepCORO_CLIP
 entity: mhi_ai
-tag: deepCORO_CLIP
+tag: deepCORO_CLIP_learnable_temp
 
 # Additional parameters
 output_dir: outputs

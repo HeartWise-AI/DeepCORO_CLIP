@@ -82,6 +82,7 @@ def parse_args():
     parser.add_argument("--target-label", type=str, default="Report", help="Target text column")
     parser.add_argument("--datapoint-loc-label", type=str, default="FileName", help="Path column")
     parser.add_argument("--frames", type=int, default=16, help="Number of frames")
+    parser.add_argument("--stride", type=int, default=2, help="Frame sampling stride")
 
     # Model parameters
     parser.add_argument(
@@ -155,6 +156,7 @@ def setup_training(args, rank=0):
     wandb_run = None
     if rank == 0:
         wandb_run = create_logger(args)
+    print("Args: ", args)
 
     # Calculate dataset statistics (only on rank 0)
     mean, std = None, None
@@ -168,6 +170,7 @@ def setup_training(args, rank=0):
             datapoint_loc_label=args.datapoint_loc_label,
             num_frames=args.frames,
             backbone=args.model_name,
+            stride=args.stride,
         )
 
         num_stats_samples = min(100, 1000)
@@ -286,11 +289,18 @@ def setup_training(args, rank=0):
     for param in text_encoder.parameters():
         param.data = param.data.float()
 
+    # Make temperature a trainable parameter directly on the device
+    log_temp = nn.Parameter(
+        torch.log(torch.tensor([args.temp], dtype=torch.float32, device=device))
+    )
+
+    # Include the temperature parameter in the optimizer
     optimizer_class = getattr(torch.optim, args.optimizer)
     optimizer = optimizer_class(
         [
             {"params": video_encoder.parameters()},
             {"params": text_encoder.parameters()},
+            {"params": [log_temp]},  # Add the temperature parameter
         ],
         lr=args.lr,
         weight_decay=args.weight_decay,
@@ -595,13 +605,14 @@ def train_epoch(
             # Forward passes with optional AMP
             if scaler is not None:
                 with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
+                    # Inside the training loop where loss is computed:
                     video_features = video_encoder(videos)
                     text_features = text_encoder(input_ids, attention_mask)
-                    similarity_matrix = torch.matmul(
-                        nn.functional.normalize(video_features, dim=1),
-                        nn.functional.normalize(text_features, dim=1).t(),
-                    )
-                    loss = contrastive_loss(video_features, text_features)
+
+                    current_temp = torch.exp(
+                        log_temp
+                    )  # Exponentiate log_temp to ensure positivity
+                    loss = contrastive_loss(video_features, text_features, current_temp)
 
                 # Backward pass with AMP
                 scaler.scale(loss).backward()
@@ -921,8 +932,28 @@ def validate_epoch(
     text_embedding_pickle_path="text_embeddings.pkl",
     output_dir="outputs",
     report_to_global_index=None,
+    use_val_only_pool=True,
 ):
-    """Validation epoch with global retrieval computation and additional logging."""
+    """
+    Validation epoch with retrieval computation and logging.
+
+    Args:
+        video_encoder, text_encoder: Models
+        dataloader: Validation DataLoader
+        device: torch device
+        wandb_run: W&B logger
+        rank: DDP rank
+        world_size: DDP world size
+        epoch: current epoch
+        all_text_embeddings: precomputed text embeddings for the pool (val-only or global)
+        all_reports: corresponding reports (val-only or global)
+        report_to_global_index: mapping from report to index in `all_reports`
+        use_val_only_pool (bool): If True, evaluate retrieval using only the val set embeddings,
+                                  and log best/worst examples. If False, only compute metrics.
+
+    Returns:
+        avg_loss, epoch_metrics, examples_dict
+    """
     video_encoder.eval()
     text_encoder.eval()
 
@@ -942,10 +973,7 @@ def validate_epoch(
     all_paths = []
     all_ground_truth_reports = []
 
-    if rank == 0:
-        progress = tqdm(dataloader, desc="Validation")
-    else:
-        progress = dataloader
+    progress = tqdm(dataloader, desc="Validation") if rank == 0 else dataloader
 
     with torch.no_grad():
         for batch_idx, batch in enumerate(progress):
@@ -966,27 +994,22 @@ def validate_epoch(
             video_features = video_encoder(videos)
             text_features = text_encoder(input_ids, attention_mask)
 
+            # Compute validation loss on this batch
             loss = contrastive_loss(video_features, text_features)
             total_loss += loss.item()
             num_batches += 1
 
-            normalized_video = nn.functional.normalize(video_features, dim=1)
+            # Store raw video embeddings (not normalized yet)
+            all_video_embeddings.append(video_features.cpu())
 
-            all_video_embeddings.append(normalized_video.cpu())
             all_paths.extend(paths)
             all_ground_truth_reports.extend(batch_reports)
 
-            del (
-                videos,
-                input_ids,
-                attention_mask,
-                video_features,
-                text_features,
-                normalized_video,
-                loss,
-            )
+            # Clean up
+            del videos, input_ids, attention_mask, video_features, text_features, loss
             torch.cuda.empty_cache()
 
+    # Reduce loss across processes if distributed
     if world_size > 1:
         loss_tensor = torch.tensor([total_loss, float(num_batches)], device=device)
         dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
@@ -994,6 +1017,7 @@ def validate_epoch(
 
     avg_loss = total_loss / num_batches if num_batches > 0 else float("inf")
 
+    # If no batches or no embeddings, return early
     if num_batches == 0 or len(all_video_embeddings) == 0:
         if rank == 0:
             print("\nNo validation batches processed or no valid data.")
@@ -1009,166 +1033,181 @@ def validate_epoch(
                 "worst_scores": [],
             },
         )
-    # all_paths and all_ground_truth_reports have one entry per video
-    global_ground_truth_indices = []
-    for gt_report in all_ground_truth_reports:
-        # Find the global index for the ground truth report
-        # This relies on the report_to_global_index you loaded or passed in somehow
-        # Make sure report_to_global_index is accessible here (pass it into validate_epoch or load it)
-        gt_idx = report_to_global_index[gt_report]
-        global_ground_truth_indices.append(gt_idx)
 
-    global_ground_truth_indices_tensor = torch.tensor(global_ground_truth_indices, device=device)
-
+    # Concatenate all video embeddings
     all_video_embeddings = torch.cat(all_video_embeddings, dim=0).to(device)
     all_text_embeddings = all_text_embeddings.to(device)
 
+    # Compute norms before normalization
+    max_len = min(all_video_embeddings.size(0), all_text_embeddings.size(0))
+    truncated_video = all_video_embeddings[:max_len]
+    truncated_text = all_text_embeddings[:max_len]
+
+    # Compute norms from raw embeddings
+    norm_metrics = compute_embedding_norms(truncated_video, truncated_text)
+    epoch_metrics["video_norm"] = norm_metrics["video_norm"]
+    epoch_metrics["text_norm"] = norm_metrics["text_norm"]
+
+    # Now normalize embeddings for similarity calculation
+    all_video_embeddings = nn.functional.normalize(all_video_embeddings, dim=1)
+    all_text_embeddings = nn.functional.normalize(all_text_embeddings, dim=1)
+
+    # Compute similarity matrix
     similarity_matrix = torch.matmul(all_video_embeddings, all_text_embeddings.T)
 
     effective_k = min(5, similarity_matrix.size(0), similarity_matrix.size(1))
     if similarity_matrix.size(0) >= 5 and similarity_matrix.size(1) >= 5:
+        global_ground_truth_indices = [
+            report_to_global_index[gt_report] for gt_report in all_ground_truth_reports
+        ]
+        global_ground_truth_indices_tensor = torch.tensor(
+            global_ground_truth_indices, device=device
+        )
+
         recall_metrics = compute_recall_at_k(
             similarity_matrix, global_ground_truth_indices_tensor, k_values=[1, effective_k]
         )
         mrr_metrics = compute_mrr(similarity_matrix, global_ground_truth_indices_tensor)
 
-        max_len = min(all_video_embeddings.size(0), all_text_embeddings.size(0))
-        truncated_video = all_video_embeddings[:max_len]
-        truncated_text = all_text_embeddings[:max_len]
-
-        norm_metrics = compute_embedding_norms(truncated_video, truncated_text)
-        alignment_score = compute_alignment_score(truncated_video, truncated_text)
+        alignment_score = compute_alignment_score(
+            all_video_embeddings[:max_len],
+            all_text_embeddings[:max_len],
+        )
 
         for metric_name, value in recall_metrics.items():
             epoch_metrics[metric_name] = value
         for metric_name, value in mrr_metrics.items():
             epoch_metrics[metric_name] = value
-        epoch_metrics["video_norm"] = norm_metrics["video_norm"]
-        epoch_metrics["text_norm"] = norm_metrics["text_norm"]
         epoch_metrics["alignment_score"] = alignment_score
 
-    # For logging best and worst retrieval for 1 sample
-    max_scores, _ = similarity_matrix.max(dim=1)
-    k = 1  # Only pick top 1 best and worst
-    best_scores, best_indices = torch.topk(max_scores, k=k)
-    worst_scores, worst_indices = torch.topk(max_scores, k=k, largest=False)
-
-    # Prepare CSV with ground truth and top 5 predictions for each sample
-    val_csv_path = os.path.join(output_dir, f"val_epoch{epoch}.csv")
-
-    import csv
-
-    with open(val_csv_path, mode="w", newline="") as csvfile:
-        writer = csv.writer(csvfile)
-        header = [
-            "FileName",
-            "ground_truth_idx",
-            "predicted_idx_1",
-            "sim_1",
-            "predicted_idx_2",
-            "sim_2",
-            "predicted_idx_3",
-            "sim_3",
-            "predicted_idx_4",
-            "sim_4",
-            "predicted_idx_5",
-            "sim_5",
-        ]
-        writer.writerow(header)
-
-        # For each video, get top-5 predictions and their similarity scores
-        for i, path in enumerate(all_paths):
-            top_5_text_indices = torch.argsort(similarity_matrix[i], descending=True)[:5]
-            predicted_indices = [idx.item() for idx in top_5_text_indices]
-            # Get similarity scores for these top-5 predictions
-            predicted_sims = [similarity_matrix[i, idx].item() for idx in top_5_text_indices]
-
-            row_data = [path, i]
-            for p_idx, p_sim in zip(predicted_indices, predicted_sims):
-                row_data.append(p_idx)
-                row_data.append(f"{p_sim:.4f}")
-
-            writer.writerow(row_data)
-
+    # Only log best/worst retrieval if we are using val-only pool
     val_best_videos = []
     val_best_reports = []
-    if best_indices.numel() > 0:
-        idx = best_indices[0].item()
-        score = best_scores[0].item()
-        top_5_text_indices = torch.argsort(similarity_matrix[idx], descending=True)[:5]
-        predicted_reports = [all_reports[j.item()] for j in top_5_text_indices]
-        val_best_videos.append(str(all_paths[idx]))
-        val_best_reports.append(
-            {
-                "ground_truth": all_ground_truth_reports[idx],
-                "predicted": predicted_reports,
-                "similarity_score": score,
-            }
-        )
-
     val_worst_videos = []
     val_worst_reports = []
-    if worst_indices.numel() > 0:
-        idx = worst_indices[0].item()
-        score = worst_scores[0].item()
-        top_5_text_indices = torch.argsort(similarity_matrix[idx], descending=True)[:5]
-        predicted_reports = [all_reports[j.item()] for j in top_5_text_indices]
-        val_worst_videos.append(str(all_paths[idx]))
-        val_worst_reports.append(
-            {
-                "ground_truth": all_ground_truth_reports[idx],
-                "predicted": predicted_reports,
-                "similarity_score": score,
-            }
-        )
 
-    # Log the best example video and top-5 texts
-    if val_best_videos and val_best_reports and wandb_run is not None:
-        mp4_path = convert_to_mp4(val_best_videos[0])
-        if mp4_path:
+    if use_val_only_pool:
+        # For logging best and worst retrieval examples
+        max_scores, _ = similarity_matrix.max(dim=1)
+        k = 1  # Only pick top 1 best and worst
+        best_scores, best_indices = torch.topk(max_scores, k=k)
+        worst_scores, worst_indices = torch.topk(max_scores, k=k, largest=False)
+
+        # Prepare CSV with ground truth and top 5 predictions for each sample
+        val_csv_path = os.path.join(output_dir, f"val_epoch{epoch}.csv")
+        import csv
+
+        with open(val_csv_path, mode="w", newline="") as csvfile:
+            writer = csv.writer(csvfile)
+            header = [
+                "FileName",
+                "ground_truth_idx",
+                "predicted_idx_1",
+                "sim_1",
+                "predicted_idx_2",
+                "sim_2",
+                "predicted_idx_3",
+                "sim_3",
+                "predicted_idx_4",
+                "sim_4",
+                "predicted_idx_5",
+                "sim_5",
+            ]
+            writer.writerow(header)
+
+            # For each video, get top-5 predictions and their similarity scores
+            for i, path in enumerate(all_paths):
+                top_5_text_indices = torch.argsort(similarity_matrix[i], descending=True)[:5]
+                predicted_indices = [idx.item() for idx in top_5_text_indices]
+                predicted_sims = [similarity_matrix[i, idx].item() for idx in top_5_text_indices]
+
+                row_data = [path, i]
+                for p_idx, p_sim in zip(predicted_indices, predicted_sims):
+                    row_data.append(p_idx)
+                    row_data.append(f"{p_sim:.4f}")
+
+                writer.writerow(row_data)
+
+        if best_indices.numel() > 0:
+            idx = best_indices[0].item()
+            score = best_scores[0].item()
+            top_5_text_indices = torch.argsort(similarity_matrix[idx], descending=True)[:5]
+            predicted_reports = [all_reports[j.item()] for j in top_5_text_indices]
+            val_best_videos.append(str(all_paths[idx]))
+            val_best_reports.append(
+                {
+                    "ground_truth": all_ground_truth_reports[idx],
+                    "predicted": predicted_reports,
+                    "similarity_score": score,
+                }
+            )
+
+        if worst_indices.numel() > 0:
+            idx = worst_indices[0].item()
+            score = worst_scores[0].item()
+            top_5_text_indices = torch.argsort(similarity_matrix[idx], descending=True)[:5]
+            predicted_reports = [all_reports[j.item()] for j in top_5_text_indices]
+            val_worst_videos.append(str(all_paths[idx]))
+            val_worst_reports.append(
+                {
+                    "ground_truth": all_ground_truth_reports[idx],
+                    "predicted": predicted_reports,
+                    "similarity_score": score,
+                }
+            )
+
+        # Log the best example video and top-5 texts
+        if val_best_videos and val_best_reports and wandb_run is not None:
+            mp4_path = convert_to_mp4(val_best_videos[0])
+            if mp4_path:
+                wandb_run.log(
+                    {
+                        f"qualitative/good_retrieval": wandb.Video(
+                            mp4_path,
+                            caption=f"Sim: {val_best_reports[0]['similarity_score']:.3f}",
+                        ),
+                        "epoch": epoch,
+                    }
+                )
+
+            predicted_html = "<br>".join(
+                [f"{i+1}. {text}" for i, text in enumerate(val_best_reports[0]["predicted"])]
+            )
+            ground_truth_html = (
+                f"<b>Ground Truth:</b> {val_best_reports[0]['ground_truth']}<br>"
+                f"<b>Top 5 Predicted:</b><br>{predicted_html}"
+            )
             wandb_run.log(
                 {
-                    f"qualitative/good_retrieval": wandb.Video(
-                        mp4_path, caption=f"Sim: {val_best_reports[0]['similarity_score']:.3f}"
-                    ),
+                    f"qualitative/good_retrieval_text": wandb.Html(ground_truth_html),
                     "epoch": epoch,
                 }
             )
 
-        predicted_html = "<br>".join(
-            [f"{i+1}. {text}" for i, text in enumerate(val_best_reports[0]["predicted"])]
-        )
-        ground_truth_html = (
-            f"<b>Ground Truth:</b> {val_best_reports[0]['ground_truth']}<br>"
-            f"<b>Top 5 Predicted:</b><br>{predicted_html}"
-        )
-        wandb_run.log(
-            {f"qualitative/good_retrieval_text": wandb.Html(ground_truth_html), "epoch": epoch}
-        )
+        # Similarly for worst retrieval
+        if val_worst_videos and val_worst_reports and wandb_run is not None:
+            mp4_path = convert_to_mp4(val_worst_videos[0])
+            if mp4_path:
+                wandb_run.log(
+                    {
+                        f"qualitative/bad_retrieval": wandb.Video(
+                            mp4_path,
+                            caption=f"Sim: {val_worst_reports[0]['similarity_score']:.3f}",
+                        ),
+                        "epoch": epoch,
+                    }
+                )
 
-    # Similarly for worst retrieval
-    if val_worst_videos and val_worst_reports and wandb_run is not None:
-        mp4_path = convert_to_mp4(val_worst_videos[0])
-        if mp4_path:
-            wandb_run.log(
-                {
-                    f"qualitative/bad_retrieval": wandb.Video(
-                        mp4_path, caption=f"Sim: {val_worst_reports[0]['similarity_score']:.3f}"
-                    ),
-                    "epoch": epoch,
-                }
+            predicted_html = "<br>".join(
+                [f"{i+1}. {text}" for i, text in enumerate(val_worst_reports[0]["predicted"])]
             )
-
-        predicted_html = "<br>".join(
-            [f"{i+1}. {text}" for i, text in enumerate(val_worst_reports[0]["predicted"])]
-        )
-        ground_truth_html = (
-            f"<b>Ground Truth:</b> {val_worst_reports[0]['ground_truth']}<br>"
-            f"<b>Top 5 Predicted:</b><br>{predicted_html}"
-        )
-        wandb_run.log(
-            {f"qualitative/bad_retrieval_text": wandb.Html(ground_truth_html), "epoch": epoch}
-        )
+            ground_truth_html = (
+                f"<b>Ground Truth:</b> {val_worst_reports[0]['ground_truth']}<br>"
+                f"<b>Top 5 Predicted:</b><br>{predicted_html}"
+            )
+            wandb_run.log(
+                {f"qualitative/bad_retrieval_text": wandb.Html(ground_truth_html), "epoch": epoch}
+            )
 
     avg_text_embedding = all_text_embeddings.mean(dim=0)
     if rank == 0:
@@ -1197,24 +1236,16 @@ def validate_epoch(
 def main(rank=0, world_size=1, args=None):
     training_setup = None
     try:
-        # If rank=0, initialize W&B run first
         wandb_run = None
         if rank == 0:
             wandb_run = create_logger(args)
 
-        # Create a run_id based on wandb_run id or a custom one
         run_id = wandb_run.id if wandb_run is not None else "run_id_001"
-
-        # Generate output directory name
         output_subdir = generate_output_dir_name(args, run_id)
         full_output_path = os.path.join(args.output_dir, output_subdir)
         os.makedirs(full_output_path, exist_ok=True)
-
-        # Now that output_dir is ready, call setup_training
-        # setup_training does not depend on full_output_path now
+        print("Args: ", args)
         training_setup = setup_training(args, rank=rank)
-
-        # Set wandb_run from training_setup if not set
         if wandb_run is None:
             wandb_run = training_setup["wandb_run"]
 
@@ -1223,20 +1254,16 @@ def main(rank=0, world_size=1, args=None):
         train_dataset = training_setup["train_dataset"]
         val_dataset = training_setup["val_dataset"]
         device = training_setup["device"]
+        log_temp = training_setup["log_temp"] if "log_temp" in training_setup else None
 
         best_val_loss = float("inf")
         best_epoch = -1
 
-        # In main or a setup function:
-        # After loading train_dataset, val_dataset, (and test_dataset if you have one)
-        all_global_reports = create_global_text_pool(
-            train_dataset, val_dataset, None
-        )  ##TODO : modify to also take test dataset
+        # === Create Global Pool (train + val) ===
+        all_global_reports = create_global_text_pool(train_dataset, val_dataset, None)
         all_global_reports, all_global_text_embeddings = precompute_global_text_embeddings(
             text_encoder, all_global_reports, train_dataset.tokenizer, device
         )
-
-        # After all_global_reports is created:
         report_to_global_index = {r: i for i, r in enumerate(all_global_reports)}
 
         with open(os.path.join(full_output_path, "global_text_embeddings.pkl"), "wb") as f:
@@ -1244,6 +1271,18 @@ def main(rank=0, world_size=1, args=None):
                 (all_global_reports, all_global_text_embeddings, report_to_global_index), f
             )
 
+        # === Create Validation-Only Pool ===
+        # Extract reports only from val_dataset.
+        val_reports = val_dataset.get_all_reports()
+        val_unique_reports = list(dict.fromkeys(val_reports))  # Preserve order, remove duplicates
+        val_report_to_index = {r: i for i, r in enumerate(val_unique_reports)}
+
+        # Precompute validation-only text embeddings
+        val_reports, val_text_embeddings = precompute_global_text_embeddings(
+            text_encoder, val_unique_reports, train_dataset.tokenizer, device
+        )
+
+        # Main training loop
         for epoch in range(args.epochs):
             if rank == 0:
                 print(f"\nEpoch {epoch + 1}/{args.epochs}")
@@ -1260,12 +1299,33 @@ def main(rank=0, world_size=1, args=None):
                 epoch=epoch,
             )
 
-            val_loss, val_metrics, val_examples = validate_epoch(
+            # Validate on validation-only embeddings (use_val_only_pool=True)
+            val_loss_valpool, val_metrics_valpool, _ = validate_epoch(
                 video_encoder=training_setup["video_encoder"],
                 text_encoder=text_encoder,
                 dataloader=training_setup["val_loader"],
                 device=device,
-                wandb_run=training_setup["wandb_run"],
+                wandb_run=wandb_run,
+                rank=0,
+                world_size=1,
+                epoch=epoch,
+                all_text_embeddings=val_text_embeddings,
+                all_reports=val_reports,
+                text_embedding_pickle_path=os.path.join(
+                    full_output_path, "val_text_embeddings.pkl"
+                ),
+                output_dir=full_output_path,
+                report_to_global_index=val_report_to_index,
+                use_val_only_pool=True,  # <-- Val-only retrievals
+            )
+
+            # Validate on global embeddings (train+val) (use_val_only_pool=False)
+            val_loss_global, val_metrics_global, _ = validate_epoch(
+                video_encoder=training_setup["video_encoder"],
+                text_encoder=text_encoder,
+                dataloader=training_setup["val_loader"],
+                device=device,
+                wandb_run=wandb_run,
                 rank=0,
                 world_size=1,
                 epoch=epoch,
@@ -1275,20 +1335,30 @@ def main(rank=0, world_size=1, args=None):
                     full_output_path, "global_text_embeddings.pkl"
                 ),
                 output_dir=full_output_path,
-                report_to_global_index=report_to_global_index,  # Pass it here
+                report_to_global_index=report_to_global_index,
+                use_val_only_pool=False,  # <-- Global retrievals without top/bottom examples
             )
 
+            # Choose one for best model comparison (typically val-only)
+            current_val_loss = val_loss_valpool
+
             if rank == 0 and wandb_run is not None:
-                wandb_run.log(
-                    {
-                        "train/loss": train_loss,
-                        "train/learning_rate": training_setup["optimizer"].param_groups[0]["lr"],
-                        **{f"train/{k}": v for k, v in train_metrics.items()},
-                        "val/loss": val_loss,
-                        "val/best_loss": best_val_loss,
-                        **{f"val/{k}": v for k, v in val_metrics.items()},
-                    }
-                )
+                log_data = {
+                    "epoch": epoch,
+                    "train/loss": train_loss,
+                    "train/learning_rate": training_setup["optimizer"].param_groups[0]["lr"],
+                    "val_only/loss": val_loss_valpool,
+                    **{f"val_only/{k}": v for k, v in val_metrics_valpool.items()},
+                    "val_global/loss": val_loss_global,
+                    **{f"val_global/{k}": v for k, v in val_metrics_global.items()},
+                }
+                # Log temperature if available
+                if log_temp is not None:
+                    current_temp = torch.exp(log_temp).item()
+                    log_data["temperature"] = current_temp
+                    log_data["log_temp"] = log_temp.item()
+
+                wandb_run.log(log_data)
 
             if training_setup["scheduler"] is not None:
                 training_setup["scheduler"].step()
@@ -1316,11 +1386,13 @@ def main(rank=0, world_size=1, args=None):
 
                 metrics_dict = {
                     "train_loss": train_loss,
-                    "val_loss": val_loss,
+                    "val_loss_valpool": val_loss_valpool,
+                    "val_loss_global": val_loss_global,
                     "best_val_loss": best_val_loss,
                     "best_epoch": best_epoch,
                     **train_metrics,
-                    **val_metrics,
+                    **val_metrics_valpool,  # store the val-only metrics
+                    **{f"global_{k}": v for k, v in val_metrics_global.items()},
                 }
 
                 checkpoint_dir = Path(full_output_path) / "checkpoints"
@@ -1330,13 +1402,15 @@ def main(rank=0, world_size=1, args=None):
                 save_checkpoint(model_dict, metrics_dict, latest_path)
                 print(f"\nSaved latest checkpoint at epoch {epoch + 1}")
 
-                if val_loss < best_val_loss:
-                    best_val_loss = val_loss
+                # Update best model based on val-only performance
+                if current_val_loss < best_val_loss:
+                    previous_best = best_val_loss
+                    best_val_loss = current_val_loss
                     best_epoch = epoch
                     best_path = checkpoint_dir / "best.pt"
                     save_checkpoint(model_dict, metrics_dict, best_path, is_best=True)
                     print(
-                        f"\nNew best model saved! Val Loss: {val_loss:.4f} (previous: {best_val_loss:.4f})"
+                        f"\nNew best model saved! Val Loss (val-only): {current_val_loss:.4f} (previous: {previous_best:.4f})"
                     )
 
                     if wandb_run is not None:

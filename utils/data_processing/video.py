@@ -1,18 +1,15 @@
-import collections
 import os
 import pathlib
 import sys
+
 from typing import Any, List, Optional, Tuple
 
 import cv2
 import numpy as np
 import pandas as pd
 import torch
-import torch.utils.data
-import torchvision
-from torchvision.transforms import v2
-from transformers import AutoTokenizer
 from torch.utils.data import Dataset
+from torchvision.transforms import v2
 
 # Global variable for directory paths
 dir2 = os.path.abspath("/volume/DeepCORO_CLIP/orion")

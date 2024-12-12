@@ -8,39 +8,57 @@ DeepCORO_CLIP is a deep learning model for echocardiography video interpretation
 
 - **CUDA-capable GPU**
 - **Python 3.11+**
-- **[uv](https://github.com/astral-sh/uv)** (optional) or `pip` for installing dependencies
+- **[uv](https://github.com/ashttps://github.com/astral-sh/uvtral-sh/uv)** (optional) or `pip` for installing dependencies
 
 ### Steps
 
 1. **Clone the Repository**:
-    ```bash
-    git clone https://github.com/yourusername/DeepCORO_CLIP.git
-    cd DeepCORO_CLIP
-    ```
 
-2. **Create & Activate Virtual Environment** (do this every time you start):
-    ```bash
-    python3 -m venv .venv
-    source .venv/bin/activate  # On Linux/Mac
-    # or
-    .venv\Scripts\activate     # On Windows
-    ```
+   ```bash
+   git clone https://github.com/yourusername/DeepCORO_CLIP.git
+   cd DeepCORO_CLIP
+   ```
 
-3. **Install Dependencies**:
-    ```uv sync
-    ```
+1. **Install Dependencies**:
+   First install uv (Mandatory):
 
-4. **Log into Weights & Biases (optional)**:
-    ```bash
-    wandb login
-    ```
+   ```bash
+   # On macOS and Linux
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+   ```
+
+   Then install dependencies:
+
+   ```bash
+   # Using uv (recommended)
+   uv sync
+
+   # Or using pip
+   pip install -r requirements.txt
+   ```
+
+1. **Activate Virtual Environment** (do this every time you start):
+
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate  # On Linux/Mac
+   # or
+   .venv\Scripts\activate     # On Windows
+   ```
+
+1. **Log into Weights & Biases (optional)**:
+
+   ```bash
+   wandb login
+   ```
 
 ## Configuration Files
 
 Training parameters (batch size, epochs, model name, data paths) are defined in YAML config files under `config/`.
 
 **Example: `config/default_config.yaml`**:
-```yaml
+
+````yaml
 # Training parameters
 epochs: 50
 batch_size: 32
@@ -65,6 +83,35 @@ project: deepcoro_clip
 entity: your_wandb_entity
 tag: experiment_tag
 output_dir: outputs
+
+
+
+## Training
+
+### Use Config Files
+
+- **Run with default config**:
+    ```bash
+    python scripts/train_model.py --config config/default_config.yaml
+    ```
+
+- **Override config values with CLI arguments**:
+    ```bash
+    python scripts/train_model.py --config config/default_config.yaml --batch-size 16 --lr 0.0001
+    ```
+
+### Single GPU Training
+
+Ideal for development and debugging:
+```bash
+python scripts/train_model.py --config config/default_config.yaml --gpu 0
+```
+
+### Multi-GPU Training
+
+```bash
+torchrun --nproc_per_node=2 scripts/train_model.py --config config/default_config.yaml
+```
 
 
 ### Development Setup
@@ -98,87 +145,6 @@ pre-commit run
 ```
 
 The hooks will automatically run on `git commit`. You can temporarily skip them with `git commit --no-verify`.
-
-
-
-## Training
-
-### Use Config Files
-
-- **Run with default config**:
-    ```bash
-    python scripts/train_model.py --config config/default_config.yaml
-    ```
-
-- **Override config values with CLI arguments**:
-    ```bash
-    python scripts/train_model.py --config config/default_config.yaml --batch-size 16 --lr 0.0001
-    ```
-
-### Single GPU Training
-
-Ideal for development and debugging:
-```bash
-python scripts/train_model.py --config config/default_config.yaml --gpu 0
-```
-
-3. **Example Config File Structure** (`config/default_config.yaml`):
-
-```yaml
-# Training parameters
-epochs: 20
-batch_size: 8
-num_workers: 8
-lr: 0.000025
-debug: false
-temp: 0.1
-
-# Data parameters
-data_filename: data/reports/reports_sampled_1000.csv
-root: "."
-target_label: Report
-datapoint_loc_label: FileName
-frames: 16
-
-# Model parameters
-model_name: mvit
-pretrained: true
-
-# Logging parameters
-project: your_project_name
-entity: your_wandb_entity
-tag: experiment_tag
-```
-
-4. **Multi-GPU Training with Config**:
-
-```bash
-torchrun --nproc_per_node=2 scripts/train_model.py --config config/default_config.yaml
-```
-
-### Single GPU vs Multi-GPU Training
-
-The model can be trained in two modes:
-
-1. **Single GPU Training** (Recommended for most users)
-
-   - Uses one GPU for training
-   - Simpler setup and debugging
-   - Lower memory requirements
-   - Slower training but more stable
-
-1. **Multi-GPU Training** (For large-scale training)
-
-   - Uses multiple GPUs with Distributed Data Parallel (DDP)
-   - Faster training through data parallelism
-   - Higher memory requirements
-   - More complex setup and potential synchronization issues
-
-
-### Memory Requirements
-
-- Single GPU: Minimum 12GB VRAM
-- Multi-GPU: Minimum 8GB VRAM per GPU
 
 ### Performance Comparison
 
@@ -227,7 +193,6 @@ Options:
   --lr FLOAT          Default: 1e-4. Learning rate
 ```
 
-
 #### Recommended Batch Sizes by GPU Memory
 
 | GPU Memory | Recommended Batch Size | Command           |
@@ -263,8 +228,6 @@ Options:
    - Increase for better performance: `--epochs 100`
    - Decrease for quick experiments: `--epochs 10`
 
-
-
 #### Monitoring Training
 
 1. **GPU Memory Usage**:
@@ -284,3 +247,4 @@ nvidia-smi -l 1  # Monitor GPU usage every second
 - Training metrics are logged to Weights & Biases
 - Includes loss, learning rate, batch size
 - Access via WandB dashboard
+````

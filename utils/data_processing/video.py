@@ -8,8 +8,11 @@ import cv2
 import numpy as np
 import pandas as pd
 import torch
+import torch.utils.data
+import torchvision
 from torch.utils.data import Dataset
 from torchvision.transforms import v2
+from transformers import AutoTokenizer
 
 # Global variable for directory paths
 dir2 = os.path.abspath("/volume/DeepCORO_CLIP/orion")
@@ -24,7 +27,7 @@ def load_video(
     video_path,
     split="train",
     n_frames=32,
-    period=1,
+    stride=1,
     resize=224,
     apply_mask=False,
     normalize=True,
@@ -43,7 +46,7 @@ def load_video(
     # Force 16 frames for MViT backbone
     if backbone.lower() == "mvit":
         n_frames = 16
-        period = 1
+        stride = 1
 
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -171,11 +174,11 @@ class VideoDataset(torch.utils.data.Dataset):
         self.normalize = normalize
 
         # Extract additional parameters
-        self.period = kwargs.pop("period", 1)
+        self.stride = kwargs.pop("stride", 1)
         if self.backbone.lower() == "mvit":
             self.num_frames = 16
-            self.period = 1
-            print(f"Using MViT backbone - forcing exactly {self.num_frames} frames with period=1")
+            self.stride = 1
+            print(f"Using MViT backbone - forcing exactly {self.num_frames} frames with stride=1")
             if "length" in kwargs:
                 kwargs["length"] = 16
 
@@ -188,17 +191,26 @@ class VideoDataset(torch.utils.data.Dataset):
         self.weighted_sampling = kwargs.pop("weighted_sampling", False)
         self.max_length = kwargs.pop("max_length", 250)
         self.clips = kwargs.pop("clips", 1)
-        target_label = [target_label] if target_label and not isinstance(target_label, list) else target_label
+        target_label = (
+            [target_label]
+            if target_label and not isinstance(target_label, list)
+            else target_label
+        )
         self.target_label = target_label
         self.target_transform = kwargs.pop("target_transform", None)
         self.external_test_location = kwargs.pop("external_test_location", None)
 
         # Load data
-        self.fnames, self.outcome, self.target_index = self.load_data(self.split, self.target_label)
+        self.fnames, self.outcome, self.target_index = self.load_data(
+            self.split, self.target_label
+        )
 
         # Weighted sampling logic
         if self.weighted_sampling and self.target_label and self.target_index is not None:
-            labels = np.array([self.outcome[ind][self.target_index] for ind in range(len(self.outcome))], dtype=int)
+            labels = np.array(
+                [self.outcome[ind][self.target_index] for ind in range(len(self.outcome))],
+                dtype=int,
+            )
             weights = 1 - (np.bincount(labels) / len(labels))
             self.weight_list = np.zeros(len(labels))
             for label_val in range(len(weights)):
@@ -310,7 +322,7 @@ class VideoDataset(torch.utils.data.Dataset):
                 video_fname,
                 split=self.split,
                 n_frames=16 if self.backbone.lower() == "mvit" else self.num_frames,
-                period=1 if self.backbone.lower() == "mvit" else self.period,
+                stride=self.stride,
                 resize=self.resize,
                 apply_mask=self.apply_mask,
                 normalize=self.normalize,
@@ -376,6 +388,7 @@ class VideoDataset(torch.utils.data.Dataset):
                 print(f"Warning: No report found for video {path}")
                 reports.append("")
         return reports
+
     def get_all_reports(self):
         """
         Return all reports (text outcomes) from the dataset as a list of strings.
@@ -383,9 +396,9 @@ class VideoDataset(torch.utils.data.Dataset):
         return [str(o) for o in self.outcome]
 
 
-
 class SimpleTextDataset(Dataset):
     """Allow me to encode all reportsi n the valdiation dataset at once for validation metrics"""
+
     def __init__(self, texts, tokenizer):
         self.texts = texts
         self.tokenizer = tokenizer
@@ -406,6 +419,7 @@ class SimpleTextDataset(Dataset):
         encoded = {k: v.squeeze(0) for k, v in encoded.items()}
         return encoded
 
+
 class StatsDataset(torch.utils.data.Dataset):
     """Dataset class for calculating mean and std statistics without the Video base class."""
 
@@ -417,6 +431,7 @@ class StatsDataset(torch.utils.data.Dataset):
         target_label,
         datapoint_loc_label="target_video_path",
         num_frames=32,
+        stride=1,
         backbone="default",
         max_samples=128,
     ):
@@ -425,6 +440,7 @@ class StatsDataset(torch.utils.data.Dataset):
         self.datapoint_loc_label = datapoint_loc_label
         self.split = split
         self.num_frames = 16 if backbone.lower() == "mvit" else num_frames
+        self.stride = stride
         self.backbone = backbone
         self.max_samples = max_samples
 
@@ -434,9 +450,9 @@ class StatsDataset(torch.utils.data.Dataset):
 
         self.fnames, self.outcome, _ = self.load_data(split, target_label)
         if self.max_samples and len(self.fnames) > self.max_samples:
-            self.fnames = self.fnames[:self.max_samples]
+            self.fnames = self.fnames[: self.max_samples]
             if self.outcome:
-                self.outcome = self.outcome[:self.max_samples]
+                self.outcome = self.outcome[: self.max_samples]
             print(f"Limited dataset to {self.max_samples} samples")
 
     def load_data(self, split, target_label):
@@ -474,6 +490,7 @@ class StatsDataset(torch.utils.data.Dataset):
                 n_frames=self.num_frames,
                 normalize=False,
                 backbone=self.backbone,
+                stride=self.stride,
             )
             return video, None, video_fname
         except Exception as e:
@@ -517,31 +534,3 @@ def custom_collate_fn(
         combined_texts = None
 
     return videos, combined_texts, paths
-
-
-def convert_to_mp4(input_path):
-    """Convert video to MP4 format for wandb logging with reduced size."""
-    import subprocess
-    import tempfile
-
-    temp_fd, temp_path = tempfile.mkstemp(suffix=".mp4")
-    os.close(temp_fd)
-
-    try:
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-i", input_path,
-                "-c:v", "mpeg4",
-                "-vf", "scale=320:-1",
-                "-r", "15",
-                "-y", temp_path,
-            ],
-            check=True,
-            capture_output=True,
-        )
-        return temp_path
-    except subprocess.CalledProcessError as e:
-        print(f"Warning: Failed to convert video {input_path} to MP4: {e.stderr.decode()}")
-        os.unlink(temp_path)
-        return None

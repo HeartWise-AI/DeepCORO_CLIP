@@ -216,38 +216,33 @@ class TextEncoder(nn.Module):
 
 
 def contrastive_loss(
-    video_emb: torch.Tensor, text_emb: torch.Tensor, temperature: float = 0.1
+    video_features: torch.Tensor, text_features: torch.Tensor, temp: float = 0.1
 ) -> torch.Tensor:
     """Compute contrastive loss between video and text embeddings.
 
     Args:
-        video_emb (torch.Tensor): Video embeddings of shape [batch_size, output_dim]
-        text_emb (torch.Tensor): Text embeddings of shape [batch_size, output_dim]
-        temperature (float): Temperature parameter for scaling logits
+        video_features (torch.Tensor): Video embeddings of shape [batch_size, output_dim]
+        text_features (torch.Tensor): Text embeddings of shape [batch_size, output_dim]
+        temp (float): Temperature parameter for scaling logits
 
     Returns:
         torch.Tensor: Scalar loss value
     """
+    # Normalize features
+    video_features = nn.functional.normalize(video_features, dim=1)
+    text_features = nn.functional.normalize(text_features, dim=1)
 
-    # Ensure both embeddings are 2D
-    if video_emb.dim() > 2:
-        video_emb = video_emb.view(video_emb.size(0), -1)
-    if text_emb.dim() > 2:
-        text_emb = text_emb.view(text_emb.size(0), -1)
+    similarity_matrix = torch.matmul(video_features, text_features.t())
 
-    # Normalize embeddings
-    video_emb = nn.functional.normalize(video_emb, dim=1)
-    text_emb = nn.functional.normalize(text_emb, dim=1)
-
-    # Compute similarity matrix
-    logits = torch.matmul(video_emb, text_emb.t()) / temperature
+    # Scale by temperature (lower temp => sharper distribution)
+    similarity_matrix = similarity_matrix / temp
 
     # Create labels for matching pairs
-    labels = torch.arange(len(video_emb), device=video_emb.device)
+    labels = torch.arange(len(video_features), device=video_features.device)
 
     # Compute loss in both directions and average
-    loss_v = nn.CrossEntropyLoss()(logits, labels)
-    loss_t = nn.CrossEntropyLoss()(logits.t(), labels)
+    loss_v = nn.CrossEntropyLoss()(similarity_matrix, labels)
+    loss_t = nn.CrossEntropyLoss()(similarity_matrix.t(), labels)
     loss = (loss_v + loss_t) / 2
 
     return loss

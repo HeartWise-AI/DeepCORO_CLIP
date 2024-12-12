@@ -7,7 +7,7 @@ debug: false
 temp: 1
 
 # Data parameters
-data_filename: data/reports/reports_sampled_1000.csv
+data_filename: data/reports/reports_sampled_no_conclusion_1000.csv
 root: "."
 target_label: Report
 datapoint_loc_label: FileName

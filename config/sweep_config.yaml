@@ -1,0 +1,22 @@
+program: scripts/train_model.py
+name: "My_DeepCORO_Clip_Sweep"
+method: "bayes"
+metric:
+  name: "best_val_loss"
+  goal: "minimize"
+parameters:
+  lr:
+    min: 1e-8
+    max: 2e-5
+    distribution: "uniform"
+  optimizer:
+    values: ["AdamW", "RAdam"]
+  epochs:
+    values: [1, 2]
+  # ... other parameters as needed ...
+command:
+  - bash
+  - /volume/DeepCORO_CLIP/config/runner.sh
+  - ${program}
+  - "config/default_config.yaml"
+  - ${args}

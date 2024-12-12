@@ -533,36 +533,3 @@ def custom_collate_fn(
         combined_texts = None
 
     return videos, combined_texts, paths
-
-
-def convert_to_mp4(input_path):
-    """Convert video to MP4 format for wandb logging with reduced size."""
-    import subprocess
-    import tempfile
-
-    temp_fd, temp_path = tempfile.mkstemp(suffix=".mp4")
-    os.close(temp_fd)
-
-    try:
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-i",
-                input_path,
-                "-c:v",
-                "mpeg4",
-                "-vf",
-                "scale=320:-1",
-                "-r",
-                "15",
-                "-y",
-                temp_path,
-            ],
-            check=True,
-            capture_output=True,
-        )
-        return temp_path
-    except subprocess.CalledProcessError as e:
-        print(f"Warning: Failed to convert video {input_path} to MP4: {e.stderr.decode()}")
-        os.unlink(temp_path)
-        return None

@@ -105,59 +105,14 @@ output_dir: outputs
 Ideal for development and debugging:
 ```bash
 python scripts/train_model.py --config config/default_config.yaml --gpu 0
-````
-
-3. **Example Config File Structure** (`config/default_config.yaml`):
-
-```yaml
-# Training parameters
-epochs: 20
-batch_size: 8
-num_workers: 8
-lr: 0.000025
-debug: false
-temp: 0.1
-
-# Data parameters
-data_filename: data/reports/reports_sampled_1000.csv
-root: "."
-target_label: Report
-datapoint_loc_label: FileName
-frames: 16
-
-# Model parameters
-model_name: mvit
-pretrained: true
-
-# Logging parameters
-project: your_project_name
-entity: your_wandb_entity
-tag: experiment_tag
 ```
 
-4. **Multi-GPU Training with Config**:
+### Multi-GPU Training
 
 ```bash
 torchrun --nproc_per_node=2 scripts/train_model.py --config config/default_config.yaml
 ```
 
-### Single GPU vs Multi-GPU Training
-
-The model can be trained in two modes:
-
-1. **Single GPU Training** (Recommended for most users)
-
-   - Uses one GPU for training
-   - Simpler setup and debugging
-   - Lower memory requirements
-   - Slower training but more stable
-
-1. **Multi-GPU Training** (For large-scale training)
-
-   - Uses multiple GPUs with Distributed Data Parallel (DDP)
-   - Faster training through data parallelism
-   - Higher memory requirements
-   - More complex setup and potential synchronization issues
 
 ### Development Setup
 
@@ -292,3 +247,4 @@ nvidia-smi -l 1  # Monitor GPU usage every second
 - Training metrics are logged to Weights & Biases
 - Includes loss, learning rate, batch size
 - Access via WandB dashboard
+````

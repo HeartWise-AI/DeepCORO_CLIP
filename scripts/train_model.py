@@ -29,7 +29,6 @@ from utils.data_processing.video import (
     SimpleTextDataset,
     StatsDataset,
     VideoDataset,
-    convert_to_mp4,
     custom_collate_fn,
     load_video,
     stats_collate_fn,
@@ -153,9 +152,20 @@ def setup_training(args, rank=0):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Initialize wandb if on rank 0
+
     wandb_run = None
     if rank == 0:
         wandb_run = create_logger(args)
+
+        # After wandb.init(), wandb.config is available.
+        # Override args with wandb.config parameters if present.
+        if wandb_run is not None and len(wandb.config.keys()) > 0:
+            for key, value in wandb.config.items():
+                if hasattr(args, key):
+                    setattr(args, key, value)
+                else:
+                    print(f"Warning: {key} in wandb.config not recognized as an arg.")
+
     print("Args: ", args)
 
     # Calculate dataset statistics (only on rank 0)
@@ -1158,17 +1168,19 @@ def validate_epoch(
 
         # Log the best example video and top-5 texts
         if val_best_videos and val_best_reports and wandb_run is not None:
-            mp4_path = convert_to_mp4(val_best_videos[0])
-            if mp4_path:
-                wandb_run.log(
-                    {
-                        f"qualitative/good_retrieval": wandb.Video(
-                            mp4_path,
-                            caption=f"Sim: {val_best_reports[0]['similarity_score']:.3f}",
-                        ),
-                        "epoch": epoch,
-                    }
-                )
+            # Convert video and get path + cleanup flag
+            mp4_path, is_temp = convert_video_for_wandb(val_best_videos[0])
+
+            wandb_run.log(
+                {
+                    "qualitative/good_retrieval": wandb.Video(
+                        mp4_path,
+                        caption=f"Sim: {val_best_reports[0]['similarity_score']:.3f}",
+                        format="mp4",
+                    ),
+                    "epoch": epoch,
+                }
+            )
 
             predicted_html = "<br>".join(
                 [f"{i+1}. {text}" for i, text in enumerate(val_best_reports[0]["predicted"])]
@@ -1184,19 +1196,25 @@ def validate_epoch(
                 }
             )
 
+            # Clean up temp file if needed
+            if is_temp:
+                cleanup_temp_video(mp4_path)
+
         # Similarly for worst retrieval
         if val_worst_videos and val_worst_reports and wandb_run is not None:
-            mp4_path = convert_to_mp4(val_worst_videos[0])
-            if mp4_path:
-                wandb_run.log(
-                    {
-                        f"qualitative/bad_retrieval": wandb.Video(
-                            mp4_path,
-                            caption=f"Sim: {val_worst_reports[0]['similarity_score']:.3f}",
-                        ),
-                        "epoch": epoch,
-                    }
-                )
+            # Convert video and get path + cleanup flag
+            mp4_path, is_temp = convert_video_for_wandb(val_worst_videos[0])
+
+            wandb_run.log(
+                {
+                    "qualitative/bad_retrieval": wandb.Video(
+                        mp4_path,
+                        caption=f"Sim: {val_worst_reports[0]['similarity_score']:.3f}",
+                        format="mp4",
+                    ),
+                    "epoch": epoch,
+                }
+            )
 
             predicted_html = "<br>".join(
                 [f"{i+1}. {text}" for i, text in enumerate(val_worst_reports[0]["predicted"])]
@@ -1208,6 +1226,10 @@ def validate_epoch(
             wandb_run.log(
                 {f"qualitative/bad_retrieval_text": wandb.Html(ground_truth_html), "epoch": epoch}
             )
+
+            # Clean up temp file if needed
+            if is_temp:
+                cleanup_temp_video(mp4_path)
 
     avg_text_embedding = all_text_embeddings.mean(dim=0)
     if rank == 0:
@@ -1428,7 +1450,6 @@ def main(rank=0, world_size=1, args=None):
 
 if __name__ == "__main__":
     args = parse_args()
-
     num_gpus = torch.cuda.device_count()
     if args.gpu is not None and args.gpu >= num_gpus:
         print(
@@ -1437,19 +1458,22 @@ if __name__ == "__main__":
         )
         args.gpu = None
 
+    # Initialize W&B run before adjusting args with wandb.config in main()
+    # main() will call create_logger(args) which calls wandb.init().
+    # We will adjust args AFTER wandb.init() so wandb.config is available.
+
+    # Temporarily start a run with minimal init to ensure wandb.config is populated:
+    # (W&B agent populates wandb.config as soon as wandb.init() is called.)
+    # This is handled inside create_logger(). So we just call main and inside main, after create_logger, we override args.
+
     if args.gpu is not None:
-        # Use specified GPU
         os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
         main(rank=0, world_size=1, args=args)
     else:
-        # Default to GPU 0 for single GPU mode
         if torch.cuda.device_count() == 1:
             os.environ["CUDA_VISIBLE_DEVICES"] = "0"
             main(rank=0, world_size=1, args=args)
         else:
-            # Multi-GPU mode - remove any GPU restrictions
             if "CUDA_VISIBLE_DEVICES" in os.environ:
                 del os.environ["CUDA_VISIBLE_DEVICES"]
             main(rank=0, world_size=1, args=args)
-
-    # Multi-GPU mode must be explicitly triggered using torchrun or torch.distributed.launch

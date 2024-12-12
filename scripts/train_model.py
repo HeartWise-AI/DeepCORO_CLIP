@@ -82,7 +82,7 @@ def parse_args():
     parser.add_argument("--datapoint-loc-label", type=str, default="FileName", help="Path column")
     parser.add_argument("--frames", type=int, default=16, help="Number of frames")
     parser.add_argument("--stride", type=int, default=2, help="Frame sampling stride")
-
+    parser.add_argument("--rand-aug", type=bool, default=False, help="Use random augmentation")
     # Model parameters
     parser.add_argument(
         "--model-name", type=str, default="mvit_v2_s", help="Video backbone model name"
@@ -243,6 +243,7 @@ def setup_training(args, rank=0):
         backbone=args.model_name,
         mean=(mean.tolist() if mean is not None else [0.485, 0.456, 0.406]),
         std=(std.tolist() if std is not None else [0.229, 0.224, 0.225]),
+        rand_augment=args.rand_aug,
     )
 
     val_dataset = VideoDataset(
@@ -1373,6 +1374,7 @@ def main(rank=0, world_size=1, args=None):
                     **{f"val_only/{k}": v for k, v in val_metrics_valpool.items()},
                     "val_global/loss": val_loss_global,
                     **{f"val_global/{k}": v for k, v in val_metrics_global.items()},
+                    "best_val_loss": best_val_loss,  # Log the current best_val_loss each epoch
                 }
                 # Log temperature if available
                 if log_temp is not None:
@@ -1436,6 +1438,14 @@ def main(rank=0, world_size=1, args=None):
                     )
 
                     if wandb_run is not None:
+                        # Also log the new best_val_loss immediately when found
+                        wandb_run.log(
+                            {
+                                "best_val_loss": best_val_loss,
+                                "best_epoch": best_epoch,
+                                "epoch": epoch,
+                            }
+                        )
                         wandb.save(str(best_path))
 
     except Exception as e:

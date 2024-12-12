@@ -16,6 +16,7 @@ stride: 2
 # Model parameters
 model_name: mvit
 pretrained: true
+log_temp: true
 
 # Optimization parameters
 optimizer: AdamW

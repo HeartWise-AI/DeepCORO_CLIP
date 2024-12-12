@@ -11,9 +11,22 @@ parameters:
     distribution: "uniform"
   optimizer:
     values: ["AdamW", "RAdam"]
+  scheduler-type:
+    values: ["step", "cosine"]
+  lr-step-period:
+    values: [5, 10]
+  factor:
+    values: [0.1, 0.3, 0.5]
   epochs:
     values: [1, 2]
-  # ... other parameters as needed ...
+  batch-size:
+    values: [16, 32, 48, 64]
+  temp:
+    min: 0.01
+    max: 2.0
+    distribution: uniform
+  rand-aug:
+    values: [True, False]
 command:
   - bash
   - /volume/DeepCORO_CLIP/config/runner.sh

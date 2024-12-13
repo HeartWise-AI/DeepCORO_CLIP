@@ -5,17 +5,16 @@ import argparse
 import os
 import pickle
 import sys
-from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict
 
-import numpy as np
-import pandas as pd
 import torch
 import torch.distributed as dist
 import torch.nn as nn
 import yaml
 from torch.utils.data import DataLoader, DistributedSampler
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.distributed import init_process_group, destroy_process_group
 from tqdm import tqdm
 
 import wandb
@@ -148,14 +147,10 @@ def generate_output_dir_name(args, run_id):
     return dir_name
 
 
-def setup_training(args, rank=0):
-    """Set up training environment and parameters."""
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # Initialize wandb if on rank 0
-
+def load_train_objs(args):
+    device = int(os.environ["LOCAL_RANK"])
     wandb_run = None
-    if rank == 0:
+    if args.rank == 0:
         wandb_run = create_logger(args)
 
         # After wandb.init(), wandb.config is available.
@@ -165,13 +160,11 @@ def setup_training(args, rank=0):
                 if hasattr(args, key):
                     setattr(args, key, value)
                 else:
-                    print(f"Warning: {key} in wandb.config not recognized as an arg.")
-
-    print("Args: ", args)
-
+                    print(f"Warning: {key} in wandb.config not recognized as an arg.")    
+                    
     # Calculate dataset statistics (only on rank 0)
     mean, std = None, None
-    if rank == 0:
+    if args.rank == 0:
         print("\n=== Calculating Dataset Statistics ===")
         stats_dataset = StatsDataset(
             root=args.root,
@@ -217,8 +210,8 @@ def setup_training(args, rank=0):
         print(f"Mean: {mean.tolist()}")
         print(f"Std:  {std.tolist()}")
         print(f"Calculated from {num_stats_samples} samples ({pixel_count:,} pixels)")
-        print("===========================\n")
-
+        print("===========================\n")                    
+    
     # Broadcast stats if distributed
     if torch.distributed.is_initialized():
         if mean is not None:
@@ -226,13 +219,15 @@ def setup_training(args, rank=0):
             std = std.cuda()
         mean_tensor = torch.zeros(3, device="cuda")
         std_tensor = torch.zeros(3, device="cuda")
-        if rank == 0:
+        if args.rank == 0:
             mean_tensor.copy_(mean)
             std_tensor.copy_(std)
         torch.distributed.broadcast(mean_tensor, 0)
         torch.distributed.broadcast(std_tensor, 0)
         mean = mean_tensor.cpu()
-        std = std_tensor.cpu()
+        std = std_tensor.cpu()    
+    
+    print(f"Rank: {args.rank} - mean: {mean} - std: {std}")
 
     train_dataset = VideoDataset(
         root=args.root,
@@ -257,15 +252,19 @@ def setup_training(args, rank=0):
         backbone=args.model_name,
         mean=mean.tolist() if mean is not None else [0.485, 0.456, 0.406],
         std=std.tolist() if std is not None else [0.229, 0.224, 0.225],
-    )
-
+    )    
+    
     if len(val_dataset) == 0:
-        raise ValueError("No validation samples found! Check your dataset split.")
+        raise ValueError("No validation samples found! Check your dataset split.")    
 
+    # Create distributed samplers
+    train_sampler = DistributedSampler(train_dataset, shuffle=True)
+    val_sampler = DistributedSampler(val_dataset, shuffle=False)      
+    
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
-        shuffle=True,
+        sampler=train_sampler,
         num_workers=args.num_workers,
         pin_memory=True,
         drop_last=True,
@@ -275,13 +274,14 @@ def setup_training(args, rank=0):
     val_loader = DataLoader(
         val_dataset,
         batch_size=args.batch_size,
-        shuffle=False,
+        sampler=val_sampler,
         num_workers=args.num_workers,
         pin_memory=True,
-        drop_last=False,
+        drop_last=True,
         collate_fn=custom_collate_fn,
-    )
-
+    )    
+        
+    # Create models
     video_encoder = (
         VideoEncoder(
             backbone=args.model_name,
@@ -290,20 +290,26 @@ def setup_training(args, rank=0):
             pretrained=args.pretrained,
             output_dim=512,
         )
-        .to(device)
+        .to(args.rank)
         .float()
     )
 
-    text_encoder = TextEncoder().to(device).float()
+    text_encoder = TextEncoder().to(args.rank).float()
 
-    for param in video_encoder.parameters():
-        param.data = param.data.float()
-    for param in text_encoder.parameters():
-        param.data = param.data.float()
+    video_encoder = DDP(
+        video_encoder.to(args.rank), 
+        device_ids=[args.rank], 
+        find_unused_parameters=True
+    )
+    text_encoder = DDP(
+        text_encoder.to(args.rank), 
+        device_ids=[args.rank], 
+        find_unused_parameters=True
+    )
 
     # Make temperature a trainable parameter directly on the device
     log_temp = nn.Parameter(
-        torch.log(torch.tensor([args.temp], dtype=torch.float32, device=device))
+        torch.log(torch.tensor([args.temp], dtype=torch.float32, device=args.rank))
     )
 
     # Include the temperature parameter in the optimizer
@@ -331,7 +337,7 @@ def setup_training(args, rank=0):
             T_max=args.epochs,
         )
 
-    if rank == 0:
+    if args.rank == 0:
         print("\n=== Dataset Information ===")
         print(f"Training:   {len(train_dataset):,} videos")
         print(f"Validation: {len(val_dataset):,} videos")
@@ -437,55 +443,9 @@ def custom_collate_fn(batch):
     return videos, combined_texts, paths
 
 
-def setup_ddp(rank, world_size):
-    """Initialize DDP process group with proper error handling"""
-    try:
-        # Set the device
-        if torch.cuda.is_available():
-            # Remove any CUDA_VISIBLE_DEVICES restriction
-            if "CUDA_VISIBLE_DEVICES" in os.environ:
-                del os.environ["CUDA_VISIBLE_DEVICES"]
-
-            torch.cuda.set_device(rank)  # Set to use the correct GPU
-            device = torch.device(f"cuda:{rank}")
-        else:
-            device = torch.device("cpu")
-
-        # Initialize process group
-        init_method = "env://"  # Using environment variables for initialization
-        dist.init_process_group(
-            backend="nccl" if torch.cuda.is_available() else "gloo",
-            init_method=init_method,
-            world_size=world_size,
-            rank=rank,
-            timeout=timedelta(minutes=30),
-        )
-
-        # Verify initialization
-        if not dist.is_initialized():
-            raise RuntimeError("Failed to initialize process group")
-
-        if rank == 0:
-            print(f"Initialized process group: rank {rank} on device {device}")
-            print(f"Number of GPUs available: {torch.cuda.device_count()}")
-            for i in range(torch.cuda.device_count()):
-                print(f"GPU {i}: {torch.cuda.get_device_name(i)}")
-
-        return device
-
-    except Exception as e:
-        print(f"Error in DDP setup on rank {rank}: {str(e)}")
-        raise e
-
-
-def cleanup_ddp():
-    """Clean up DDP process group with proper error handling"""
-    if dist.is_initialized():
-        try:
-            dist.destroy_process_group()
-        except Exception as e:
-            print(f"Error in DDP cleanup: {str(e)}")
-
+def ddp_setup():
+    torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+    init_process_group(backend="nccl")
 
 def compute_recall_at_k(similarity_matrix, global_gt_indices, k_values=[1, 5]):
     batch_size = similarity_matrix.shape[0]
@@ -1257,22 +1217,20 @@ def validate_epoch(
     )
 
 
-def main(rank=0, world_size=1, args=None):
-    training_setup = None
+def main(args=None):
+    
+    ddp_setup()
+                
+    training_setup = load_train_objs(args)
+    world_size = int(os.environ["WORLD_SIZE"])
+
+    run_id = training_setup["wandb_run"].id if training_setup["wandb_run"] is not None else "run_id_001"
+    output_subdir = generate_output_dir_name(args, run_id)
+    full_output_path = os.path.join(args.output_dir, output_subdir)        
+    os.makedirs(full_output_path, exist_ok=True)
+    print("Args: ", args)
+    
     try:
-        wandb_run = None
-        if rank == 0:
-            wandb_run = create_logger(args)
-
-        run_id = wandb_run.id if wandb_run is not None else "run_id_001"
-        output_subdir = generate_output_dir_name(args, run_id)
-        full_output_path = os.path.join(args.output_dir, output_subdir)
-        os.makedirs(full_output_path, exist_ok=True)
-        print("Args: ", args)
-        training_setup = setup_training(args, rank=rank)
-        if wandb_run is None:
-            wandb_run = training_setup["wandb_run"]
-
         is_distributed = world_size > 1
         text_encoder = training_setup["text_encoder"]
         train_dataset = training_setup["train_dataset"]
@@ -1308,7 +1266,7 @@ def main(rank=0, world_size=1, args=None):
 
         # Main training loop
         for epoch in range(args.epochs):
-            if rank == 0:
+            if args.rank == 0:
                 print(f"\nEpoch {epoch + 1}/{args.epochs}")
 
             train_loss, train_metrics = train_epoch(
@@ -1317,8 +1275,8 @@ def main(rank=0, world_size=1, args=None):
                 dataloader=training_setup["train_loader"],
                 optimizer=training_setup["optimizer"],
                 device=device,
-                wandb_run=wandb_run,
-                rank=rank,
+                wandb_run=training_setup["wandb_run"],
+                rank=args.rank,
                 world_size=world_size,
                 epoch=epoch,
             )
@@ -1329,9 +1287,9 @@ def main(rank=0, world_size=1, args=None):
                 text_encoder=text_encoder,
                 dataloader=training_setup["val_loader"],
                 device=device,
-                wandb_run=wandb_run,
-                rank=0,
-                world_size=1,
+                wandb_run=training_setup["wandb_run"],
+                rank=args.rank,
+                world_size=world_size,
                 epoch=epoch,
                 all_text_embeddings=val_text_embeddings,
                 all_reports=val_reports,
@@ -1349,9 +1307,9 @@ def main(rank=0, world_size=1, args=None):
                 text_encoder=text_encoder,
                 dataloader=training_setup["val_loader"],
                 device=device,
-                wandb_run=wandb_run,
-                rank=0,
-                world_size=1,
+                wandb_run=training_setup["wandb_run"],
+                rank=args.rank,
+                world_size=world_size,
                 epoch=epoch,
                 all_text_embeddings=all_global_text_embeddings,
                 all_reports=all_global_reports,
@@ -1366,7 +1324,7 @@ def main(rank=0, world_size=1, args=None):
             # Choose one for best model comparison (typically val-only)
             current_val_loss = val_loss_valpool
 
-            if rank == 0 and wandb_run is not None:
+            if args.rank == 0 and training_setup["wandb_run"] is not None:
                 log_data = {
                     "epoch": epoch,
                     "train/loss": train_loss,
@@ -1383,12 +1341,12 @@ def main(rank=0, world_size=1, args=None):
                     log_data["temperature"] = current_temp
                     log_data["log_temp"] = log_temp.item()
 
-                wandb_run.log(log_data)
+                training_setup["wandb_run"].log(log_data)
 
             if training_setup["scheduler"] is not None:
                 training_setup["scheduler"].step()
 
-            if rank == 0:
+            if args.rank == 0:
                 model_dict = {
                     "video_encoder": (
                         training_setup["video_encoder"].module.state_dict()
@@ -1438,53 +1396,28 @@ def main(rank=0, world_size=1, args=None):
                         f"\nNew best model saved! Val Loss (val-only): {current_val_loss:.4f} (previous: {previous_best:.4f})"
                     )
 
-                    if wandb_run is not None:
+                    if training_setup["wandb_run"] is not None:
                         # Also log the new best_val_loss immediately when found
-                        wandb_run.log(
+                        training_setup["wandb_run"].log(
                             {
                                 "best_val_loss": best_val_loss,
                                 "best_epoch": best_epoch,
                                 "epoch": epoch,
                             }
                         )
-                        wandb.save(str(best_path))
+                        training_setup["wandb_run"].save(str(best_path))
 
     except Exception as e:
-        print(f"Error on rank {rank}: {str(e)}")
+        print(f"Error on rank {args.rank}: {str(e)}")
         raise e
     finally:
         if training_setup is not None and training_setup["wandb_run"] is not None:
             wandb.finish()
         if "is_distributed" in locals() and is_distributed:
-            cleanup_ddp()
+            destroy_process_group()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    num_gpus = torch.cuda.device_count()
-    if args.gpu is not None and args.gpu >= num_gpus:
-        print(
-            f"WARNING: Requested GPU index {args.gpu} is not available. "
-            f"Only {num_gpus} GPU(s) detected. Falling back to CPU."
-        )
-        args.gpu = None
-
-    # Initialize W&B run before adjusting args with wandb.config in main()
-    # main() will call create_logger(args) which calls wandb.init().
-    # We will adjust args AFTER wandb.init() so wandb.config is available.
-
-    # Temporarily start a run with minimal init to ensure wandb.config is populated:
-    # (W&B agent populates wandb.config as soon as wandb.init() is called.)
-    # This is handled inside create_logger(). So we just call main and inside main, after create_logger, we override args.
-
-    if args.gpu is not None:
-        os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
-        main(rank=0, world_size=1, args=args)
-    else:
-        if torch.cuda.device_count() == 1:
-            os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-            main(rank=0, world_size=1, args=args)
-        else:
-            if "CUDA_VISIBLE_DEVICES" in os.environ:
-                del os.environ["CUDA_VISIBLE_DEVICES"]
-            main(rank=0, world_size=1, args=args)
+    args.rank = int(os.environ["LOCAL_RANK"])
+    main(args=args)

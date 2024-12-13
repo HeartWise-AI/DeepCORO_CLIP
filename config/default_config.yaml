@@ -1,13 +1,13 @@
 # Training parameters
-epochs: 20
-batch_size: 48
-num_workers: 24
+epochs: 5
+batch_size: 16
+num_workers: 12
 lr: 0.000025
 debug: false
 temp: 1
 
 # Data parameters
-data_filename: data/reports/reports_sampled_no_conclusion_1000.csv
+data_filename: data/reports/reports_with_splits.csv
 root: "."
 target_label: Report
 datapoint_loc_label: FileName

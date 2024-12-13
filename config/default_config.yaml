@@ -1,7 +1,7 @@
 # Training parameters
-epochs: 20
-batch_size: 32
-num_workers: 16
+epochs: 5
+batch_size: 16
+num_workers: 12
 lr: 0.000025
 debug: false
 temp: 1
@@ -32,7 +32,7 @@ local_rank: -1
 # Logging parameters
 project: deepCORO_CLIP
 entity: mhi_ai
-tag: deepCORO_CLIP_learnable_temp
+tag: multi_gpu_stability_test
 
 # Additional parameters
 output_dir: outputs

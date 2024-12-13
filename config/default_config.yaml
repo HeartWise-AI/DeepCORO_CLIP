@@ -32,7 +32,7 @@ local_rank: -1
 # Logging parameters
 project: deepCORO_CLIP
 entity: mhi_ai
-tag: multi_gpu_stability_test
+tag: deepCORO_CLIP_learnable_temp
 
 # Additional parameters
 output_dir: outputs

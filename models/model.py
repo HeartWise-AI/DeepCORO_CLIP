@@ -2,6 +2,7 @@
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torchvision.models.video import mvit_v1_b, r3d_18
 from transformers import AutoModel, AutoTokenizer
 
@@ -110,19 +111,24 @@ class VideoEncoder(nn.Module):
             self.proj = nn.Identity()
         else:
             raise ValueError(f"Unsupported backbone: {backbone}")
-        ### Freeze
+
         # Freeze the weights of the pretrained model except the head
         frozen_layers = []
         unfrozen_layers = []
         for name, param in self.model.named_parameters():
-            if not name.startswith("head"):
-                param.requires_grad = False
-                frozen_layers.append(name)
+            # Unfreeze the last 4 blocks
+            if (
+                "blocks.16" in name
+                or "blocks.17" in name
+                or "blocks.18" in name
+                or "blocks.19" in name
+                or name.startswith("head")
+            ):
+                param.requires_grad = True
             else:
-                unfrozen_layers.append(name)
-
-        print(f"Frozen layers: {frozen_layers}")
-        print(f"Unfrozen layers: {unfrozen_layers}")
+                param.requires_grad = False
+        print(f"Frozen layers (VideoEncoder): {frozen_layers}")
+        print(f"Unfrozen layers (VideoEncoder): {unfrozen_layers}")
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass of the video encoder.
@@ -177,6 +183,15 @@ class TextEncoder(nn.Module):
 
         # Load model and get its config
         self.bert = AutoModel.from_pretrained(model_name)
+        # Freeze all BERT parameters
+        for param in self.bert.parameters():
+            param.requires_grad = False
+
+        # Unfreeze the last 6 encoder layers of BERT
+        for layer in self.bert.encoder.layer[-6:]:
+            for param in layer.parameters():
+                param.requires_grad = True
+
         config = self.bert.config
 
         # Project from BERT hidden size to match video encoder
@@ -188,6 +203,20 @@ class TextEncoder(nn.Module):
         print(f"  hidden_size: {config.hidden_size}")
         print(f"  vocab_size: {config.vocab_size}")
         print(f"  output_dim: {output_dim}")
+        self.print_frozen_status()
+
+    def print_frozen_status(self):
+        """Print which layers are frozen/unfrozen in the text encoder."""
+        frozen_layers = []
+        unfrozen_layers = []
+        for name, param in self.bert.named_parameters():
+            if param.requires_grad:
+                unfrozen_layers.append(name)
+            else:
+                frozen_layers.append(name)
+
+        print(f"Frozen layers (TextEncoder): {frozen_layers}")
+        print(f"Unfrozen layers (TextEncoder): {unfrozen_layers}")
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
         """Forward pass of the text encoder.
@@ -215,34 +244,38 @@ class TextEncoder(nn.Module):
         return features
 
 
-def contrastive_loss(
-    video_features: torch.Tensor, text_features: torch.Tensor, temp: float = 0.1
+def clip_style_loss(
+    video_features: torch.Tensor, text_features: torch.Tensor, log_temp: torch.Tensor
 ) -> torch.Tensor:
-    """Compute contrastive loss between video and text embeddings.
+    """
+    Compute the CLIP-style cross-entropy loss over video-text pairs.
 
     Args:
-        video_features (torch.Tensor): Video embeddings of shape [batch_size, output_dim]
-        text_features (torch.Tensor): Text embeddings of shape [batch_size, output_dim]
-        temp (float): Temperature parameter for scaling logits
+        video_features (torch.Tensor): Normalized video embeddings of shape [B, D]
+        text_features (torch.Tensor): Normalized text embeddings of shape [B, D]
+        log_temp (torch.Tensor): Logarithm of the temperature parameter, shape [1]
 
     Returns:
-        torch.Tensor: Scalar loss value
+        torch.Tensor: A scalar loss value.
     """
-    # Normalize features
-    video_features = nn.functional.normalize(video_features, dim=1)
-    text_features = nn.functional.normalize(text_features, dim=1)
+    video_features = F.normalize(video_features, dim=1)
+    text_features = F.normalize(text_features, dim=1)
 
+    # Compute similarity matrix [B, B]
     similarity_matrix = torch.matmul(video_features, text_features.t())
 
-    # Scale by temperature (lower temp => sharper distribution)
-    similarity_matrix = similarity_matrix / temp
+    # Exponentiate log_temp to get the actual temperature (ensure positivity)
+    temp = torch.exp(log_temp)
+    logits = similarity_matrix / temp
+    print("temp", temp)
 
-    # Create labels for matching pairs
-    labels = torch.arange(len(video_features), device=video_features.device)
+    # Targets are simply [0, 1, 2, ..., B-1] since the i-th video corresponds to the i-th text.
+    targets = torch.arange(logits.size(0), device=logits.device)
 
-    # Compute loss in both directions and average
-    loss_v = nn.CrossEntropyLoss()(similarity_matrix, labels)
-    loss_t = nn.CrossEntropyLoss()(similarity_matrix.t(), labels)
-    loss = (loss_v + loss_t) / 2
+    # Compute cross-entropy loss for video->text (rows) and text->video (columns)
+    loss_i2t = F.cross_entropy(logits, targets)
+    loss_t2i = F.cross_entropy(logits.t(), targets)
 
+    # Final loss is the average
+    loss = (loss_i2t + loss_t2i) / 2.0
     return loss

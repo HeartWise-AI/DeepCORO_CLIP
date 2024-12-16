@@ -1,31 +1,31 @@
 program: scripts/train_model.py
-name: "My_DeepCORO_Clip_Sweep"
+name: "My_DeepCORO_Clip_Sweep_Learnable_Temp"
 method: "bayes"
 metric:
   name: "best_val_loss"
   goal: "minimize"
 parameters:
-  lr:
-    min: 1e-8
-    max: 2e-5
+  learning_rate:
+    min: 1e-4
+    max: 1e-3
     distribution: "uniform"
   optimizer:
     values: ["AdamW", "RAdam"]
-  scheduler-type:
-    values: ["step", "cosine"]
-  lr-step-period:
-    values: [5, 10]
+  scheduler_type:
+    values: ["cosine"]
+  lr_step_period:
+    values: [10]
   factor:
     values: [0.1, 0.3, 0.5]
   epochs:
-    values: [1, 2]
-  batch-size:
-    values: [16, 32, 48, 64]
-  temp:
+    values: [10, 20]
+  batch_size:
+    values: [24, 36, 48]
+  temperature:
     min: 0.01
     max: 2.0
     distribution: uniform
-  rand-aug:
+  random_augment:
     values: [True, False]
 command:
   - bash

@@ -24,7 +24,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.append(project_root)
 
-from models.model import TextEncoder, VideoEncoder, contrastive_loss
+from models.model import TextEncoder, VideoEncoder, clip_style_loss
 from utils.data_processing.video import (
     SimpleTextDataset,
     StatsDataset,
@@ -309,8 +309,8 @@ def setup_training(args, rank=0):
     optimizer_class = getattr(torch.optim, args.optimizer)
     optimizer = optimizer_class(
         [
-            {"params": video_encoder.parameters()},
-            {"params": text_encoder.parameters()},
+            {"params": video_encoder.parameters(), "lr": 1e-3},  # Lower LR for video model
+            {"params": text_encoder.parameters(), "lr": 1e-3},  # Lower LR for PubMedBERT
             {"params": [log_temp]},  # Add the temperature parameter
         ],
         lr=args.lr,
@@ -353,6 +353,7 @@ def setup_training(args, rank=0):
         "val_dataset": val_dataset,
         "device": device,
         "wandb_run": wandb_run,
+        "log_temp": log_temp,
     }
 
 
@@ -576,6 +577,7 @@ def train_epoch(
     world_size=1,
     epoch=0,
     scaler=None,
+    log_temp=None,
 ):
     """Training epoch with local metrics only."""
     video_encoder.train()
@@ -620,29 +622,25 @@ def train_epoch(
                     video_features = video_encoder(videos)
                     text_features = text_encoder(input_ids, attention_mask)
 
-                    current_temp = torch.exp(
-                        log_temp
-                    )  # Exponentiate log_temp to ensure positivity
-                    loss = contrastive_loss(video_features, text_features, current_temp)
+                    loss = clip_style_loss(video_features, text_features, log_temp)
 
                 # Backward pass with AMP
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(video_encoder.parameters(), max_norm=5.0)
-                torch.nn.utils.clip_grad_norm_(text_encoder.parameters(), max_norm=5.0)
+
+                # torch.nn.utils.clip_grad_norm_(video_encoder.parameters(), max_norm=5.0)
+                # torch.nn.utils.clip_grad_norm_(text_encoder.parameters(), max_norm=5.0)
+
                 scaler.step(optimizer)
                 scaler.update()
             else:
                 video_features = video_encoder(videos)
                 text_features = text_encoder(input_ids, attention_mask)
-                similarity_matrix = torch.matmul(
-                    nn.functional.normalize(video_features, dim=1),
-                    nn.functional.normalize(text_features, dim=1).t(),
-                )
-                loss = contrastive_loss(video_features, text_features)
+                loss = clip_style_loss(video_features, text_features, log_temp)
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(video_encoder.parameters(), max_norm=5.0)
-                torch.nn.utils.clip_grad_norm_(text_encoder.parameters(), max_norm=5.0)
+
+                # torch.nn.utils.clip_grad_norm_(video_encoder.parameters(), max_norm=5.0)
+                # torch.nn.utils.clip_grad_norm_(text_encoder.parameters(), max_norm=5.0)
                 optimizer.step()
 
             # Update metrics
@@ -673,7 +671,6 @@ def train_epoch(
                 attention_mask,
                 video_features,
                 text_features,
-                similarity_matrix,
                 loss,
             )
             torch.cuda.empty_cache()
@@ -944,6 +941,7 @@ def validate_epoch(
     output_dir="outputs",
     report_to_global_index=None,
     use_val_only_pool=True,
+    log_temp=None,
 ):
     """
     Validation epoch with retrieval computation and logging.
@@ -1004,9 +1002,8 @@ def validate_epoch(
 
             video_features = video_encoder(videos)
             text_features = text_encoder(input_ids, attention_mask)
-
             # Compute validation loss on this batch
-            loss = contrastive_loss(video_features, text_features)
+            loss = clip_style_loss(video_features, text_features, log_temp)
             total_loss += loss.item()
             num_batches += 1
 
@@ -1320,9 +1317,18 @@ def main(rank=0, world_size=1, args=None):
                 rank=rank,
                 world_size=world_size,
                 epoch=epoch,
+                log_temp=log_temp,
             )
 
-            # Validate on validation-only embeddings (use_val_only_pool=True)
+            # Recompute text embeddings here, using the current (just-trained) state of `text_encoder` otherwise validation metirvcs stay static
+            val_reports, val_text_embeddings = precompute_global_text_embeddings(
+                text_encoder, val_unique_reports, train_dataset.tokenizer, device
+            )
+            all_global_reports, all_global_text_embeddings = precompute_global_text_embeddings(
+                text_encoder, all_global_reports, train_dataset.tokenizer, device
+            )
+
+            # Now perform validation using the freshly computed text embeddings:
             val_loss_valpool, val_metrics_valpool, _ = validate_epoch(
                 video_encoder=training_setup["video_encoder"],
                 text_encoder=text_encoder,
@@ -1339,10 +1345,10 @@ def main(rank=0, world_size=1, args=None):
                 ),
                 output_dir=full_output_path,
                 report_to_global_index=val_report_to_index,
-                use_val_only_pool=True,  # <-- Val-only retrievals
+                use_val_only_pool=True,  # Val-only retrievals
+                log_temp=log_temp,
             )
 
-            # Validate on global embeddings (train+val) (use_val_only_pool=False)
             val_loss_global, val_metrics_global, _ = validate_epoch(
                 video_encoder=training_setup["video_encoder"],
                 text_encoder=text_encoder,
@@ -1359,7 +1365,8 @@ def main(rank=0, world_size=1, args=None):
                 ),
                 output_dir=full_output_path,
                 report_to_global_index=report_to_global_index,
-                use_val_only_pool=False,  # <-- Global retrievals without top/bottom examples
+                use_val_only_pool=False,
+                log_temp=log_temp,
             )
 
             # Choose one for best model comparison (typically val-only)
@@ -1379,7 +1386,7 @@ def main(rank=0, world_size=1, args=None):
                 # Log temperature if available
                 if log_temp is not None:
                     current_temp = torch.exp(log_temp).item()
-                    log_data["temperature"] = current_temp
+                    log_data["exp_of_log_temp"] = current_temp
                     log_data["log_temp"] = log_temp.item()
 
                 wandb_run.log(log_data)

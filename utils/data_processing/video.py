@@ -124,7 +124,7 @@ def load_video(
             print(f"Warning: Error applying transforms to video {video_path}: {str(e)}")
 
     if rand_augment:
-        raug = [v2.RandAugment(magnitude=9, num_layers=2, prob=0.5)]
+        raug = [v2.RandAugment(magnitude=9, num_ops=2)]
         raug_composed = v2.Compose(raug)
         video = raug_composed(video)
 

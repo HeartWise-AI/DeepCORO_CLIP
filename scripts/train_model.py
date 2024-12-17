@@ -26,11 +26,9 @@ if project_root not in sys.path:
 
 from models.model import TextEncoder, VideoEncoder, clip_style_loss
 from utils.data_processing.video import (
-    SimpleTextDataset,
     StatsDataset,
     VideoDataset,
     custom_collate_fn,
-    load_video,
     stats_collate_fn,
 )
 from utils.logging import (
@@ -57,51 +55,53 @@ def parse_args():
 
     # Training parameters
     parser.add_argument("--gpu", type=int, default=None, help="GPU index to use")
-    parser.add_argument("--batch-size", type=int, default=32, help="Batch size per GPU")
+    parser.add_argument("--batch_size", type=int, default=32, help="Batch size per GPU")
     parser.add_argument(
         "--num-workers", type=int, default=4, help="Number of data loading workers"
     )
     parser.add_argument("--epochs", type=int, default=50, help="Number of epochs to train")
-    parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate")
+    parser.add_argument("--learning_rate", type=float, default=5e-5, help="Learning rate")
     parser.add_argument("--local_rank", "--local-rank", type=int, default=-1, help="Local rank")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     parser.add_argument(
-        "--temp", type=float, default=0.1, help="Temperature for contrastive loss"
+        "--temperature", type=float, default=0.1, help="Temperature for contrastive loss"
     )
-    parser.add_argument("--use-amp", action="store_true", help="Use AMP training")
 
     # Data parameters
     parser.add_argument(
-        "--data-filename",
+        "--data_filename",
         type=str,
         default="processed/reports/reports_sampled_1000.csv",
         help="Data CSV",
     )
     parser.add_argument("--root", type=str, default="data/", help="Root directory")
-    parser.add_argument("--target-label", type=str, default="Report", help="Target text column")
-    parser.add_argument("--datapoint-loc-label", type=str, default="FileName", help="Path column")
+    parser.add_argument("--target_label", type=str, default="Report", help="Target text column")
+    parser.add_argument("--datapoint_loc_label", type=str, default="FileName", help="Path column")
     parser.add_argument("--frames", type=int, default=16, help="Number of frames")
     parser.add_argument("--stride", type=int, default=2, help="Frame sampling stride")
-    parser.add_argument("--rand-aug", type=bool, default=False, help="Use random augmentation")
+    parser.add_argument(
+        "--random_augment", type=bool, default=False, help="Use random augmentation"
+    )
     # Model parameters
     parser.add_argument(
-        "--model-name", type=str, default="mvit_v2_s", help="Video backbone model name"
+        "--model_name", type=str, default="mvit_v2_s", help="Video backbone model name"
     )
     parser.add_argument("--pretrained", action="store_true", help="Use pretrained backbone")
 
     # Optimization parameters
     parser.add_argument("--optimizer", type=str, default="AdamW", help="Optimizer type")
-    parser.add_argument("--weight-decay", type=float, default=0.01, help="Weight decay")
-    parser.add_argument("--scheduler-type", type=str, default="step", help="LR scheduler type")
-    parser.add_argument("--lr-step-period", type=int, default=15, help="LR step period")
+    parser.add_argument("--weight_decay", type=float, default=0.01, help="Weight decay")
+    parser.add_argument("--scheduler_type", type=str, default="step", help="LR scheduler type")
+    parser.add_argument("--lr_step_period", type=int, default=15, help="LR step period")
     parser.add_argument("--factor", type=float, default=0.3, help="Factor for scheduler")
+    parser.add_argument("--use_amp", action="store_true", help="Use AMP training")
 
     # Logging parameters
     parser.add_argument("--project", type=str, default="deepcoro_clip", help="W&B project name")
     parser.add_argument("--entity", type=str, default=None, help="W&B entity name")
     parser.add_argument("--tag", type=str, default=None, help="Additional tag")
     parser.add_argument(
-        "--output-dir", type=str, default="outputs", help="Directory to save outputs"
+        "--output_dir", type=str, default="outputs", help="Directory to save outputs"
     )
 
     args = parser.parse_args()
@@ -114,7 +114,7 @@ def parse_args():
             if key in args_dict and args_dict[key] == parser.get_default(key):
                 args_dict[key] = value
         # Explicitly cast known numeric parameters to float
-        args.lr = float(args.lr)
+        args.learning_rate = float(args.learning_rate)
         args.weight_decay = float(args.weight_decay)
         args.factor = float(args.factor)
 
@@ -135,7 +135,7 @@ def generate_output_dir_name(args, run_id):
     batch_size = args.batch_size
     frames = args.frames
     optimizer = args.optimizer
-    lr = args.lr
+    lr = args.learning_rate
     tag = args.tag if args.tag else "default"
     project = args.project if args.project else "default_project"
 
@@ -243,7 +243,7 @@ def setup_training(args, rank=0):
         backbone=args.model_name,
         mean=(mean.tolist() if mean is not None else [0.485, 0.456, 0.406]),
         std=(std.tolist() if std is not None else [0.229, 0.224, 0.225]),
-        rand_augment=args.rand_aug,
+        rand_augment=args.random_augment,
     )
 
     val_dataset = VideoDataset(
@@ -302,7 +302,7 @@ def setup_training(args, rank=0):
 
     # Make temperature a trainable parameter directly on the device
     log_temp = nn.Parameter(
-        torch.log(torch.tensor([args.temp], dtype=torch.float32, device=device))
+        torch.log(torch.tensor([args.temperature], dtype=torch.float32, device=device))
     )
 
     # Include the temperature parameter in the optimizer
@@ -313,7 +313,7 @@ def setup_training(args, rank=0):
             {"params": text_encoder.parameters(), "lr": 1e-3},  # Lower LR for PubMedBERT
             {"params": [log_temp]},  # Add the temperature parameter
         ],
-        lr=args.lr,
+        lr=args.learning_rate,
         weight_decay=args.weight_decay,
     )
 
@@ -330,7 +330,16 @@ def setup_training(args, rank=0):
             T_max=args.epochs,
         )
 
-    if rank == 0:
+    # Log dataset sizes to W&B configuration if rank=0 and run is initialized
+    if rank == 0 and wandb.run is not None:
+        wandb.config.update(
+            {
+                "train_dataset_size": len(train_dataset),
+                "val_dataset_size": len(val_dataset),
+            },
+            allow_val_change=True,
+        )
+
         print("\n=== Dataset Information ===")
         print(f"Training:   {len(train_dataset):,} videos")
         print(f"Validation: {len(val_dataset):,} videos")
@@ -626,11 +635,6 @@ def train_epoch(
 
                 # Backward pass with AMP
                 scaler.scale(loss).backward()
-                scaler.unscale_(optimizer)
-
-                # torch.nn.utils.clip_grad_norm_(video_encoder.parameters(), max_norm=5.0)
-                # torch.nn.utils.clip_grad_norm_(text_encoder.parameters(), max_norm=5.0)
-
                 scaler.step(optimizer)
                 scaler.update()
             else:
@@ -725,7 +729,7 @@ def create_logger(args):
     # Create config dictionary from args
     config = {
         "batch_size": args.batch_size,
-        "learning_rate": args.lr,
+        "learning_rate": args.learning_rate,
         "epochs": args.epochs,
         "num_workers": args.num_workers,
         "gpu": args.gpu,
@@ -743,7 +747,7 @@ def create_logger(args):
     for key, value in vars(args).items():
         if key not in config:
             config[key] = value
-
+    print(config)
     # Initialize wandb with proper project and entity
     wandb.init(
         project=args.project,
@@ -1302,6 +1306,9 @@ def main(rank=0, world_size=1, args=None):
             text_encoder, val_unique_reports, train_dataset.tokenizer, device
         )
 
+        # Create the GradScaler if AMP is enabled
+        scaler = torch.amp.GradScaler(enabled=args.use_amp, device=device)
+
         # Main training loop
         for epoch in range(args.epochs):
             if rank == 0:
@@ -1317,6 +1324,7 @@ def main(rank=0, world_size=1, args=None):
                 rank=rank,
                 world_size=world_size,
                 epoch=epoch,
+                scaler=scaler,
                 log_temp=log_temp,
             )
 

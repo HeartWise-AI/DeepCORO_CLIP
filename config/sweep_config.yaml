@@ -1,5 +1,5 @@
 program: scripts/train_model.py
-name: "My_DeepCORO_Clip_Sweep_Learnable_Temp"
+name: "DeepCORO_Clip_Sweep_Learnable_Temp_40k"
 method: "bayes"
 metric:
   name: "best_val_loss"
@@ -20,10 +20,10 @@ parameters:
   epochs:
     values: [10, 20]
   batch_size:
-    values: [24, 36, 48]
+    values: [36, 48, 64]
   temperature:
     min: 0.01
-    max: 2.0
+    max: 0.5
     distribution: uniform
   random_augment:
     values: [True, False]

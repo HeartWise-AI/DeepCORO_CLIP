@@ -267,7 +267,6 @@ def clip_style_loss(
     # Exponentiate log_temp to get the actual temperature (ensure positivity)
     temp = torch.exp(log_temp)
     logits = similarity_matrix / temp
-    print("temp", temp)
 
     # Targets are simply [0, 1, 2, ..., B-1] since the i-th video corresponds to the i-th text.
     targets = torch.arange(logits.size(0), device=logits.device)

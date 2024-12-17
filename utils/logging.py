@@ -4,9 +4,6 @@ import os
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-import imageio
-import torch
-
 import wandb
 
 
@@ -57,16 +54,8 @@ class WandbLogger:
         **kwargs,
     ) -> None:
         """Log metrics for a training batch.
-        Only logs essential training metrics (loss, lr) for continuous monitoring.
 
-        Args:
-            loss: Training loss value
-            batch_idx: Current batch index
-            epoch: Current epoch number
-            learning_rate: Current learning rate
-            batch_size: Batch size used
-            num_batches: Total number of batches per epoch
-            **kwargs: Additional metrics to log
+        Only logs essential training metrics (loss, lr) for continuous monitoring.
         """
         if self.mode == "disabled":
             return
@@ -82,7 +71,7 @@ class WandbLogger:
             "train/global_step": self.step,
         }
 
-        # Add any additional metrics that should be logged continuously
+        # Add any additional continuous metrics
         for key, value in kwargs.items():
             if key.startswith("continuous_"):
                 metrics[f"train/{key.replace('continuous_', '')}"] = value
@@ -93,28 +82,15 @@ class WandbLogger:
         self,
         epoch: int,
         train_loss: float,
-        val_loss: Optional[float] = None,
         learning_rate: Optional[float] = None,
-        recall_metrics: Optional[Dict[str, float]] = None,
-        mrr_metrics: Optional[Dict[str, float]] = None,
-        video_norm: Optional[float] = None,
-        text_norm: Optional[float] = None,
-        alignment_score: Optional[float] = None,
         **kwargs,
     ) -> None:
-        """Log comprehensive metrics at the end of each epoch.
+        """Log comprehensive metrics at the end of each epoch for training.
 
         Args:
             epoch: Current epoch number
             train_loss: Average training loss for the epoch
-            val_loss: Optional validation loss
             learning_rate: Optional current learning rate
-            recall_metrics: Optional dictionary of Recall@K metrics
-            mrr_metrics: Optional dictionary of MRR metrics
-            video_norm: Optional average L2 norm of video embeddings
-            text_norm: Optional average L2 norm of text embeddings
-            alignment_score: Optional average cosine similarity of positive pairs
-            **kwargs: Additional metrics to log
         """
         if self.mode == "disabled":
             return
@@ -125,72 +101,136 @@ class WandbLogger:
             "epoch/train_loss": train_loss,
         }
 
-        if val_loss is not None:
-            metrics["epoch/val_loss"] = val_loss
-
         if learning_rate is not None:
             metrics["epoch/learning_rate"] = learning_rate
 
-        # Add retrieval metrics if provided
-        if recall_metrics:
-            for metric_name, value in recall_metrics.items():
-                metrics[f"epoch/retrieval/{metric_name}"] = value
-
-        if mrr_metrics:
-            for metric_name, value in mrr_metrics.items():
-                metrics[f"epoch/retrieval/{metric_name}"] = value
-
-        # Add embedding metrics if provided
-        if video_norm is not None:
-            metrics["epoch/embeddings/video_norm"] = video_norm
-        if text_norm is not None:
-            metrics["epoch/embeddings/text_norm"] = text_norm
-        if alignment_score is not None:
-            metrics["epoch/embeddings/alignment_score"] = alignment_score
-
-        # Add any additional metrics
+        # Add any additional epoch-level metrics here
         for key, value in kwargs.items():
             metrics[f"epoch/{key}"] = value
 
         wandb.log(metrics, step=self.step)
 
-    def log_validation(
+    def log_val_only_metrics(
         self,
-        val_loss: float,
         epoch: int,
+        val_loss: float,
+        recall_metrics: Optional[Dict[str, float]] = None,
+        mrr_metrics: Optional[Dict[str, float]] = None,
+        video_norm: Optional[float] = None,
+        text_norm: Optional[float] = None,
+        alignment_score: Optional[float] = None,
         **kwargs,
     ) -> None:
-        """Log validation metrics.
+        """Log metrics from the 'val_only' scenario.
 
         Args:
-            val_loss: Validation loss value
             epoch: Current epoch number
-            **kwargs: Additional validation metrics to log
+            val_loss: Validation loss (val-only scenario)
+            recall_metrics: Dictionary containing Recall@K metrics
+            mrr_metrics: Dictionary containing MRR metrics
+            video_norm: Average L2 norm of video embeddings (val_only)
+            text_norm: Average L2 norm of text embeddings (val_only)
+            alignment_score: Average cosine similarity of positive pairs (val_only)
+
+        Recommended additional metrics for retrieval:
+        - NDCG@K
+        - Median Rank
+        - R@10, R@50
+        - MAP (Mean Average Precision)
+
+        If computed, log them similarly to recall and MRR below.
         """
         if self.mode == "disabled":
             return
 
         metrics = {
-            "val/loss": val_loss,
-            "val/epoch": epoch,
+            "val_only/loss": val_loss,
+            "val_only/epoch": epoch,
         }
 
-        # Add any additional validation metrics
+        # Log retrieval metrics
+        if recall_metrics:
+            for metric_name, value in recall_metrics.items():
+                metrics[f"val_only/{metric_name}"] = value
+
+        if mrr_metrics:
+            for metric_name, value in mrr_metrics.items():
+                metrics[f"val_only/{metric_name}"] = value
+
+        # Embedding stats
+        if video_norm is not None:
+            metrics["val_only/embeddings/video_norm"] = video_norm
+        if text_norm is not None:
+            metrics["val_only/embeddings/text_norm"] = text_norm
+        if alignment_score is not None:
+            metrics["val_only/embeddings/alignment_score"] = alignment_score
+
+        # Additional metrics
         for key, value in kwargs.items():
-            metrics[f"val/{key}"] = value
+            metrics[f"val_only/{key}"] = value
 
         wandb.log(metrics, step=self.step)
 
-    def log_model_graph(self, model) -> None:
-        """Log model architecture graph.
+    def log_global_pool_val_metrics(
+        self,
+        epoch: int,
+        val_loss: float,
+        recall_metrics: Optional[Dict[str, float]] = None,
+        mrr_metrics: Optional[Dict[str, float]] = None,
+        video_norm: Optional[float] = None,
+        text_norm: Optional[float] = None,
+        alignment_score: Optional[float] = None,
+        **kwargs,
+    ) -> None:
+        """Log metrics from the 'global_pool_val' scenario.
 
         Args:
-            model: PyTorch model to visualize
+            epoch: Current epoch number
+            val_loss: Validation loss (global pool scenario)
+            recall_metrics: Dictionary containing Recall@K metrics (global pool)
+            mrr_metrics: Dictionary containing MRR metrics (global pool)
+            video_norm: Average L2 norm of video embeddings (global pool)
+            text_norm: Average L2 norm of text embeddings (global pool)
+            alignment_score: Average cosine similarity of positive pairs (global pool)
+
+        Recommended additional metrics for retrieval:
+        - NDCG@K
+        - Median Rank
+        - R@10, R@50
+        - MAP
+
+        If computed, log them similarly.
         """
         if self.mode == "disabled":
             return
 
-        wandb.watch(model, log="all")
+        metrics = {
+            "global_pool_val/loss": val_loss,
+            "global_pool_val/epoch": epoch,
+        }
+
+        # Log retrieval metrics
+        if recall_metrics:
+            for metric_name, value in recall_metrics.items():
+                metrics[f"global_pool_val/{metric_name}"] = value
+
+        if mrr_metrics:
+            for metric_name, value in mrr_metrics.items():
+                metrics[f"global_pool_val/{metric_name}"] = value
+
+        # Embedding stats
+        if video_norm is not None:
+            metrics["global_pool_val/embeddings/video_norm"] = video_norm
+        if text_norm is not None:
+            metrics["global_pool_val/embeddings/text_norm"] = text_norm
+        if alignment_score is not None:
+            metrics["global_pool_val/embeddings/alignment_score"] = alignment_score
+
+        # Additional metrics
+        for key, value in kwargs.items():
+            metrics[f"global_pool_val/{key}"] = value
+
+        wandb.log(metrics, step=self.step)
 
     def log_media(
         self,
@@ -198,13 +238,7 @@ class WandbLogger:
         caption: Optional[str] = None,
         step: Optional[int] = None,
     ) -> None:
-        """Log video or image media.
-
-        Args:
-            video_path: Path to video/image file
-            caption: Optional caption for the media
-            step: Optional step number for logging
-        """
+        """Log video or image media."""
         if self.mode == "disabled":
             return
 
@@ -218,85 +252,21 @@ class WandbLogger:
         if self.mode != "disabled":
             wandb.finish()
 
-    def log_retrieval_metrics(
-        self,
-        recall_metrics: Dict[str, float],
-        mrr_metrics: Dict[str, float],
-        split: str = "train",
-        **kwargs,
-    ) -> None:
-        """Log detailed retrieval metrics at epoch end.
-
-        Args:
-            recall_metrics: Dictionary containing Recall@K metrics for V2T and T2V
-            mrr_metrics: Dictionary containing MRR metrics for V2T and T2V
-            split: Data split (train/val)
-            **kwargs: Additional metrics to log
-        """
-        if self.mode == "disabled":
-            return
-
-        metrics = {}
-
-        # Log Recall@K metrics
-        for metric_name, value in recall_metrics.items():
-            metrics[f"{split}/retrieval/{metric_name}"] = value
-
-        # Log MRR metrics
-        for metric_name, value in mrr_metrics.items():
-            metrics[f"{split}/retrieval/{metric_name}"] = value
-
-        # Add any additional metrics
-        for key, value in kwargs.items():
-            metrics[f"{split}/retrieval/{key}"] = value
-
-        wandb.log(metrics, step=self.step)
-
-    def log_embedding_stats(
-        self,
-        video_norm: float,
-        text_norm: float,
-        alignment_score: float,
-        split: str = "train",
-        **kwargs,
-    ) -> None:
-        """Log detailed embedding statistics at epoch end.
-
-        Args:
-            video_norm: Average L2 norm of video embeddings
-            text_norm: Average L2 norm of text embeddings
-            alignment_score: Average cosine similarity of positive pairs
-            split: Data split (train/val)
-            **kwargs: Additional embedding metrics to log
-        """
-        if self.mode == "disabled":
-            return
-
-        metrics = {
-            f"{split}/embeddings/video_norm": video_norm,
-            f"{split}/embeddings/text_norm": text_norm,
-            f"{split}/embeddings/alignment_score": alignment_score,
-        }
-
-        # Add any additional metrics
-        for key, value in kwargs.items():
-            metrics[f"{split}/embeddings/{key}"] = value
-
-        wandb.log(metrics, step=self.step)
-
     def log_validation_examples(
         self,
+        scenario: str,  # 'val_only' or 'global_pool_val'
         val_best_videos,
         val_best_reports,
         val_worst_videos,
         val_worst_reports,
-        epoch: int
+        epoch: int,
     ) -> None:
-        """Log validation video examples with their reports, keyed by epoch."""
+        """Log validation video examples (best/worst) under the chosen scenario (val_only or global_pool_val)."""
         if self.mode == "disabled":
             return
 
-        # Track temporary files for cleanup
+        from utils.logging import cleanup_temp_video, convert_video_for_wandb
+
         temp_files = []
 
         # Log best retrievals
@@ -324,23 +294,23 @@ class WandbLogger:
                 # Include epoch in the keys for uniqueness
                 wandb.log(
                     {
-                        f"qualitative/good_retrieval_epoch_{epoch}_{i}": wandb.Video(
+                        f"{scenario}/qualitative/good_retrieval_epoch_{epoch}_{i}": wandb.Video(
                             mp4_path,
-                            caption=f"Good Validation Retrieval {i+1} (Similarity: {report_data['similarity_score']:.3f})",
+                            caption=f"Good {scenario} Retrieval {i+1} (Sim: {report_data['similarity_score']:.3f})",
                         ),
-                        f"qualitative/good_reports_epoch_{epoch}_{i}": wandb.Html(report_html),
-                        f"qualitative/good_similarity_epoch_{epoch}_{i}": report_data["similarity_score"],
-                        "epoch": epoch
+                        f"{scenario}/qualitative/good_reports_epoch_{epoch}_{i}": wandb.Html(
+                            report_html
+                        ),
+                        f"{scenario}/qualitative/good_similarity_epoch_{epoch}_{i}": report_data[
+                            "similarity_score"
+                        ],
+                        "epoch": epoch,
                     },
-                    step=epoch,  # Use epoch as step
-                )
-
-                print(
-                    f"\nLogged good validation example {i+1} at epoch {epoch} (Similarity: {report_data['similarity_score']:.3f})"
+                    step=epoch,
                 )
 
             except Exception as e:
-                print(f"Warning: Failed to log good validation video {video_path}: {str(e)}")
+                print(f"Warning: Failed to log good {scenario} video {video_path}: {str(e)}")
 
         # Log worst retrievals
         for i, (video_path, report_data) in enumerate(zip(val_worst_videos, val_worst_reports)):
@@ -366,25 +336,53 @@ class WandbLogger:
 
                 wandb.log(
                     {
-                        f"qualitative/bad_retrieval_epoch_{epoch}_{i}": wandb.Video(
+                        f"{scenario}/qualitative/bad_retrieval_epoch_{epoch}_{i}": wandb.Video(
                             mp4_path,
-                            caption=f"Bad Validation Retrieval {i+1} (Similarity: {report_data['similarity_score']:.3f})",
+                            caption=f"Bad {scenario} Retrieval {i+1} (Sim: {report_data['similarity_score']:.3f})",
                         ),
-                        f"qualitative/bad_reports_epoch_{epoch}_{i}": wandb.Html(report_html),
-                        f"qualitative/bad_similarity_epoch_{epoch}_{i}": report_data["similarity_score"],
-                        "epoch": epoch
+                        f"{scenario}/qualitative/bad_reports_epoch_{epoch}_{i}": wandb.Html(
+                            report_html
+                        ),
+                        f"{scenario}/qualitative/bad_similarity_epoch_{epoch}_{i}": report_data[
+                            "similarity_score"
+                        ],
+                        "epoch": epoch,
                     },
-                    step=epoch,  # Use epoch as step
+                    step=epoch,
                 )
 
-                print(
-                    f"\nLogged bad validation example {i+1} at epoch {epoch} (Similarity: {report_data['similarity_score']:.3f})"
-                )
             except Exception as e:
-                print(f"Warning: Failed to log bad validation video {video_path}: {str(e)}")
+                print(f"Warning: Failed to log bad {scenario} video {video_path}: {str(e)}")
 
         for temp_file in temp_files:
             cleanup_temp_video(temp_file)
+
+
+def create_logger(
+    args,
+    project_name: str = "deepcoro_clip",
+    experiment_name: Optional[str] = None,
+) -> WandbLogger:
+    """Create a WandbLogger instance with configuration from args."""
+
+    config = {
+        "batch_size": args.batch_size,
+        "learning_rate": args.lr,
+        "epochs": args.epochs,
+        "num_workers": args.num_workers,
+        "gpu": args.gpu,
+    }
+
+    # Add any additional args to config
+    for key, value in vars(args).items():
+        if key not in config:
+            config[key] = value
+
+    return WandbLogger(
+        project_name=project_name,
+        experiment_name=experiment_name,
+        config=config,
+    )
 
 
 def convert_video_for_wandb(video_path):
@@ -491,40 +489,4 @@ def get_best_and_worst_retrievals(similarity_matrix, paths, reports, k=2):
         worst_values,
         best_text_indices,
         worst_text_indices,
-    )
-
-
-def create_logger(
-    args,
-    project_name: str = "deepcoro_clip",
-    experiment_name: Optional[str] = None,
-) -> WandbLogger:
-    """Create a WandbLogger instance with configuration from args.
-
-    Args:
-        args: Arguments from argparse containing training configuration
-        project_name: Name of the project on WandB
-        experiment_name: Optional name for this specific run
-
-    Returns:
-        WandbLogger instance
-    """
-    # Create config dictionary from args
-    config = {
-        "batch_size": args.batch_size,
-        "learning_rate": args.lr,
-        "epochs": args.epochs,
-        "num_workers": args.num_workers,
-        "gpu": args.gpu,
-    }
-
-    # Add any additional args to config
-    for key, value in vars(args).items():
-        if key not in config:
-            config[key] = value
-
-    return WandbLogger(
-        project_name=project_name,
-        experiment_name=experiment_name,
-        config=config,
     )

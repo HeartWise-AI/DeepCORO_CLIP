@@ -33,6 +33,9 @@ from utils.data_processing.video import (
 )
 from utils.logging import (
     cleanup_temp_video,
+    compute_map,
+    compute_median_rank,
+    compute_ndcg,
     convert_video_for_wandb,
     create_logger,
     get_best_and_worst_retrievals,
@@ -976,10 +979,15 @@ def validate_epoch(
     epoch_metrics = {
         "Recall@1_V2T": 0.0,
         "Recall@5_V2T": 0.0,
+        "Recall@10_V2T": 0.0,
+        "Recall@50_V2T": 0.0,
         "MRR_V2T": 0.0,
+        "NDCG@5_V2T": 0.0,
+        "MedianRank_V2T": 0.0,
         "video_norm": 0.0,
         "text_norm": 0.0,
         "alignment_score": 0.0,
+        "MAP": 0.0,
     }
 
     all_video_embeddings = []
@@ -1077,9 +1085,16 @@ def validate_epoch(
         )
 
         recall_metrics = compute_recall_at_k(
-            similarity_matrix, global_ground_truth_indices_tensor, k_values=[1, effective_k]
+            similarity_matrix, global_ground_truth_indices_tensor, k_values=[1, 5, 10, 50]
         )
         mrr_metrics = compute_mrr(similarity_matrix, global_ground_truth_indices_tensor)
+        epoch_metrics["NDCG@5_V2T"] = compute_ndcg(
+            similarity_matrix, global_ground_truth_indices_tensor, k=5
+        )
+        epoch_metrics["MedianRank_V2T"] = compute_median_rank(
+            similarity_matrix, global_ground_truth_indices_tensor
+        )
+        epoch_metrics["MAP"] = compute_map(similarity_matrix, global_ground_truth_indices_tensor)
 
         alignment_score = compute_alignment_score(
             all_video_embeddings[:max_len],

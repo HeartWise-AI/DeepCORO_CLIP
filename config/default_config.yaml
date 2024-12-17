@@ -7,7 +7,7 @@ debug: false
 temperature: 0.1
 
 # Data parameters
-data_filename: data/reports/reports_sampled_no_conclusion_1000.csv
+data_filename: data/reports/reports_sampled_no_conclusion_40000.csv
 root: "."
 target_label: Report
 datapoint_loc_label: FileName
@@ -25,7 +25,7 @@ lr_step_period: 110
 factor: 0.3
 
 # Distributed training
-gpu: 0  # Set to GPU index for single GPU training
+gpu: 1  # Set to GPU index for single GPU training
 local_rank: -1
 
 # Logging parameters

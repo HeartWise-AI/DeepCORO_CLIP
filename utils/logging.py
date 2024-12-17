@@ -1,8 +1,11 @@
 """Logging utilities for training and evaluation."""
 
+import math
 import os
 from datetime import datetime
 from typing import Any, Dict, Optional
+
+import torch
 
 import wandb
 
@@ -490,3 +493,102 @@ def get_best_and_worst_retrievals(similarity_matrix, paths, reports, k=2):
         best_text_indices,
         worst_text_indices,
     )
+
+
+def compute_ndcg(similarity_matrix: torch.Tensor, global_gt_indices: torch.Tensor, k=5) -> float:
+    """
+    Compute NDCG@k for each query and average over all queries.
+    Simplified assumption: one correct answer per query.
+
+    Args:
+        similarity_matrix (torch.Tensor): [num_queries, num_candidates]
+        global_gt_indices (torch.Tensor): [num_queries], each entry is the index of the correct text
+        k (int): Rank cutoff
+
+    Returns:
+        float: Average NDCG@k over all queries.
+    """
+    num_queries = similarity_matrix.size(0)
+    if num_queries == 0:
+        return 0.0
+
+    # Sort candidates by similarity in descending order
+    sorted_indices = torch.argsort(similarity_matrix, dim=1, descending=True)
+
+    ndcg_values = []
+    for i in range(num_queries):
+        correct_idx = global_gt_indices[i].item()
+        # Find the rank of the correct index
+        ranking = (sorted_indices[i] == correct_idx).nonzero(as_tuple=True)[0]
+        if ranking.numel() == 0:
+            # Correct item not found (should not happen if all candidates included)
+            ndcg_values.append(0.0)
+            continue
+
+        rank = ranking.item()
+        if rank < k:
+            # DCG = 1 / log2(rank+2)
+            dcg = 1.0 / math.log2(rank + 2)
+        else:
+            dcg = 0.0
+
+        # Ideal DCG (IDCG) = 1 since there's only one relevant doc at best rank
+        idcg = 1.0
+        ndcg_values.append(dcg / idcg)
+
+    return float(torch.tensor(ndcg_values).mean().item())
+
+
+def compute_median_rank(
+    similarity_matrix: torch.Tensor, global_gt_indices: torch.Tensor
+) -> float:
+    """
+    Compute the median rank of the correct item over all queries.
+    Lower is better.
+    """
+    num_queries = similarity_matrix.size(0)
+    if num_queries == 0:
+        return 0.0
+
+    sorted_indices = torch.argsort(similarity_matrix, dim=1, descending=True)
+    ranks = []
+    for i in range(num_queries):
+        correct_idx = global_gt_indices[i].item()
+        ranking = (sorted_indices[i] == correct_idx).nonzero(as_tuple=True)[0]
+        if ranking.numel() == 0:
+            # Not found, assign large rank
+            ranks.append(similarity_matrix.size(1))
+        else:
+            rank = ranking.item() + 1  # +1 because ranks are 1-based
+            ranks.append(rank)
+
+    ranks = torch.tensor(ranks, dtype=torch.float)
+    median_rank = ranks.median().item()
+    return median_rank
+
+
+def compute_map(similarity_matrix: torch.Tensor, global_gt_indices: torch.Tensor) -> float:
+    """
+    Compute mean average precision (MAP).
+    Assuming exactly one relevant doc per query.
+    AP = 1/rank_of_correct_item
+    MAP = average of AP over all queries
+    """
+    num_queries = similarity_matrix.size(0)
+    if num_queries == 0:
+        return 0.0
+
+    sorted_indices = torch.argsort(similarity_matrix, dim=1, descending=True)
+    aps = []
+    for i in range(num_queries):
+        correct_idx = global_gt_indices[i].item()
+        ranking = (sorted_indices[i] == correct_idx).nonzero(as_tuple=True)[0]
+        if ranking.numel() == 0:
+            # Correct not found, AP=0
+            aps.append(0.0)
+        else:
+            rank = ranking.item() + 1
+            ap = 1.0 / rank
+            aps.append(ap)
+
+    return float(torch.tensor(aps).mean().item())

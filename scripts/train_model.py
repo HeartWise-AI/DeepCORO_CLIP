@@ -1249,15 +1249,16 @@ def validate_epoch(
                 cleanup_temp_video(mp4_path)
 
     avg_text_embedding = all_text_embeddings.mean(dim=0)
+    prefix = "val_only" if use_val_only_pool else "global_val"
+
     if rank == 0:
         print(f"\nAverage text embedding (first 5 dims): {avg_text_embedding[:5]}")
         print(f"Validation Loss: {avg_loss:.4f}")
 
         if wandb_run is not None:
-            wandb_run.log({"val/avg_loss": avg_loss, "epoch": epoch})
+            wandb_run.log({f"{prefix}/avg_loss": avg_loss, "epoch": epoch})
             for metric_name, val in epoch_metrics.items():
-                wandb_run.log({f"val/{metric_name}": val, "epoch": epoch})
-
+                wandb_run.log({f"{prefix}/{metric_name}": val, "epoch": epoch})
     return (
         avg_loss,
         epoch_metrics,

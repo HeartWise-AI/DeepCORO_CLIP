@@ -1348,9 +1348,6 @@ def main(rank=0, world_size=1, args=None):
             val_reports, val_text_embeddings = precompute_global_text_embeddings(
                 text_encoder, val_unique_reports, train_dataset.tokenizer, device
             )
-            all_global_reports, all_global_text_embeddings = precompute_global_text_embeddings(
-                text_encoder, all_global_reports, train_dataset.tokenizer, device
-            )
 
             # Now perform validation using the freshly computed text embeddings:
             val_loss_valpool, val_metrics_valpool, _ = validate_epoch(
@@ -1373,28 +1370,10 @@ def main(rank=0, world_size=1, args=None):
                 log_temp=log_temp,
             )
 
-            val_loss_global, val_metrics_global, _ = validate_epoch(
-                video_encoder=training_setup["video_encoder"],
-                text_encoder=text_encoder,
-                dataloader=training_setup["val_loader"],
-                device=device,
-                wandb_run=wandb_run,
-                rank=0,
-                world_size=1,
-                epoch=epoch,
-                all_text_embeddings=all_global_text_embeddings,
-                all_reports=all_global_reports,
-                text_embedding_pickle_path=os.path.join(
-                    full_output_path, "global_text_embeddings.pkl"
-                ),
-                output_dir=full_output_path,
-                report_to_global_index=report_to_global_index,
-                use_val_only_pool=False,
-                log_temp=log_temp,
-            )
-
             # Choose one for best model comparison (typically val-only)
             current_val_loss = val_loss_valpool
+            del val_text_embeddings
+            torch.cuda.empty_cache()
 
             if rank == 0 and wandb_run is not None:
                 log_data = {
@@ -1403,8 +1382,6 @@ def main(rank=0, world_size=1, args=None):
                     "train/learning_rate": training_setup["optimizer"].param_groups[0]["lr"],
                     "val_only/loss": val_loss_valpool,
                     **{f"val_only/{k}": v for k, v in val_metrics_valpool.items()},
-                    "val_global/loss": val_loss_global,
-                    **{f"val_global/{k}": v for k, v in val_metrics_global.items()},
                     "best_val_loss": best_val_loss,  # Log the current best_val_loss each epoch
                 }
                 # Log temperature if available
@@ -1442,12 +1419,10 @@ def main(rank=0, world_size=1, args=None):
                 metrics_dict = {
                     "train_loss": train_loss,
                     "val_loss_valpool": val_loss_valpool,
-                    "val_loss_global": val_loss_global,
                     "best_val_loss": best_val_loss,
                     "best_epoch": best_epoch,
                     **train_metrics,
                     **val_metrics_valpool,  # store the val-only metrics
-                    **{f"global_{k}": v for k, v in val_metrics_global.items()},
                 }
 
                 checkpoint_dir = Path(full_output_path) / "checkpoints"
@@ -1478,6 +1453,8 @@ def main(rank=0, world_size=1, args=None):
                             }
                         )
                         wandb.save(str(best_path))
+
+
 
     except Exception as e:
         print(f"Error on rank {rank}: {str(e)}")

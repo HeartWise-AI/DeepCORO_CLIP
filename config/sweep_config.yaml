@@ -1,5 +1,5 @@
 program: scripts/train_model.py
-name: "DeepCORO_Clip_Sweep_Learnable_Temp_40k"
+name: "DeepCORO_Clip_Sweep_Learnable_Temp_Full"
 method: "bayes"
 metric:
   name: "best_val_loss"

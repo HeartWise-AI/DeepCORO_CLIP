@@ -7,7 +7,7 @@ debug: false
 temperature: 0.1
 
 # Data parameters
-data_filename: data/reports/reports_sampled_no_conclusion_40000.csv
+data_filename: data/reports/reports_sampled_no_conclusion.csv
 root: "."
 target_label: Report
 datapoint_loc_label: FileName
@@ -31,7 +31,7 @@ local_rank: -1
 # Logging parameters
 project: deepCORO_CLIP
 entity: mhi_ai
-tag: DeepCORO_Clip_Sweep_Learnable_Temp_40k
+tag: DeepCORO_Clip_Sweep_Learnable_Temp_Full
 
 # Additional parameters
 output_dir: outputs

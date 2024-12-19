@@ -878,7 +878,6 @@ def precompute_global_text_embeddings(
             input_ids = batch_texts["input_ids"].to(device)
             attention_mask = batch_texts["attention_mask"].to(device)
             text_features = text_encoder(input_ids, attention_mask)
-            text_features = nn.functional.normalize(text_features, dim=1)
             all_text_embeddings.append(text_features.cpu())
 
     all_global_text_embeddings = torch.cat(all_text_embeddings, dim=0)
@@ -1299,28 +1298,12 @@ def main(rank=0, world_size=1, args=None):
         best_val_loss = float("inf")
         best_epoch = -1
 
-        # === Create Global Pool (train + val) ===
-        all_global_reports = create_global_text_pool(train_dataset, val_dataset, None)
-        all_global_reports, all_global_text_embeddings = precompute_global_text_embeddings(
-            text_encoder, all_global_reports, train_dataset.tokenizer, device
-        )
-        report_to_global_index = {r: i for i, r in enumerate(all_global_reports)}
-
-        with open(os.path.join(full_output_path, "global_text_embeddings.pkl"), "wb") as f:
-            pickle.dump(
-                (all_global_reports, all_global_text_embeddings, report_to_global_index), f
-            )
 
         # === Create Validation-Only Pool ===
         # Extract reports only from val_dataset.
         val_reports = val_dataset.get_all_reports()
         val_unique_reports = list(dict.fromkeys(val_reports))  # Preserve order, remove duplicates
         val_report_to_index = {r: i for i, r in enumerate(val_unique_reports)}
-
-        # Precompute validation-only text embeddings
-        val_reports, val_text_embeddings = precompute_global_text_embeddings(
-            text_encoder, val_unique_reports, train_dataset.tokenizer, device
-        )
 
         # Create the GradScaler if AMP is enabled
         scaler = torch.amp.GradScaler(enabled=args.use_amp, device=device)

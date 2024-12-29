@@ -1,13 +1,11 @@
 """Logging utilities for training and evaluation."""
 
 import os
+import torch
+import wandb
+
 from datetime import datetime
 from typing import Any, Dict, Optional
-
-import imageio
-import torch
-
-import wandb
 
 
 class WandbLogger:
@@ -494,17 +492,11 @@ def get_best_and_worst_retrievals(similarity_matrix, paths, reports, k=2):
     )
 
 
-def create_logger(
-    args,
-    project_name: str = "deepcoro_clip",
-    experiment_name: Optional[str] = None,
-) -> WandbLogger:
-    """Create a WandbLogger instance with configuration from args.
+def create_logger(args):
+    """Create logger with proper WandB configuration.
 
     Args:
-        args: Arguments from argparse containing training configuration
-        project_name: Name of the project on WandB
-        experiment_name: Optional name for this specific run
+        args: Parsed command line arguments with config values
 
     Returns:
         WandbLogger instance
@@ -516,6 +508,14 @@ def create_logger(
         "epochs": args.epochs,
         "num_workers": args.num_workers,
         "gpu": args.gpu,
+        "model_name": args.model_name,
+        "optimizer": args.optimizer,
+        "weight_decay": args.weight_decay,
+        "scheduler_type": args.scheduler_type,
+        "lr_step_period": args.lr_step_period,
+        "factor": args.factor,
+        "frames": args.frames,
+        "pretrained": args.pretrained,
     }
 
     # Add any additional args to config
@@ -523,8 +523,48 @@ def create_logger(
         if key not in config:
             config[key] = value
 
-    return WandbLogger(
-        project_name=project_name,
-        experiment_name=experiment_name,
+    # Initialize wandb with proper project and entity
+    wandb.init(
+        project=args.project,
+        entity=args.entity,
+        name=args.tag,
         config=config,
     )
+
+    return wandb.run
+
+
+# def create_logger(
+#     args,
+#     project_name: str = "deepcoro_clip",
+#     experiment_name: Optional[str] = None,
+# ) -> WandbLogger:
+#     """Create a WandbLogger instance with configuration from args.
+
+#     Args:
+#         args: Arguments from argparse containing training configuration
+#         project_name: Name of the project on WandB
+#         experiment_name: Optional name for this specific run
+
+#     Returns:
+#         WandbLogger instance
+#     """
+#     # Create config dictionary from args
+#     config = {
+#         "batch_size": args.batch_size,
+#         "learning_rate": args.lr,
+#         "epochs": args.epochs,
+#         "num_workers": args.num_workers,
+#         "gpu": args.gpu,
+#     }
+
+#     # Add any additional args to config
+#     for key, value in vars(args).items():
+#         if key not in config:
+#             config[key] = value
+
+#     return WandbLogger(
+#         project_name=project_name,
+#         experiment_name=experiment_name,
+#         config=config,
+#     )

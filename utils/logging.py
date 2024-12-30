@@ -95,9 +95,15 @@ class WandbLogger:
             train_loss: Average training loss for the epoch
             learning_rate: Optional current learning rate
         """
+    
         if self.mode == "disabled":
             return
+        
+        # Skip logging epoch=0 so we don't pollute the chart
+        if epoch == 0:
+            return
 
+        
         self.epoch = epoch
         metrics = {
             "epoch": epoch,

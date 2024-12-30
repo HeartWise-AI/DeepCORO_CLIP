@@ -1,10 +1,10 @@
 # Training parameters
-epochs: 30
-batch_size: 48
-num_workers: 24
-learning_rate: 0.000025
+epochs: 50
+batch_size: 4
+num_workers: 24     # 24 is okay, but 4 is often enough for a small dataset
+learning_rate: 0.0001
 debug: false
-temperature: 0.1
+temperature: 0.07    # More typical CLIP-like initial temperature
 
 # Data parameters
 data_filename: data/reports/reports_sampled_no_conclusion.csv
@@ -13,6 +13,7 @@ target_label: Report
 datapoint_loc_label: FileName
 frames: 16
 stride: 2
+
 # Model parameters
 model_name: mvit
 pretrained: true
@@ -21,11 +22,11 @@ pretrained: true
 optimizer: RAdam
 weight_decay: 0.000001
 scheduler_type: step
-lr_step_period: 110
+lr_step_period: 15    # Step the LR every 15 epochs instead of 110
 factor: 0.3
 
 # Distributed training
-gpu: 1  # Set to GPU index for single GPU training
+gpu: 1
 local_rank: -1
 
 # Logging parameters
@@ -48,8 +49,8 @@ metrics_control:
   num_bootstrap: 100
   quantile_bootstrap: 0.05
 
-# Data augmentation
-random_augment: false
+# Data augmentation (enable random augmentations to reduce overfitting)
+random_augment: true
 resize: 224
 apply_mask: false
 view_count: null

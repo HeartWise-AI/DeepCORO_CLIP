@@ -14,7 +14,7 @@ from torchvision.transforms import v2
 from transformers import AutoTokenizer
 
 # Global variable for directory paths
-dir2 = os.path.abspath("/volume/DeepCORO_CLIP/orion")
+dir2 = os.path.abspath("/volume/DeepCORO_CLIP")
 dir1 = os.path.dirname(dir2)
 if dir1 not in sys.path:
     sys.path.append(dir1)
@@ -143,7 +143,7 @@ def load_video(
 
 class VideoDataset(torch.utils.data.Dataset):
     """
-    Dataset class for video-text pairs. Incorporates logic from the old Video class directly.
+    Dataset class for video-text pairs.
     """
 
     def __init__(
@@ -204,19 +204,6 @@ class VideoDataset(torch.utils.data.Dataset):
             self.split, self.target_label
         )
 
-        # Weighted sampling logic
-        if self.weighted_sampling and self.target_label and self.target_index is not None:
-            labels = np.array(
-                [self.outcome[ind][self.target_index] for ind in range(len(self.outcome))],
-                dtype=int,
-            )
-            weights = 1 - (np.bincount(labels) / len(labels))
-            self.weight_list = np.zeros(len(labels))
-            for label_val in range(len(weights)):
-                weight = weights[label_val]
-                self.weight_list[np.where(labels == label_val)] = weight
-        else:
-            self.weight_list = None
 
         # Initialize tokenizer
         try:
@@ -231,6 +218,10 @@ class VideoDataset(torch.utils.data.Dataset):
             self.valid_indices = self._validate_all_videos()
         else:
             self.valid_indices = list(range(len(self.fnames)))
+
+    def __len__(self):
+        # Return the number of valid indices
+        return len(self.valid_indices)
 
     def load_data(self, split, target_label):
         """Load data from CSV file and filter by split."""
@@ -341,40 +332,27 @@ class VideoDataset(torch.utils.data.Dataset):
             encoded = None
             if self.target_label is not None and self.target_index is not None:
                 text = self.outcome[actual_idx]
+
                 if not isinstance(text, str):
                     text = str(text)
-                try:
-                    encoded = self.tokenizer(
-                        text,
-                        padding="max_length",
-                        max_length=512,
-                        truncation=True,
-                        return_tensors="pt",
-                    )
-                    encoded = {k: v.squeeze(0) for k, v in encoded.items()}
-                    if hasattr(self, "device"):
-                        encoded = {k: v.to(self.device) for k, v in encoded.items()}
-                except Exception as e:
-                    raise RuntimeError(f"Failed to tokenize text for {video_fname}: {str(e)}")
-
+                encoded = self.tokenizer(
+                    text,
+                    padding="max_length",
+                    max_length=512,
+                    truncation=True,
+                    return_tensors="pt",
+                )
+                encoded = {k: v.squeeze(0) for k, v in encoded.items()}
+                if hasattr(self, "device"):
+                    encoded = {k: v.to(self.device) for k, v in encoded.items()}
+            else:
+                print("No target label or target index")
+                encoded = None
             return video, encoded, video_fname
 
         except Exception as e:
-            self.remove_invalid_video(index)
+            # No removal of valid_indices, just raise error
             raise RuntimeError(f"Failed to load video {video_fname}: {str(e)}") from e
-
-    def remove_invalid_video(self, index: int):
-        """Remove a video from valid_indices if it's found invalid."""
-        if index in self.valid_indices:
-            invalid_path = self.fnames[self.valid_indices[index]]
-            self.valid_indices.remove(index)
-            print(
-                f"Removed invalid video at index {index} ({invalid_path}). "
-                f"Remaining valid videos: {len(self.valid_indices)}"
-            )
-
-    def __len__(self):
-        return len(self.valid_indices)
 
     def get_reports(self, video_paths: List[str]) -> List[str]:
         """Get report texts for given video paths."""

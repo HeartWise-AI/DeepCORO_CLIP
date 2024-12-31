@@ -1,20 +1,16 @@
-"""Model definitions for DeepCORO_CLIP."""
-
 import torch
 import torch.nn as nn
-from torchvision.models.video import mvit_v1_b, r3d_18
+import torch.nn.functional as F
+from torchvision.models.video import (
+    mvit_v1_b,
+    r3d_18,
+    mvit_v2_s,
+)
 from transformers import AutoModel, AutoTokenizer
 
 
 def get_tokenizer(model_name="microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext"):
-    """Get the tokenizer with proper configuration.
-
-    Args:
-        model_name (str): Name of the pretrained model
-
-    Returns:
-        tokenizer: Configured tokenizer
-    """
+    """Get the tokenizer with proper configuration."""
     return AutoTokenizer.from_pretrained(
         model_name,
         use_fast=True,
@@ -28,27 +24,12 @@ class TransformerHead(nn.Module):
     """Transformer head for video classification."""
 
     def __init__(self, dim_in: int, num_classes: int, dropout: float = 0.5):
-        """Initialize transformer head.
-
-        Args:
-            dim_in (int): Input dimension from backbone
-            num_classes (int): Number of output classes/dimensions
-            dropout (float): Dropout probability
-        """
         super().__init__()
         self.norm = nn.LayerNorm(dim_in)
         self.dropout = nn.Dropout(dropout)
         self.fc = nn.Linear(dim_in, num_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass.
-
-        Args:
-            x (torch.Tensor): Input tensor of shape [batch_size, dim_in]
-
-        Returns:
-            torch.Tensor: Output tensor of shape [batch_size, num_classes]
-        """
         x = self.norm(x)
         x = self.dropout(x)
         x = self.fc(x)
@@ -56,193 +37,162 @@ class TransformerHead(nn.Module):
 
 
 class VideoEncoder(nn.Module):
-    """Video encoder model based on specified backbone."""
+    """
+    Video encoder with optional dropout & partial-freeze logic.
+
+    - `freeze_ratio` ∈ [0..1] => fraction of backbone layers to keep frozen.
+      Example:
+        freeze_ratio=1.0 => unfreeze everything,
+        freeze_ratio=0.0 => freeze all,
+        freeze_ratio=0.8 => freeze bottom 80% of parameters, unfreeze top 20%.
+    """
 
     def __init__(
-        self, backbone="mvit", input_channels=1, num_frames=16, pretrained=True, output_dim=512
+        self,
+        backbone="mvit",
+        input_channels=3,
+        num_frames=16,
+        pretrained=True,
+        output_dim=512,
+        dropout=0.2,
+        freeze_ratio=0.8,
     ):
-        """Initialize the video encoder.
-
-        Args:
-            backbone (str): Name of the backbone model to use ("mvit" or "r3d")
-            input_channels (int): Number of input channels (1 for grayscale, 3 for RGB)
-            num_frames (int): Number of frames in the input video
-            pretrained (bool): Whether to use pretrained weights
-            output_dim (int): Output dimension of the encoder
-        """
         super().__init__()
         self.backbone = backbone
         self.input_channels = input_channels
         self.num_frames = num_frames
         self.output_dim = output_dim
+        self.dropout_p = dropout
+        self.freeze_ratio = freeze_ratio
 
-        # Convert grayscale to 3 channels if needed
-        if input_channels == 1:
-            self.to_rgb = nn.Sequential(
-                # First expand to 3 channels
-                nn.Conv3d(1, 3, kernel_size=1, bias=False),
-                nn.BatchNorm3d(3),
-                nn.ReLU(inplace=True),
-            )
-        else:
-            self.to_rgb = nn.Identity()
+        if self.backbone == "mvit":
+            # Load the pretrained MViT v2 S
+            self.model = mvit_v2_s(weights="KINETICS400_V1" if pretrained else None)
+            # self.model.head is a Sequential. We find the final nn.Linear layer:
+            in_features = None
+            for layer in reversed(self.model.head):
+                if isinstance(layer, nn.Linear):
+                    in_features = layer.in_features
+                    break
+            # If we didn't find a linear, default to a known dimension (e.g., 768)
+            if in_features is None:
+                in_features = 768
 
-        # Load the specified backbone with pretrained weights if specified
-        if backbone == "mvit":
-            self.model = mvit_v1_b(weights="KINETICS400_V1" if pretrained else None)
-            in_features = 768  # MViT v1's hidden dimension
-            kinetics_classes = 400  # Number of Kinetics classes
-            # Replace the classification head with a sequence of layers
-            self.model.head = nn.Sequential(
-                nn.LayerNorm(in_features),
-                nn.Linear(in_features, kinetics_classes),
-            )
-            # Add projection layer to match desired output dimension
-            self.proj = nn.Sequential(
-                nn.Linear(kinetics_classes, output_dim),
-                nn.LayerNorm(output_dim),
-                nn.Dropout(0.1),
-            )
-        elif backbone == "r3d":
+            # Replace classification head with Identity
+            self.model.head = nn.Identity()
+
+        elif self.backbone == "r3d":
             self.model = r3d_18(pretrained=pretrained)
-            in_features = 512  # R3D-18's hidden dimension
-            self.model.fc = TransformerHead(dim_in=in_features, num_classes=output_dim)
-            self.proj = nn.Identity()
-        else:
-            raise ValueError(f"Unsupported backbone: {backbone}")
-        ### Freeze
-        # Freeze the weights of the pretrained model except the head
-        frozen_layers = []
-        unfrozen_layers = []
-        for name, param in self.model.named_parameters():
-            if not name.startswith("head"):
-                param.requires_grad = False
-                frozen_layers.append(name)
-            else:
-                unfrozen_layers.append(name)
+            in_features = self.model.fc.in_features
+            self.model.fc = nn.Identity()
 
-        print(f"Frozen layers: {frozen_layers}")
-        print(f"Unfrozen layers: {unfrozen_layers}")
+        else:
+            raise ValueError(f"Unsupported backbone: {self.backbone}")
+
+        # Projection from backbone dimension -> output_dim
+        # (includes dropout to help regularize)
+        self.proj = nn.Sequential(
+            nn.Dropout(self.dropout_p),
+            nn.Linear(in_features, output_dim),
+            nn.ReLU(inplace=True),
+            nn.Dropout(self.dropout_p),
+        )
+
+        # Freeze partial layers
+        self._freeze_partial_layers()
+
+    def _freeze_partial_layers(self):
+        """
+        Freeze a fraction (1 - freeze_ratio) of the backbone's layers
+        (from bottom to top), leaving top fraction = freeze_ratio un-frozen.
+        """
+        all_named_params = list(self.model.named_parameters())
+        total_count = len(all_named_params)
+        train_count = int(self.freeze_ratio * total_count)
+
+        # Freeze the bottom portion, keep top `train_count` trainable
+        for i, (name, param) in enumerate(all_named_params):
+            if i < (total_count - train_count):
+                param.requires_grad = False
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass of the video encoder.
-
-        Args:
-            x (torch.Tensor): Input tensor of shape [batch_size, channels, frames, height, width]
-
-        Returns:
-            torch.Tensor: Output features of shape [batch_size, output_dim]
-        """
-
-        # Input shape: [batch_size, channels, frames, height, width]
-        # Backbone expects [batch_size, channels, time, height, width]
-
-        # Convert grayscale to RGB if needed
-        if self.input_channels == 1:
-            # Take only the first channel if input has 3 channels
-            if x.shape[1] == 3:
-                x = x[:, 0:1]
-            x = self.to_rgb(x)  # [B, 3, T, H, W]
-        else:
-            x = self.to_rgb(x)  # Pass through Identity if not grayscale
-
-        # Forward through the backbone model
-        x = self.model(
-            x
-        )  # Output shape: [batch_size, kinetics_classes] for mvit or [batch_size, output_dim] for r3d
-
-        # Project to desired output dimension if needed
-        x = self.proj(x)  # Output shape: [batch_size, output_dim]
-
+        # Pass through backbone
+        x = self.model(x)        # shape: [batch_size, in_features]
+        x = self.proj(x)         # final projection layers
         return x
 
 
 class TextEncoder(nn.Module):
-    """Text encoder model based on PubMedBERT."""
+    """
+    Text encoder with optional dropout & partial-freeze.
+
+    - `freeze_ratio`: fraction of BERT layers to keep trainable (the rest are frozen).
+    - final projection uses dropout to help with regularization.
+    """
 
     def __init__(
         self,
         model_name="microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext",
         output_dim=512,
+        dropout=0.2,
+        freeze_ratio=0.5,
     ):
-        """Initialize the text encoder.
-
-        Args:
-            model_name (str): Name of the pretrained model to use
-            output_dim (int): Output dimension to match video encoder
-        """
         super().__init__()
         self.model_name = model_name
         self.output_dim = output_dim
+        self.dropout_p = dropout
+        self.freeze_ratio = freeze_ratio
 
-        # Load model and get its config
         self.bert = AutoModel.from_pretrained(model_name)
-        config = self.bert.config
+        hidden_size = self.bert.config.hidden_size
 
-        # Project from BERT hidden size to match video encoder
-        self.proj = nn.Linear(config.hidden_size, output_dim)
+        # Freeze a portion of BERT's encoder layers
+        self._freeze_partial_bert()
 
-        # Print model configuration for debugging
-        print(f"Initialized TextEncoder with:")
-        print(f"  model_name: {model_name}")
-        print(f"  hidden_size: {config.hidden_size}")
-        print(f"  vocab_size: {config.vocab_size}")
-        print(f"  output_dim: {output_dim}")
+        # Final projection
+        self.proj = nn.Sequential(
+            nn.Dropout(self.dropout_p),
+            nn.Linear(hidden_size, output_dim),
+            nn.ReLU(inplace=True),
+            nn.Dropout(self.dropout_p),
+        )
+
+    def _freeze_partial_bert(self):
+        """
+        Freeze the bottom portion of the BERT parameters, leaving
+        a fraction `freeze_ratio` trainable from the top.
+        """
+        all_named_params = list(self.bert.named_parameters())
+        total_count = len(all_named_params)
+        train_count = int(self.freeze_ratio * total_count)
+
+        for i, (name, param) in enumerate(all_named_params):
+            if i < (total_count - train_count):
+                param.requires_grad = False
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-        """Forward pass of the text encoder.
-
-        Args:
-            input_ids (torch.Tensor): Input token IDs of shape [batch_size, sequence_length]
-            attention_mask (torch.Tensor): Attention mask of shape [batch_size, sequence_length]
-
-        Returns:
-            torch.Tensor: Output features of shape [batch_size, output_dim]
-        """
-
-        # Add batch dimension if needed
-        if input_ids.dim() == 1:
-            input_ids = input_ids.unsqueeze(0)
-            attention_mask = attention_mask.unsqueeze(0)
-
-        # Get BERT features and take CLS token output
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        features = outputs.last_hidden_state[:, 0]  # Take CLS token
-
-        # Project to match video encoder dimension
-        features = self.proj(features)
-
-        return features
+        # CLS token: outputs.last_hidden_state[:, 0]
+        cls_token = outputs.last_hidden_state[:, 0]
+        return self.proj(cls_token)
 
 
-def contrastive_loss(
-    video_features: torch.Tensor, text_features: torch.Tensor, temp: float = 0.1
+def clip_style_loss(
+    video_features: torch.Tensor, text_features: torch.Tensor, log_temp: torch.Tensor
 ) -> torch.Tensor:
-    """Compute contrastive loss between video and text embeddings.
-
-    Args:
-        video_features (torch.Tensor): Video embeddings of shape [batch_size, output_dim]
-        text_features (torch.Tensor): Text embeddings of shape [batch_size, output_dim]
-        temp (float): Temperature parameter for scaling logits
-
-    Returns:
-        torch.Tensor: Scalar loss value
     """
-    # Normalize features
-    video_features = nn.functional.normalize(video_features, dim=1)
-    text_features = nn.functional.normalize(text_features, dim=1)
+    Compute the CLIP-style cross-entropy loss over video-text pairs.
+    """
+    video_features = F.normalize(video_features, dim=1)
+    text_features = F.normalize(text_features, dim=1)
 
     similarity_matrix = torch.matmul(video_features, text_features.t())
 
-    # Scale by temperature (lower temp => sharper distribution)
-    similarity_matrix = similarity_matrix / temp
+    temp = torch.exp(log_temp)
+    logits = similarity_matrix / temp
 
-    # Create labels for matching pairs
-    labels = torch.arange(len(video_features), device=video_features.device)
+    targets = torch.arange(logits.size(0), device=logits.device)
 
-    # Compute loss in both directions and average
-    loss_v = nn.CrossEntropyLoss()(similarity_matrix, labels)
-    loss_t = nn.CrossEntropyLoss()(similarity_matrix.t(), labels)
-    loss = (loss_v + loss_t) / 2
-
-    return loss
+    loss_i2t = F.cross_entropy(logits, targets)
+    loss_t2i = F.cross_entropy(logits.t(), targets)
+    return (loss_i2t + loss_t2i) / 2.0

@@ -30,11 +30,8 @@ DeepCORO_CLIP is a deep learning model for echocardiography video interpretation
    Then install dependencies:
 
    ```bash
-   # Using uv (recommended)
+   # Using uv
    uv sync
-
-   # Or using pip
-   pip install -r requirements.txt
    ```
 
 1. **Activate Virtual Environment** (do this every time you start):

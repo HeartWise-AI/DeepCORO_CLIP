@@ -1,38 +1,37 @@
 # Training parameters
-epochs: 5
-batch_size: 16
-num_workers: 12
-lr: 0.000025
-debug: false
-temp: 1
+epochs: 50
+batch_size: 4
+num_workers: 24     # 24 is okay, but 4 is often enough for a small dataset
+learning_rate: 0.0001
+temperature: 0.07    # More typical CLIP-like initial temperature
 
 # Data parameters
-data_filename: data/reports/reports_with_splits.csv
+data_filename: data/reports/reports_sampled_no_conclusion.csv
 root: "."
 target_label: Report
 datapoint_loc_label: FileName
 frames: 16
 stride: 2
+
 # Model parameters
 model_name: mvit
 pretrained: true
-log_temp: true
 
 # Optimization parameters
-optimizer: AdamW
+optimizer: RAdam
 weight_decay: 0.000001
 scheduler_type: step
-lr_step_period: 5
+lr_step_period: 15    # Step the LR every 15 epochs instead of 110
 factor: 0.3
 
 # Distributed training
-gpu: 0  # Set to GPU index for single GPU training
+gpu: 1
 local_rank: -1
 
 # Logging parameters
 project: deepCORO_CLIP
 entity: mhi_ai
-tag: deepCORO_CLIP_learnable_temp
+tag: DeepCORO_Clip_Sweep_Learnable_Temp_Full
 
 # Additional parameters
 output_dir: outputs
@@ -43,14 +42,14 @@ period: 1
 
 # Metrics control
 metrics_control:
-  optim_thresh: g_mean
-  plot_pred_distribution: true
-  plot_metrics_moving_thresh: true
-  n_bootstrap: 100
-  q_bootstrap: 0.05
+  optimization_threshold: g_mean
+  plot_prediction_distribution: true
+  plot_metrics_moving_threshold: true
+  num_bootstrap: 100
+  quantile_bootstrap: 0.05
 
-# Data augmentation
-rand_augment: true
+# Data augmentation (enable random augmentations to reduce overfitting)
+random_augment: true
 resize: 224
 apply_mask: false
 view_count: null

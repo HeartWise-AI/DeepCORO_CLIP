@@ -226,6 +226,7 @@ source = { editable = "." }
 dependencies = [
     { name = "av" },
     { name = "decorator" },
+    { name = "ffmpeg" },
     { name = "ffmpeg-python" },
     { name = "imageio" },
     { name = "imageio-ffmpeg" },
@@ -257,6 +258,7 @@ requires-dist = [
     { name = "av", specifier = ">=10.0.0" },
     { name = "black", marker = "extra == 'dev'", specifier = ">=23.3.0" },
     { name = "decorator", specifier = ">=4.0.2" },
+    { name = "ffmpeg", specifier = ">=1.4" },
     { name = "ffmpeg-python", specifier = ">=0.2.0" },
     { name = "imageio", specifier = ">=2.33.0" },
     { name = "imageio-ffmpeg", specifier = "==0.4.8" },
@@ -298,6 +300,12 @@ sdist = { url = "https://files.pythonhosted.org/packages/c5/e6/d1f6c00b7221e2d7c
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f5/e8/f6bd1eee09314e7e6dee49cbe2c5e22314ccdb38db16c9fc72d2fa80d054/docker_pycreds-0.4.0-py2.py3-none-any.whl", hash = "sha256:7266112468627868005106ec19cd0d722702d2b7d5912a28e19b826c3d37af49", size = 8982 },
 ]
+
+[[package]]
+name = "ffmpeg"
+version = "1.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f0/cc/3b7408b8ecf7c1d20ad480c3eaed7619857bf1054b690226e906fdf14258/ffmpeg-1.4.tar.gz", hash = "sha256:6931692c890ff21d39938433c2189747815dca0c60ddc7f9bb97f199dba0b5b9", size = 5055 }
 
 [[package]]
 name = "ffmpeg-python"

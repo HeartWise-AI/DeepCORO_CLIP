@@ -1,32 +1,61 @@
 program: scripts/train_model.py
-name: "My_DeepCORO_Clip_Sweep"
-method: "bayes"
+name: "My_DeepCORO_Clip_Sweep_new_hyperparam"
+method: bayes
+
 metric:
   name: "best_val_loss"
   goal: "minimize"
+
 parameters:
-  lr:
-    min: 1e-8
-    max: 2e-5
-    distribution: "uniform"
+  learning_rate:
+    distribution: log_uniform_values
+    min: 1e-6
+    max: 1e-4
+
   optimizer:
     values: ["AdamW", "RAdam"]
-  scheduler-type:
+
+  scheduler_type:
     values: ["step", "cosine"]
-  lr-step-period:
-    values: [5, 10]
+
+  lr_step_period:
+    values: [5, 10, 15]
+
   factor:
     values: [0.1, 0.3, 0.5]
+
   epochs:
-    values: [1, 2]
-  batch-size:
-    values: [16, 32, 48, 64]
-  temp:
-    min: 0.01
-    max: 2.0
+    values: [20, 30, 40]
+
+  batch_size:
+    values: [16, 24, 32]
+
+  temperature:
     distribution: uniform
-  rand-aug:
-    values: [True, False]
+    min: 0.05
+    max: 0.5
+
+  random_augment:
+    values: [true, false]
+
+  # New hyperparameters:
+  dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.5
+
+  video_freeze_ratio:
+    values: [0.0, 0.5, 1.0]
+
+  text_freeze_ratio:
+    values: [0.0, 0.5, 1.0]
+
+  patience:
+    values: [3, 5, 8, 10]
+    
+  stride:
+    values: [1, 2, 3]
+
 command:
   - bash
   - /volume/DeepCORO_CLIP/config/runner.sh

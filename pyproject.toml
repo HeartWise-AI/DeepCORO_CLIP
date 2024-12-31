@@ -30,7 +30,8 @@ dependencies = [
     "decorator>=4.0.2",
     "opencv-python>=4.8.0",
     "av>=10.0.0",
-    "ffmpeg-python>=0.2.0",  # Python bindings for FFmpeg
+    "ffmpeg-python>=0.2.0", # Python bindings for FFmpeg
+    "ffmpeg>=1.4",
 ]
 
 [project.optional-dependencies]

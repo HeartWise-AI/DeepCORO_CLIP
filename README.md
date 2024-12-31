@@ -107,7 +107,7 @@ python scripts/train_model.py --config config/default_config.yaml --gpu 0
 ### Multi-GPU Training
 
 ```bash
-torchrun --nproc_per_node=2 scripts/train_model.py --config config/default_config.yaml
+torchrun --nproc_per_node=2 scripts/train_model_multi_gpu.py --config config/default_config.yaml
 ```
 
 

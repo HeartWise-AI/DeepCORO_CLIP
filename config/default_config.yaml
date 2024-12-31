@@ -3,7 +3,6 @@ epochs: 50
 batch_size: 4
 num_workers: 24     # 24 is okay, but 4 is often enough for a small dataset
 learning_rate: 0.0001
-debug: false
 temperature: 0.07    # More typical CLIP-like initial temperature
 
 # Data parameters

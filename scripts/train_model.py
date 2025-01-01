@@ -41,6 +41,10 @@ from utils.logging import (
     create_logger,
     get_best_and_worst_retrievals,
     log_val_only_retrievals,
+    compute_alignment_score,
+    compute_embedding_norms,
+    compute_recall_at_k,
+    compute_mrr,
 )
 
 
@@ -395,36 +399,6 @@ def setup_training(args, rank=0):
 
 
 
-def custom_collate_fn(batch):
-    """Custom collate function to handle video and text data.
-
-    Args:
-        batch: List of tuples (video, encoded_text, path)
-        Each video has shape [F, H, W, C]
-    Returns:
-        videos: Tensor of shape (batch_size, C, F, H, W) for MViT compatibility
-        encoded_texts: Dictionary with input_ids and attention_mask tensors
-        paths: List of file paths
-    """
-    videos, encoded_texts, paths = zip(*batch)
-
-    # Stack videos - handle both tensor and numpy inputs
-    videos = torch.stack([torch.from_numpy(v) for v in videos])  # Shape: [B, F, H, W, C]
-
-    # Permute dimensions from [B, F, H, W, C] to [B, C, F, H, W] for MViT
-    videos = videos.permute(0, 4, 1, 2, 3)
-
-    # Combine encoded texts
-    if encoded_texts[0] is not None:
-        combined_texts = {
-            "input_ids": torch.stack([text["input_ids"] for text in encoded_texts]),
-            "attention_mask": torch.stack([text["attention_mask"] for text in encoded_texts]),
-        }
-    else:
-        combined_texts = None
-
-    return videos, combined_texts, paths
-
 
 def setup_ddp(rank, world_size):
     """Initialize DDP process group with proper error handling"""
@@ -475,84 +449,6 @@ def cleanup_ddp():
         except Exception as e:
             print(f"Error in DDP cleanup: {str(e)}")
 
-
-def compute_recall_at_k(similarity_matrix, global_gt_indices, k_values=[1, 5]):
-    batch_size = similarity_matrix.shape[0]
-    metrics = {}
-
-    for k in k_values:
-        v2t_topk = torch.topk(similarity_matrix, k, dim=1)[1]
-        v2t_correct = v2t_topk == global_gt_indices.unsqueeze(1)
-        v2t_recall = (v2t_correct.sum(dim=1) > 0).float().mean().item()
-        metrics[f"Recall@{k}_V2T"] = v2t_recall
-        ## A report text can haev multiple video ground truths so cant calculate t2v
-        # t2v_topk = torch.topk(similarity_matrix.t(), k, dim=1)[1]
-        # t2v_correct = t2v_topk == global_gt_indices.unsqueeze(1)
-        # t2v_recall = (t2v_correct.sum(dim=1) > 0).float().mean().item()
-        # metrics[f"Recall@{k}_T2V"] = t2v_recall
-
-    return metrics
-
-
-def compute_mrr(similarity_matrix, global_gt_indices):
-    batch_size = similarity_matrix.shape[0]
-    device = similarity_matrix.device
-
-    # Video to Text
-    target_scores = similarity_matrix.gather(1, global_gt_indices.unsqueeze(1))
-    v2t_ranks = (similarity_matrix >= target_scores).sum(1).float()
-    v2t_mrr = (1 / v2t_ranks).mean().item()
-
-    return {"MRR_V2T": v2t_mrr}
-
-
-def compute_embedding_norms(video_features, text_features):
-    """Compute L2 norms of video and text embeddings."""
-    video_norms = torch.norm(video_features, dim=1).mean().item()
-    text_norms = torch.norm(text_features, dim=1).mean().item()
-    return {"video_norm": video_norms, "text_norm": text_norms}
-
-
-def compute_alignment_score(
-    video_features,
-    text_features,
-    all_video_embeddings=None,
-    all_text_embeddings=None,
-    global_ground_truth_indices_tensor=None,
-):
-    """
-    Compute average cosine similarity of positive pairs.
-
-    Parameters:
-    - video_features: torch.Tensor (batch local video embeddings)
-    - text_features: torch.Tensor (batch local text embeddings)
-    - all_video_embeddings: torch.Tensor of all validation video embeddings [N_videos, dim] (optional)
-    - all_text_embeddings: torch.Tensor of all global text embeddings [N_texts, dim] (optional)
-    - global_ground_truth_indices_tensor: torch.Tensor of global GT indices for each video (optional)
-
-    If all_video_embeddings, all_text_embeddings, and global_ground_truth_indices_tensor
-    are provided, compute global alignment using global embeddings.
-
-    Otherwise, compute local alignment score assuming a one-to-one mapping between
-    video_features[i] and text_features[i].
-    """
-    if (
-        all_video_embeddings is not None
-        and all_text_embeddings is not None
-        and global_ground_truth_indices_tensor is not None
-    ):
-        # Global alignment scenario (for validation)
-        correct_text_embeddings = all_text_embeddings[global_ground_truth_indices_tensor]
-        normalized_video = nn.functional.normalize(all_video_embeddings, dim=1)
-        normalized_text = nn.functional.normalize(correct_text_embeddings, dim=1)
-        alignment_scores = (normalized_video * normalized_text).sum(dim=1)
-        return alignment_scores.mean().item()
-    else:
-        # Local alignment scenario (for training)
-        normalized_video = nn.functional.normalize(video_features, dim=1)
-        normalized_text = nn.functional.normalize(text_features, dim=1)
-        alignment_scores = (normalized_video * normalized_text).sum(dim=1)
-        return alignment_scores.mean().item()
 
 
 def train_epoch(
@@ -1197,6 +1093,22 @@ def main(rank=0, world_size=1, args=None):
             if training_setup["scheduler"] is not None:
                 training_setup["scheduler"].step()
 
+           # Early-stopping logic
+            if current_val_loss < best_val_loss:
+                previous_best = best_val_loss
+                best_val_loss = current_val_loss
+            
+                best_epoch = epoch
+                patience_counter = 0
+                # (Save best checkpoint as before)
+            else:
+                patience_counter += 1
+                if patience_counter >= args.patience:
+                    if rank == 0:
+                        print(f"Early stopping triggered at epoch {epoch+1} with no improvement.")
+                    break
+                
+
             if rank == 0:
                 model_dict = {
                     "video_encoder": (
@@ -1235,10 +1147,7 @@ def main(rank=0, world_size=1, args=None):
                 print(f"\nSaved latest checkpoint at epoch {epoch + 1}")
 
                 # Update best model based on val-only performance
-                if current_val_loss < best_val_loss:
-                    previous_best = best_val_loss
-                    best_val_loss = current_val_loss
-                    best_epoch = epoch
+                if best_epoch == epoch:
                     best_path = checkpoint_dir / "best.pt"
                     save_checkpoint(model_dict, metrics_dict, best_path, is_best=True)
                     print(
@@ -1256,20 +1165,7 @@ def main(rank=0, world_size=1, args=None):
                         )
                         wandb.save(str(best_path))
             
-            # Early-stopping logic
-            if current_val_loss < best_val_loss:
-                best_val_loss = current_val_loss
-                best_epoch = epoch
-                patience_counter = 0
-                # (Save best checkpoint as before)
-            else:
-                patience_counter += 1
-                if patience_counter >= args.patience:
-                    if rank == 0:
-                        print(f"Early stopping triggered at epoch {epoch+1} with no improvement.")
-                    break
-                
-
+ 
 
 
     except Exception as e:

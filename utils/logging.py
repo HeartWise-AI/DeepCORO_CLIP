@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 
 import torch
+import torch.nn as nn
 import csv
 import wandb
 
@@ -768,3 +769,82 @@ def log_val_only_retrievals(
                 # Cleanup
                 if is_temp:
                     cleanup_temp_video(mp4_path)
+
+
+def compute_recall_at_k(similarity_matrix, global_gt_indices, k_values=[1, 5]):
+    batch_size = similarity_matrix.shape[0]
+    metrics = {}
+
+    for k in k_values:
+        v2t_topk = torch.topk(similarity_matrix, k, dim=1)[1]
+        v2t_correct = v2t_topk == global_gt_indices.unsqueeze(1)
+        v2t_recall = (v2t_correct.sum(dim=1) > 0).float().mean().item()
+        metrics[f"Recall@{k}_V2T"] = v2t_recall
+        ## A report text can haev multiple video ground truths so cant calculate t2v
+        # t2v_topk = torch.topk(similarity_matrix.t(), k, dim=1)[1]
+        # t2v_correct = t2v_topk == global_gt_indices.unsqueeze(1)
+        # t2v_recall = (t2v_correct.sum(dim=1) > 0).float().mean().item()
+        # metrics[f"Recall@{k}_T2V"] = t2v_recall
+
+    return metrics
+
+
+def compute_mrr(similarity_matrix, global_gt_indices):
+    batch_size = similarity_matrix.shape[0]
+    device = similarity_matrix.device
+
+    # Video to Text
+    target_scores = similarity_matrix.gather(1, global_gt_indices.unsqueeze(1))
+    v2t_ranks = (similarity_matrix >= target_scores).sum(1).float()
+    v2t_mrr = (1 / v2t_ranks).mean().item()
+
+    return {"MRR_V2T": v2t_mrr}
+
+
+def compute_embedding_norms(video_features, text_features):
+    """Compute L2 norms of video and text embeddings."""
+    video_norms = torch.norm(video_features, dim=1).mean().item()
+    text_norms = torch.norm(text_features, dim=1).mean().item()
+    return {"video_norm": video_norms, "text_norm": text_norms}
+
+
+def compute_alignment_score(
+    video_features,
+    text_features,
+    all_video_embeddings=None,
+    all_text_embeddings=None,
+    global_ground_truth_indices_tensor=None,
+):
+    """
+    Compute average cosine similarity of positive pairs.
+
+    Parameters:
+    - video_features: torch.Tensor (batch local video embeddings)
+    - text_features: torch.Tensor (batch local text embeddings)
+    - all_video_embeddings: torch.Tensor of all validation video embeddings [N_videos, dim] (optional)
+    - all_text_embeddings: torch.Tensor of all global text embeddings [N_texts, dim] (optional)
+    - global_ground_truth_indices_tensor: torch.Tensor of global GT indices for each video (optional)
+
+    If all_video_embeddings, all_text_embeddings, and global_ground_truth_indices_tensor
+    are provided, compute global alignment using global embeddings.
+
+    Otherwise, compute local alignment score assuming a one-to-one mapping between
+    video_features[i] and text_features[i].
+    """
+    if (
+        all_video_embeddings is not None
+        and all_text_embeddings is not None
+        and global_ground_truth_indices_tensor is not None
+    ):
+        # Global alignment scenario (for validation)
+        correct_text_embeddings = all_text_embeddings[global_ground_truth_indices_tensor]
+        normalized_video = nn.functional.normalize(all_video_embeddings, dim=1)
+        normalized_text = nn.functional.normalize(correct_text_embeddings, dim=1)
+        alignment_scores = (normalized_video * normalized_text).sum(dim=1)
+        return alignment_scores.mean().item()
+    else:
+        # Local alignment scenario (for training)
+        normalized_video = nn.functional.normalize(video_features, dim=1)
+        normalized_text = nn.functional.normalize(text_features, dim=1)
+        alignment_scores = (normalized_video * normalized_text).sum(dim=1)
+        return alignment_scores.mean().item()

@@ -495,14 +495,27 @@ def format_mean_std(input_value):
     return input_value
 
 
-def custom_collate_fn(
-    batch: List[Tuple[np.ndarray, Any, str]]
-) -> Tuple[torch.Tensor, dict, List[str]]:
-    """Custom collate function to handle video and text data."""
+
+def custom_collate_fn(batch):
+    """Custom collate function to handle video and text data.
+
+    Args:
+        batch: List of tuples (video, encoded_text, path)
+        Each video has shape [F, H, W, C]
+    Returns:
+        videos: Tensor of shape (batch_size, C, F, H, W) for MViT compatibility
+        encoded_texts: Dictionary with input_ids and attention_mask tensors
+        paths: List of file paths
+    """
     videos, encoded_texts, paths = zip(*batch)
 
-    videos = torch.stack([torch.from_numpy(v) for v in videos])
+    # Stack videos - handle both tensor and numpy inputs
+    videos = torch.stack([torch.from_numpy(v) for v in videos])  # Shape: [B, F, H, W, C]
 
+    # Permute dimensions from [B, F, H, W, C] to [B, C, F, H, W] for MViT
+    videos = videos.permute(0, 4, 1, 2, 3)
+
+    # Combine encoded texts
     if encoded_texts[0] is not None:
         combined_texts = {
             "input_ids": torch.stack([text["input_ids"] for text in encoded_texts]),

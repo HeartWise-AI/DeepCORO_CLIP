@@ -72,8 +72,14 @@ datapoint_loc_label: FileName
 frames: 16
 
 # Model parameters
-model_name: mvit_v2_s
+model_name: mvit
 pretrained: true
+
+# Multi-video parameters
+multi_video: true
+n_video: 4
+scorn: StudyInstanceUID
+aggregate_function: mean
 
 # Logging parameters
 project: deepcoro_clip
@@ -94,7 +100,7 @@ output_dir: outputs
 
 - **Override config values with CLI arguments**:
     ```bash
-    python scripts/train_model.py --config config/default_config.yaml --batch-size 16 --lr 0.0001
+    python scripts/train_model.py --config config/default_config.yaml --batch-size 16 --lr 0.0001 --n_video 4 --scorn StudyInstanceUID --aggregate_function mean
     ```
 
 ### Single GPU Training
@@ -244,4 +250,86 @@ nvidia-smi -l 1  # Monitor GPU usage every second
 - Training metrics are logged to Weights & Biases
 - Includes loss, learning rate, batch size
 - Access via WandB dashboard
-````
+
+## Multi-Video Parameters
+
+- **multi_video**: Enables the use of multiple videos per study for training and evaluation.
+- **n_video**: Specifies the number of videos to be used per study.
+- **scorn**: The column name used as a unique identifier for grouping videos by study.
+- **aggregate_function**: The function used to aggregate embeddings from multiple videos. Options include `mean`, `max`, and `median`.
+
+## Default Configuration Parameters
+
+Here are the default configuration parameters used in `config/default_config.yaml`:
+
+- **Training parameters**
+  - **epochs**: Number of training epochs. Example: `50`
+  - **batch_size**: Number of samples per batch. Example: `8`
+  - **num_workers**: Number of subprocesses for data loading. Example: `16`
+  - **learning_rate**: Learning rate for the optimizer. Example: `0.0001`
+  - **temperature**: Temperature for contrastive loss. Example: `0.07`
+
+- **Data parameters**
+  - **data_filename**: Path to the CSV file containing data. Example: `data/reports/reports_sampled_300_study_ids.csv`
+  - **root**: Root directory for data. Example: `.`
+  - **target_label**: Column name for target text. Example: `Report`
+  - **datapoint_loc_label**: Column name for file paths. Example: `FileName`
+  - **frames**: Number of frames to sample from each video. Example: `16`
+  - **stride**: Frame sampling stride. Example: `2`
+
+- **Model parameters**
+  - **model_name**: Name of the video backbone model. Example: `mvit`
+  - **pretrained**: Whether to use a pretrained model. Example: `true`
+
+- **Optimization parameters**
+  - **optimizer**: Type of optimizer to use. Example: `RAdam`
+  - **weight_decay**: Weight decay for the optimizer. Example: `0.000001`
+  - **scheduler_type**: Type of learning rate scheduler. Example: `step`
+  - **lr_step_period**: Period for learning rate step. Example: `15`
+  - **factor**: Factor for learning rate scheduler. Example: `0.3`
+
+- **Distributed training**
+  - **gpu**: GPU index to use. Example: `2`
+  - **local_rank**: Local rank for distributed training. Example: `-1`
+
+- **Logging parameters**
+  - **project**: Name of the W&B project. Example: `deepCORO_CLIP`
+  - **entity**: W&B entity name. Example: `mhi_ai`
+  - **tag**: Tag for the W&B run. Example: `DeepCORO_Clip_Sweep_Learnable_Temp_Full`
+  - **multi_video**: Enable multi-video per study. Example: `true`
+  - **n_video**: Number of videos per study. Example: `4`
+  - **scorn**: Column name for study ID. Example: `StudyInstanceUID`
+  - **aggregate_function**: Function to aggregate video embeddings. Example: `mean`
+
+- **Additional parameters**
+  - **output_dir**: Directory to save outputs. Example: `outputs`
+  - **seed**: Random seed for reproducibility. Example: `0`
+  - **use_amp**: Use automatic mixed precision. Example: `true`
+  - **device**: Device to use for training. Example: `cuda`
+  - **period**: Period for logging. Example: `1`
+
+- **Metrics control**
+  - **optimization_threshold**: Metric for optimization threshold. Example: `g_mean`
+  - **plot_prediction_distribution**: Plot prediction distribution. Example: `true`
+  - **plot_metrics_moving_threshold**: Plot metrics with moving threshold. Example: `true`
+  - **num_bootstrap**: Number of bootstrap samples. Example: `100`
+  - **quantile_bootstrap**: Quantile for bootstrap. Example: `0.05`
+
+- **Data augmentation**
+  - **random_augment**: Enable random augmentations. Example: `true`
+  - **resize**: Resize dimension for images. Example: `224`
+  - **apply_mask**: Apply mask to images. Example: `false`
+  - **view_count**: Number of views. Example: `null`
+
+- **Checkpointing**
+  - **save_best**: Criterion to save the best model. Example: `loss`
+  - **resume**: Resume training from checkpoint. Example: `false`
+
+## Training
+
+### Use Config Files
+
+- **Run with default config**:
+    ```bash
+    python scripts/train_model.py --config config/default_config.yaml
+    ```

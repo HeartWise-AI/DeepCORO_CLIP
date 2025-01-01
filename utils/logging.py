@@ -416,18 +416,14 @@ def convert_video_for_wandb(video_path):
     temp_fd, temp_path = tempfile.mkstemp(suffix=".mp4")
     os.close(temp_fd)
 
-    try:
-        # Convert to MP4 using ffmpeg
-        subprocess.run(
-            ["ffmpeg", "-i", video_path, "-c:v", "libx264", "-preset", "fast", "-y", temp_path],
-            check=True,
-            capture_output=True,
-        )
-        return temp_path, True
-    except subprocess.CalledProcessError as e:
-        print(f"Warning: Failed to convert video {video_path}: {e.stderr.decode()}")
-        os.unlink(temp_path)
-        return video_path, False
+
+    # Convert to MP4 using ffmpeg
+    subprocess.run(
+        ["ffmpeg", "-i", video_path, "-c:v", "libx264", "-preset", "fast", "-y", temp_path],
+        check=True,
+        capture_output=True,
+    )
+    return temp_path, True
 
 
 def cleanup_temp_video(video_path):

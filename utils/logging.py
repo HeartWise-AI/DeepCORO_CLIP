@@ -6,9 +6,10 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 
 import torch
-
+import csv
 import wandb
 
+from typing import List, Dict
 
 class WandbLogger:
     """Wrapper for Weights & Biases logging."""
@@ -598,3 +599,172 @@ def compute_map(similarity_matrix: torch.Tensor, global_gt_indices: torch.Tensor
             aps.append(ap)
 
     return float(torch.tensor(aps).mean().item())
+
+def log_val_only_retrievals(
+    similarity_matrix: torch.Tensor,
+    all_paths: List[str],
+    all_ground_truth_reports: List[str],
+    all_reports: List[str],
+    epoch: int,
+    wandb_run,
+    output_dir: str,
+    k: int = 1,
+):
+    """
+    Log best and worst retrieval examples for val-only scenario.
+    Writes out a CSV with top-5 predictions per video, logs best/worst samples to wandb.
+
+    Args:
+        similarity_matrix: [N, M] matrix (N = #videos, M = #text embeddings)
+        all_paths: List of video file paths
+        all_ground_truth_reports: Ground-truth report for each video
+        all_reports: Full list of text reports (used for indexing)
+        epoch: Current epoch
+        wandb_run: The wandb.Run object for logging
+        output_dir: Directory to save CSV and other artifacts
+        k: # of best/worst items to highlight in the logs
+    """
+    # Create CSV file listing top-5 predictions for each video
+    val_csv_path = os.path.join(output_dir, f"val_epoch{epoch}.csv")
+    os.makedirs(os.path.dirname(val_csv_path), exist_ok=True)
+
+    with open(val_csv_path, mode="w", newline="") as csvfile:
+        writer = csv.writer(csvfile)
+        header = [
+            "FileName",
+            "ground_truth_idx",
+            "predicted_idx_1",
+            "sim_1",
+            "predicted_idx_2",
+            "sim_2",
+            "predicted_idx_3",
+            "sim_3",
+            "predicted_idx_4",
+            "sim_4",
+            "predicted_idx_5",
+            "sim_5",
+        ]
+        writer.writerow(header)
+
+        for i, path in enumerate(all_paths):
+            top_5_text_indices = torch.argsort(similarity_matrix[i], descending=True)[:5]
+            predicted_indices = [idx.item() for idx in top_5_text_indices]
+            predicted_sims = [similarity_matrix[i, idx].item() for idx in top_5_text_indices]
+
+            row_data = [path, i]
+            for p_idx, p_sim in zip(predicted_indices, predicted_sims):
+                row_data.append(p_idx)
+                row_data.append(f"{p_sim:.4f}")
+
+            writer.writerow(row_data)
+
+    # Pick the best/worst examples based on max similarity
+    max_scores, _ = similarity_matrix.max(dim=1)
+    best_scores, best_indices = torch.topk(max_scores, k=k)
+    worst_scores, worst_indices = torch.topk(max_scores, k=k, largest=False)
+
+    # Prepare lists to store for logging
+    val_best_videos = []
+    val_best_reports = []
+    val_worst_videos = []
+    val_worst_reports = []
+
+    # Gather best retrieval
+    for i in range(best_indices.numel()):
+        idx = best_indices[i].item()
+        score = best_scores[i].item()
+        top_5_text_indices = torch.argsort(similarity_matrix[idx], descending=True)[:5]
+        predicted_reports = [all_reports[t_idx.item()] for t_idx in top_5_text_indices]
+
+        val_best_videos.append(all_paths[idx])
+        val_best_reports.append(
+            {
+                "ground_truth": all_ground_truth_reports[idx],
+                "predicted": predicted_reports,
+                "similarity_score": score,
+            }
+        )
+
+    # Gather worst retrieval
+    for i in range(worst_indices.numel()):
+        idx = worst_indices[i].item()
+        score = worst_scores[i].item()
+        top_5_text_indices = torch.argsort(similarity_matrix[idx], descending=True)[:5]
+        predicted_reports = [all_reports[t_idx.item()] for t_idx in top_5_text_indices]
+
+        val_worst_videos.append(all_paths[idx])
+        val_worst_reports.append(
+            {
+                "ground_truth": all_ground_truth_reports[idx],
+                "predicted": predicted_reports,
+                "similarity_score": score,
+            }
+        )
+
+    # Log best/worst to wandb if available
+    if wandb_run is not None:
+        # -- log best example(s) --
+        if val_best_videos:
+            for i, (video_path, report_data) in enumerate(zip(val_best_videos, val_best_reports)):
+                mp4_path, is_temp = convert_video_for_wandb(video_path)
+                # Log the video
+                wandb_run.log(
+                    {
+                        f"qualitative/good_retrieval": wandb.Video(
+                            mp4_path,
+                            caption=f"Sim: {report_data['similarity_score']:.3f}",
+                            format="mp4",
+                        ),
+                        "epoch": epoch,
+                    }
+                )
+                # Build HTML
+                predicted_html = "<br>".join(
+                    [f"{j+1}. {text}" for j, text in enumerate(report_data["predicted"])]
+                )
+                ground_truth_html = (
+                    f"<b>Ground Truth:</b> {report_data['ground_truth']}<br>"
+                    f"<b>Top 5 Predicted:</b><br>{predicted_html}"
+                )
+                wandb_run.log(
+                    {
+                        f"qualitative/good_retrieval_text": wandb.Html(ground_truth_html),
+                        "epoch": epoch,
+                    }
+                )
+                # Cleanup
+                if is_temp:
+                    cleanup_temp_video(mp4_path)
+
+        # -- log worst example(s) --
+        if val_worst_videos:
+            for i, (video_path, report_data) in enumerate(zip(val_worst_videos, val_worst_reports)):
+                mp4_path, is_temp = convert_video_for_wandb(video_path)
+                # Log the video
+                wandb_run.log(
+                    {
+                        f"qualitative/bad_retrieval": wandb.Video(
+                            mp4_path,
+                            caption=f"Sim: {report_data['similarity_score']:.3f}",
+                            format="mp4",
+                        ),
+                        "epoch": epoch,
+                    }
+                )
+                # Build HTML
+                predicted_html = "<br>".join(
+                    [f"{j+1}. {text}" for j, text in enumerate(report_data["predicted"])]
+                )
+                ground_truth_html = (
+                    f"<b>Ground Truth:</b> {report_data['ground_truth']}<br>"
+                    f"<b>Top 5 Predicted:</b><br>{predicted_html}"
+                )
+                wandb_run.log(
+                    {
+                        f"qualitative/bad_retrieval_text": wandb.Html(ground_truth_html),
+                        "epoch": epoch,
+                    }
+                )
+                # Cleanup
+                if is_temp:
+                    cleanup_temp_video(mp4_path)

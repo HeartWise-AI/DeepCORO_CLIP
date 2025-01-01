@@ -40,6 +40,7 @@ from utils.logging import (
     convert_video_for_wandb,
     create_logger,
     get_best_and_worst_retrievals,
+    log_val_only_retrievals,
 )
 
 
@@ -860,53 +861,6 @@ def precompute_global_text_embeddings(
     return all_global_reports, all_global_text_embeddings
 
 
-def get_best_and_worst_retrievals(similarity_matrix, paths, reports, k=2):
-    """Get the best and worst retrievals based on similarity scores, along with their top text matches.
-
-    Args:
-        similarity_matrix: Tensor of shape (num_videos, num_queries)
-        paths: List of video paths
-        reports: List of report texts
-        k: Number of best/worst examples to return
-
-    Returns:
-        tuple: (best_indices, worst_indices, best_scores, worst_scores, best_text_indices, worst_text_indices)
-    """
-    # Get mean similarity score for each video-query pair
-    mean_similarities = similarity_matrix.mean(dim=1)
-
-    # Adjust k to not exceed batch size
-    k = min(k, len(mean_similarities))
-
-    # Get indices of best and worst k videos
-    best_values, best_indices = torch.topk(mean_similarities, k=k)
-    worst_values, worst_indices = torch.topk(mean_similarities, k=k, largest=False)
-
-    # Get top-5 text matches for each video
-    best_text_indices = []
-    worst_text_indices = []
-
-    for idx in best_indices:
-        # Get top N text matches for this video, where N is min(5, batch_size)
-        n_texts = min(5, similarity_matrix.size(1))
-        _, top_n_texts = torch.topk(similarity_matrix[idx], k=n_texts)
-        best_text_indices.append(top_n_texts)
-
-    for idx in worst_indices:
-        # Get top N text matches for this video, where N is min(5, batch_size)
-        n_texts = min(5, similarity_matrix.size(1))
-        _, top_n_texts = torch.topk(similarity_matrix[idx], k=n_texts)
-        worst_text_indices.append(top_n_texts)
-
-    return (
-        best_indices,
-        worst_indices,
-        best_values,
-        worst_values,
-        best_text_indices,
-        worst_text_indices,
-    )
-
 
 def validate_epoch(
     video_encoder,
@@ -1095,139 +1049,16 @@ def validate_epoch(
     val_worst_reports = []
 
     if use_val_only_pool:
-        # For logging best and worst retrieval examples
-        max_scores, _ = similarity_matrix.max(dim=1)
-        k = 1  # Only pick top 1 best and worst
-        best_scores, best_indices = torch.topk(max_scores, k=k)
-        worst_scores, worst_indices = torch.topk(max_scores, k=k, largest=False)
-
-        # Prepare CSV with ground truth and top 5 predictions for each sample
-        val_csv_path = os.path.join(output_dir, f"val_epoch{epoch}.csv")
-        import csv
-
-        with open(val_csv_path, mode="w", newline="") as csvfile:
-            writer = csv.writer(csvfile)
-            header = [
-                "FileName",
-                "ground_truth_idx",
-                "predicted_idx_1",
-                "sim_1",
-                "predicted_idx_2",
-                "sim_2",
-                "predicted_idx_3",
-                "sim_3",
-                "predicted_idx_4",
-                "sim_4",
-                "predicted_idx_5",
-                "sim_5",
-            ]
-            writer.writerow(header)
-
-            # For each video, get top-5 predictions and their similarity scores
-            for i, path in enumerate(all_paths):
-                top_5_text_indices = torch.argsort(similarity_matrix[i], descending=True)[:5]
-                predicted_indices = [idx.item() for idx in top_5_text_indices]
-                predicted_sims = [similarity_matrix[i, idx].item() for idx in top_5_text_indices]
-
-                row_data = [path, i]
-                for p_idx, p_sim in zip(predicted_indices, predicted_sims):
-                    row_data.append(p_idx)
-                    row_data.append(f"{p_sim:.4f}")
-
-                writer.writerow(row_data)
-
-        if best_indices.numel() > 0:
-            idx = best_indices[0].item()
-            score = best_scores[0].item()
-            top_5_text_indices = torch.argsort(similarity_matrix[idx], descending=True)[:5]
-            predicted_reports = [all_reports[j.item()] for j in top_5_text_indices]
-            val_best_videos.append(str(all_paths[idx]))
-            val_best_reports.append(
-                {
-                    "ground_truth": all_ground_truth_reports[idx],
-                    "predicted": predicted_reports,
-                    "similarity_score": score,
-                }
-            )
-
-        if worst_indices.numel() > 0:
-            idx = worst_indices[0].item()
-            score = worst_scores[0].item()
-            top_5_text_indices = torch.argsort(similarity_matrix[idx], descending=True)[:5]
-            predicted_reports = [all_reports[j.item()] for j in top_5_text_indices]
-            val_worst_videos.append(str(all_paths[idx]))
-            val_worst_reports.append(
-                {
-                    "ground_truth": all_ground_truth_reports[idx],
-                    "predicted": predicted_reports,
-                    "similarity_score": score,
-                }
-            )
-
-        # Log the best example video and top-5 texts
-        if val_best_videos and val_best_reports and wandb_run is not None:
-            # Convert video and get path + cleanup flag
-            mp4_path, is_temp = convert_video_for_wandb(val_best_videos[0])
-
-            wandb_run.log(
-                {
-                    "qualitative/good_retrieval": wandb.Video(
-                        mp4_path,
-                        caption=f"Sim: {val_best_reports[0]['similarity_score']:.3f}",
-                        format="mp4",
-                    ),
-                    "epoch": epoch,
-                }
-            )
-
-            predicted_html = "<br>".join(
-                [f"{i+1}. {text}" for i, text in enumerate(val_best_reports[0]["predicted"])]
-            )
-            ground_truth_html = (
-                f"<b>Ground Truth:</b> {val_best_reports[0]['ground_truth']}<br>"
-                f"<b>Top 5 Predicted:</b><br>{predicted_html}"
-            )
-            wandb_run.log(
-                {
-                    f"qualitative/good_retrieval_text": wandb.Html(ground_truth_html),
-                    "epoch": epoch,
-                }
-            )
-
-            # Clean up temp file if needed
-            if is_temp:
-                cleanup_temp_video(mp4_path)
-
-        # Similarly for worst retrieval
-        if val_worst_videos and val_worst_reports and wandb_run is not None:
-            # Convert video and get path + cleanup flag
-            mp4_path, is_temp = convert_video_for_wandb(val_worst_videos[0])
-
-            wandb_run.log(
-                {
-                    "qualitative/bad_retrieval": wandb.Video(
-                        mp4_path,
-                        caption=f"Sim: {val_worst_reports[0]['similarity_score']:.3f}",
-                        format="mp4",
-                    ),
-                    "epoch": epoch,
-                }
-            )
-
-            predicted_html = "<br>".join(
-                [f"{i+1}. {text}" for i, text in enumerate(val_worst_reports[0]["predicted"])]
-            )
-            ground_truth_html = (
-                f"<b>Ground Truth:</b> {val_worst_reports[0]['ground_truth']}<br>"
-                f"<b>Top 5 Predicted:</b><br>{predicted_html}"
-            )
-            wandb_run.log(
-                {f"qualitative/bad_retrieval_text": wandb.Html(ground_truth_html), "epoch": epoch}
-            )
-
-            # Clean up temp file if needed
-            if is_temp:
-                cleanup_temp_video(mp4_path)
+        log_val_only_retrievals(
+            similarity_matrix=similarity_matrix,
+            all_paths=all_paths,
+            all_ground_truth_reports=all_ground_truth_reports,
+            all_reports=all_reports,
+            epoch=epoch,
+            wandb_run=wandb_run,
+            output_dir=output_dir,
+            k=1,  # number of best/worst examples
+        )
 
     avg_text_embedding = all_text_embeddings.mean(dim=0)
     prefix = "val_only" if use_val_only_pool else "global_val"

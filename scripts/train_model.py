@@ -1,4 +1,7 @@
-"""Training script for DeepCORO_CLIP model."""
+"""
+Training script for DeepCORO_CLIP model with a built-in VideoAggregator inside VideoEncoder.
+(No double-logging inside validate_epoch)
+"""
 
 import argparse
 import os
@@ -30,8 +33,8 @@ from utils.data_processing.video import (
     VideoDataset,
     custom_collate_fn,
     stats_collate_fn,
-    MultiVideoDataset,         
-    multi_video_collate_fn,    
+    MultiVideoDataset,
+    multi_video_collate_fn,
 )
 from utils.logging import (
     cleanup_temp_video,
@@ -66,9 +69,7 @@ def parse_args():
     # Training parameters
     parser.add_argument("--gpu", type=int, default=None, help="GPU index to use")
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size per GPU")
-    parser.add_argument(
-        "--num-workers", type=int, default=4, help="Number of data loading workers"
-    )
+    parser.add_argument("--num_workers", type=int, default=4, help="Number of data loading workers")
     parser.add_argument("--epochs", type=int, default=50, help="Number of epochs to train")
     parser.add_argument("--learning_rate", type=float, default=5e-5, help="Learning rate")
     parser.add_argument("--local_rank", "--local-rank", type=int, default=-1, help="Local rank")
@@ -89,9 +90,7 @@ def parse_args():
     parser.add_argument("--datapoint_loc_label", type=str, default="FileName", help="Path column")
     parser.add_argument("--frames", type=int, default=16, help="Number of frames")
     parser.add_argument("--stride", type=int, default=2, help="Frame sampling stride")
-    parser.add_argument(
-        "--random_augment", type=bool, default=False, help="Use random augmentation"
-    )
+    parser.add_argument("--random_augment", type=bool, default=False, help="Use random augmentation")
 
     # Model parameters
     parser.add_argument(
@@ -128,11 +127,9 @@ def parse_args():
     parser.add_argument("--project", type=str, default="deepcoro_clip", help="W&B project name")
     parser.add_argument("--entity", type=str, default=None, help="W&B entity name")
     parser.add_argument("--tag", type=str, default=None, help="Additional tag")
-    parser.add_argument(
-        "--output_dir", type=str, default="outputs", help="Directory to save outputs"
-    )
+    parser.add_argument("--output_dir", type=str, default="outputs", help="Directory to save outputs")
 
-    # ADDED: Multi-video parameters
+    # Multi-video parameters
     parser.add_argument("--multi_video", action="store_true", help="Enable multi-video per study")
     parser.add_argument("--n_video", type=int, default=4, help="Number of videos per study")
     parser.add_argument(
@@ -148,7 +145,6 @@ def parse_args():
         choices=["mean", "max", "median"],
         help="Aggregation function across multi-video embeddings",
     )
-    # END ADDED
 
     args = parser.parse_args()
 
@@ -210,7 +206,7 @@ def setup_training(args, rank=0):
 
     print("Args: ", args)
 
-    # Calculate dataset statistics (only on rank 0)
+    # === Calculate dataset statistics (rank=0 only) ===
     mean, std = None, None
     if rank == 0:
         print("\n=== Calculating Dataset Statistics ===")
@@ -275,15 +271,16 @@ def setup_training(args, rank=0):
         mean = mean_tensor.cpu()
         std = std_tensor.cpu()
 
+    # === Datasets ===
     if args.multi_video:
-        print("Using MultiVideoDataset with aggregator:", args.aggregate_function)
+        print("Using MultiVideoDataset")
         train_dataset = MultiVideoDataset(
             root=args.root,
             data_filename=args.data_filename,
             split="train",
             target_label=args.target_label,
             datapoint_loc_label=args.datapoint_loc_label,
-            scorn=args.scorn,  # grouping key
+            scorn=args.scorn,
             num_videos=args.n_video,
             mean=(mean.tolist() if mean is not None else [0.485, 0.456, 0.406]),
             std=(std.tolist() if std is not None else [0.229, 0.224, 0.225]),
@@ -311,7 +308,7 @@ def setup_training(args, rank=0):
             split="val",
             target_label=args.target_label,
             datapoint_loc_label=args.datapoint_loc_label,
-            scorn=args.scorn,  # grouping key
+            scorn=args.scorn,
             num_videos=args.n_video,
             mean=mean.tolist() if mean is not None else [0.485, 0.456, 0.406],
             std=std.tolist() if std is not None else [0.229, 0.224, 0.225],
@@ -333,16 +330,16 @@ def setup_training(args, rank=0):
     if len(val_dataset) == 0:
         raise ValueError("No validation samples found! Check your dataset split.")
 
-    # ADDED: if multi_video, use multi_video_collate_fn
+    # === Dataloaders ===
     if args.multi_video:
         train_loader = DataLoader(
             train_dataset,
-            batch_size=args.batch_size,  # batch size is # of studies
+            batch_size=args.batch_size,
             shuffle=True,
             num_workers=args.num_workers,
             pin_memory=True,
             drop_last=True,
-            collate_fn=multi_video_collate_fn,  # aggregator inside collate
+            collate_fn=multi_video_collate_fn,
         )
         val_loader = DataLoader(
             val_dataset,
@@ -372,8 +369,8 @@ def setup_training(args, rank=0):
             drop_last=False,
             collate_fn=custom_collate_fn,
         )
-    # END ADDED
 
+    # === Model Creation ===
     video_encoder = VideoEncoder(
         backbone=args.model_name,
         input_channels=3,
@@ -394,13 +391,13 @@ def setup_training(args, rank=0):
     for param in text_encoder.parameters():
         param.data = param.data.float()
 
-    # Make temperature a trainable parameter directly on the device
+    # Trainable temperature
     temp_tensor = torch.tensor([args.temperature], dtype=torch.float32, device=device)
     if torch.isnan(temp_tensor).any():
         raise ValueError("Temperature value is NaN")
     log_temperature = nn.Parameter(torch.log(temp_tensor))
 
-    # Include the temperature parameter in the optimizer
+    # === Optimizer & Scheduler ===
     optimizer_class = getattr(torch.optim, args.optimizer)
     optimizer = optimizer_class(
         [
@@ -425,6 +422,7 @@ def setup_training(args, rank=0):
             T_max=args.epochs,
         )
 
+    # === Logging Info ===
     if rank == 0 and wandb.run is not None:
         wandb.config.update(
             {
@@ -433,7 +431,6 @@ def setup_training(args, rank=0):
             },
             allow_val_change=True,
         )
-
         print("\n=== Dataset Information ===")
         print(f"Training:   {len(train_dataset):,} videos (or studies if multi-video)")
         print(f"Validation: {len(val_dataset):,} videos (or studies if multi-video)")
@@ -453,7 +450,7 @@ def setup_training(args, rank=0):
         "train_dataset": train_dataset,
         "val_dataset": val_dataset,
         "device": device,
-        "wandb_run": wandb_run,
+        "wandb_run": wandb.run,
         "log_temperature": log_temperature,
     }
 
@@ -461,11 +458,9 @@ def setup_training(args, rank=0):
 def setup_ddp(rank, world_size):
     """Initialize DDP process group with proper error handling"""
     try:
-        # Set the device
         if torch.cuda.is_available():
             if "CUDA_VISIBLE_DEVICES" in os.environ:
                 del os.environ["CUDA_VISIBLE_DEVICES"]
-
             torch.cuda.set_device(rank)
             device = torch.device(f"cuda:{rank}")
         else:
@@ -497,7 +492,6 @@ def setup_ddp(rank, world_size):
 
 
 def cleanup_ddp():
-    """Clean up DDP process group with proper error handling"""
     if dist.is_initialized():
         try:
             dist.destroy_process_group()
@@ -517,23 +511,15 @@ def train_epoch(
     epoch=0,
     scaler=None,
     log_temperature=None,
-    aggregator="mean",  
 ):
     """
-    Training epoch that handles either single-video or multi-video batches.
-
-    If multi-video => shape of 'videos' is [B, N, T, H, W, C].
-    We permute & flatten to [B*N, C, T, H, W], pass through video_encoder => [B*N, 512].
-    Then reshape => [B, N, 512], and aggregate => [B, 512].
-
-    If single-video => shape is [B, C, T, H, W] and we do normal path.
+    A single training epoch that can handle single-video or multi-video inputs.
     """
     video_encoder.train()
     text_encoder.train()
 
     total_loss = 0.0
     num_batches = 0
-
     epoch_metrics = {
         "video_norm": 0.0,
         "text_norm": 0.0,
@@ -547,119 +533,54 @@ def train_epoch(
 
     for batch_idx, batch in enumerate(progress):
         try:
-            # batch => (videos, encoded_texts, paths_or_ids)
-            videos, encoded_texts, paths_or_ids = batch
-
-            # Move to device
+            videos, encoded_texts, _ = batch
             videos = videos.to(device, non_blocking=True).float()
             input_ids = encoded_texts["input_ids"].to(device, non_blocking=True)
             attention_mask = encoded_texts["attention_mask"].to(device, non_blocking=True)
 
             optimizer.zero_grad(set_to_none=True)
 
-            # Distinguish between single-video vs multi-video by # of dims
-            if videos.dim() == 6:
-                # multi-video shape => [B, N, T, H, W, C]
-                # re-permute => [B, N, C, T, H, W]
-                videos = videos.permute(0, 1, 5, 2, 3, 4)  # => [B, N, 3, T, H, W]
-                B, N, C, T, H, W = videos.shape
-                # Flatten => [B*N, C, T, H, W]
-                videos_flat = videos.view(B*N, C, T, H, W)
+            # unify shape for aggregator (N dimension if single)
+            if videos.dim() == 5:
+                videos = videos.unsqueeze(1)
 
-                if scaler is not None:
-                    with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
-                        # Encode
-                        video_features = video_encoder(videos_flat)  # => [B*N, 512]
-                        text_features = text_encoder(input_ids, attention_mask)  # => [B, 512]
+            if scaler is not None:
+                with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
+                    video_embeds = video_encoder(videos)
+                    text_embeds = text_encoder(input_ids, attention_mask)
+                    loss = clip_style_loss(video_embeds, text_embeds, log_temperature)
 
-                        # Reshape => [B, N, 512]
-                        video_features = video_features.view(B, N, 512)
-
-                        # Aggregate
-                        if aggregator == "mean":
-                            video_embeds = video_features.mean(dim=1)
-                        elif aggregator == "max":
-                            video_embeds = video_features.max(dim=1).values
-                        elif aggregator == "median":
-                            video_embeds = video_features.median(dim=1).values
-                        else:
-                            raise ValueError(f"Unknown aggregator {aggregator}")
-
-                        loss = clip_style_loss(video_embeds, text_features, log_temperature)
-
-                    scaler.scale(loss).backward()
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    video_features = video_encoder(videos_flat)  # => [B*N, 512]
-                    text_features = text_encoder(input_ids, attention_mask)  # => [B, 512]
-
-                    video_features = video_features.view(B, N, 512)
-                    if aggregator == "mean":
-                        video_embeds = video_features.mean(dim=1)
-                    elif aggregator == "max":
-                        video_embeds = video_features.max(dim=1).values
-                    elif aggregator == "median":
-                        video_embeds = video_features.median(dim=1).values
-                    else:
-                        raise ValueError(f"Unknown aggregator {aggregator}")
-
-                    loss = clip_style_loss(video_embeds, text_features, log_temperature)
-                    loss.backward()
-                    optimizer.step()
-
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
             else:
-                # single-video shape => [B, C, T, H, W]
-                if scaler is not None:
-                    with torch.amp.autocast(device_type="cuda", dtype=torch.float16):
-                        video_features = video_encoder(videos)
-                        text_features = text_encoder(input_ids, attention_mask)
-                        loss = clip_style_loss(video_features, text_features, log_temperature)
-
-                    scaler.scale(loss).backward()
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    video_features = video_encoder(videos)
-                    text_features = text_encoder(input_ids, attention_mask)
-                    loss = clip_style_loss(video_features, text_features, log_temperature)
-                    loss.backward()
-                    optimizer.step()
+                video_embeds = video_encoder(videos)
+                text_embeds = text_encoder(input_ids, attention_mask)
+                loss = clip_style_loss(video_embeds, text_embeds, log_temperature)
+                loss.backward()
+                optimizer.step()
 
             total_loss += loss.item()
             num_batches += 1
 
-            # Logging
-            current_avg = total_loss / num_batches
             if rank == 0:
                 progress.set_postfix(
                     {
                         "train_loss": f"{loss.item():.4f}",
-                        "avg_train_loss": f"{current_avg:.4f}",
+                        "avg_train_loss": f"{(total_loss / num_batches):.4f}",
                     }
                 )
 
-            # Compute norms/alignment on a small subset
-            # We'll just pick the aggregated video_embeds if multi-video or raw if single-video
+            # local norms
             with torch.no_grad():
-                if videos.dim() == 6:
-                    # We already have video_embeds & text_features in the local scope
-                    # but let's store them in local vars
-                    v_emb = video_embeds
-                    t_emb = text_features
-                else:
-                    v_emb = video_features
-                    t_emb = text_features
-
-                if v_emb.size(0) >= 5:
-                    norm_metrics = compute_embedding_norms(v_emb, t_emb)
-                    alignment_score = compute_alignment_score(v_emb, t_emb)
+                if video_embeds.size(0) >= 5:
+                    norm_metrics = compute_embedding_norms(video_embeds, text_embeds)
+                    alignment_score = compute_alignment_score(video_embeds, text_embeds)
                     epoch_metrics["video_norm"] += norm_metrics["video_norm"]
                     epoch_metrics["text_norm"] += norm_metrics["text_norm"]
                     epoch_metrics["alignment_score"] += alignment_score
 
-            # Cleanup
-            del loss, video_features, text_features
+            del loss, video_embeds, text_embeds
             torch.cuda.empty_cache()
 
         except Exception as e:
@@ -672,8 +593,6 @@ def train_epoch(
         total_loss, num_batches = loss_tensor.tolist()
 
     avg_loss = total_loss / num_batches if num_batches > 0 else float("inf")
-
-    # Final average of local metrics
     metric_batches = num_batches if num_batches > 0 else 1
     for metric_name in epoch_metrics:
         epoch_metrics[metric_name] /= metric_batches
@@ -683,8 +602,9 @@ def train_epoch(
 
     return avg_loss, epoch_metrics
 
+
 def create_logger(args):
-    """Create logger with proper WandB configuration."""
+    """Create logger with W&B configuration."""
     config = {
         "batch_size": args.batch_size,
         "learning_rate": args.learning_rate,
@@ -796,24 +716,20 @@ def validate_epoch(
     text_encoder,
     dataloader,
     device,
-    wandb_run,
+    # wandb_run,  # <--- no logging inside validate_epoch, remove wandb here
     rank=0,
     world_size=1,
     epoch=0,
     all_text_embeddings=None,
     all_reports=None,
-    text_embedding_pickle_path="text_embeddings.pkl",
     output_dir="outputs",
     report_to_global_index=None,
     use_val_only_pool=True,
     log_temperature=None,
-    aggregator="mean", 
 ):
     """
-    Validation epoch that also handles multi-video input. 
-    If shape of 'videos' is [B, N, 16, H, W, 3], we flatten and pass to video_encoder.
-    Then we aggregate [B, N, 512] => [B,512] before computing clip-style loss.
-    We store all resulting video embeddings in all_video_embeddings for retrieval metrics.
+    Validation epoch that handles single or multi-video, but NO direct wandb.log calls.
+    We'll return all metrics, and the main() loop will do the logging afterwards.
     """
     video_encoder.eval()
     text_encoder.eval()
@@ -839,86 +755,54 @@ def validate_epoch(
     all_paths = []
     all_ground_truth_reports = []
 
+    # no wandb logging here
     progress = tqdm(dataloader, desc=f"Validation Epoch {epoch}") if rank == 0 else dataloader
 
     with torch.no_grad():
         for batch_idx, batch in enumerate(progress):
-            videos, encoded_texts, paths_or_ids = batch  # shape depends on multi-video vs single
-
+            videos, encoded_texts, paths_or_ids = batch
             videos = videos.to(device).float()
             input_ids = encoded_texts["input_ids"].to(device)
             attention_mask = encoded_texts["attention_mask"].to(device)
 
-            # ============ MULTI-VIDEO: shape [B,N,T,H,W,C] ============
-            if videos.dim() == 6:
-                # [B,N,T,H,W,C] => [B,N,C,T,H,W]
-                videos = videos.permute(0, 1, 5, 2, 3, 4)
-                B, N, C, T, H, W = videos.shape
-                videos_flat = videos.view(B*N, C, T, H, W)
+            if videos.dim() == 5:
+                videos = videos.unsqueeze(1)
 
-                video_features = video_encoder(videos_flat)  # => [B*N,512]
-                video_features = video_features.view(B, N, 512)
-
-                # aggregator
-                if aggregator == "mean":
-                    video_embeds = video_features.mean(dim=1)
-                elif aggregator == "max":
-                    video_embeds = video_features.max(dim=1).values
-                elif aggregator == "median":
-                    video_embeds = video_features.median(dim=1).values
-                else:
-                    raise ValueError(f"Unknown aggregator {aggregator}")
-
-                text_features = text_encoder(input_ids, attention_mask)
-                loss = clip_style_loss(video_embeds, text_features, log_temperature)
-
-                # store for retrieval
-                all_video_embeddings.append(video_embeds.cpu())
-
-            # ============ SINGLE-VIDEO: shape [B, C, T, H, W] ============
-            else:
-                video_features = video_encoder(videos)
-                text_features = text_encoder(input_ids, attention_mask)
-                loss = clip_style_loss(video_features, text_features, log_temperature)
-                all_video_embeddings.append(video_features.cpu())
+            video_embeds = video_encoder(videos)
+            text_embeds = text_encoder(input_ids, attention_mask)
+            loss = clip_style_loss(video_embeds, text_embeds, log_temperature)
 
             total_loss += loss.item()
             num_batches += 1
 
-            # -------------- FIX: Map study IDs => real file paths --------------
+            all_video_embeddings.append(video_embeds.cpu())
+
+            # gather file paths or IDs
             if videos.dim() == 6:
-                # multi-video => 'paths_or_ids' is a list of study IDs
-                # We'll build 'this_paths' with actual file paths from dataset.study_to_videos
+                # multi-video => 'paths_or_ids' is list of study IDs
                 this_paths = []
                 if hasattr(dataloader.dataset, "study_to_videos"):
                     for sid in paths_or_ids:
                         vid_list = dataloader.dataset.study_to_videos.get(sid, [])
-                        if len(vid_list) > 0:
-                            # pick first path as "representative"
+                        if vid_list:
                             this_paths.append(vid_list[0])
                         else:
-                            # fallback if no video found
                             this_paths.append(sid)
                 else:
-                    # fallback: just keep the IDs as strings
                     this_paths = [str(s) for s in paths_or_ids]
             else:
-                # single-video => normal file paths in 'paths_or_ids'
                 if isinstance(paths_or_ids, (list, tuple)):
                     this_paths = paths_or_ids
                 else:
                     this_paths = [paths_or_ids]
 
             all_paths.extend(this_paths)
-
-            # ground-truth text
             batch_reports = dataloader.dataset.get_reports(paths_or_ids)
             all_ground_truth_reports.extend(batch_reports)
 
-            del loss, video_features
+            del loss, video_embeds, text_embeds
             torch.cuda.empty_cache()
 
-    # -------------- Summaries --------------
     if world_size > 1:
         loss_tensor = torch.tensor([total_loss, float(num_batches)], device=device)
         dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
@@ -946,20 +830,16 @@ def validate_epoch(
     all_video_embeddings = torch.cat(all_video_embeddings, dim=0).to(device)
     all_text_embeddings = all_text_embeddings.to(device)
 
-    # clip if mismatch
     max_len = min(all_video_embeddings.size(0), all_text_embeddings.size(0))
     truncated_video = all_video_embeddings[:max_len]
     truncated_text = all_text_embeddings[:max_len]
 
-    # metrics
     norm_metrics = compute_embedding_norms(truncated_video, truncated_text)
     epoch_metrics["video_norm"] = norm_metrics["video_norm"]
     epoch_metrics["text_norm"] = norm_metrics["text_norm"]
 
-    # normalize for similarity
     all_video_embeddings = nn.functional.normalize(all_video_embeddings, dim=1)
     all_text_embeddings = nn.functional.normalize(all_text_embeddings, dim=1)
-
     similarity_matrix = torch.matmul(all_video_embeddings, all_text_embeddings.T)
 
     max_k = min(similarity_matrix.size(0), similarity_matrix.size(1))
@@ -971,7 +851,6 @@ def validate_epoch(
         ]
         gt_tensor = torch.tensor(global_ground_truth_indices, device=device)
 
-        # recall, mrr, ndcg, etc.
         recall_metrics = compute_recall_at_k(similarity_matrix, gt_tensor, k_values=k_values)
         mrr_metrics = compute_mrr(similarity_matrix, gt_tensor)
         epoch_metrics["NDCG@5_V2T"] = compute_ndcg(similarity_matrix, gt_tensor, k=5)
@@ -985,12 +864,7 @@ def validate_epoch(
             epoch_metrics[metric_name] = value
         epoch_metrics["alignment_score"] = alignment_score
 
-    val_best_videos = []
-    val_best_reports = []
-    val_worst_videos = []
-    val_worst_reports = []
-
-    # -------------- log retrievals --------------
+    # We might optionally do log_val_only_retrievals for top examples
     if use_val_only_pool:
         log_val_only_retrievals(
             similarity_matrix=similarity_matrix,
@@ -998,33 +872,21 @@ def validate_epoch(
             all_ground_truth_reports=all_ground_truth_reports,
             all_reports=all_reports,
             epoch=epoch,
-            wandb_run=wandb_run,
+            wandb_run=None,  # or pass none so it doesn't log
             output_dir=output_dir,
             k=1,
         )
-
-    avg_text_embedding = all_text_embeddings.mean(dim=0)
-    prefix = "val_only" if use_val_only_pool else "global_val"
-
-    if rank == 0:
-        print(f"\n[Validate] Epoch={epoch}, Loss={avg_loss:.4f}")
-        print(f"Avg Text Embedding (first 5 dims): {avg_text_embedding[:5]}")
-
-        if wandb_run is not None:
-            wandb_run.log({f"{prefix}/avg_loss": avg_loss, "epoch": epoch})
-            for metric_name, val in epoch_metrics.items():
-                wandb_run.log({f"{prefix}/{metric_name}": val, "epoch": epoch})
 
     return (
         avg_loss,
         epoch_metrics,
         {
-            "best_videos": val_best_videos,
-            "best_reports": val_best_reports,
-            "best_scores": [br["similarity_score"] for br in val_best_reports],
-            "worst_videos": val_worst_videos,
-            "worst_reports": val_worst_reports,
-            "worst_scores": [wr["similarity_score"] for wr in val_worst_reports],
+            "best_videos": [],
+            "best_reports": [],
+            "best_scores": [],
+            "worst_videos": [],
+            "worst_reports": [],
+            "worst_scores": [],
         },
     )
 
@@ -1041,15 +903,18 @@ def main(rank=0, world_size=1, args=None):
         full_output_path = os.path.join(args.output_dir, output_subdir)
         os.makedirs(full_output_path, exist_ok=True)
         print("Args: ", args)
+
         training_setup = setup_training(args, rank=rank)
         if wandb_run is None:
             wandb_run = training_setup["wandb_run"]
 
         is_distributed = world_size > 1
+        device = training_setup["device"]
         text_encoder = training_setup["text_encoder"]
+        train_loader = training_setup["train_loader"]
+        val_loader = training_setup["val_loader"]
         train_dataset = training_setup["train_dataset"]
         val_dataset = training_setup["val_dataset"]
-        device = training_setup["device"]
 
         if "log_temperature" not in training_setup:
             raise ValueError("log_temperature not found in training setup")
@@ -1059,7 +924,7 @@ def main(rank=0, world_size=1, args=None):
         best_epoch = -1
         patience_counter = 0
 
-        # === Create Validation-Only Pool ===
+        # Build validation-only pool
         val_reports = val_dataset.get_all_reports()
         val_unique_reports = list(dict.fromkeys(val_reports))
         val_report_to_index = {r: i for i, r in enumerate(val_unique_reports)}
@@ -1070,10 +935,11 @@ def main(rank=0, world_size=1, args=None):
             if rank == 0:
                 print(f"\nEpoch {epoch + 1}/{args.epochs}")
 
+            # ==== Train Phase ====
             train_loss, train_metrics = train_epoch(
                 video_encoder=training_setup["video_encoder"],
                 text_encoder=text_encoder,
-                dataloader=training_setup["train_loader"],
+                dataloader=train_loader,
                 optimizer=training_setup["optimizer"],
                 device=device,
                 wandb_run=wandb_run,
@@ -1084,6 +950,7 @@ def main(rank=0, world_size=1, args=None):
                 log_temperature=log_temperature,
             )
 
+            # ==== Validation Phase (we do no wandb logging here) ====
             val_reports, val_text_embeddings = precompute_global_text_embeddings(
                 text_encoder, val_unique_reports, train_dataset.tokenizer, device
             )
@@ -1091,29 +958,26 @@ def main(rank=0, world_size=1, args=None):
             val_loss_valpool, val_metrics_valpool, _ = validate_epoch(
                 video_encoder=training_setup["video_encoder"],
                 text_encoder=text_encoder,
-                dataloader=training_setup["val_loader"],
+                dataloader=val_loader,
                 device=device,
-                wandb_run=wandb_run,
+                # wandb_run=wandb_run, # no direct logging here
                 rank=0,
                 world_size=1,
                 epoch=epoch,
                 all_text_embeddings=val_text_embeddings,
                 all_reports=val_reports,
-                text_embedding_pickle_path=os.path.join(
-                    full_output_path, "val_text_embeddings.pkl"
-                ),
                 output_dir=full_output_path,
                 report_to_global_index=val_report_to_index,
                 use_val_only_pool=True,
                 log_temperature=log_temperature,
             )
-
             current_val_loss = val_loss_valpool
-
             del val_text_embeddings
             torch.cuda.empty_cache()
 
+            # === Single Logging after both train & val ===
             if rank == 0 and wandb_run is not None:
+                # Combine train & val metrics in one call
                 log_data = {
                     "epoch": epoch,
                     "train/loss": train_loss,
@@ -1127,11 +991,14 @@ def main(rank=0, world_size=1, args=None):
                     log_data["temp"] = current_temp
                     log_data["log_temperature"] = log_temperature.item()
 
+                # Now do a single wandb.log
                 wandb_run.log(log_data)
 
+            # Step LR
             if training_setup["scheduler"] is not None:
                 training_setup["scheduler"].step()
 
+            # Early stopping
             if current_val_loss < best_val_loss:
                 previous_best = best_val_loss
                 best_val_loss = current_val_loss
@@ -1144,6 +1011,7 @@ def main(rank=0, world_size=1, args=None):
                         print(f"Early stopping triggered at epoch {epoch+1} with no improvement.")
                     break
 
+            # === Save Checkpoints ===
             if rank == 0:
                 model_dict = {
                     "video_encoder": (
@@ -1185,9 +1053,9 @@ def main(rank=0, world_size=1, args=None):
                     best_path = checkpoint_dir / "best.pt"
                     save_checkpoint(model_dict, metrics_dict, best_path, is_best=True)
                     print(
-                        f"\nNew best model saved! Val Loss (val-only): {current_val_loss:.4f} (previous: {previous_best:.4f})"
+                        f"\nNew best model saved! Val Loss (val-only): {current_val_loss:.4f} "
+                        f"(previous: {previous_best:.4f})"
                     )
-
                     if wandb_run is not None:
                         wandb_run.log(
                             {

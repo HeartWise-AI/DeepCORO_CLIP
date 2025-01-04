@@ -1,6 +1,6 @@
 # Training parameters
 epochs: 50
-batch_size: 8
+batch_size: 12
 num_workers: 16
 learning_rate: 0.0001
 temperature: 0.07    # More typical CLIP-like initial temperature
@@ -33,9 +33,8 @@ project: deepCORO_CLIP
 entity: mhi_ai
 tag: DeepCORO_Clip_Sweep_Learnable_Temp_Full
 multi_video: true
-n_video: 4
+n_video: 5
 scorn: StudyInstanceUID
-aggregate_function: mean
 
 # Additional parameters
 output_dir: outputs

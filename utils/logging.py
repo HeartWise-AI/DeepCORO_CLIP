@@ -607,6 +607,7 @@ def log_val_only_retrievals(
     wandb_run,
     output_dir: str,
     k: int = 1,
+    report_to_global_index=None,  # <--- Add this parameter
 ):
     """
     Log best and worst retrieval examples for val-only scenario.
@@ -621,6 +622,7 @@ def log_val_only_retrievals(
         wandb_run: The wandb.Run object for logging
         output_dir: Directory to save CSV and other artifacts
         k: # of best/worst items to highlight in the logs
+        report_to_global_index: Dictionary mapping each text -> its unique index
     """
     # Create CSV file listing top-5 predictions for each video
     val_csv_path = os.path.join(output_dir, f"val_epoch{epoch}.csv")
@@ -649,19 +651,32 @@ def log_val_only_retrievals(
             predicted_indices = [idx.item() for idx in top_5_text_indices]
             predicted_sims = [similarity_matrix[i, idx].item() for idx in top_5_text_indices]
 
-            row_data = [path, i]
+            row_data = [path]
+
+            # 1) Get the ground truth text
+            gt_text = all_ground_truth_reports[i]
+
+            # 2) Convert to unique report index (if dictionary is provided)
+            if report_to_global_index is not None and gt_text in report_to_global_index:
+                gt_idx = report_to_global_index[gt_text]
+            else:
+                gt_idx = -1  # fallback if not found or no dictionary
+
+            row_data.append(gt_idx)
+
+            # Then append predicted top-5
             for p_idx, p_sim in zip(predicted_indices, predicted_sims):
                 row_data.append(p_idx)
                 row_data.append(f"{p_sim:.4f}")
 
             writer.writerow(row_data)
 
-    # Pick the best/worst examples based on max similarity
+    # Now compute best/worst examples based on max similarity
+    # (unchanged)
     max_scores, _ = similarity_matrix.max(dim=1)
     best_scores, best_indices = torch.topk(max_scores, k=k)
     worst_scores, worst_indices = torch.topk(max_scores, k=k, largest=False)
 
-    # Prepare lists to store for logging
     val_best_videos = []
     val_best_reports = []
     val_worst_videos = []

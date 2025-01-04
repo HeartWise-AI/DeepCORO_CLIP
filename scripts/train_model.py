@@ -683,6 +683,9 @@ def validate_epoch(
     """
     Validation epoch with retrieval computation and logging.
 
+    This version assumes your VideoEncoder already does aggregation internally,
+    so video_embeds will be shape (B, emb_dim) for either single-video or multi-video.
+
     Args:
         video_encoder, text_encoder: Models
         dataloader: Validation DataLoader
@@ -694,11 +697,12 @@ def validate_epoch(
         all_text_embeddings: precomputed text embeddings for the pool (val-only or global)
         all_reports: corresponding reports (val-only or global)
         report_to_global_index: mapping from report to index in `all_reports`
-        use_val_only_pool (bool): If True, evaluate retrieval using only the val set embeddings,
-                                  and log best/worst examples. If False, only compute metrics.
+        use_val_only_pool (bool): If True, evaluate retrieval using only the val set embeddings
+        log_temperature: learned temperature for contrastive loss
 
     Returns:
         avg_loss, epoch_metrics, examples_dict
+          where examples_dict includes info about best/worst retrieval examples
     """
     video_encoder.eval()
     text_encoder.eval()
@@ -706,6 +710,7 @@ def validate_epoch(
     total_loss = 0.0
     num_batches = 0
 
+    # We'll collect these stats over the whole validation set
     epoch_metrics = {
         "Recall@1_V2T": 0.0,
         "Recall@5_V2T": 0.0,
@@ -720,65 +725,72 @@ def validate_epoch(
         "MAP": 0.0,
     }
 
+    # Store item-level (study-level or video-level) embeddings
     all_video_embeddings = []
     all_paths = []
     all_ground_truth_reports = []
 
-    progress = tqdm(dataloader, desc=f"Validation Epoch {epoch}") if rank==0 else dataloader
+    if rank == 0:
+        progress = tqdm(dataloader, desc=f"Validation Epoch {epoch}")
+    else:
+        progress = dataloader
 
     with torch.no_grad():
-        for batch_idx, batch in enumerate(progress):
-            videos, encoded_texts, paths_or_ids = batch
+        for batch_idx, (videos, encoded_texts, study_ids) in enumerate(progress):
+            # videos => shape [B, C, F, H, W] for single-video
+            #         or shape [B, N, C, F, H, W] for multi-video
+            # aggregator is inside video_encoder => output => [B, emb_dim]
             videos = videos.to(device).float()
+
             input_ids = encoded_texts["input_ids"].to(device)
             attention_mask = encoded_texts["attention_mask"].to(device)
 
-            if videos.dim()==5:
-                videos = videos.unsqueeze(1)
-
+            # Forward pass (aggregator is inside VideoEncoder)
             video_embeds = video_encoder(videos)
             text_embeds = text_encoder(input_ids, attention_mask)
-            loss = clip_style_loss(video_embeds, text_embeds, log_temperature)
 
+            # Compute contrastive loss
+            loss = clip_style_loss(video_embeds, text_embeds, log_temperature)
             total_loss += loss.item()
             num_batches += 1
+            # Collect embeddings
             all_video_embeddings.append(video_embeds.cpu())
 
-            # gather file paths or IDs
-            if videos.dim()==6:
-                this_paths = []
-                if hasattr(dataloader.dataset, "study_to_videos"):
-                    for sid in paths_or_ids:
-                        vid_list = dataloader.dataset.study_to_videos.get(sid, [])
-                        if vid_list:
-                            this_paths.append(vid_list[0])
-                        else:
-                            this_paths.append(sid)
-                else:
-                    this_paths = [str(s) for s in paths_or_ids]
+            # If we're using MultiVideoDataset:
+            if hasattr(dataloader.dataset, "get_video_paths"):
+                for sid in study_ids:
+                    # get the *list* of underlying video paths
+                    vid_list = dataloader.dataset.get_video_paths(sid)
+                    if len(vid_list) > 0:
+                        # e.g. store just the *first* path
+                        all_paths.append(vid_list[0])
+                    else:
+                        # fallback if no paths
+                        all_paths.append(str(sid))
             else:
-                if isinstance(paths_or_ids, (list, tuple)):
-                    this_paths = paths_or_ids
-                else:
-                    this_paths = [paths_or_ids]
+                # single-video dataset => 'study_ids' is actually the direct file path
+                for p in study_ids:
+                    all_paths.append(str(p))
 
-            all_paths.extend(this_paths)
-            batch_reports = dataloader.dataset.get_reports(paths_or_ids)
+            # Collect ground truth text
+            batch_reports = dataloader.dataset.get_reports(study_ids)
             all_ground_truth_reports.extend(batch_reports)
 
             del loss, video_embeds, text_embeds
             torch.cuda.empty_cache()
-
-    if world_size>1:
+    # -- Aggregate DDP losses if needed --
+    if world_size > 1:
         loss_tensor = torch.tensor([total_loss, float(num_batches)], device=device)
         dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
         total_loss, num_batches = loss_tensor.tolist()
 
-    avg_loss = total_loss/num_batches if num_batches>0 else float("inf")
+    # -- Compute average loss --
+    avg_loss = total_loss / num_batches if num_batches > 0 else float("inf")
 
-    if num_batches==0 or len(all_video_embeddings)==0:
-        if rank==0:
-            print("\nNo validation batches processed or no valid data.")
+    # Edge case: if no valid batches, return
+    if num_batches == 0 or len(all_video_embeddings) == 0:
+        if rank == 0:
+            print("No validation data processed.")
         return avg_loss, epoch_metrics, {
             "best_videos": [],
             "best_reports": [],
@@ -788,55 +800,65 @@ def validate_epoch(
             "worst_scores": [],
         }
 
+    # -- Concatenate all video embeddings => [N_items, emb_dim] --
     all_video_embeddings = torch.cat(all_video_embeddings, dim=0).to(device)
+
+    # -- Normalize and compute similarity --
     all_text_embeddings = all_text_embeddings.to(device)
-
-    max_len = min(all_video_embeddings.size(0), all_text_embeddings.size(0))
-    truncated_video = all_video_embeddings[:max_len]
-    truncated_text = all_text_embeddings[:max_len]
-
-    nm = compute_embedding_norms(truncated_video, truncated_text)
-    epoch_metrics["video_norm"] = nm["video_norm"]
-    epoch_metrics["text_norm"] = nm["text_norm"]
-
     all_video_embeddings = nn.functional.normalize(all_video_embeddings, dim=1)
     all_text_embeddings = nn.functional.normalize(all_text_embeddings, dim=1)
     similarity_matrix = torch.matmul(all_video_embeddings, all_text_embeddings.T)
 
-    max_k = min(similarity_matrix.size(0), similarity_matrix.size(1))
-    k_values = [k for k in [1,5,10,50] if k<=max_k]
+    # -- Compute summary norms (just for logging) --
+    # (Truncate to the same shape if there's a mismatch in length, purely for norm calculation)
+    max_len = min(all_video_embeddings.size(0), all_text_embeddings.size(0))
+    nm = compute_embedding_norms(
+        all_video_embeddings[:max_len],
+        all_text_embeddings[:max_len],
+    )
+    epoch_metrics["video_norm"] = nm["video_norm"]
+    epoch_metrics["text_norm"] = nm["text_norm"]
 
-    if max_k>=1:
-        # Now each "report" -> "report_to_global_index" to ensure
-        # repeated text => same index
-        global_ground_truth_indices = []
+    # -- Compute retrieval metrics if possible --
+    num_items, num_texts = similarity_matrix.shape
+    if num_items > 0 and num_texts > 0:
+        # Convert each ground-truth report -> global index
+        global_gt_indices = []
         for gt_text in all_ground_truth_reports:
-            # map to global ID
-            global_index = report_to_global_index[gt_text]
-            global_ground_truth_indices.append(global_index)
+            global_gt_indices.append(report_to_global_index[gt_text])
+        gt_tensor = torch.tensor(global_gt_indices, device=device)
 
-        gt_tensor = torch.tensor(global_ground_truth_indices, device=device)
 
-        recall_metrics = compute_recall_at_k(similarity_matrix, gt_tensor, k_values)
-        mrr_metrics = compute_mrr(similarity_matrix, gt_tensor)
-        epoch_metrics["NDCG@5_V2T"] = compute_ndcg(similarity_matrix, gt_tensor, k=5)
-        epoch_metrics["MedianRank_V2T"] = compute_median_rank(similarity_matrix, gt_tensor)
-        epoch_metrics["MAP"] = compute_map(similarity_matrix, gt_tensor)
-        align_score = compute_alignment_score(truncated_video, truncated_text)
+        num_items, num_texts = similarity_matrix.shape
+        max_k = min(num_items, num_texts)
+        k_values = [k for k in [1, 5, 10, 50] if k <= max_k]
+# Now do your recall, MRR, etc.
+        if len(k_values) > 0:
+            recall_metrics = compute_recall_at_k(similarity_matrix, gt_tensor, k_values)
+            epoch_metrics.update(recall_metrics)
 
-        for metric_name, value in recall_metrics.items():
-            epoch_metrics[metric_name] = value
-        for metric_name, value in mrr_metrics.items():
-            epoch_metrics[metric_name] = value
-        epoch_metrics["alignment_score"] = align_score
-    
-    # Only log best/worst retrieval if we are using val-only pool
-    val_best_videos = []
-    val_best_reports = []
-    val_worst_videos = []
-    val_worst_reports = []
+            epoch_metrics["MRR_V2T"] = compute_mrr(similarity_matrix, gt_tensor)["MRR_V2T"]
+            epoch_metrics["NDCG@5_V2T"] = compute_ndcg(similarity_matrix, gt_tensor, k=5)
+            epoch_metrics["MedianRank_V2T"] = compute_median_rank(similarity_matrix, gt_tensor)
+            epoch_metrics["MAP"] = compute_map(similarity_matrix, gt_tensor)
+        else:
+            print("No valid k values found for recall, MRR, NDCG, MedianRank, or MAP.")
+
+        # Alignment score over truncated set
+        truncated_video = all_video_embeddings[:max_len]
+        truncated_text = all_text_embeddings[:max_len]
+        epoch_metrics["alignment_score"] = compute_alignment_score(
+            truncated_video, truncated_text
+        )
+
+    # -- Optionally log best/worst retrieval examples --
+    best_videos = []
+    best_reports = []
+    worst_videos = []
+    worst_reports = []
 
     if use_val_only_pool:
+        # Log or export retrieval results
         log_val_only_retrievals(
             similarity_matrix=similarity_matrix,
             all_paths=all_paths,
@@ -845,31 +867,24 @@ def validate_epoch(
             epoch=epoch,
             wandb_run=wandb_run,
             output_dir=output_dir,
-            k=1,  # number of best/worst examples
+            k=1,  # number of best/worst examples to highlight
+            report_to_global_index=report_to_global_index,
         )
 
-    avg_text_embedding = all_text_embeddings.mean(dim=0)
-    prefix = "val_only" if use_val_only_pool else "global_val"
-
+    # -- Print final results --
     if rank == 0:
-        print(f"\nAverage text embedding (first 5 dims): {avg_text_embedding[:5]}")
-        print(f"Validation Loss: {avg_loss:.4f}")
-
-        if wandb_run is not None:
-            wandb_run.log({f"{prefix}/avg_loss": avg_loss, "epoch": epoch})
-            for metric_name, val in epoch_metrics.items():
-                wandb_run.log({f"{prefix}/{metric_name}": val, "epoch": epoch})
+        print(f"[Val] Epoch={epoch}, Loss={avg_loss:.4f}")
 
     return (
         avg_loss,
         epoch_metrics,
         {
-            "best_videos": val_best_videos,
-            "best_reports": val_best_reports,
-            "best_scores": [br["similarity_score"] for br in val_best_reports],
-            "worst_videos": val_worst_videos,
-            "worst_reports": val_worst_reports,
-            "worst_scores": [wr["similarity_score"] for wr in val_worst_reports],
+            "best_videos": best_videos,
+            "best_reports": best_reports,
+            "best_scores": [x["similarity_score"] for x in best_reports],
+            "worst_videos": worst_videos,
+            "worst_reports": worst_reports,
+            "worst_scores": [x["similarity_score"] for x in worst_reports],
         },
     )
 
@@ -967,12 +982,14 @@ def main(rank=0, world_size=1, args=None):
                 world_size=1,
                 epoch=epoch,
                 all_text_embeddings=val_text_embeddings,
-                all_reports=val_reports,
+                all_reports=val_unique_reports,
                 output_dir=full_output_path,
                 report_to_global_index=val_report_to_index,
                 use_val_only_pool=True,
                 log_temperature=log_temperature,
             )
+            
+
             current_val_loss = val_loss_valpool
             del val_text_embeddings
             torch.cuda.empty_cache()

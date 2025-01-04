@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from transformers import AutoModel, AutoTokenizer
 
-from utils.registry import register_model
+from utils.registry import ModelRegistry
 
 
 def get_tokenizer(model_name="microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext"):
@@ -23,7 +23,7 @@ def get_tokenizer(model_name="microsoft/BiomedNLP-PubMedBERT-base-uncased-abstra
     )
 
 
-@register_model("text_encoder")
+@ModelRegistry.register("text_encoder")
 class TextEncoder(nn.Module):
     """Text encoder model based on PubMedBERT."""
 

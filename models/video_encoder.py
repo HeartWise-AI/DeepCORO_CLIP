@@ -5,7 +5,7 @@ import torch.nn as nn
 from torchvision.models.video import mvit_v1_b, r3d_18
 from transformers import AutoModel, AutoTokenizer
 
-from utils.registry import register_model
+from utils.registry import ModelRegistry
 
 
 
@@ -39,7 +39,7 @@ class TransformerHead(nn.Module):
         x = self.fc(x)
         return x
 
-@register_model("video_encoder")
+@ModelRegistry.register("video_encoder")
 class VideoEncoder(nn.Module):
     """Video encoder model based on specified backbone."""
 

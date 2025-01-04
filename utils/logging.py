@@ -369,31 +369,32 @@ class WandbLogger:
             cleanup_temp_video(temp_file)
 
 
-def create_logger(
-    args,
-    project_name: str = "deepcoro_clip",
-    experiment_name: Optional[str] = None,
-) -> WandbLogger:
-    """Create a WandbLogger instance with configuration from args."""
-
+def create_logger(args):
     config = {
         "batch_size": args.batch_size,
-        "learning_rate": args.lr,
+        "learning_rate": args.learning_rate,
         "epochs": args.epochs,
         "num_workers": args.num_workers,
         "gpu": args.gpu,
+        "model_name": args.model_name,
+        "optimizer": args.optimizer,
+        "weight_decay": args.weight_decay,
+        "scheduler_type": args.scheduler_type,
+        "lr_step_period": args.lr_step_period,
+        "factor": args.factor,
+        "frames": args.frames,
+        "pretrained": args.pretrained,
     }
-
-    # Add any additional args to config
     for key, value in vars(args).items():
         if key not in config:
             config[key] = value
-
-    return WandbLogger(
-        project_name=project_name,
-        experiment_name=experiment_name,
+    wandb.init(
+        project=args.project,
+        entity=args.entity,
+        name=args.tag,
         config=config,
     )
+    return wandb.run
 
 
 def convert_video_for_wandb(video_path):

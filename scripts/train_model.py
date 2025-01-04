@@ -190,10 +190,8 @@ def generate_output_dir_name(args, run_id):
 
 
 def setup_training(args, rank=0):
-    """Set up training environment and parameters."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Initialize wandb if on rank 0
     wandb_run = None
     if rank == 0:
         wandb_run = create_logger(args)
@@ -201,12 +199,8 @@ def setup_training(args, rank=0):
             for key, value in wandb.config.items():
                 if hasattr(args, key):
                     setattr(args, key, value)
-                else:
-                    print(f"Warning: {key} in wandb.config not recognized as an arg.")
 
-    print("Args: ", args)
-
-    # === Calculate dataset statistics (rank=0 only) ===
+    # === Stats
     mean, std = None, None
     if rank == 0:
         print("\n=== Calculating Dataset Statistics ===")
@@ -220,13 +214,11 @@ def setup_training(args, rank=0):
             backbone=args.model_name,
             stride=args.stride,
         )
-
         num_stats_samples = min(100, 1000)
         print(f"Stats dataset length: {len(stats_dataset)}")
         if len(stats_dataset) > num_stats_samples:
             indices = torch.linspace(0, len(stats_dataset) - 1, num_stats_samples).long().tolist()
             stats_dataset = torch.utils.data.Subset(stats_dataset, indices)
-
         print(f"\nUsing {num_stats_samples} samples for statistics calculation")
         print(f"Frame count per video: {args.frames}")
 
@@ -246,7 +238,6 @@ def setup_training(args, rank=0):
             mean_sum += batch.sum(dim=0)
             squared_sum += (batch**2).sum(dim=0)
             pixel_count += batch.shape[0]
-
         mean = mean_sum / pixel_count
         std = torch.sqrt((squared_sum / pixel_count) - (mean**2))
 
@@ -256,7 +247,6 @@ def setup_training(args, rank=0):
         print(f"Calculated from {num_stats_samples} samples ({pixel_count:,} pixels)")
         print("===========================\n")
 
-    # Broadcast stats if distributed
     if torch.distributed.is_initialized():
         if mean is not None:
             mean = mean.cuda()
@@ -271,7 +261,7 @@ def setup_training(args, rank=0):
         mean = mean_tensor.cpu()
         std = std_tensor.cpu()
 
-    # === Datasets ===
+    # === Datasets
     if args.multi_video:
         print("Using MultiVideoDataset")
         train_dataset = MultiVideoDataset(
@@ -287,21 +277,6 @@ def setup_training(args, rank=0):
             random_augment=args.random_augment,
             backbone=args.model_name,
         )
-    else:
-        train_dataset = VideoDataset(
-            root=args.root,
-            data_filename=args.data_filename,
-            split="train",
-            target_label=args.target_label,
-            datapoint_loc_label=args.datapoint_loc_label,
-            num_frames=args.frames,
-            backbone=args.model_name,
-            mean=(mean.tolist() if mean is not None else [0.485, 0.456, 0.406]),
-            std=(std.tolist() if std is not None else [0.229, 0.224, 0.225]),
-            rand_augment=args.random_augment,
-        )
-
-    if args.multi_video:
         val_dataset = MultiVideoDataset(
             root=args.root,
             data_filename=args.data_filename,
@@ -315,6 +290,18 @@ def setup_training(args, rank=0):
             backbone=args.model_name,
         )
     else:
+        train_dataset = VideoDataset(
+            root=args.root,
+            data_filename=args.data_filename,
+            split="train",
+            target_label=args.target_label,
+            datapoint_loc_label=args.datapoint_loc_label,
+            num_frames=args.frames,
+            backbone=args.model_name,
+            mean=(mean.tolist() if mean is not None else [0.485, 0.456, 0.406]),
+            std=(std.tolist() if std is not None else [0.229, 0.224, 0.225]),
+            rand_augment=args.random_augment,
+        )
         val_dataset = VideoDataset(
             root=args.root,
             data_filename=args.data_filename,
@@ -328,9 +315,8 @@ def setup_training(args, rank=0):
         )
 
     if len(val_dataset) == 0:
-        raise ValueError("No validation samples found! Check your dataset split.")
+        raise ValueError("No validation samples found!")
 
-    # === Dataloaders ===
     if args.multi_video:
         train_loader = DataLoader(
             train_dataset,
@@ -370,7 +356,7 @@ def setup_training(args, rank=0):
             collate_fn=custom_collate_fn,
         )
 
-    # === Model Creation ===
+    # === Model
     video_encoder = VideoEncoder(
         backbone=args.model_name,
         input_channels=3,
@@ -380,7 +366,6 @@ def setup_training(args, rank=0):
         dropout=args.dropout,
         freeze_ratio=args.video_freeze_ratio,
     ).to(device).float()
-
     text_encoder = TextEncoder(
         dropout=args.dropout,
         freeze_ratio=args.text_freeze_ratio,
@@ -391,13 +376,11 @@ def setup_training(args, rank=0):
     for param in text_encoder.parameters():
         param.data = param.data.float()
 
-    # Trainable temperature
     temp_tensor = torch.tensor([args.temperature], dtype=torch.float32, device=device)
     if torch.isnan(temp_tensor).any():
         raise ValueError("Temperature value is NaN")
     log_temperature = nn.Parameter(torch.log(temp_tensor))
 
-    # === Optimizer & Scheduler ===
     optimizer_class = getattr(torch.optim, args.optimizer)
     optimizer = optimizer_class(
         [
@@ -422,8 +405,7 @@ def setup_training(args, rank=0):
             T_max=args.epochs,
         )
 
-    # === Logging Info ===
-    if rank == 0 and wandb.run is not None:
+    if rank == 0 and wandb_run is not None:
         wandb.config.update(
             {
                 "train_dataset_size": len(train_dataset),
@@ -432,8 +414,8 @@ def setup_training(args, rank=0):
             allow_val_change=True,
         )
         print("\n=== Dataset Information ===")
-        print(f"Training:   {len(train_dataset):,} videos (or studies if multi-video)")
-        print(f"Validation: {len(val_dataset):,} videos (or studies if multi-video)")
+        print(f"Training:   {len(train_dataset):,} (studies if multi-video)")
+        print(f"Validation: {len(val_dataset):,} (studies if multi-video)")
         print(f"Total:      {len(train_dataset) + len(val_dataset):,}")
         print(f"\nBatch Size: {args.batch_size}")
         print(f"Training Batches: {len(train_loader):,}")
@@ -603,35 +585,6 @@ def train_epoch(
     return avg_loss, epoch_metrics
 
 
-def create_logger(args):
-    """Create logger with W&B configuration."""
-    config = {
-        "batch_size": args.batch_size,
-        "learning_rate": args.learning_rate,
-        "epochs": args.epochs,
-        "num_workers": args.num_workers,
-        "gpu": args.gpu,
-        "model_name": args.model_name,
-        "optimizer": args.optimizer,
-        "weight_decay": args.weight_decay,
-        "scheduler_type": args.scheduler_type,
-        "lr_step_period": args.lr_step_period,
-        "factor": args.factor,
-        "frames": args.frames,
-        "pretrained": args.pretrained,
-    }
-    for key, value in vars(args).items():
-        if key not in config:
-            config[key] = value
-    print(config)
-    wandb.init(
-        project=args.project,
-        entity=args.entity,
-        name=args.tag,
-        config=config,
-    )
-    return wandb.run
-
 
 def save_checkpoint(model_dict, metrics_dict, output_path, is_best=False):
     """
@@ -670,7 +623,12 @@ def create_global_text_pool(train_dataset, val_dataset, test_dataset=None):
 def precompute_global_text_embeddings(
     text_encoder, all_global_reports, tokenizer, device, batch_size=64, num_workers=4
 ):
-    from torch.utils.data import DataLoader, Dataset
+    """
+    Return:
+       all_global_reports => the same unique list
+       all_global_text_embeddings => shape [num_unique, emb_dim]
+    """
+    from torch.utils.data import Dataset, DataLoader
 
     class GlobalTextDataset(Dataset):
         def __init__(self, texts, tokenizer):
@@ -682,41 +640,36 @@ def precompute_global_text_embeddings(
 
         def __getitem__(self, idx):
             text = self.texts[idx]
-            encoded = self.tokenizer(
+            enc = self.tokenizer(
                 text,
                 padding="max_length",
                 truncation=True,
                 max_length=512,
                 return_tensors="pt",
             )
-            encoded = {k: v.squeeze(0) for k, v in encoded.items()}
-            return encoded
+            enc = {k: v.squeeze(0) for k, v in enc.items()}
+            return enc
 
     text_dataset = GlobalTextDataset(all_global_reports, tokenizer)
-    text_loader = DataLoader(
-        text_dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False
-    )
+    text_loader = DataLoader(text_dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False)
 
     all_text_embeddings = []
     text_encoder.eval()
-
     with torch.no_grad():
         for batch_texts in text_loader:
             input_ids = batch_texts["input_ids"].to(device)
             attention_mask = batch_texts["attention_mask"].to(device)
-            text_features = text_encoder(input_ids, attention_mask)
-            all_text_embeddings.append(text_features.cpu())
-
+            txt_feats = text_encoder(input_ids, attention_mask)
+            all_text_embeddings.append(txt_feats.cpu())
     all_global_text_embeddings = torch.cat(all_text_embeddings, dim=0)
     return all_global_reports, all_global_text_embeddings
-
 
 def validate_epoch(
     video_encoder,
     text_encoder,
     dataloader,
     device,
-    # wandb_run,  # <--- no logging inside validate_epoch, remove wandb here
+    wandb_run,
     rank=0,
     world_size=1,
     epoch=0,
@@ -728,8 +681,24 @@ def validate_epoch(
     log_temperature=None,
 ):
     """
-    Validation epoch that handles single or multi-video, but NO direct wandb.log calls.
-    We'll return all metrics, and the main() loop will do the logging afterwards.
+    Validation epoch with retrieval computation and logging.
+
+    Args:
+        video_encoder, text_encoder: Models
+        dataloader: Validation DataLoader
+        device: torch device
+        wandb_run: W&B logger
+        rank: DDP rank
+        world_size: DDP world size
+        epoch: current epoch
+        all_text_embeddings: precomputed text embeddings for the pool (val-only or global)
+        all_reports: corresponding reports (val-only or global)
+        report_to_global_index: mapping from report to index in `all_reports`
+        use_val_only_pool (bool): If True, evaluate retrieval using only the val set embeddings,
+                                  and log best/worst examples. If False, only compute metrics.
+
+    Returns:
+        avg_loss, epoch_metrics, examples_dict
     """
     video_encoder.eval()
     text_encoder.eval()
@@ -755,8 +724,7 @@ def validate_epoch(
     all_paths = []
     all_ground_truth_reports = []
 
-    # no wandb logging here
-    progress = tqdm(dataloader, desc=f"Validation Epoch {epoch}") if rank == 0 else dataloader
+    progress = tqdm(dataloader, desc=f"Validation Epoch {epoch}") if rank==0 else dataloader
 
     with torch.no_grad():
         for batch_idx, batch in enumerate(progress):
@@ -765,7 +733,7 @@ def validate_epoch(
             input_ids = encoded_texts["input_ids"].to(device)
             attention_mask = encoded_texts["attention_mask"].to(device)
 
-            if videos.dim() == 5:
+            if videos.dim()==5:
                 videos = videos.unsqueeze(1)
 
             video_embeds = video_encoder(videos)
@@ -774,12 +742,10 @@ def validate_epoch(
 
             total_loss += loss.item()
             num_batches += 1
-
             all_video_embeddings.append(video_embeds.cpu())
 
             # gather file paths or IDs
-            if videos.dim() == 6:
-                # multi-video => 'paths_or_ids' is list of study IDs
+            if videos.dim()==6:
                 this_paths = []
                 if hasattr(dataloader.dataset, "study_to_videos"):
                     for sid in paths_or_ids:
@@ -803,30 +769,25 @@ def validate_epoch(
             del loss, video_embeds, text_embeds
             torch.cuda.empty_cache()
 
-    if world_size > 1:
+    if world_size>1:
         loss_tensor = torch.tensor([total_loss, float(num_batches)], device=device)
         dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
         total_loss, num_batches = loss_tensor.tolist()
 
-    avg_loss = total_loss / num_batches if num_batches > 0 else float("inf")
+    avg_loss = total_loss/num_batches if num_batches>0 else float("inf")
 
-    if num_batches == 0 or len(all_video_embeddings) == 0:
-        if rank == 0:
+    if num_batches==0 or len(all_video_embeddings)==0:
+        if rank==0:
             print("\nNo validation batches processed or no valid data.")
-        return (
-            avg_loss,
-            epoch_metrics,
-            {
-                "best_videos": [],
-                "best_reports": [],
-                "best_scores": [],
-                "worst_videos": [],
-                "worst_reports": [],
-                "worst_scores": [],
-            },
-        )
+        return avg_loss, epoch_metrics, {
+            "best_videos": [],
+            "best_reports": [],
+            "best_scores": [],
+            "worst_videos": [],
+            "worst_reports": [],
+            "worst_scores": [],
+        }
 
-    # unify => shape [N_total, 512]
     all_video_embeddings = torch.cat(all_video_embeddings, dim=0).to(device)
     all_text_embeddings = all_text_embeddings.to(device)
 
@@ -834,37 +795,47 @@ def validate_epoch(
     truncated_video = all_video_embeddings[:max_len]
     truncated_text = all_text_embeddings[:max_len]
 
-    norm_metrics = compute_embedding_norms(truncated_video, truncated_text)
-    epoch_metrics["video_norm"] = norm_metrics["video_norm"]
-    epoch_metrics["text_norm"] = norm_metrics["text_norm"]
+    nm = compute_embedding_norms(truncated_video, truncated_text)
+    epoch_metrics["video_norm"] = nm["video_norm"]
+    epoch_metrics["text_norm"] = nm["text_norm"]
 
     all_video_embeddings = nn.functional.normalize(all_video_embeddings, dim=1)
     all_text_embeddings = nn.functional.normalize(all_text_embeddings, dim=1)
     similarity_matrix = torch.matmul(all_video_embeddings, all_text_embeddings.T)
 
     max_k = min(similarity_matrix.size(0), similarity_matrix.size(1))
-    k_values = [k for k in [1, 5, 10, 50] if k <= max_k]
+    k_values = [k for k in [1,5,10,50] if k<=max_k]
 
-    if max_k >= 1:
-        global_ground_truth_indices = [
-            report_to_global_index[gt] for gt in all_ground_truth_reports
-        ]
+    if max_k>=1:
+        # Now each "report" -> "report_to_global_index" to ensure
+        # repeated text => same index
+        global_ground_truth_indices = []
+        for gt_text in all_ground_truth_reports:
+            # map to global ID
+            global_index = report_to_global_index[gt_text]
+            global_ground_truth_indices.append(global_index)
+
         gt_tensor = torch.tensor(global_ground_truth_indices, device=device)
 
-        recall_metrics = compute_recall_at_k(similarity_matrix, gt_tensor, k_values=k_values)
+        recall_metrics = compute_recall_at_k(similarity_matrix, gt_tensor, k_values)
         mrr_metrics = compute_mrr(similarity_matrix, gt_tensor)
         epoch_metrics["NDCG@5_V2T"] = compute_ndcg(similarity_matrix, gt_tensor, k=5)
         epoch_metrics["MedianRank_V2T"] = compute_median_rank(similarity_matrix, gt_tensor)
         epoch_metrics["MAP"] = compute_map(similarity_matrix, gt_tensor)
-        alignment_score = compute_alignment_score(truncated_video, truncated_text)
+        align_score = compute_alignment_score(truncated_video, truncated_text)
 
         for metric_name, value in recall_metrics.items():
             epoch_metrics[metric_name] = value
         for metric_name, value in mrr_metrics.items():
             epoch_metrics[metric_name] = value
-        epoch_metrics["alignment_score"] = alignment_score
+        epoch_metrics["alignment_score"] = align_score
+    
+    # Only log best/worst retrieval if we are using val-only pool
+    val_best_videos = []
+    val_best_reports = []
+    val_worst_videos = []
+    val_worst_reports = []
 
-    # We might optionally do log_val_only_retrievals for top examples
     if use_val_only_pool:
         log_val_only_retrievals(
             similarity_matrix=similarity_matrix,
@@ -872,24 +843,50 @@ def validate_epoch(
             all_ground_truth_reports=all_ground_truth_reports,
             all_reports=all_reports,
             epoch=epoch,
-            wandb_run=None,  # or pass none so it doesn't log
+            wandb_run=wandb_run,
             output_dir=output_dir,
-            k=1,
+            k=1,  # number of best/worst examples
         )
+
+    avg_text_embedding = all_text_embeddings.mean(dim=0)
+    prefix = "val_only" if use_val_only_pool else "global_val"
+
+    if rank == 0:
+        print(f"\nAverage text embedding (first 5 dims): {avg_text_embedding[:5]}")
+        print(f"Validation Loss: {avg_loss:.4f}")
+
+        if wandb_run is not None:
+            wandb_run.log({f"{prefix}/avg_loss": avg_loss, "epoch": epoch})
+            for metric_name, val in epoch_metrics.items():
+                wandb_run.log({f"{prefix}/{metric_name}": val, "epoch": epoch})
 
     return (
         avg_loss,
         epoch_metrics,
         {
-            "best_videos": [],
-            "best_reports": [],
-            "best_scores": [],
-            "worst_videos": [],
-            "worst_reports": [],
-            "worst_scores": [],
+            "best_videos": val_best_videos,
+            "best_reports": val_best_reports,
+            "best_scores": [br["similarity_score"] for br in val_best_reports],
+            "worst_videos": val_worst_videos,
+            "worst_reports": val_worst_reports,
+            "worst_scores": [wr["similarity_score"] for wr in val_worst_reports],
         },
     )
 
+
+
+def save_unique_texts_csv(output_dir, unique_texts):
+    import csv
+    """
+    Save the unique text list to a CSV for debugging or reference.
+    """
+    csv_path = os.path.join(output_dir, "unique_val_texts.csv")
+    with open(csv_path, mode="w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["Index", "Text"])
+        for idx, txt in enumerate(unique_texts):
+            writer.writerow([idx, txt])
+    print(f"Saved {len(unique_texts)} unique val texts to {csv_path}")
 
 def main(rank=0, world_size=1, args=None):
     training_setup = None
@@ -902,6 +899,7 @@ def main(rank=0, world_size=1, args=None):
         output_subdir = generate_output_dir_name(args, run_id)
         full_output_path = os.path.join(args.output_dir, output_subdir)
         os.makedirs(full_output_path, exist_ok=True)
+
         print("Args: ", args)
 
         training_setup = setup_training(args, rank=rank)
@@ -928,6 +926,10 @@ def main(rank=0, world_size=1, args=None):
         val_reports = val_dataset.get_all_reports()
         val_unique_reports = list(dict.fromkeys(val_reports))
         val_report_to_index = {r: i for i, r in enumerate(val_unique_reports)}
+
+        
+        if rank==0:
+            save_unique_texts_csv(full_output_path, val_unique_reports)
 
         scaler = torch.amp.GradScaler(enabled=args.use_amp, device=device)
 
@@ -960,7 +962,7 @@ def main(rank=0, world_size=1, args=None):
                 text_encoder=text_encoder,
                 dataloader=val_loader,
                 device=device,
-                # wandb_run=wandb_run, # no direct logging here
+                wandb_run=wandb_run,
                 rank=0,
                 world_size=1,
                 epoch=epoch,
@@ -1075,7 +1077,7 @@ def main(rank=0, world_size=1, args=None):
         if "is_distributed" in locals() and is_distributed:
             cleanup_ddp()
 
-
+ 
 if __name__ == "__main__":
     args = parse_args()
     num_gpus = torch.cuda.device_count()

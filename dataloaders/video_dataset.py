@@ -9,9 +9,9 @@ import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 
-from models.text_encoder import get_tokenizer
 from utils.ddp import DS
-from utils.parser import HeartWiseParser
+from utils.config import HeartWiseConfig
+from models.text_encoder import get_tokenizer
 from utils.video import load_video, format_mean_std
 
 class VideoDataset(torch.utils.data.Dataset):
@@ -303,7 +303,7 @@ def custom_collate_fn(batch):
     }
 
 def get_distributed_video_dataloader(
-    args: HeartWiseParser,
+    config: HeartWiseConfig,
     split: str,
     mean: List[float],
     std: List[float],
@@ -313,16 +313,16 @@ def get_distributed_video_dataloader(
 ) -> DataLoader:
     # Create the video dataset
     video_dataset = VideoDataset(
-        root=args.root,
-        data_filename=args.data_filename,
+        root=config.root,
+        data_filename=config.data_filename,
         split=split,
-        target_label=args.target_label,
-        datapoint_loc_label=args.datapoint_loc_label,
-        num_frames=args.frames,
-        backbone=args.model_name,
+        target_label=config.target_label,
+        datapoint_loc_label=config.datapoint_loc_label,
+        num_frames=config.frames,
+        backbone=config.model_name,
         mean=mean,
         std=std,
-        rand_augment=args.rand_aug,
+        rand_augment=config.rand_augment,
     )
 
     # Create a sampler for distributed training
@@ -336,9 +336,9 @@ def get_distributed_video_dataloader(
     # Create the dataloader
     return DataLoader(
         video_dataset,
-        batch_size=args.batch_size,
+        batch_size=config.batch_size,
         sampler=sampler,
-        num_workers=args.num_workers,
+        num_workers=config.num_workers,
         pin_memory=True,
         drop_last=True,
         collate_fn=custom_collate_fn,

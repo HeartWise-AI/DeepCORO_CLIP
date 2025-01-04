@@ -64,6 +64,11 @@ class HeartWiseConfig:
     # Checkpointing
     save_best: str
     resume: bool
+    
+    # Logging
+    project: str
+    entity: str
+    tag: str
 
     @classmethod
     def from_yaml(cls, config_path: str) -> 'HeartWiseConfig':

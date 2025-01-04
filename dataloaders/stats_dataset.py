@@ -6,7 +6,7 @@ import pandas as pd
 from torch.utils.data import DataLoader
 
 from utils.video import load_video
-from utils.parser import HeartWiseParser
+from utils.config import HeartWiseConfig
 
 
 class StatsDataset(torch.utils.data.Dataset):
@@ -99,22 +99,22 @@ def stats_collate_fn(batch):
     return videos
 
 
-def get_stats_dataloader(args: HeartWiseParser):
+def get_stats_dataloader(config: HeartWiseConfig):
     stats_dataset = StatsDataset(
-        root=args.root,
-        data_filename=args.data_filename,
+        root=config.root,
+        data_filename=config.data_filename,
         split="train",
-        target_label=args.target_label,
-        datapoint_loc_label=args.datapoint_loc_label,
-        num_frames=args.frames,
-        backbone=args.model_name,
-        stride=args.stride,
+        target_label=config.target_label,
+        datapoint_loc_label=config.datapoint_loc_label,
+        num_frames=config.frames,
+        backbone=config.model_name,
+        stride=config.stride,
     )
 
     return DataLoader(
         stats_dataset,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
+        batch_size=config.batch_size,
+        num_workers=config.num_workers,
         shuffle=False,
         collate_fn=stats_collate_fn,
     )    

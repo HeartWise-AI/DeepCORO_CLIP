@@ -48,7 +48,7 @@ metrics_control:
 recall_k: [1, 5, 10, 50]
 
 # Data augmentation
-rand_augment: !!bool true
+rand_augment: !!bool false
 resize: !!int 224
 apply_mask: !!bool false
 view_count: !!null null
@@ -56,3 +56,8 @@ view_count: !!null null
 # Checkpointing
 save_best: !!str loss
 resume: !!bool false
+
+# Logging
+project: !!str deepcoro_clip
+entity: !!str jacques-delfrate
+tag: !!str mvit_pretrained

@@ -22,12 +22,11 @@ from utils.text_encoder import (
 from utils.metrics import (
     compute_mrr, 
     compute_map,
-    compute_ndcg,
+    compute_ndcg_at_k,
     compute_median_rank,
     compute_recall_at_k, 
     compute_embedding_norms, 
-    compute_alignment_score, 
-    compute_similarity_matrix
+    compute_alignment_score
 )
 
 from models.video_encoder import VideoEncoder
@@ -78,6 +77,14 @@ class VideoContrastiveLearningRunner:
         lr_scheduler: LRScheduler,
         loss_fn: callable,
     ):
+        # Add validation for recall_k
+        if not isinstance(config.recall_k, list):
+            raise ValueError("config.recall_k must be a list of integers, "
+                             f"got {type(config.recall_k)}")
+        if not isinstance(config.ndcg_k, list):
+            raise ValueError("config.ndcg_k must be a list of integers, "
+                             f"got {type(config.ndcg_k)}")
+        
         self.config: HeartWiseConfig = config
         self.device: int = device
         self.world_size: int = world_size
@@ -297,22 +304,22 @@ class VideoContrastiveLearningRunner:
             ground_truth_indices = torch.arange(len(all_ground_truth_reports), device=self.device)
             
             # Compute recall metrics
-            recall_metrics = compute_recall_at_k(similarity_matrix, k_values=[1, 5])
+            recall_metrics = compute_recall_at_k(similarity_matrix, ground_truth_indices, k_values=self.config.recall_k)
             mrr_score = compute_mrr(similarity_matrix)
             map_score = compute_map(similarity_matrix, ground_truth_indices)
             median_rank_score = compute_median_rank(similarity_matrix, ground_truth_indices)
-            ndcg_score = compute_ndcg(similarity_matrix, ground_truth_indices)
+            ndcg_score = compute_ndcg_at_k(similarity_matrix, ground_truth_indices, k_values=self.config.ndcg_k)
             
             # Update dictionary with hashmap type metrics
             epoch_metrics.update(recall_metrics)
             epoch_metrics.update(mrr_score)
+            epoch_metrics.update(ndcg_score)
             
             # Update dictionary with float type metrics
-            epoch_metrics['map'] = map_score
-            epoch_metrics['median_rank'] = median_rank_score
-            epoch_metrics['ndcg'] = ndcg_score
+            epoch_metrics['MAP'] = map_score
+            epoch_metrics['MedianRank_V2T'] = median_rank_score
             
-            # Gather and average across all processes
+            # Gather and average across all GPU processes
             gathered_metrics = {
                 f"{mode}/{k}": gather_loss([v], self.device) 
                 for k, v in epoch_metrics.items()

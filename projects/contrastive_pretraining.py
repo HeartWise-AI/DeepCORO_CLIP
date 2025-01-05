@@ -33,13 +33,13 @@ from utils.logging import (
     convert_video_for_wandb
 )
 from utils.metrics import (
-    compute_embedding_norms, 
-    compute_alignment_score, 
-    compute_recall_at_k, 
     compute_mrr, 
     compute_map,
+    compute_ndcg_at_k,
+    compute_recall_at_k, 
     compute_median_rank,
-    compute_ndcg
+    compute_embedding_norms, 
+    compute_alignment_score, 
 )
 from dataloaders.stats_dataset import get_stats_dataloader
 from dataloaders.video_dataset import get_distributed_video_dataloader
@@ -361,7 +361,7 @@ def validate_epoch(
         mrr_metrics = compute_mrr(similarity_matrix, global_ground_truth_indices_tensor)
 
         map_metrics = compute_map(similarity_matrix, global_ground_truth_indices_tensor)
-        ndcg_metrics = compute_ndcg(similarity_matrix, global_ground_truth_indices_tensor)
+        ndcg_metrics = compute_ndcg_at_k(similarity_matrix, global_ground_truth_indices_tensor, k_values=[1, effective_k])
         median_rank_metrics = compute_median_rank(similarity_matrix, global_ground_truth_indices_tensor)
 
         alignment_score = compute_alignment_score(

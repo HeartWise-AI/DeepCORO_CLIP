@@ -273,20 +273,37 @@ class VideoContrastiveLearningRunner:
         # Process embeddings for recall computation
         all_video_embeddings = torch.cat(all_video_embeddings, dim=0).to(self.device)
         all_text_embeddings = torch.cat(all_text_embeddings, dim=0).to(self.device)
+        
+        # Get unique texts and create mapping
+        unique_texts = list(dict.fromkeys(all_ground_truth_reports))
+        text_to_idx = {text: idx for idx, text in enumerate(unique_texts)}
+        
+        # Create ground truth indices - map each video to index of its text
+        ground_truth_indices = torch.tensor([
+            text_to_idx[text] for text in all_ground_truth_reports
+        ], device=self.device)
+
+        # Get embeddings for unique texts only
+        unique_text_embeddings = []
+        for text in unique_texts:
+            # Find first occurrence of this text
+            idx = all_ground_truth_reports.index(text)
+            unique_text_embeddings.append(all_text_embeddings[idx])
+        unique_text_embeddings = torch.stack(unique_text_embeddings)
                     
         # Normalize embeddings
         all_video_embeddings_normalized = nn.functional.normalize(all_video_embeddings, dim=1)
-        all_text_embeddings_normalized = nn.functional.normalize(all_text_embeddings, dim=1)
+        unique_text_embeddings_normalized = nn.functional.normalize(unique_text_embeddings, dim=1)
         
-        # Compute similarity matrix
-        similarity_matrix = torch.matmul(all_video_embeddings_normalized, all_text_embeddings_normalized.T)
+        # Compute similarity matrix between videos and unique texts
+        similarity_matrix = torch.matmul(
+            all_video_embeddings_normalized, 
+            unique_text_embeddings_normalized.T
+        )
         
-        # Create ground truth indices (diagonal matrix since each video matches with its text)
-        ground_truth_indices = torch.arange(len(all_ground_truth_reports), device=self.device)
-        
-        # Compute recall metrics
+        # Compute metrics on this GPU's portion of data
         recall_metrics = compute_recall_at_k(similarity_matrix, ground_truth_indices, k_values=self.config.recall_k)
-        mrr_score = compute_mrr(similarity_matrix)
+        mrr_score = compute_mrr(similarity_matrix, ground_truth_indices)
         map_score = compute_map(similarity_matrix, ground_truth_indices)
         median_rank_score = compute_median_rank(similarity_matrix, ground_truth_indices)
         ndcg_score = compute_ndcg_at_k(similarity_matrix, ground_truth_indices, k_values=self.config.ndcg_k)
@@ -300,7 +317,7 @@ class VideoContrastiveLearningRunner:
         epoch_metrics['MAP'] = map_score
         epoch_metrics['MedianRank_V2T'] = median_rank_score
         
-        # Gather and average across all GPU processes
+        # Gather and average all metrics across GPUs
         gathered_metrics = {
             f"{mode}/{k}": gather_loss([v], self.device) 
             for k, v in epoch_metrics.items()

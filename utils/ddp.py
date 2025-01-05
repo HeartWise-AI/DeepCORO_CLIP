@@ -22,5 +22,4 @@ def ddp_cleanup():
 def gather_loss(loss: list, device: int) -> float:
     loss_tensor = torch.tensor(loss, device=device)
     dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
-    avg_loss = loss_tensor.mean().item() / dist.get_world_size()
-    return avg_loss
+    return loss_tensor.mean().item() / dist.get_world_size()

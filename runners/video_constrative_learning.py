@@ -145,19 +145,25 @@ class VideoContrastiveLearningRunner:
         # Training loop
         for epoch in range(self.config.epochs):           
             # Training phase
-            train_metrics = self._run_epoch(mode="train", epoch=epoch)
-
+            train_metrics = self._run_epoch(
+                mode="train", 
+                epoch=epoch
+            )
             if self.config.is_ref_device:
                 self.wandb_wrapper.log({
                     **train_metrics
                 })
 
             
-            # # Validation phase with pool
-            # val_metrics = self._run_epoch(
-            #     mode="val",
-            #     epoch=epoch,
-            # )
+            # Validation phase with pool
+            val_metrics = self._run_epoch(
+                mode="val",
+                epoch=epoch,
+            )
+            if self.config.is_ref_device:
+                self.wandb_wrapper.log({
+                    **val_metrics
+                })
             
             # # Update best model based on val-only performance
             # current_val_loss = val_metrics["val/loss"]
@@ -166,7 +172,7 @@ class VideoContrastiveLearningRunner:
             #     self.best_val_loss = current_val_loss
             #     self.best_epoch = epoch
                 
-            #     if self.device == 0:
+            #     if self.config.is_ref_device:
             #         self._save_checkpoint(
             #             epoch=epoch,
             #             metrics={
@@ -179,7 +185,7 @@ class VideoContrastiveLearningRunner:
             #               f"(previous: {previous_best:.4f})")
 
             # # Log metrics only on reference device
-            # if self.device == 0 and self.wandb_wrapper:
+            # if self.config.is_ref_device and self.wandb_wrapper:
             #     self.wandb_wrapper.log({
             #         "epoch": epoch,
             #         **train_metrics,
@@ -189,7 +195,7 @@ class VideoContrastiveLearningRunner:
             #     })
                 
             # # Save latest checkpoint
-            # if self.device == 0:
+            # if self.config.is_ref_device:
             #     self._save_checkpoint(
             #         epoch=epoch,
             #         metrics={
@@ -220,6 +226,9 @@ class VideoContrastiveLearningRunner:
         # Get appropriate dataloader
         dataloader = self.train_loader if mode == "train" else self.val_loader
         
+        # Get appropriate step function
+        step_fn = self._train_step if mode == "train" else self._val_step      
+        
         # Progress bar
         tqdm_desc = f'Running {mode} Epoch {epoch + 1}'
         progress = tqdm(dataloader, desc=tqdm_desc) if self.device == 0 else dataloader
@@ -229,155 +238,75 @@ class VideoContrastiveLearningRunner:
         all_text_embeddings = []
         all_paths = []
         all_ground_truth_reports = []
-
-        # Initialize batch_idx before the loop
-        batch_idx = 0
         
+        # Run batches
         for batch_idx, batch in enumerate(progress, start=1):
             if batch["videos"] is None or batch["encoded_texts"] is None:
                 continue
                 
-            inputs = self._preprocess_inputs(batch)
+            step_inputs, paths = self._preprocess_inputs(batch)
+            batch_metrics, embeddings = step_fn(**step_inputs)
+            all_video_embeddings.append(embeddings["video_embeddings"].cpu())
+            all_text_embeddings.append(embeddings["text_embeddings"].cpu())
+            all_paths.extend(paths)
+            all_ground_truth_reports.extend(
+                dataloader.dataset.get_reports(paths)
+            )
             
-            if mode == "train":
-                batch_metrics, embeddings = self._train_step(**inputs)
-                all_video_embeddings.append(embeddings["video_embeddings"].cpu())
-                all_text_embeddings.append(embeddings["text_embeddings"].cpu())
-                all_paths.extend(inputs["paths"])
-                all_ground_truth_reports.extend(
-                    self.train_loader.dataset.get_reports(inputs["paths"])
-                )
-                
-                # Accumulate metrics
-                for k, v in batch_metrics.items():
-                    epoch_metrics[k] = epoch_metrics.get(k, 0) + v
-                            
-                # Update progress bar
-                total_loss += batch_metrics["loss"]
-                if self.device == 0:
-                    progress.set_postfix({
-                        f"{mode}_loss": f"{batch_metrics['loss']:.4f}",
-                        "avg_loss": f"{(total_loss / batch_idx):.4f}"
-                    })
-                    
-            else:  # Validation mode
-                with torch.no_grad():
-                    video_features = self.video_encoder(inputs["videos"])
-                    text_features = self.text_encoder(
-                        inputs["input_ids"], 
-                        inputs["attention_mask"]
-                    )
-                                        
-                    loss = self.loss_fn(video_features, text_features, self.temperature)
-                    
-                    epoch_metrics["loss"] = epoch_metrics.get("loss", 0) + loss.item()
-                    
-                    # Store embeddings for later computation
-                    all_video_embeddings.append(video_features.cpu())
-                    all_text_embeddings.append(text_features.cpu())
-                    all_paths.extend(inputs["paths"])
-                    all_ground_truth_reports.extend(
-                        self.val_loader.dataset.get_reports(inputs["paths"])
-                    )
-
-        # Raise error if no batches were processed
-        if batch_idx == 0:
-            raise ValueError("No batches were processed. Check your data loader and input pipeline.")
-
-        # At the end of the epoch, compute means and gather across processes
-        if mode == "train":
-            # Compute means for all metrics
-            epoch_metrics = {
-                k: v / batch_idx for k, v in epoch_metrics.items()
-            }
-
-            # Process embeddings for recall computation
-            all_video_embeddings = torch.cat(all_video_embeddings, dim=0).to(self.device)
-            all_text_embeddings = torch.cat(all_text_embeddings, dim=0).to(self.device)
+            # Accumulate metrics
+            for k, v in batch_metrics.items():
+                epoch_metrics[k] = epoch_metrics.get(k, 0) + v
                         
-            # Normalize embeddings
-            all_video_embeddings_normalized = nn.functional.normalize(all_video_embeddings, dim=1)
-            all_text_embeddings_normalized = nn.functional.normalize(all_text_embeddings, dim=1)
-            
-            # Compute similarity matrix
-            similarity_matrix = torch.matmul(all_video_embeddings_normalized, all_text_embeddings_normalized.T)
-            
-            # Create ground truth indices (diagonal matrix since each video matches with its text)
-            ground_truth_indices = torch.arange(len(all_ground_truth_reports), device=self.device)
-            
-            # Compute recall metrics
-            recall_metrics = compute_recall_at_k(similarity_matrix, ground_truth_indices, k_values=self.config.recall_k)
-            mrr_score = compute_mrr(similarity_matrix)
-            map_score = compute_map(similarity_matrix, ground_truth_indices)
-            median_rank_score = compute_median_rank(similarity_matrix, ground_truth_indices)
-            ndcg_score = compute_ndcg_at_k(similarity_matrix, ground_truth_indices, k_values=self.config.ndcg_k)
-            
-            # Update dictionary with hashmap type metrics
-            epoch_metrics.update(recall_metrics)
-            epoch_metrics.update(mrr_score)
-            epoch_metrics.update(ndcg_score)
-            
-            # Update dictionary with float type metrics
-            epoch_metrics['MAP'] = map_score
-            epoch_metrics['MedianRank_V2T'] = median_rank_score
-            
-            # Gather and average across all GPU processes
-            gathered_metrics = {
-                f"{mode}/{k}": gather_loss([v], self.device) 
-                for k, v in epoch_metrics.items()
-            }
-            
-            return gathered_metrics
+            # Update progress bar
+            total_loss += batch_metrics["loss"]
+            if self.device == 0:
+                progress.set_postfix({
+                    f"{mode}_loss": f"{batch_metrics['loss']:.4f}",
+                    "avg_loss": f"{(total_loss / batch_idx):.4f}"
+                })
 
-        # Process validation metrics
-        if mode == "val":
-            all_video_embeddings = torch.cat(all_video_embeddings, dim=0).to(self.device)
-            all_text_embeddings = torch.cat(all_text_embeddings, dim=0).to(self.device)
-            print(f"all_video_embeddings: {all_video_embeddings.shape}")
-            print(f"all_text_embeddings: {all_text_embeddings.shape}")
-            
-            # Create report to index mapping
-            report_to_index = {r: i for i, r in enumerate(all_ground_truth_reports)}
-            
-            # Compute norms before normalization
-            epoch_metrics.update(compute_embedding_norms(all_video_embeddings, all_text_embeddings))
-            
-            # Normalize embeddings
-            all_video_embeddings_normalized = nn.functional.normalize(all_video_embeddings, dim=1)
-            all_text_embeddings_normalized = nn.functional.normalize(all_text_embeddings, dim=1)
-            
-            # Compute similarity matrix
-            similarity_matrix = torch.matmul(all_video_embeddings_normalized, all_text_embeddings_normalized.T)
-            
-            # Compute metrics
-            if similarity_matrix.size(0) >= 5 and similarity_matrix.size(1) >= 5:
-                global_ground_truth_indices = list(range(len(all_ground_truth_reports)))  # Each video maps to its corresponding text
-                global_ground_truth_indices_tensor = torch.tensor(
-                    global_ground_truth_indices, 
-                    device=self.device
-                )
-                
-                epoch_metrics.update(compute_recall_at_k(
-                    similarity_matrix, 
-                    global_ground_truth_indices_tensor,
-                    k_values=[1, min(5, similarity_matrix.size(1))]
-                ))
-                epoch_metrics.update(compute_mrr(
-                    similarity_matrix, 
-                    global_ground_truth_indices_tensor
-                ))
-                
-                epoch_metrics["alignment_score"] = compute_alignment_score(
-                    all_video_embeddings,
-                    all_text_embeddings
-                )
-
-        # Add average loss to metrics
-        epoch_metrics["loss"] = epoch_metrics.get("loss", 0) / batch_idx
-
-        return {
-            **{f"{mode}/{k}": gather_loss([v], self.device) for k, v in epoch_metrics.items()}
+        # Compute means for all metrics
+        epoch_metrics = {
+            k: v / batch_idx for k, v in epoch_metrics.items()
         }
+
+        # Process embeddings for recall computation
+        all_video_embeddings = torch.cat(all_video_embeddings, dim=0).to(self.device)
+        all_text_embeddings = torch.cat(all_text_embeddings, dim=0).to(self.device)
+                    
+        # Normalize embeddings
+        all_video_embeddings_normalized = nn.functional.normalize(all_video_embeddings, dim=1)
+        all_text_embeddings_normalized = nn.functional.normalize(all_text_embeddings, dim=1)
+        
+        # Compute similarity matrix
+        similarity_matrix = torch.matmul(all_video_embeddings_normalized, all_text_embeddings_normalized.T)
+        
+        # Create ground truth indices (diagonal matrix since each video matches with its text)
+        ground_truth_indices = torch.arange(len(all_ground_truth_reports), device=self.device)
+        
+        # Compute recall metrics
+        recall_metrics = compute_recall_at_k(similarity_matrix, ground_truth_indices, k_values=self.config.recall_k)
+        mrr_score = compute_mrr(similarity_matrix)
+        map_score = compute_map(similarity_matrix, ground_truth_indices)
+        median_rank_score = compute_median_rank(similarity_matrix, ground_truth_indices)
+        ndcg_score = compute_ndcg_at_k(similarity_matrix, ground_truth_indices, k_values=self.config.ndcg_k)
+        
+        # Update dictionary with hashmap type metrics
+        epoch_metrics.update(recall_metrics)
+        epoch_metrics.update(mrr_score)
+        epoch_metrics.update(ndcg_score)
+        
+        # Update dictionary with float type metrics
+        epoch_metrics['MAP'] = map_score
+        epoch_metrics['MedianRank_V2T'] = median_rank_score
+        
+        # Gather and average across all GPU processes
+        gathered_metrics = {
+            f"{mode}/{k}": gather_loss([v], self.device) 
+            for k, v in epoch_metrics.items()
+        }
+        
+        return gathered_metrics
 
     def _save_checkpoint(self, epoch: int, metrics: dict, is_best: bool = False):
         checkpoint_dir: str = os.path.join(self.setup_dict["full_output_path"], "checkpoints")
@@ -421,21 +350,19 @@ class VideoContrastiveLearningRunner:
     def _preprocess_inputs(
         self, 
         batch: dict[str, torch.Tensor]
-    ) -> dict[str, torch.Tensor]:
+    ) -> tuple[dict[str, torch.Tensor], list[str]]:
         return {
             "videos": batch["videos"].to(self.device).float(),
             "input_ids": batch["encoded_texts"]["input_ids"].to(self.device), 
-            "attention_mask": batch["encoded_texts"]["attention_mask"].to(self.device),
-            "paths": batch["paths"]
-        }
+            "attention_mask": batch["encoded_texts"]["attention_mask"].to(self.device)
+        }, batch["paths"]
 
     def _train_step(
         self, 
         videos: torch.Tensor,
         input_ids: torch.Tensor, 
         attention_mask: torch.Tensor, 
-        paths: list[str]
-    ) -> dict[str, torch.Tensor]:  
+    ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:  
         # Zero gradients at the start
         self.optimizer.zero_grad()
         
@@ -481,15 +408,15 @@ class VideoContrastiveLearningRunner:
             embedding_norms = compute_embedding_norms(video_embeddings, text_embeddings)
             alignment_score = compute_alignment_score(video_embeddings, text_embeddings)
             
-            metrics = {
-                **embedding_norms,
-                "alignment_score": alignment_score
-            }
+        metrics = {
+            **embedding_norms,
+            "alignment_score": alignment_score
+        }
             
         return {
             "loss": loss.detach(), 
             "learning_rate": self.optimizer.param_groups[0]["lr"],
-            "temperature": self.log_temp.exp().detach(),
+            "temperature": self.log_temp.exp().detach(), # add temperature to metrics for wandb logging
             **{k: v.detach() if torch.is_tensor(v) else v for k, v in metrics.items()}
         }, {
             "video_embeddings": video_embeddings,
@@ -501,38 +428,36 @@ class VideoContrastiveLearningRunner:
         videos: torch.Tensor,
         input_ids: torch.Tensor, 
         attention_mask: torch.Tensor, 
-        paths: list[str]
-    ) -> dict[str, torch.Tensor]:
-        """Validation step function."""
-        
-        # get reports
-        reports = self.val_loader.dataset.get_reports(paths)
-                
+    ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
+            
         with torch.no_grad():
-            # Get features
-            video_features = self.video_encoder(videos)
-            text_features = self.text_encoder(input_ids, attention_mask)
-            
-            # Normalize features
-            normalized_video = nn.functional.normalize(video_features, dim=1)
-            normalized_text = nn.functional.normalize(text_features, dim=1)
-            
-            # Compute similarity matrix
-            similarity_matrix = torch.matmul(normalized_video, normalized_text.t())
-            
-            # Compute loss
-            loss = self.loss_fn(video_features, text_features)
+            with torch.amp.autocast('cuda'):
+                # Get features
+                video_features = self.video_encoder(videos)
+                text_features = self.text_encoder(
+                    input_ids, 
+                    attention_mask
+                )
+                                
+                loss = self.loss_fn(video_features, text_features, self.log_temp)
 
             # Compute metrics
-            metrics = compute_recall_at_k(similarity_matrix)
-            metrics.update(compute_mrr(similarity_matrix))
-            metrics.update(compute_embedding_norms(video_features, text_features))
-            metrics.update({'alignment_score': compute_alignment_score(video_features, text_features)})
-
-            return {
-                "loss": loss.detach(),
-                **{k: v.detach() if torch.is_tensor(v) else v for k, v in metrics.items()}
-            }
+            embedding_norms = compute_embedding_norms(video_features, text_features)
+            alignment_score = compute_alignment_score(video_features, text_features)
+            
+        metrics = {
+            **embedding_norms,
+            "alignment_score": alignment_score
+        }
+        
+        return {
+            "loss": loss.detach(),
+            "temperature": self.log_temp.exp().detach(), # add temperature to metrics for wandb logging
+            **{k: v.detach() if torch.is_tensor(v) else v for k, v in metrics.items()}
+        }, {
+            "video_embeddings": video_features.float(),
+            "text_embeddings": text_features.float()
+        }
 
 
     def validate(self):

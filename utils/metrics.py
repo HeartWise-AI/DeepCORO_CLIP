@@ -2,75 +2,28 @@ import math
 import torch
 import torch.nn as nn
 
-def compute_recall_at_k(sim_matrix, k_values=[1, 5, 10]):
-    N = sim_matrix.size(0)
-    device = sim_matrix.device
-    ground_truth = torch.arange(N).to(device)
+from typing import List
 
+
+def compute_recall_at_k(
+    similarity_matrix: torch.Tensor, 
+    global_gt_indices: torch.Tensor, 
+    k_values: List[int]
+) -> dict[str, float]:
     metrics = {}
-    for k_ in k_values:
-        # Video-to-Text Recall@k
-        # For each video (row), get top K text indices
-        _, topk_text_indices = sim_matrix.topk(k_, dim=1, largest=True, sorted=True)  # Shape: [N, K]
-        
-        # Check if the ground truth index is in the top K for each video
-        correct_v2t = (topk_text_indices == ground_truth.view(-1, 1)).any(dim=1).float()
-        recall_v2t_at_k = correct_v2t.mean().item()
-        metrics[f"Recall@{k_}_V2T"] = recall_v2t_at_k
-    
-        # Text-to-Video Recall@k
-        # For each text (column), get top K video indices
-        _, topk_video_indices = sim_matrix.topk(k_, dim=0, largest=True, sorted=True)  # Shape: [K, N]
-        
-        # Transpose to [N, K] for consistency
-        topk_video_indices = topk_video_indices.t()
-        
-        # Check if the ground truth index is in the top K for each text
-        correct_t2v = (topk_video_indices == ground_truth.view(-1, 1)).any(dim=1).float()
-        recall_t2v_at_k = correct_t2v.mean().item()
-        metrics[f"Recall@{k_}_T2V"] = recall_t2v_at_k
-    
+
+    for k in k_values:
+        v2t_topk = torch.topk(similarity_matrix, k, dim=1)[1]
+        v2t_correct = v2t_topk == global_gt_indices.unsqueeze(1)
+        v2t_recall = (v2t_correct.sum(dim=1) > 0).float().mean().item()
+        metrics[f"Recall@{k}_V2T"] = v2t_recall
+
     return metrics
-
-# def compute_recall_at_k(
-#     similarity_matrix: torch.Tensor, 
-#     k_values: list[int] = [1, 5]
-# ) -> dict:
-#     """
-#     Compute recall@k for video-to-text retrieval assuming a one-to-one diagonal mapping.
-    
-#     Args:
-#         similarity_matrix: Tensor of shape (n_videos, n_texts) containing similarity scores
-#         k_values: List of k values to compute recall for
-        
-#     Returns:
-#         Dictionary containing recall@k scores for each k value
-#     """
-#     metrics = {}
-    
-#     # Assume ground truth indices are aligned with the diagonal
-#     global_gt_indices = torch.arange(similarity_matrix.size(0), device=similarity_matrix.device)
-    
-#     # Sort similarities in descending order
-#     sorted_indices = torch.argsort(similarity_matrix, dim=1, descending=True)
-    
-#     for k in k_values:
-#         # Get top k predictions for each video
-#         topk_indices = sorted_indices[:, :k]
-        
-#         # Check if ground truth index is in top k predictions
-#         correct_predictions = (topk_indices == global_gt_indices.unsqueeze(1)).any(dim=1)
-        
-#         # Compute recall@k
-#         recall = correct_predictions.float().mean().item()
-#         metrics[f"Recall@{k}_V2T"] = recall
-
-#     return metrics
 
 
 def compute_mrr(
     similarity_matrix: torch.Tensor
-) -> dict:
+) -> dict[str, float]:
     """
     Compute Mean Reciprocal Rank (MRR) for video-to-text retrieval assuming a one-to-one diagonal mapping.
     
@@ -149,7 +102,11 @@ def compute_alignment_score(
         return alignment_scores.mean().item()
 
 
-def compute_ndcg(similarity_matrix: torch.Tensor, global_gt_indices: torch.Tensor, k=5) -> float:
+def compute_ndcg_at_k(
+    similarity_matrix: torch.Tensor, 
+    global_gt_indices: torch.Tensor, 
+    k_values: List[int]
+) -> dict[str, float]:
     """
     Compute NDCG@k for each query and average over all queries.
     Simplified assumption: one correct answer per query.
@@ -169,28 +126,32 @@ def compute_ndcg(similarity_matrix: torch.Tensor, global_gt_indices: torch.Tenso
     # Sort candidates by similarity in descending order
     sorted_indices = torch.argsort(similarity_matrix, dim=1, descending=True)
 
-    ndcg_values = []
-    for i in range(num_queries):
-        correct_idx = global_gt_indices[i].item()
-        # Find the rank of the correct index
-        ranking = (sorted_indices[i] == correct_idx).nonzero(as_tuple=True)[0]
-        if ranking.numel() == 0:
-            # Correct item not found (should not happen if all candidates included)
-            ndcg_values.append(0.0)
-            continue
+    metrics = {}
+    for k in k_values:
+        ndcg_values = []
+        for i in range(num_queries):
+            correct_idx = global_gt_indices[i].item()
+            # Find the rank of the correct index
+            ranking = (sorted_indices[i] == correct_idx).nonzero(as_tuple=True)[0]
+            if ranking.numel() == 0:
+                # Correct item not found (should not happen if all candidates included)
+                ndcg_values.append(0.0)
+                continue
 
-        rank = ranking.item()
-        if rank < k:
-            # DCG = 1 / log2(rank+2)
-            dcg = 1.0 / math.log2(rank + 2)
-        else:
-            dcg = 0.0
+            rank = ranking.item()
+            if rank < k:
+                # DCG = 1 / log2(rank+2)
+                dcg = 1.0 / math.log2(rank + 2)
+            else:
+                dcg = 0.0
 
-        # Ideal DCG (IDCG) = 1 since there's only one relevant doc at best rank
-        idcg = 1.0
-        ndcg_values.append(dcg / idcg)
+            # Ideal DCG (IDCG) = 1 since there's only one relevant doc at best rank
+            idcg = 1.0
+            ndcg_values.append(dcg / idcg)
 
-    return float(torch.tensor(ndcg_values).mean().item())
+        metrics[f"NDCG@{k}_V2T"] = float(torch.tensor(ndcg_values).mean().item())
+
+    return metrics
 
 
 def compute_median_rank(

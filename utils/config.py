@@ -55,6 +55,9 @@ class HeartWiseConfig:
     # Recall @k
     recall_k: List[int]
 
+    # NDCG @k
+    ndcg_k: List[int]
+
     # Data augmentation
     rand_augment: bool
     resize: int

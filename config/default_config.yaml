@@ -47,6 +47,9 @@ metrics_control:
 # Recall @k
 recall_k: [1, 5, 10, 50]
 
+# NDCG @k
+ndcg_k: [5]
+
 # Data augmentation
 rand_augment: !!bool false
 resize: !!int 224

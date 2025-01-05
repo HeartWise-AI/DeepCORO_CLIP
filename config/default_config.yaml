@@ -1,10 +1,10 @@
 # Training parameters
-epochs: !!int 2
+epochs: !!int 10
 batch_size: !!int 16
 num_workers: !!int 12
 lr: !!float 0.000025
 debug: !!bool false
-temp: !!float 1
+temperature: !!float 0.07
 
 # Data parameters
 data_filename: !!str data/reports/reports_with_splits_subset.csv
@@ -17,7 +17,6 @@ stride: !!int 2
 # Model parameters
 model_name: !!str mvit
 pretrained: !!bool true
-log_temp: !!bool true
 
 # Optimization parameters
 optimizer: !!str AdamW

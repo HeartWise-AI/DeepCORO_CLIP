@@ -517,8 +517,8 @@ def load_train_objs(
     )
 
     # Make temperature a trainable parameter directly on the device
-    log_temp: nn.Parameter = nn.Parameter(
-        torch.log(torch.tensor([config.temp], dtype=torch.float32, device=config.gpu))
+    log_temperature: nn.Parameter = nn.Parameter(
+        torch.log(torch.tensor([config.temperature], dtype=torch.float32, device=config.gpu))
     )
 
     # Include the temperature parameter in the optimizer
@@ -527,7 +527,7 @@ def load_train_objs(
         [
             {"params": video_encoder.parameters()},
             {"params": text_encoder.parameters()},
-            {"params": [log_temp]},  # Add the temperature parameter
+            {"params": [log_temperature]},
         ],
         lr=config.lr,
         weight_decay=config.weight_decay,
@@ -565,6 +565,7 @@ def load_train_objs(
         "device": config.gpu,
         "wandb_run": wandb_run,
         "scaler": scaler,
+        "log_temp": log_temperature,
     }
 
 
@@ -580,7 +581,7 @@ class ContrastivePretraining:
         training_setup: dict[str, Any] = load_train_objs(
             config=self.config
         )
-        
+                
         runner: VideoContrastiveLearningRunner = RunnerRegistry.get(
             name="video_contrastive_learning"
         )(
@@ -594,6 +595,7 @@ class ContrastivePretraining:
             wandb_wrapper=training_setup["wandb_run"],
             optimizer=training_setup["optimizer"],
             scaler=training_setup["scaler"],
+            log_temp=training_setup["log_temp"],
             lr_scheduler=training_setup["scheduler"],
             loss_fn=get_loss_fn(self.config.loss_name),
         )

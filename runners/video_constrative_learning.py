@@ -74,6 +74,7 @@ class VideoContrastiveLearningRunner:
         wandb_wrapper,
         optimizer: AdamW,
         scaler: GradScaler,
+        log_temp: torch.Tensor,
         lr_scheduler: LRScheduler,
         loss_fn: callable,
     ):
@@ -100,7 +101,8 @@ class VideoContrastiveLearningRunner:
         self.setup_dict = None
         self.best_val_loss = float('inf')
         self.best_epoch = -1
-
+        self.log_temp = log_temp
+        
     def _compute_text_embeddings(self, reports: list[str]) -> tuple[torch.Tensor, dict[str, int]]:
         """Compute text embeddings for a list of reports."""
         report_to_index = {r: i for i, r in enumerate(reports)}
@@ -144,8 +146,8 @@ class VideoContrastiveLearningRunner:
         for epoch in range(self.config.epochs):           
             # Training phase
             train_metrics = self._run_epoch(mode="train", epoch=epoch)
-            
-            if self.device == 0:
+
+            if self.config.is_ref_device:
                 self.wandb_wrapper.log({
                     **train_metrics
                 })
@@ -266,7 +268,7 @@ class VideoContrastiveLearningRunner:
                         inputs["attention_mask"]
                     )
                                         
-                    loss = self.loss_fn(video_features, text_features)
+                    loss = self.loss_fn(video_features, text_features, self.temperature)
                     
                     epoch_metrics["loss"] = epoch_metrics.get("loss", 0) + loss.item()
                     
@@ -445,7 +447,7 @@ class VideoContrastiveLearningRunner:
                 text_embeddings = self.text_encoder(input_ids, attention_mask)
 
                 # Compute loss
-                loss = self.loss_fn(video_embeddings, text_embeddings)
+                loss = self.loss_fn(video_embeddings, text_embeddings, self.log_temp)
 
             # Backward pass
             self.scaler.scale(loss).backward()
@@ -464,7 +466,7 @@ class VideoContrastiveLearningRunner:
             text_embeddings = self.text_encoder(input_ids, attention_mask)
             
             # Compute loss
-            loss = self.loss_fn(video_embeddings, text_embeddings)  # Use normalized features
+            loss = self.loss_fn(video_embeddings, text_embeddings, self.log_temp)  # Use normalized features
             
             loss.backward()
             
@@ -487,6 +489,7 @@ class VideoContrastiveLearningRunner:
         return {
             "loss": loss.detach(), 
             "learning_rate": self.optimizer.param_groups[0]["lr"],
+            "temperature": self.log_temp.exp().detach(),
             **{k: v.detach() if torch.is_tensor(v) else v for k, v in metrics.items()}
         }, {
             "video_embeddings": video_embeddings,

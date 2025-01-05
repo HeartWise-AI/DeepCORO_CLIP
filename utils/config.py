@@ -17,7 +17,7 @@ class HeartWiseConfig:
     num_workers: int
     lr: float
     debug: bool
-    temp: float
+    temperature: float
 
     # Data parameters
     data_filename: str
@@ -30,7 +30,6 @@ class HeartWiseConfig:
     # Model parameters
     model_name: str
     pretrained: bool
-    log_temp: bool
 
     # Optimization parameters
     optimizer: str

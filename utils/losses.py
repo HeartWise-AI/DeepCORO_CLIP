@@ -10,7 +10,7 @@ def get_loss_fn(loss_name: str) -> nn.Module:
 def contrastive_loss(
     video_features: torch.Tensor, 
     text_features: torch.Tensor, 
-    temp: float = 0.1
+    log_temp: torch.Tensor = torch.log(torch.tensor(0.1))
 ) -> torch.Tensor:
     """Compute contrastive loss between video and text embeddings.
 
@@ -29,7 +29,7 @@ def contrastive_loss(
     similarity_matrix = torch.matmul(video_features, text_features.t())
 
     # Scale by temperature (lower temp => sharper distribution)
-    similarity_matrix = similarity_matrix / temp
+    similarity_matrix = similarity_matrix / torch.exp(log_temp)
 
     # Create labels for matching pairs
     labels = torch.arange(len(video_features), device=video_features.device)

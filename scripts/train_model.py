@@ -59,6 +59,7 @@ def load_config(config_path: str) -> Dict[str, Any]:
     return config
 
 
+
 def parse_args():
     """Parse command line arguments and optionally load config file."""
     parser = argparse.ArgumentParser(description="Train DeepCORO_CLIP model")
@@ -76,6 +77,15 @@ def parse_args():
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
     parser.add_argument(
         "--temperature", type=float, default=0.1, help="Temperature for contrastive loss"
+    )
+
+    # -- NEW: Resume arguments
+    parser.add_argument("--resume", action="store_true", help="Resume training from a checkpoint")
+    parser.add_argument(
+        "--resume_checkpoint",
+        type=str,
+        default=None,
+        help="Path to the latest.pt or best.pt checkpoint to resume from",
     )
 
     # Data parameters
@@ -164,6 +174,62 @@ def parse_args():
         args.local_rank = int(os.environ.get("LOCAL_RANK", -1))
 
     return args
+def preview_checkpoint_for_resuming(checkpoint_path: str):
+    """
+    Quick "preview" function that loads minimal fields from the checkpoint 
+    on CPU, to retrieve wandb_run, epoch, best_val_loss, best_epoch, etc.
+    Returns:
+      wandb_run (str or None)
+      start_epoch (int)
+      best_val_loss (float)
+      best_epoch (int)
+    """
+    if not os.path.isfile(checkpoint_path):
+        print(f"Warning: checkpoint not found at {checkpoint_path}.")
+        return None, 0, float('inf'), -1
+
+    print(f"[Preview] Loading minimal info from checkpoint: {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+
+    wandb_run = checkpoint.get("wandb_run", None)
+    start_epoch = checkpoint.get("epoch", -1) + 1
+    best_val_loss = checkpoint.get("best_val_loss", float("inf"))
+    best_epoch = checkpoint.get("best_epoch", -1)
+
+    print(
+        f"[Preview] Found run_id={wandb_run}, "
+        f"start_epoch={start_epoch}, best_val_loss={best_val_loss}, best_epoch={best_epoch}"
+    )
+    return wandb_run, start_epoch, best_val_loss, best_epoch
+
+
+def load_full_checkpoint(checkpoint_path: str, device, training_setup):
+    """
+    After the model/optimizer/etc. is initialized, call this 
+    to actually load states from the checkpoint into them.
+    """
+    if not os.path.isfile(checkpoint_path):
+        print(f"Warning: checkpoint not found at {checkpoint_path}. No loading done.")
+        return
+
+    print(f"[Full Load] Loading checkpoint from: {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+
+    video_encoder = training_setup["video_encoder"]
+    text_encoder = training_setup["text_encoder"]
+    optimizer = training_setup["optimizer"]
+    scheduler = training_setup["scheduler"]
+
+    if "video_encoder" in checkpoint:
+        video_encoder.load_state_dict(checkpoint["video_encoder"], strict=False)
+    if "text_encoder" in checkpoint:
+        text_encoder.load_state_dict(checkpoint["text_encoder"], strict=False)
+
+    if "optimizer" in checkpoint and checkpoint["optimizer"]:
+        optimizer.load_state_dict(checkpoint["optimizer"])
+    if "scheduler" in checkpoint and checkpoint["scheduler"] and scheduler is not None:
+        scheduler.load_state_dict(checkpoint["scheduler"])
+
 
 
 def generate_output_dir_name(args, run_id):
@@ -586,13 +652,17 @@ def train_epoch(
 
 
 
-def save_checkpoint(model_dict, metrics_dict, output_path, is_best=False):
+def save_checkpoint(model_dict, metrics_dict, output_path, is_best=False, wandb_run=None):
     """
-    Save model checkpoint with metrics.
+    Save model checkpoint with metrics, plus wandb_run if provided.
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     checkpoint = {**model_dict, **metrics_dict}
+
+    if wandb_run is not None:
+        checkpoint["wandb_run"] = wandb_run
+
     torch.save(checkpoint, output_path)
     print(f"Saved checkpoint to {output_path}")
 
@@ -903,61 +973,91 @@ def save_unique_texts_csv(output_dir, unique_texts):
             writer.writerow([idx, txt])
     print(f"Saved {len(unique_texts)} unique val texts to {csv_path}")
 
+
 def main(rank=0, world_size=1, args=None):
     training_setup = None
     try:
+        # A) Possibly "preview" the checkpoint to get wandb_run, epoch, etc.
         wandb_run = None
+        start_epoch = 0
+        best_val_loss = float("inf")
+        best_epoch = -1
+        if args.resume and args.resume_checkpoint:
+            (wandb_run, start_epoch, best_val_loss, best_epoch) = preview_checkpoint_for_resuming(
+                args.resume_checkpoint
+            )
+
+
         if rank == 0:
-            wandb_run = create_logger(args)
+            wandb_kwargs = {
+                "project": args.project,
+                "entity": args.entity,
+                "name": args.tag,
+            }
+            if wandb_run:
+                wandb_kwargs["id"] = wandb_run
+                wandb_kwargs["resume"] = "allow"
+                print(f"[W&B] Resuming run_id={wandb_run}")
+            else:
+                print("[W&B] Starting new run (no run_id found).")
 
-        run_id = wandb_run.id if wandb_run is not None else "run_id_001"
-        output_subdir = generate_output_dir_name(args, run_id)
-        full_output_path = os.path.join(args.output_dir, output_subdir)
-        os.makedirs(full_output_path, exist_ok=True)
+            wandb_run = wandb.init(**wandb_kwargs)
 
-        print("Args: ", args)
-
+        # C) Setup training
         training_setup = setup_training(args, rank=rank)
-        if wandb_run is None:
-            wandb_run = training_setup["wandb_run"]
+        if wandb_run is not None:
+            training_setup["wandb_run"] = wandb_run
 
-        is_distributed = world_size > 1
         device = training_setup["device"]
+        video_encoder = training_setup["video_encoder"]
         text_encoder = training_setup["text_encoder"]
+        optimizer = training_setup["optimizer"]
+        scheduler = training_setup["scheduler"]
         train_loader = training_setup["train_loader"]
         val_loader = training_setup["val_loader"]
         train_dataset = training_setup["train_dataset"]
         val_dataset = training_setup["val_dataset"]
-
-        if "log_temperature" not in training_setup:
-            raise ValueError("log_temperature not found in training setup")
         log_temperature = training_setup["log_temperature"]
+        is_distributed = world_size>1
 
-        best_val_loss = float("inf")
-        best_epoch = -1
-        patience_counter = 0
+        # D) If resume, fully load checkpoint states
+        if args.resume and args.resume_checkpoint:
+            load_full_checkpoint(args.resume_checkpoint, device, training_setup)
 
-        # Build validation-only pool
+        # Now you have start_epoch, best_val_loss, best_epoch from preview 
+        # (or defaults if checkpoint not found).
+        print(f"[Resume] start_epoch={start_epoch}, best_val_loss={best_val_loss}, best_epoch={best_epoch}")
+
+        # E) Build the "val-only" text embedding pool
         val_reports = val_dataset.get_all_reports()
         val_unique_reports = list(dict.fromkeys(val_reports))
         val_report_to_index = {r: i for i, r in enumerate(val_unique_reports)}
 
-        
+
+        output_subdir = generate_output_dir_name(args, wandb_run)
+        full_output_path = os.path.join(args.output_dir, output_subdir)
+
+
         if rank==0:
+            if not os.path.exists(full_output_path):
+                os.makedirs(full_output_path)
             save_unique_texts_csv(full_output_path, val_unique_reports)
 
         scaler = torch.amp.GradScaler(enabled=args.use_amp, device=device)
 
-        for epoch in range(args.epochs):
+        best_epoch = -1 if best_epoch < 0 else best_epoch
+
+        # 6) Main training loop from "start_epoch" to "args.epochs"
+        for epoch in range(start_epoch, args.epochs):
             if rank == 0:
                 print(f"\nEpoch {epoch + 1}/{args.epochs}")
 
-            # ==== Train Phase ====
+            # -- Train
             train_loss, train_metrics = train_epoch(
-                video_encoder=training_setup["video_encoder"],
+                video_encoder=video_encoder,
                 text_encoder=text_encoder,
                 dataloader=train_loader,
-                optimizer=training_setup["optimizer"],
+                optimizer=optimizer,
                 device=device,
                 wandb_run=wandb_run,
                 rank=rank,
@@ -967,13 +1067,14 @@ def main(rank=0, world_size=1, args=None):
                 log_temperature=log_temperature,
             )
 
-            # ==== Validation Phase (we do no wandb logging here) ====
+            # -- Precompute text embeddings
             val_reports, val_text_embeddings = precompute_global_text_embeddings(
                 text_encoder, val_unique_reports, train_dataset.tokenizer, device
             )
 
+            # -- Validate
             val_loss_valpool, val_metrics_valpool, _ = validate_epoch(
-                video_encoder=training_setup["video_encoder"],
+                video_encoder=video_encoder,
                 text_encoder=text_encoder,
                 dataloader=val_loader,
                 device=device,
@@ -988,34 +1089,28 @@ def main(rank=0, world_size=1, args=None):
                 use_val_only_pool=True,
                 log_temperature=log_temperature,
             )
-            
-
             current_val_loss = val_loss_valpool
             del val_text_embeddings
             torch.cuda.empty_cache()
 
-            # === Single Logging after both train & val ===
             if rank == 0 and wandb_run is not None:
-                # Combine train & val metrics in one call
                 log_data = {
                     "epoch": epoch,
                     "train/loss": train_loss,
-                    "train/learning_rate": training_setup["optimizer"].param_groups[0]["lr"],
+                    "train/learning_rate": optimizer.param_groups[0]["lr"],
                     "val_only/loss": val_loss_valpool,
                     **{f"val_only/{k}": v for k, v in val_metrics_valpool.items()},
-                    "best_val_loss": best_val_loss,
                 }
+                log_data["best_val_loss"] = best_val_loss
                 if log_temperature is not None:
                     current_temp = torch.exp(log_temperature).item()
                     log_data["temp"] = current_temp
                     log_data["log_temperature"] = log_temperature.item()
 
-                # Now do a single wandb.log
                 wandb_run.log(log_data)
 
-            # Step LR
-            if training_setup["scheduler"] is not None:
-                training_setup["scheduler"].step()
+            if scheduler is not None:
+                scheduler.step()
 
             # Early stopping
             if current_val_loss < best_val_loss:
@@ -1030,25 +1125,16 @@ def main(rank=0, world_size=1, args=None):
                         print(f"Early stopping triggered at epoch {epoch+1} with no improvement.")
                     break
 
-            # === Save Checkpoints ===
             if rank == 0:
                 model_dict = {
                     "video_encoder": (
-                        training_setup["video_encoder"].module.state_dict()
-                        if is_distributed
-                        else training_setup["video_encoder"].state_dict()
+                        video_encoder.module.state_dict() if is_distributed else video_encoder.state_dict()
                     ),
                     "text_encoder": (
-                        text_encoder.module.state_dict()
-                        if is_distributed
-                        else text_encoder.state_dict()
+                        text_encoder.module.state_dict() if is_distributed else text_encoder.state_dict()
                     ),
-                    "optimizer": training_setup["optimizer"].state_dict(),
-                    "scheduler": (
-                        training_setup["scheduler"].state_dict()
-                        if training_setup["scheduler"] is not None
-                        else None
-                    ),
+                    "optimizer": optimizer.state_dict(),
+                    "scheduler": scheduler.state_dict() if scheduler is not None else None,
                     "epoch": epoch,
                 }
 
@@ -1063,7 +1149,6 @@ def main(rank=0, world_size=1, args=None):
 
                 checkpoint_dir = Path(full_output_path) / "checkpoints"
                 checkpoint_dir.mkdir(parents=True, exist_ok=True)
-
                 latest_path = checkpoint_dir / "latest.pt"
                 save_checkpoint(model_dict, metrics_dict, latest_path)
                 print(f"\nSaved latest checkpoint at epoch {epoch + 1}")
@@ -1075,15 +1160,14 @@ def main(rank=0, world_size=1, args=None):
                         f"\nNew best model saved! Val Loss (val-only): {current_val_loss:.4f} "
                         f"(previous: {previous_best:.4f})"
                     )
-                    if wandb_run is not None:
-                        wandb_run.log(
-                            {
-                                "best_val_loss": best_val_loss,
-                                "best_epoch": best_epoch,
-                                "epoch": epoch,
-                            }
-                        )
-                        wandb.save(str(best_path))
+                    wandb_run.log(
+                        {
+                            "best_val_loss": best_val_loss,
+                            "best_epoch": best_epoch,
+                            "epoch": epoch,
+                        }
+                    )
+                    wandb.save(str(best_path))
 
     except Exception as e:
         print(f"Error on rank {rank}: {str(e)}")
@@ -1091,7 +1175,7 @@ def main(rank=0, world_size=1, args=None):
     finally:
         if training_setup is not None and training_setup["wandb_run"] is not None:
             wandb.finish()
-        if "is_distributed" in locals() and is_distributed:
+        if dist.is_initialized():
             cleanup_ddp()
 
  

@@ -388,12 +388,14 @@ def create_logger(args):
     for key, value in vars(args).items():
         if key not in config:
             config[key] = value
-    wandb.init(
-        project=args.project,
-        entity=args.entity,
-        name=args.tag,
-        config=config,
-    )
+            
+    if args.resume==False:
+        wandb.init(
+            project=args.project,
+            entity=args.entity,
+            name=args.tag,
+            config=config,
+        )
     return wandb.run
 
 

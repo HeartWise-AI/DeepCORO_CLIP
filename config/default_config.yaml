@@ -17,6 +17,11 @@ stride: 2
 model_name: mvit
 pretrained: true
 
+# Checkpointing
+resume: true
+resume_checkpoint: outputs/deepCORO_CLIP/DeepCORO_Clip_Sweep_Learnable_Temp_Full_mvit_b12_f16_RAdam_lr0.0001_20250105-140102_4prjnaxn/checkpoints/latest.pt
+
+
 # Optimization parameters
 optimizer: RAdam
 weight_decay: 0.000001
@@ -59,4 +64,3 @@ view_count: null
 
 # Checkpointing
 save_best: loss
-resume: false

@@ -26,6 +26,7 @@ from utils.registry import (
     ProjectRegistry, 
 )
 from utils.logging import create_logger
+from utils.files_handler import generate_output_dir_name
 from dataloaders.stats_dataset import get_stats_dataloader
 from dataloaders.video_dataset import get_distributed_video_dataloader
 
@@ -55,8 +56,9 @@ def save_checkpoint(model_dict, metrics_dict, output_path, is_best=False):
 def load_train_objs(
     config: HeartWiseConfig,
 )->dict:
-    wandb_run = None
-    if config.is_ref_device:
+    wandb_run = None # Set default to None - will be changed for ref device only
+    full_output_path = None # Set default to None - will be changed for ref device only
+    if config.is_ref_device: 
         wandb_run = create_logger(config=config)
 
         # After wandb.init(), wandb.config is available.
@@ -67,6 +69,12 @@ def load_train_objs(
                     setattr(config, key, value)
                 else:
                     print(f"Warning: {key} in wandb.config not recognized as an arg.")    
+                    
+        # Generate output directory
+        run_id = wandb_run.id if wandb_run is not None else ""
+        output_subdir = generate_output_dir_name(config, run_id)
+        full_output_path = os.path.join(config.output_dir, output_subdir)        
+        os.makedirs(full_output_path, exist_ok=True)
                     
     # Calculate dataset statistics (only on rank 0)
     mean, std = None, None
@@ -216,6 +224,7 @@ def load_train_objs(
         "wandb_run": wandb_run,
         "scaler": scaler,
         "log_temp": log_temperature,
+        "full_output_path": full_output_path,
     }
 
 
@@ -248,165 +257,12 @@ class ContrastivePretraining:
             log_temp=training_setup["log_temp"],
             lr_scheduler=training_setup["scheduler"],
             loss_fn=get_loss_fn(self.config.loss_name),
+            output_dir=training_setup["full_output_path"],
         )
         
-        runner.train()        
-        # is_distributed = self.world_size > 1
-        # text_encoder = training_setup["text_encoder"]
-        # train_loader = training_setup["train_loader"]
-        # val_loader = training_setup["val_loader"]
-        # device = self.device
-        # log_temp = training_setup["log_temp"] if "log_temp" in training_setup else None
+        runner.train() 
 
-        # best_val_loss = float("inf")
-        # best_epoch = -1
-
-        # # Main training loop
-        # for epoch in range(self.args.epochs):
-        #     if self.device == 0:
-        #         print(f"\nEpoch {epoch + 1}/{self.args.epochs}")
-
-        #     train_loss, train_metrics = train_epoch(
-        #         args=self.args,
-        #         video_encoder=training_setup["video_encoder"],
-        #         text_encoder=text_encoder,
-        #         dataloader=train_loader,
-        #         optimizer=training_setup["optimizer"],
-        #         device=self.device,
-        #         wandb_run=training_setup["wandb_run"],
-        #         rank=self.args.rank,
-        #         world_size=self.world_size,
-        #         epoch=epoch,
-        #     )
-
-        #     # Validate on validation-only embeddings (use_val_only_pool=True)
-        #     val_loss_valpool, val_metrics_valpool, _ = validate_epoch(
-        #         args=self.args,
-        #         video_encoder=training_setup["video_encoder"],
-        #         text_encoder=text_encoder,
-        #         dataloader=val_loader,
-        #         device=self.device,
-        #         wandb_run=training_setup["wandb_run"],
-        #         rank=self.args.rank,
-        #         world_size=self.world_size,
-        #         epoch=epoch,
-        #         all_text_embeddings=val_text_embeddings,
-        #         all_reports=val_reports,
-        #         text_embedding_pickle_path=os.path.join(
-        #             full_output_path, "val_text_embeddings.pkl"
-        #         ),
-        #         output_dir=full_output_path,
-        #         report_to_global_index=val_report_to_index,
-        #         use_val_only_pool=True,  # <-- Val-only retrievals
-        #     )
-
-        #     # Validate on global embeddings (train+val) (use_val_only_pool=False)
-        #     val_loss_global, val_metrics_global, _ = validate_epoch(
-        #         args=self.args,
-        #         video_encoder=training_setup["video_encoder"],
-        #         text_encoder=text_encoder,
-        #         dataloader=val_loader,
-        #         device=self.device,
-        #         wandb_run=training_setup["wandb_run"],
-        #         rank=self.args.rank,
-        #         world_size=self.world_size,
-        #         epoch=epoch,
-        #         all_text_embeddings=all_global_text_embeddings,
-        #         all_reports=all_global_reports,
-        #         text_embedding_pickle_path=os.path.join(
-        #             full_output_path, "global_text_embeddings.pkl"
-        #         ),
-        #         output_dir=full_output_path,
-        #         report_to_global_index=report_to_global_index,
-        #         use_val_only_pool=False,  # <-- Global retrievals without top/bottom examples
-        #     )
-
-        #     # Choose one for best model comparison (typically val-only)
-        #     current_val_loss = val_loss_valpool
-
-        #     if self.device == 0 and training_setup["wandb_run"] is not None:
-        #         log_data = {
-        #             "epoch": epoch,
-        #             "train/loss": train_loss,
-        #             "train/learning_rate": training_setup["optimizer"].param_groups[0]["lr"],
-        #             "val_only/loss": val_loss_valpool,
-        #             **{f"val_only/{k}": v for k, v in val_metrics_valpool.items()},
-        #             "val_global/loss": val_loss_global,
-        #             **{f"val_global/{k}": v for k, v in val_metrics_global.items()},
-        #             "best_val_loss": best_val_loss,  # Log the current best_val_loss each epoch
-        #         }
-        #         # Log temperature if available
-        #         if log_temp is not None:
-        #             current_temp = torch.exp(log_temp).item()
-        #             log_data["temperature"] = current_temp
-        #             log_data["log_temp"] = log_temp.item()
-
-        #         training_setup["wandb_run"].log(log_data)
-
-        #     if training_setup["scheduler"] is not None:
-        #         training_setup["scheduler"].step()
-
-        #     if self.device == 0:
-        #         model_dict = {
-        #             "video_encoder": (
-        #                 training_setup["video_encoder"].module.state_dict()
-        #                 if is_distributed
-        #                 else training_setup["video_encoder"].state_dict()
-        #             ),
-        #             "text_encoder": (
-        #                 text_encoder.module.state_dict()
-        #                 if is_distributed
-        #                 else text_encoder.state_dict()
-        #             ),
-        #             "optimizer": training_setup["optimizer"].state_dict(),
-        #             "scheduler": (
-        #                 training_setup["scheduler"].state_dict()
-        #                 if training_setup["scheduler"] is not None
-        #                 else None
-        #             ),
-        #             "epoch": epoch,
-        #         }
-
-        #         metrics_dict = {
-        #             "train_loss": train_loss,
-        #             "val_loss_valpool": val_loss_valpool,
-        #             "val_loss_global": val_loss_global,
-        #             "best_val_loss": best_val_loss,
-        #             "best_epoch": best_epoch,
-        #             **train_metrics,
-        #             **val_metrics_valpool,  # store the val-only metrics
-        #             **{f"global_{k}": v for k, v in val_metrics_global.items()},
-        #         }
-
-        #         checkpoint_dir = Path(full_output_path) / "checkpoints"
-        #         checkpoint_dir.mkdir(parents=True, exist_ok=True)
-
-        #         latest_path = checkpoint_dir / "latest.pt"
-        #         save_checkpoint(model_dict, metrics_dict, latest_path)
-        #         print(f"\nSaved latest checkpoint at epoch {epoch + 1}")
-
-        #         # Update best model based on val-only performance
-        #         if current_val_loss < best_val_loss:
-        #             previous_best = best_val_loss
-        #             best_val_loss = current_val_loss
-        #             best_epoch = epoch
-        #             best_path = checkpoint_dir / "best.pt"
-        #             save_checkpoint(model_dict, metrics_dict, best_path, is_best=True)
-        #             print(
-        #                 f"\nNew best model saved! Val Loss (val-only): {current_val_loss:.4f} (previous: {previous_best:.4f})"
-        #             )
-
-        #             if training_setup["wandb_run"] is not None:
-        #                 # Also log the new best_val_loss immediately when found
-        #                 training_setup["wandb_run"].log(
-        #                     {
-        #                         "best_val_loss": best_val_loss,
-        #                         "best_epoch": best_epoch,
-        #                         "epoch": epoch,
-        #                     }
-        #                 )
-        #                 training_setup["wandb_run"].save(str(best_path))      
-
-        wandb.finish()
+        if self.config.is_ref_device:
+            wandb.finish()
 
 

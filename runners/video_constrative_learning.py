@@ -15,11 +15,6 @@ from tqdm import tqdm
 from utils.ddp import gather_loss
 from utils.config import HeartWiseConfig
 from utils.registry import RunnerRegistry
-from utils.files_handler import generate_output_dir_name
-from utils.text_encoder import (
-    create_global_text_pool, 
-    precompute_global_text_embeddings
-)
 from utils.metrics import (
     compute_mrr, 
     compute_map,
@@ -33,33 +28,6 @@ from utils.logging import log_best_worst_retrievals
 
 from models.video_encoder import VideoEncoder
 from models.text_encoder import TextEncoder
-
-
-def runner_setup(
-    config: HeartWiseConfig, 
-    train_loader: DataLoader, 
-    val_loader: DataLoader, 
-    wandb_wrapper
-):
-    # Generate output directory
-    run_id = wandb_wrapper.id if wandb_wrapper is not None else "run_id_001"
-    output_subdir = generate_output_dir_name(config, run_id)
-    full_output_path = os.path.join(config.output_dir, output_subdir)        
-    os.makedirs(full_output_path, exist_ok=True)
-    print("Args: ", config)      
-    
-    # === Create Global Pool (train + val) ===
-    all_global_reports = create_global_text_pool(train_loader, val_loader, None)
-    
-    # === Create Validation-Only Pool ===
-    val_reports = val_loader.dataset.get_all_reports()
-    val_unique_reports = list(dict.fromkeys(val_reports))  # Preserve order, remove duplicates
-    
-    return {
-        "full_output_path": full_output_path,
-        "all_global_reports": all_global_reports,
-        "val_reports": val_unique_reports,
-    }
 
 
 @RunnerRegistry.register('video_contrastive_learning')
@@ -79,6 +47,7 @@ class VideoContrastiveLearningRunner:
         log_temp: torch.Tensor,
         lr_scheduler: LRScheduler,
         loss_fn: callable,
+        output_dir: str,
     ):
         # Add validation for recall_k
         if not isinstance(config.recall_k, list):
@@ -100,7 +69,7 @@ class VideoContrastiveLearningRunner:
         self.scaler: GradScaler = scaler
         self.lr_scheduler: LRScheduler = lr_scheduler
         self.loss_fn: callable = loss_fn
-        self.setup_dict = None
+        self.output_dir: str = output_dir
         self.best_val_loss = float('inf')
         self.best_epoch = -1
         self.log_temp = log_temp
@@ -136,14 +105,7 @@ class VideoContrastiveLearningRunner:
         text_embeddings = torch.cat(all_embeddings, dim=0)
         return text_embeddings, report_to_index
 
-    def train(self):
-        self.setup_dict = runner_setup(
-            config=self.config,
-            train_loader=self.train_loader,
-            val_loader=self.val_loader,
-            wandb_wrapper=self.wandb_wrapper
-        )
-        
+    def train(self):              
         # Training loop
         for epoch in range(self.config.epochs):           
             # Training phase
@@ -167,44 +129,25 @@ class VideoContrastiveLearningRunner:
                     **val_metrics
                 })
             
-            # # Update best model based on val-only performance
-            # current_val_loss = val_metrics["val/loss"]
-            # if current_val_loss < self.best_val_loss:
-            #     previous_best = self.best_val_loss
-            #     self.best_val_loss = current_val_loss
-            #     self.best_epoch = epoch
-                
-            #     if self.config.is_ref_device:
-            #         self._save_checkpoint(
-            #             epoch=epoch,
-            #             metrics={
-            #                 **train_metrics,
-            #                 **val_metrics
-            #             },
-            #             is_best=True
-            #         )
-            #         print(f"\nNew best model saved! Val Loss: {current_val_loss:.4f} "
-            #               f"(previous: {previous_best:.4f})")
-
-            # # Log metrics only on reference device
-            # if self.config.is_ref_device and self.wandb_wrapper:
-            #     self.wandb_wrapper.log({
-            #         "epoch": epoch,
-            #         **train_metrics,
-            #         **val_metrics,
-            #         "best_val_loss": self.best_val_loss,
-            #         "best_epoch": self.best_epoch
-            #     })
-                
-            # # Save latest checkpoint
-            # if self.config.is_ref_device:
-            #     self._save_checkpoint(
-            #         epoch=epoch,
-            #         metrics={
-            #             **train_metrics,
-            #             **val_metrics
-            #         }
-            #     )
+            # Update best model based on validation performance
+            is_best = False
+            if val_metrics["val/loss"] < self.best_val_loss:
+                previous_best = self.best_val_loss
+                self.best_val_loss = val_metrics["val/loss"]
+                self.best_epoch = epoch
+                is_best = True
+                print(f"\nNew best model! Val Loss: {val_metrics['val/loss']:.4f} "
+                      f"(previous: {previous_best:.4f})")
+                                
+            if self.config.is_ref_device:
+                self._save_checkpoint(
+                    epoch=epoch,
+                    metrics={
+                        **train_metrics,
+                        **val_metrics
+                    },
+                    is_best=is_best
+                )
                 
             # Learning rate scheduler step if it exists
             if self.lr_scheduler:
@@ -339,7 +282,7 @@ class VideoContrastiveLearningRunner:
         return gathered_metrics
 
     def _save_checkpoint(self, epoch: int, metrics: dict, is_best: bool = False):
-        checkpoint_dir: str = os.path.join(self.setup_dict["full_output_path"], "checkpoints")
+        checkpoint_dir: str = os.path.join(self.output_dir, "checkpoints")
         os.makedirs(checkpoint_dir, exist_ok=True)
         
         model_dict = {
@@ -364,7 +307,7 @@ class VideoContrastiveLearningRunner:
         # Save checkpoint
         save_path = os.path.join(
             checkpoint_dir, 
-            "best.pt" if is_best else "latest.pt"
+            f"best_epoch_{epoch + 1}.pt" if is_best else f"checkpoint_{epoch + 1}.pt"
         )
         torch.save(checkpoint, save_path)
         print(f"\nSaved {'best' if is_best else 'latest'} checkpoint at epoch {epoch + 1}")

@@ -1,5 +1,6 @@
 import os
-import pickle
+import wandb
+import numpy as np
 
 import torch
 import torch.nn as nn
@@ -28,6 +29,7 @@ from utils.metrics import (
     compute_embedding_norms, 
     compute_alignment_score
 )
+from utils.logging import log_best_worst_retrievals
 
 from models.video_encoder import VideoEncoder
 from models.text_encoder import TextEncoder
@@ -301,6 +303,17 @@ class VideoContrastiveLearningRunner:
             unique_text_embeddings_normalized.T
         )
         
+        # After computing similarity matrix and before computing metrics
+        if mode == "val" and self.config.is_ref_device:
+            log_best_worst_retrievals(
+                wandb_logger=self.wandb_wrapper,
+                similarity_matrix=similarity_matrix,
+                all_paths=all_paths,
+                unique_texts=unique_texts,
+                ground_truth_indices=ground_truth_indices,
+                epoch=epoch
+            )
+
         # Compute metrics on this GPU's portion of data
         recall_metrics = compute_recall_at_k(similarity_matrix, ground_truth_indices, k_values=self.config.recall_k)
         mrr_score = compute_mrr(similarity_matrix, ground_truth_indices)

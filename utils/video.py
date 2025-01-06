@@ -1,3 +1,4 @@
+import os
 import cv2
 import torch
 import numpy as np
@@ -15,6 +16,40 @@ def cleanup_temp_video(video_path):
             path.unlink()
     except Exception as e:
         print(f"Warning: Failed to delete temporary video {video_path}: {str(e)}")
+
+
+def convert_video_for_wandb(video_path):
+    """Convert video to MP4 format for wandb logging if needed.
+
+    Args:
+        video_path: Path to input video
+
+    Returns:
+        tuple: (output_path, is_temp) where is_temp indicates if the file needs cleanup
+    """
+    # If already MP4, return as is
+    if video_path.lower().endswith(".mp4"):
+        return video_path, False
+
+    import subprocess
+    import tempfile
+
+    # Create temporary MP4 file
+    temp_fd, temp_path = tempfile.mkstemp(suffix=".mp4")
+    os.close(temp_fd)
+
+    try:
+        # Convert to MP4 using ffmpeg
+        subprocess.run(
+            ["ffmpeg", "-i", video_path, "-c:v", "libx264", "-preset", "fast", "-y", temp_path],
+            check=True,
+            capture_output=True,
+        )
+        return temp_path, True
+    except subprocess.CalledProcessError as e:
+        print(f"Warning: Failed to convert video {video_path}: {e.stderr.decode()}")
+        os.unlink(temp_path)
+        return video_path, False
 
 
 def load_video(

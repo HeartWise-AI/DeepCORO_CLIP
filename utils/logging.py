@@ -5,9 +5,11 @@ import torch
 import wandb
 
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 from utils.config import HeartWiseConfig
+from utils.video import convert_video_for_wandb, cleanup_temp_video
+
 class WandbLogger:
     """Wrapper for Weights & Biases logging."""
 
@@ -385,49 +387,6 @@ class WandbLogger:
             cleanup_temp_video(temp_file)
 
 
-def convert_video_for_wandb(video_path):
-    """Convert video to MP4 format for wandb logging if needed.
-
-    Args:
-        video_path: Path to input video
-
-    Returns:
-        tuple: (output_path, is_temp) where is_temp indicates if the file needs cleanup
-    """
-    # If already MP4, return as is
-    if video_path.lower().endswith(".mp4"):
-        return video_path, False
-
-    import subprocess
-    import tempfile
-
-    # Create temporary MP4 file
-    temp_fd, temp_path = tempfile.mkstemp(suffix=".mp4")
-    os.close(temp_fd)
-
-    try:
-        # Convert to MP4 using ffmpeg
-        subprocess.run(
-            ["ffmpeg", "-i", video_path, "-c:v", "libx264", "-preset", "fast", "-y", temp_path],
-            check=True,
-            capture_output=True,
-        )
-        return temp_path, True
-    except subprocess.CalledProcessError as e:
-        print(f"Warning: Failed to convert video {video_path}: {e.stderr.decode()}")
-        os.unlink(temp_path)
-        return video_path, False
-
-
-def cleanup_temp_video(video_path):
-    """Delete temporary video file if it exists."""
-    try:
-        if os.path.exists(video_path):
-            os.remove(video_path)
-    except Exception as e:
-        print(f"Warning: Failed to delete temporary video {video_path}: {str(e)}")
-
-
 def get_best_and_worst_retrievals(similarity_matrix, paths, reports, k=2):
     """Get the best and worst retrievals based on similarity scores, along with their top text matches.
 
@@ -529,4 +488,102 @@ def create_logger(config: HeartWiseConfig):
     )
 
     return wandb.run
+
+
+def log_best_worst_retrievals(
+    wandb_logger,
+    similarity_matrix: torch.Tensor,
+    all_paths: List[str],
+    unique_texts: List[str],
+    ground_truth_indices: torch.Tensor,
+    epoch: int
+) -> None:
+    """Log best and worst retrievals to wandb.
+    
+    Args:
+        wandb_logger: Wandb logger instance to use for logging
+        similarity_matrix: Tensor of shape [num_videos x num_unique_texts] containing similarity scores
+        all_paths: List of video paths
+        unique_texts: List of unique text descriptions
+        ground_truth_indices: Tensor mapping each video to its ground truth text index
+        epoch: Current epoch number
+    """
+    # Find best and worst retrievals based on maximum similarity scores
+    max_scores, _ = similarity_matrix.max(dim=1)
+    k = 1  # Only pick top 1 best and worst
+    best_scores, best_indices = torch.topk(max_scores, k=k)
+    worst_scores, worst_indices = torch.topk(max_scores, k=k, largest=False)
+    
+    # Process and log best retrieval
+    if best_indices.numel() > 0:
+        _log_retrieval(
+            wandb_logger=wandb_logger,
+            idx=best_indices[0].item(),
+            score=best_scores[0].item(),
+            similarity_matrix=similarity_matrix,
+            all_paths=all_paths,
+            unique_texts=unique_texts,
+            ground_truth_indices=ground_truth_indices,
+            epoch=epoch,
+            is_best=True
+        )
+
+    # Process and log worst retrieval
+    if worst_indices.numel() > 0:
+        _log_retrieval(
+            wandb_logger=wandb_logger,
+            idx=worst_indices[0].item(),
+            score=worst_scores[0].item(),
+            similarity_matrix=similarity_matrix,
+            all_paths=all_paths,
+            unique_texts=unique_texts,
+            ground_truth_indices=ground_truth_indices,
+            epoch=epoch,
+            is_best=False
+        )
+
+def _log_retrieval(
+    wandb_logger,
+    idx: int,
+    score: float,
+    similarity_matrix: torch.Tensor,
+    all_paths: List[str],
+    unique_texts: List[str],
+    ground_truth_indices: torch.Tensor,
+    epoch: int,
+    is_best: bool
+) -> None:
+    """Helper function to log a single retrieval example."""
+    # Get top 5 predicted texts
+    top_5_text_indices = torch.argsort(similarity_matrix[idx], descending=True)[:5]
+    predicted_texts = [unique_texts[j.item()] for j in top_5_text_indices]
+    
+    # Convert video and log
+    mp4_path, is_temp = convert_video_for_wandb(all_paths[idx])
+    
+    prefix = "good" if is_best else "bad"
+    wandb_logger.log({
+        f"qualitative/{prefix}_retrieval": wandb.Video(
+            mp4_path,
+            caption=f"Sim: {score:.3f}",
+            format="mp4"
+        ),
+        "epoch": epoch
+    })
+    
+    # Log text information
+    predicted_html = "<br>".join(
+        [f"{i+1}. {text}" for i, text in enumerate(predicted_texts)]
+    )
+    ground_truth_html = (
+        f"<b>Ground Truth:</b> {unique_texts[ground_truth_indices[idx]]}<br>"
+        f"<b>Top 5 Predicted:</b><br>{predicted_html}"
+    )
+    wandb_logger.log({
+        f"qualitative/{prefix}_retrieval_text": wandb.Html(ground_truth_html),
+        "epoch": epoch
+    })
+    
+    if is_temp:
+        cleanup_temp_video(mp4_path)
 

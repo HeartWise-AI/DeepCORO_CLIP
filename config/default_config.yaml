@@ -6,7 +6,7 @@ learning_rate: 0.0001
 temperature: 0.07    # More typical CLIP-like initial temperature
 
 # Data parameters
-data_filename: data/reports/reports_sampled_no_conclusion.csv
+data_filename: data/reports/reports_with_alpha_separator_with_conclusion_and_more_details_20250108.csv
 root: "."
 target_label: Report
 datapoint_loc_label: FileName
@@ -18,7 +18,7 @@ model_name: mvit
 pretrained: true
 
 # Checkpointing
-resume: true
+resume: false
 resume_checkpoint: outputs/deepCORO_CLIP/DeepCORO_Clip_Sweep_Learnable_Temp_Full_mvit_b12_f16_RAdam_lr0.0001_20250105-140102_4prjnaxn/checkpoints/latest.pt
 
 

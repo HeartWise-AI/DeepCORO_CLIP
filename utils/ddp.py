@@ -12,9 +12,24 @@ DDP = DDP
 dist = dist
 
 
-def ddp_setup():
-    torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
-    init_process_group(backend="nccl")
+def ddp_setup(gpu_id: int, world_size: int):
+    """
+    Setup DistributedDataParallel with explicit device ID
+    
+    Args:
+        gpu_id: The GPU ID for this process
+        world_size: The total number of GPUs
+    """
+    # Set the device
+    torch.cuda.set_device(gpu_id)
+    
+    # Initialize process group
+    torch.distributed.init_process_group(
+        backend="nccl",
+        init_method="env://",
+        rank=gpu_id,
+        world_size=world_size
+    )
     
 def ddp_cleanup():
     destroy_process_group()

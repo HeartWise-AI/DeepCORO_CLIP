@@ -1,6 +1,8 @@
 import yaml
-from dataclasses import dataclass
+import argparse
+from dataclasses import dataclass, asdict
 from typing import Dict, Any, Optional, List
+
 
 def load_config(config_path: str) -> Dict[str, Any]:
     """Load configuration from YAML file."""
@@ -9,13 +11,12 @@ def load_config(config_path: str) -> Dict[str, Any]:
     return config
 
 @dataclass
-class HeartWiseConfig:
+class HeartWiseConfig:    
     # Training parameters
-    epochs: int
-    batch_size: int
-    batch_size: int
-    num_workers: int
     lr: float
+    batch_size: int
+    epochs: int
+    num_workers: int
     debug: bool
     temperature: float
 
@@ -33,47 +34,45 @@ class HeartWiseConfig:
 
     # Optimization parameters
     optimizer: str
-    weight_decay: float
     scheduler_type: str
     lr_step_period: int
     factor: float
+    weight_decay: float
 
-    # Additional parameters
+    # System parameters
     output_dir: str
     seed: int
     use_amp: bool
     device: str
     period: int
 
-    # Loss parameters
+    # Loss and metrics parameters
     loss_name: str
-
-    # Metrics control
-    metrics_control: dict
-
-    # Recall @k
+    metrics_control: Dict[str, Any]
     recall_k: List[int]
-
-    # NDCG @k
     ndcg_k: List[int]
 
-    # Data augmentation
+    # Data augmentation parameters
     rand_augment: bool
     resize: int
     apply_mask: bool
     view_count: Optional[int]
 
-    # Checkpointing
+    # Checkpointing parameters
     save_best: str
     resume: bool
     
-    # Logging
+    # Logging parameters
+    tag: str
+    name: str
     project: str
     entity: str
-    tag: str
 
     @classmethod
-    def from_yaml(cls, config_path: str) -> 'HeartWiseConfig':
+    def from_args(cls, args: argparse.Namespace) -> 'HeartWiseConfig':
         """Create a HeartWiseConfig instance from a YAML file."""
-        config_dict = load_config(config_path)
-        return cls(**config_dict) 
+        return cls(**vars(args)) 
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert config to dictionary for wandb."""
+        return asdict(self) 

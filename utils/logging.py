@@ -491,7 +491,6 @@ def create_logger(config: HeartWiseConfig):
 
 
 def log_best_worst_retrievals(
-    wandb_logger,
     similarity_matrix: torch.Tensor,
     all_paths: List[str],
     unique_texts: List[str],
@@ -517,7 +516,6 @@ def log_best_worst_retrievals(
     # Process and log best retrieval
     if best_indices.numel() > 0:
         _log_retrieval(
-            wandb_logger=wandb_logger,
             idx=best_indices[0].item(),
             score=best_scores[0].item(),
             similarity_matrix=similarity_matrix,
@@ -531,7 +529,6 @@ def log_best_worst_retrievals(
     # Process and log worst retrieval
     if worst_indices.numel() > 0:
         _log_retrieval(
-            wandb_logger=wandb_logger,
             idx=worst_indices[0].item(),
             score=worst_scores[0].item(),
             similarity_matrix=similarity_matrix,
@@ -543,7 +540,6 @@ def log_best_worst_retrievals(
         )
 
 def _log_retrieval(
-    wandb_logger,
     idx: int,
     score: float,
     similarity_matrix: torch.Tensor,
@@ -562,7 +558,7 @@ def _log_retrieval(
     mp4_path, is_temp = convert_video_for_wandb(all_paths[idx])
     
     prefix = "good" if is_best else "bad"
-    wandb_logger.log({
+    wandb.log({
         f"qualitative/{prefix}_retrieval": wandb.Video(
             mp4_path,
             caption=f"Sim: {score:.3f}",
@@ -579,7 +575,7 @@ def _log_retrieval(
         f"<b>Ground Truth:</b> {unique_texts[ground_truth_indices[idx]]}<br>"
         f"<b>Top 5 Predicted:</b><br>{predicted_html}"
     )
-    wandb_logger.log({
+    wandb.log({
         f"qualitative/{prefix}_retrieval_text": wandb.Html(ground_truth_html),
         "epoch": epoch
     })

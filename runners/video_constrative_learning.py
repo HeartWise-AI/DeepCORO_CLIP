@@ -41,7 +41,6 @@ class VideoContrastiveLearningRunner:
         val_loader: DataLoader,
         video_encoder: VideoEncoder,
         text_encoder: TextEncoder,
-        wandb_wrapper,
         optimizer: AdamW,
         scaler: GradScaler,
         log_temp: torch.Tensor,
@@ -64,7 +63,6 @@ class VideoContrastiveLearningRunner:
         self.val_loader: DataLoader = val_loader
         self.video_encoder: VideoEncoder = video_encoder
         self.text_encoder: TextEncoder = text_encoder
-        self.wandb_wrapper = wandb_wrapper
         self.optimizer: AdamW = optimizer
         self.scaler: GradScaler = scaler
         self.lr_scheduler: LRScheduler = lr_scheduler
@@ -108,26 +106,33 @@ class VideoContrastiveLearningRunner:
     def train(self):              
         # Training loop
         for epoch in range(self.config.epochs):           
+            # Synchronize before epoch starts
+            if self.world_size > 1:
+                torch.distributed.barrier(device_ids=[self.device])
+                
             # Training phase
             train_metrics = self._run_epoch(
                 mode="train", 
                 epoch=epoch
             )
             if self.config.is_ref_device:
-                self.wandb_wrapper.log({
-                    **train_metrics
-                })
-
+                wandb.log(train_metrics)
             
-            # Validation phase with pool
+            # Synchronize before validation
+            if self.world_size > 1:
+                torch.distributed.barrier(device_ids=[self.device])
+                
+            # Validation phase
             val_metrics = self._run_epoch(
-                mode="val",
-                epoch=epoch,
+                mode="val", 
+                epoch=epoch
             )
             if self.config.is_ref_device:
-                self.wandb_wrapper.log({
-                    **val_metrics
-                })
+                wandb.log(val_metrics)
+            
+            # Synchronize after validation
+            if self.world_size > 1:
+                torch.distributed.barrier(device_ids=[self.device])
             
             # Update best model based on validation performance
             is_best = False
@@ -136,8 +141,9 @@ class VideoContrastiveLearningRunner:
                 self.best_val_loss = val_metrics["val/loss"]
                 self.best_epoch = epoch
                 is_best = True
-                print(f"\nNew best model! Val Loss: {val_metrics['val/loss']:.4f} "
-                      f"(previous: {previous_best:.4f})")
+                if self.config.is_ref_device:   
+                    print(f"\nNew best model! Val Loss: {val_metrics['val/loss']:.4f} "
+                          f"(previous: {previous_best:.4f})")
                                 
             if self.config.is_ref_device:
                 self._save_checkpoint(
@@ -249,7 +255,6 @@ class VideoContrastiveLearningRunner:
         # After computing similarity matrix and before computing metrics
         if mode == "val" and self.config.is_ref_device:
             log_best_worst_retrievals(
-                wandb_logger=self.wandb_wrapper,
                 similarity_matrix=similarity_matrix,
                 all_paths=all_paths,
                 unique_texts=unique_texts,
@@ -272,7 +277,7 @@ class VideoContrastiveLearningRunner:
         # Update dictionary with float type metrics
         epoch_metrics['MAP'] = map_score
         epoch_metrics['MedianRank_V2T'] = median_rank_score
-        
+
         # Gather and average all metrics across GPUs
         gathered_metrics = {
             f"{mode}/{k}": gather_loss([v], self.device) 
@@ -369,10 +374,7 @@ class VideoContrastiveLearningRunner:
             loss = self.loss_fn(video_embeddings, text_embeddings, self.log_temp)  # Use normalized features
             
             loss.backward()
-            
-            torch.nn.utils.clip_grad_norm_(self.video_encoder.parameters(), max_norm=5.0)
-            torch.nn.utils.clip_grad_norm_(self.text_encoder.parameters(), max_norm=5.0)
-            
+
             self.optimizer.step()           
         
         # Compute metrics

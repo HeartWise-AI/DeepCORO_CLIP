@@ -1,12 +1,97 @@
+import os
 import argparse
 from utils.config import HeartWiseConfig
+from utils.parser_typing import (
+    str2bool, 
+    parse_dict, 
+    parse_list, 
+    parse_optional_int
+)
 
 class HeartWiseParser:
+    @staticmethod
+    def set_gpu_info(config: HeartWiseConfig) -> None:
+        """Set GPU information from environment variables."""
+        config.gpu = int(os.environ["LOCAL_RANK"])
+        config.world_size = int(os.environ["WORLD_SIZE"])
+        config.is_ref_device = (int(os.environ["LOCAL_RANK"]) == 0)
+
     @staticmethod
     def parse_config() -> HeartWiseConfig:
         """Parse command line arguments and load config file."""
         parser = argparse.ArgumentParser(description="Train DeepCORO_CLIP model")
-        parser.add_argument("--config", type=str, required=True, help="Path to YAML config file")
+
+        # Training parameters
+        train_group = parser.add_argument_group('Training')
+        train_group.add_argument('--lr', type=float)
+        train_group.add_argument('--batch_size', type=int)
+        train_group.add_argument('--epochs', type=int)
+        train_group.add_argument('--num_workers', type=int)
+        train_group.add_argument('--debug', type=str2bool)
+        train_group.add_argument('--temperature', type=float)
+
+        # Optimization parameters
+        optim_group = parser.add_argument_group('Optimization')
+        optim_group.add_argument('--optimizer', type=str)
+        optim_group.add_argument('--scheduler_type', type=str)
+        optim_group.add_argument('--lr_step_period', type=int)
+        optim_group.add_argument('--factor', type=float)
+        optim_group.add_argument('--weight_decay', type=float)
+
+        # Data parameters
+        data_group = parser.add_argument_group('Data')
+        data_group.add_argument('--data_filename', type=str)
+        data_group.add_argument('--root', type=str)
+        data_group.add_argument('--target_label', type=str)
+        data_group.add_argument('--datapoint_loc_label', type=str)
+        data_group.add_argument('--frames', type=int)
+        data_group.add_argument('--stride', type=int)
+
+        # Model parameters
+        model_group = parser.add_argument_group('Model')
+        model_group.add_argument('--model_name', type=str)
+        model_group.add_argument('--pretrained', type=str2bool)
+
+        # System parameters
+        system_group = parser.add_argument_group('System')
+        system_group.add_argument('--output_dir', type=str)
+        system_group.add_argument('--seed', type=int)
+        system_group.add_argument('--use_amp', type=str2bool)
+        system_group.add_argument('--device', type=str)
+        system_group.add_argument('--period', type=int)
+
+        # Loss and metrics parameters
+        metrics_group = parser.add_argument_group('Loss and Metrics')
+        metrics_group.add_argument('--loss_name', type=str)
+        metrics_group.add_argument('--metrics_control', type=parse_dict)
+        metrics_group.add_argument('--recall_k', type=parse_list)
+        metrics_group.add_argument('--ndcg_k', type=parse_list)
+
+        # Data augmentation parameters
+        augment_group = parser.add_argument_group('Data Augmentation')
+        augment_group.add_argument('--rand_augment', type=str2bool)
+        augment_group.add_argument('--resize', type=int)
+        augment_group.add_argument('--apply_mask', type=str2bool)
+        augment_group.add_argument('--view_count', type=parse_optional_int)
+
+        # Checkpointing parameters
+        checkpoint_group = parser.add_argument_group('Checkpointing')
+        checkpoint_group.add_argument('--save_best', type=str)
+        checkpoint_group.add_argument('--resume', type=str2bool)
+
+        # Logging parameters
+        sweep_group = parser.add_argument_group('Sweep')
+        sweep_group.add_argument('--tag', type=str)
+        sweep_group.add_argument('--name', type=str)
+        sweep_group.add_argument('--project', type=str)
+        sweep_group.add_argument('--entity', type=str)
+
         args = parser.parse_args()
         
-        return HeartWiseConfig.from_yaml(args.config)
+        # Load config
+        config = HeartWiseConfig.from_args(args)
+
+        # Set GPU info
+        HeartWiseParser.set_gpu_info(config)
+        
+        return config

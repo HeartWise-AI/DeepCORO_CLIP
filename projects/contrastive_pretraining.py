@@ -1,11 +1,9 @@
 import os
 import wandb
-import pickle
 
 import torch
 import torch.nn as nn
 from tqdm import tqdm
-from pathlib import Path
 from torch.amp import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
@@ -25,53 +23,27 @@ from utils.registry import (
     RunnerRegistry, 
     ProjectRegistry, 
 )
-from utils.logging import create_logger
 from utils.files_handler import generate_output_dir_name
 from dataloaders.stats_dataset import get_stats_dataloader
 from dataloaders.video_dataset import get_distributed_video_dataloader
 
 
-def save_checkpoint(model_dict, metrics_dict, output_path, is_best=False):
-    """
-    Save model checkpoint with metrics.
-
-    Args:
-        model_dict (dict): Dictionary containing model states
-        metrics_dict (dict): Dictionary containing training metrics
-        output_path (str/Path): Path to save the checkpoint
-        is_best (bool): Whether this is the best model so far
-    """
-    # Ensure parent directory exists
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Combine model and metrics into one checkpoint
-    checkpoint = {**model_dict, **metrics_dict}
-
-    # Save checkpoint
-    torch.save(checkpoint, output_path)
-    print(f"Saved checkpoint to {output_path}")
-
-
 def load_train_objs(
     config: HeartWiseConfig,
 )->dict:
-    wandb_run = None # Set default to None - will be changed for ref device only
-    full_output_path = None # Set default to None - will be changed for ref device only
-    if config.is_ref_device: 
-        wandb_run = create_logger(config=config)
+    """
+    Load training objects.
 
-        # After wandb.init(), wandb.config is available.
-        # Override args with wandb.config parameters if present.
-        if wandb_run is not None and len(wandb_run.config.keys()) > 0:
-            for key, value in wandb_run.config.items():
-                if hasattr(config, key):
-                    setattr(config, key, value)
-                else:
-                    print(f"Warning: {key} in wandb.config not recognized as an arg.")    
-                    
-        # Generate output directory
-        run_id = wandb_run.id if wandb_run is not None else ""
+    Args:
+        config (HeartWiseConfig): Configuration object
+
+    Returns:
+        dict: Dictionary containing training objects
+    """
+    full_output_path = None
+    if config.is_ref_device:
+        # Generate output directory using wandb run ID that was already created
+        run_id = wandb.run.id if wandb.run is not None else ""
         output_subdir = generate_output_dir_name(config, run_id)
         full_output_path = os.path.join(config.output_dir, output_subdir)        
         os.makedirs(full_output_path, exist_ok=True)
@@ -221,7 +193,6 @@ def load_train_objs(
         "train_loader": train_loader,
         "val_loader": val_loader,
         "device": config.gpu,
-        "wandb_run": wandb_run,
         "scaler": scaler,
         "log_temp": log_temperature,
         "full_output_path": full_output_path,
@@ -251,7 +222,6 @@ class ContrastivePretraining:
             val_loader=training_setup["val_loader"],
             video_encoder=training_setup["video_encoder"],
             text_encoder=training_setup["text_encoder"],
-            wandb_wrapper=training_setup["wandb_run"],
             optimizer=training_setup["optimizer"],
             scaler=training_setup["scaler"],
             log_temp=training_setup["log_temp"],
@@ -261,8 +231,5 @@ class ContrastivePretraining:
         )
         
         runner.train() 
-
-        if self.config.is_ref_device:
-            wandb.finish()
 
 

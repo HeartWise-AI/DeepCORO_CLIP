@@ -1,35 +1,113 @@
-program: scripts/train_model.py
-name: "My_DeepCORO_Clip_Sweep"
-method: "bayes"
+# sweep_config.yaml
+command:
+  - torchrun
+  - "--nproc_per_node=4"
+  - "--master_port=29500"
+  - "scripts/train_model_multi_gpu.py"
+  - ${args}
+
+name: "test_sweep_4_gpu_subset_10k"
+project: "dev_deep_coro_clip"
+entity: "mhi_ai"
+
+method: bayes
+
 metric:
-  name: "best_val_loss"
-  goal: "minimize"
+  name: val/loss
+  goal: minimize
+
 parameters:
   lr:
-    min: 1e-8
-    max: 2e-5
-    distribution: "uniform"
+    distribution: uniform
+    min: 0.00001
+    max: 0.0001
   optimizer:
     values: ["AdamW", "RAdam"]
-  scheduler-type:
-    values: ["step", "cosine"]
-  lr-step-period:
-    values: [5, 10]
+  scheduler_type:
+    values: ["cosine", "step"]
+  lr_step_period:
+    values: [1]
   factor:
     values: [0.1, 0.3, 0.5]
+  batch_size:
+    values: [8, 16, 32]
+  temperature:
+    min: 0.05
+    max: 0.15
+    distribution: uniform 
   epochs:
-    values: [1, 2]
-  batch-size:
-    values: [16, 32, 48, 64]
-  temp:
-    min: 0.01
-    max: 2.0
-    distribution: uniform
-  rand-aug:
-    values: [True, False]
-command:
-  - bash
-  - /volume/DeepCORO_CLIP/config/runner.sh
-  - ${program}
-  - "config/default_config.yaml"
-  - ${args}
+    values: [5]
+  output_dir:
+    values: ["output"]
+  num_workers:
+    values: [12]
+  debug:
+    values: [false]
+  data_filename:
+    values: ["data/reports/reports_with_splits_subset_10k.csv"]
+  root:
+    values: ["."]
+  target_label:
+    values: ["Report"]
+  datapoint_loc_label:
+    values: ["FileName"]
+  frames:
+    values: [16]
+  stride:
+    values: [1, 2, 3]
+  model_name:
+    values: ["mvit"]
+  pretrained:
+    values: [true]
+  weight_decay:
+    values: [0.000001]
+  seed:
+    values: [0]
+  use_amp:
+    values: [true]
+  device:
+    values: ["cuda"]
+  period:
+    values: [1]
+  loss_name:
+    values: ["contrastive"]
+  metrics_control:
+    values: ['
+      {
+        "optim_thresh": "g_mean", 
+        "plot_pred_distribution": true, 
+        "plot_metrics_moving_thresh": true, 
+        "n_bootstrap": 100, 
+        "q_bootstrap": 0.05
+      }
+    ']
+  recall_k:
+    values: [[1, 5, 10, 50]]
+  ndcg_k:
+    values: [[5]]
+  rand_augment:
+    values: [false]
+  resize:
+    values: [224]
+  apply_mask:
+    values: [false]
+  view_count:
+    values: [null]
+  save_best:
+    values: ["loss"]
+  resume:
+    values: [false]
+  tag:
+    values: ["mvit_pretrained"]
+  name:
+    values: ["test_sweep_4_gpu_subset_10k"]
+  project:
+    values: ["dev_deep_coro_clip"]
+  entity:
+    values: ["mhi_ai"]
+
+early_terminate:
+  type: hyperband
+  min_iter: 3
+  eta: 2
+  s: 2

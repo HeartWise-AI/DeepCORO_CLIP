@@ -31,7 +31,8 @@ class HeartWiseConfig:
     # Model parameters
     model_name: str
     pretrained: bool
-
+    video_freeze_ratio: float
+    text_freeze_ratio: float
     # Optimization parameters
     optimizer: str
     scheduler_type: str

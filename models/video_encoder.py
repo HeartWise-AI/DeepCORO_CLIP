@@ -2,8 +2,7 @@
 
 import torch
 import torch.nn as nn
-from torchvision.models.video import mvit_v1_b, r3d_18
-from transformers import AutoModel, AutoTokenizer
+from torchvision.models.video import mvit_v2_s, r3d_18
 
 from utils.registry import ModelRegistry
 
@@ -44,7 +43,13 @@ class VideoEncoder(nn.Module):
     """Video encoder model based on specified backbone."""
 
     def __init__(
-        self, backbone="mvit", input_channels=1, num_frames=16, pretrained=True, output_dim=512
+        self, 
+        backbone="mvit", 
+        input_channels=3, 
+        num_frames=16, 
+        pretrained=True, 
+        output_dim=512, 
+        freeze_ratio=0.0
     ):
         """Initialize the video encoder.
 
@@ -60,7 +65,8 @@ class VideoEncoder(nn.Module):
         self.input_channels = input_channels
         self.num_frames = num_frames
         self.output_dim = output_dim
-
+        self.freeze_ratio = freeze_ratio
+        
         # Convert grayscale to 3 channels if needed
         if input_channels == 1:
             self.to_rgb = nn.Sequential(
@@ -74,20 +80,21 @@ class VideoEncoder(nn.Module):
 
         # Load the specified backbone with pretrained weights if specified
         if backbone == "mvit":
-            self.model = mvit_v1_b(weights="KINETICS400_V1" if pretrained else None)
-            in_features = 768  # MViT v1's hidden dimension
-            kinetics_classes = 400  # Number of Kinetics classes
-            # Replace the classification head with a sequence of layers
-            self.model.head = nn.Sequential(
-                nn.LayerNorm(in_features),
-                nn.Linear(in_features, kinetics_classes),
-            )
-            # Add projection layer to match desired output dimension
-            self.proj = nn.Sequential(
-                nn.Linear(kinetics_classes, output_dim),
-                nn.LayerNorm(output_dim),
-                nn.Dropout(0.1),
-            )
+            # Load the pretrained MViT v2 S
+            self.model = mvit_v2_s(weights="KINETICS400_V1" if pretrained else None)
+            # self.model.head is a Sequential. We find the final nn.Linear layer:
+            in_features = None
+            for layer in reversed(self.model.head):
+                if isinstance(layer, nn.Linear):
+                    in_features = layer.in_features
+                    break
+            # If we didn't find a linear, default to a known dimension (e.g., 768)
+            if in_features is None:
+                in_features = 768
+
+            # Replace classification head with Identity
+            self.model.head = nn.Identity()
+
         elif backbone == "r3d":
             self.model = r3d_18(pretrained=pretrained)
             in_features = 512  # R3D-18's hidden dimension
@@ -95,19 +102,32 @@ class VideoEncoder(nn.Module):
             self.proj = nn.Identity()
         else:
             raise ValueError(f"Unsupported backbone: {backbone}")
-        ### Freeze
-        # Freeze the weights of the pretrained model except the head
-        frozen_layers = []
-        unfrozen_layers = []
-        for name, param in self.model.named_parameters():
-            if not name.startswith("head"):
-                param.requires_grad = False
-                frozen_layers.append(name)
-            else:
-                unfrozen_layers.append(name)
+        
+        # Projection from backbone dimension -> output_dim
+        # (includes dropout to help regularize)
+        self.proj = nn.Sequential(
+            nn.Linear(in_features, output_dim),
+            nn.ReLU(inplace=True),
+        )
+        
+        # Freeze partial layers
+        self._freeze_partial_layers()
+        
 
-        print(f"Frozen layers: {frozen_layers}")
-        print(f"Unfrozen layers: {unfrozen_layers}")
+    def _freeze_partial_layers(self):
+        """
+        Freeze a fraction (1 - freeze_ratio) of the backbone's layers
+        (from bottom to top), leaving top fraction = freeze_ratio un-frozen.
+        """
+        all_named_params = list(self.model.named_parameters())
+        total_count = len(all_named_params)
+        train_count = int(self.freeze_ratio * total_count)
+
+        # Freeze the bottom portion, keep top `train_count` trainable
+        for i, (_, param) in enumerate(all_named_params):
+            if i < (total_count - train_count):
+                param.requires_grad = False
+
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass of the video encoder.

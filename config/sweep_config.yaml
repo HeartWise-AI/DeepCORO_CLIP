@@ -6,9 +6,9 @@ command:
   - "scripts/train_model_multi_gpu.py"
   - ${args}
 
-name: "test_sweep_4_gpu_subset_10k"
+name: "test_freeze_ratio"
 project: "dev_deep_coro_clip"
-entity: "mhi_ai"
+entity: "jacques-delfrate"
 
 method: bayes
 
@@ -35,6 +35,10 @@ parameters:
     min: 0.05
     max: 0.15
     distribution: uniform 
+  video_freeze_ratio:
+    values: [0.0, 0.5, 1.0]    
+  text_freeze_ratio:
+    values: [0.0, 0.5, 1.0]
   epochs:
     values: [5]
   output_dir:
@@ -44,7 +48,7 @@ parameters:
   debug:
     values: [false]
   data_filename:
-    values: ["data/reports/reports_with_splits_subset_10k.csv"]
+    values: ["data/reports/reports_with_splits_subset.csv"]
   root:
     values: ["."]
   target_label:
@@ -100,11 +104,11 @@ parameters:
   tag:
     values: ["mvit_pretrained"]
   name:
-    values: ["test_sweep_4_gpu_subset_10k"]
+    values: ["test_freeze_ratio"]
   project:
     values: ["dev_deep_coro_clip"]
   entity:
-    values: ["mhi_ai"]
+    values: ["jacques-delfrate"]
 
 early_terminate:
   type: hyperband

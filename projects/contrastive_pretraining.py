@@ -127,12 +127,13 @@ def load_train_objs(
         num_frames=config.frames,
         pretrained=config.pretrained,
         output_dim=512,
+        freeze_ratio=config.video_freeze_ratio,
     )
     video_encoder = video_encoder.to(config.gpu).float()
 
     text_encoder: TextEncoder = ModelRegistry.get(
         name="text_encoder"
-    )()
+    )(freeze_ratio=config.text_freeze_ratio)
     text_encoder = text_encoder.to(config.gpu).float()
 
     video_encoder = DDP(

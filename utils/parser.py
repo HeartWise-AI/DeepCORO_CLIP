@@ -51,7 +51,8 @@ class HeartWiseParser:
         model_group = parser.add_argument_group('Model')
         model_group.add_argument('--model_name', type=str)
         model_group.add_argument('--pretrained', type=str2bool)
-
+        model_group.add_argument('--video_freeze_ratio', type=float)
+        model_group.add_argument('--text_freeze_ratio', type=float)
         # System parameters
         system_group = parser.add_argument_group('System')
         system_group.add_argument('--output_dir', type=str)

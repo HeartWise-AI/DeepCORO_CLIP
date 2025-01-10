@@ -31,6 +31,7 @@ class TextEncoder(nn.Module):
         self,
         model_name="microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext",
         output_dim=512,
+        freeze_ratio=0.5,
     ):
         """Initialize the text encoder.
 
@@ -41,10 +42,13 @@ class TextEncoder(nn.Module):
         super().__init__()
         self.model_name = model_name
         self.output_dim = output_dim
-
+        self.freeze_ratio = freeze_ratio
         # Load model and get its config
         self.bert = AutoModel.from_pretrained(model_name)
         config = self.bert.config
+
+        # Freeze a portion of BERT's encoder layers
+        self._freeze_partial_bert()
 
         # Project from BERT hidden size to match video encoder
         self.proj = nn.Linear(config.hidden_size, output_dim)
@@ -56,6 +60,19 @@ class TextEncoder(nn.Module):
         print(f"  vocab_size: {config.vocab_size}")
         print(f"  output_dim: {output_dim}")
 
+    def _freeze_partial_bert(self):
+        """
+        Freeze the bottom portion of the BERT parameters, leaving
+        a fraction `freeze_ratio` trainable from the top.
+        """
+        all_named_params = list(self.bert.named_parameters())
+        total_count = len(all_named_params)
+        train_count = int(self.freeze_ratio * total_count)
+
+        for i, (_, param) in enumerate(all_named_params):
+            if i < (total_count - train_count):
+                param.requires_grad = False
+
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
         """Forward pass of the text encoder.
 
@@ -66,17 +83,9 @@ class TextEncoder(nn.Module):
         Returns:
             torch.Tensor: Output features of shape [batch_size, output_dim]
         """
-
-        # Add batch dimension if needed
-        if input_ids.dim() == 1:
-            input_ids = input_ids.unsqueeze(0)
-            attention_mask = attention_mask.unsqueeze(0)
-
         # Get BERT features and take CLS token output
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
         features = outputs.last_hidden_state[:, 0]  # Take CLS token
 
         # Project to match video encoder dimension
-        features = self.proj(features)
-
-        return features
+        return self.proj(features)

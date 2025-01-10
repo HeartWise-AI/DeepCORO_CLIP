@@ -33,6 +33,8 @@ class HeartWiseConfig:
     pretrained: bool
     video_freeze_ratio: float
     text_freeze_ratio: float
+    dropout: float
+    
     # Optimization parameters
     optimizer: str
     scheduler_type: str

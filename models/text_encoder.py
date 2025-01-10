@@ -31,6 +31,7 @@ class TextEncoder(nn.Module):
         self,
         model_name="microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext",
         output_dim=512,
+        dropout=0.2,
         freeze_ratio=0.5,
     ):
         """Initialize the text encoder.
@@ -43,6 +44,8 @@ class TextEncoder(nn.Module):
         self.model_name = model_name
         self.output_dim = output_dim
         self.freeze_ratio = freeze_ratio
+        self.dropout = dropout
+        
         # Load model and get its config
         self.bert = AutoModel.from_pretrained(model_name)
         config = self.bert.config
@@ -51,7 +54,12 @@ class TextEncoder(nn.Module):
         self._freeze_partial_bert()
 
         # Project from BERT hidden size to match video encoder
-        self.proj = nn.Linear(config.hidden_size, output_dim)
+        self.proj = nn.Sequential(
+            nn.Dropout(self.dropout),
+            nn.Linear(config.hidden_size, output_dim),
+            nn.ReLU(inplace=True),
+            nn.Dropout(self.dropout)
+        )
 
         # Print model configuration for debugging
         print(f"Initialized TextEncoder with:")

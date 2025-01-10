@@ -6,7 +6,7 @@ command:
   - "scripts/train_model_multi_gpu.py"
   - ${args}
 
-name: "test_freeze_ratio"
+name: "test_dropout"
 project: "dev_deep_coro_clip"
 entity: "jacques-delfrate"
 
@@ -35,6 +35,10 @@ parameters:
     min: 0.05
     max: 0.15
     distribution: uniform 
+  dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.5    
   video_freeze_ratio:
     values: [0.0, 0.5, 1.0]    
   text_freeze_ratio:
@@ -104,7 +108,7 @@ parameters:
   tag:
     values: ["mvit_pretrained"]
   name:
-    values: ["test_freeze_ratio"]
+    values: ["test_dropout"]
   project:
     values: ["dev_deep_coro_clip"]
   entity:

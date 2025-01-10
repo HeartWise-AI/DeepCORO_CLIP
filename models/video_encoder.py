@@ -49,7 +49,8 @@ class VideoEncoder(nn.Module):
         num_frames=16, 
         pretrained=True, 
         output_dim=512, 
-        freeze_ratio=0.0
+        dropout=0.2,
+        freeze_ratio=0.8
     ):
         """Initialize the video encoder.
 
@@ -65,6 +66,7 @@ class VideoEncoder(nn.Module):
         self.input_channels = input_channels
         self.num_frames = num_frames
         self.output_dim = output_dim
+        self.dropout = dropout
         self.freeze_ratio = freeze_ratio
         
         # Convert grayscale to 3 channels if needed
@@ -102,17 +104,18 @@ class VideoEncoder(nn.Module):
             self.proj = nn.Identity()
         else:
             raise ValueError(f"Unsupported backbone: {backbone}")
+                
+        # Freeze partial layers
+        self._freeze_partial_layers()
         
         # Projection from backbone dimension -> output_dim
         # (includes dropout to help regularize)
         self.proj = nn.Sequential(
+            nn.Dropout(self.dropout),
             nn.Linear(in_features, output_dim),
             nn.ReLU(inplace=True),
-        )
-        
-        # Freeze partial layers
-        self._freeze_partial_layers()
-        
+            nn.Dropout(self.dropout)
+        )        
 
     def _freeze_partial_layers(self):
         """

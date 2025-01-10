@@ -1,6 +1,7 @@
 """
-Training script for DeepCORO_CLIP model with a built-in VideoAggregator inside VideoEncoder.
-(No double-logging inside validate_epoch)
+Training script for DeepCORO_CLIP model with Val-Only Retrieval (Option A).
+No global text pool is used. Instead, we compute text embeddings for
+each val batch in validate_epoch and do retrieval among those samples only.
 """
 
 import argparse
@@ -59,10 +60,9 @@ def load_config(config_path: str) -> Dict[str, Any]:
     return config
 
 
-
 def parse_args():
     """Parse command line arguments and optionally load config file."""
-    parser = argparse.ArgumentParser(description="Train DeepCORO_CLIP model")
+    parser = argparse.ArgumentParser(description="Train DeepCORO_CLIP model (Val-Only Retrieval)")
 
     # Config file argument
     parser.add_argument("--config", type=str, help="Path to YAML config file")
@@ -75,11 +75,9 @@ def parse_args():
     parser.add_argument("--learning_rate", type=float, default=5e-5, help="Learning rate")
     parser.add_argument("--local_rank", "--local-rank", type=int, default=-1, help="Local rank")
     parser.add_argument("--debug", action="store_true", help="Enable debug mode")
-    parser.add_argument(
-        "--temperature", type=float, default=0.1, help="Temperature for contrastive loss"
-    )
+    parser.add_argument("--temperature", type=float, default=0.1, help="Temperature for contrastive loss")
 
-    # -- NEW: Resume arguments
+    # Resume arguments
     parser.add_argument("--resume", action="store_true", help="Resume training from a checkpoint")
     parser.add_argument(
         "--resume_checkpoint",
@@ -107,7 +105,6 @@ def parse_args():
         "--model_name", type=str, default="mvit_v2_s", help="Video backbone model name"
     )
     parser.add_argument("--pretrained", action="store_true", help="Use pretrained backbone")
-
     parser.add_argument("--dropout", type=float, default=0.2, help="Dropout probability in heads")
     parser.add_argument(
         "--video_freeze_ratio",
@@ -129,9 +126,7 @@ def parse_args():
     parser.add_argument("--lr_step_period", type=int, default=15, help="LR step period")
     parser.add_argument("--factor", type=float, default=0.3, help="Factor for scheduler")
     parser.add_argument("--use_amp", action="store_true", help="Use AMP training")
-    parser.add_argument(
-        "--patience", type=int, default=5, help="Num. epochs to wait for val improvement"
-    )
+    parser.add_argument("--patience", type=int, default=5, help="Num. epochs to wait for val improvement")
 
     # Logging parameters
     parser.add_argument("--project", type=str, default="deepcoro_clip", help="W&B project name")
@@ -174,15 +169,12 @@ def parse_args():
         args.local_rank = int(os.environ.get("LOCAL_RANK", -1))
 
     return args
+
+
 def preview_checkpoint_for_resuming(checkpoint_path: str):
     """
     Quick "preview" function that loads minimal fields from the checkpoint 
     on CPU, to retrieve wandb_run, epoch, best_val_loss, best_epoch, etc.
-    Returns:
-      wandb_run (str or None)
-      start_epoch (int)
-      best_val_loss (float)
-      best_epoch (int)
     """
     if not os.path.isfile(checkpoint_path):
         print(f"Warning: checkpoint not found at {checkpoint_path}.")
@@ -231,7 +223,6 @@ def load_full_checkpoint(checkpoint_path: str, device, training_setup):
         scheduler.load_state_dict(checkpoint["scheduler"])
 
 
-
 def generate_output_dir_name(args, run_id):
     """
     Generates a directory name for output based on the provided configuration.
@@ -251,7 +242,7 @@ def generate_output_dir_name(args, run_id):
         f"{tag}_{model_name}_b{batch_size}_f{frames}_{optimizer}_lr{lr}_{current_time}_{run_id}"
     )
 
-    dir_name = os.path.join(project, model_dir)
+    dir_name = os.path.join(args.output_dir, project, model_dir)
     return dir_name
 
 
@@ -621,12 +612,11 @@ def train_epoch(
 
             # local norms
             with torch.no_grad():
-                if video_embeds.size(0) >= 5:
-                    norm_metrics = compute_embedding_norms(video_embeds, text_embeds)
-                    alignment_score = compute_alignment_score(video_embeds, text_embeds)
-                    epoch_metrics["video_norm"] += norm_metrics["video_norm"]
-                    epoch_metrics["text_norm"] += norm_metrics["text_norm"]
-                    epoch_metrics["alignment_score"] += alignment_score
+                norm_metrics = compute_embedding_norms(video_embeds, text_embeds)
+                alignment_score = compute_alignment_score(video_embeds, text_embeds)
+                epoch_metrics["video_norm"] += norm_metrics["video_norm"]
+                epoch_metrics["text_norm"] += norm_metrics["text_norm"]
+                epoch_metrics["alignment_score"] += alignment_score
 
             del loss, video_embeds, text_embeds
             torch.cuda.empty_cache()
@@ -651,89 +641,6 @@ def train_epoch(
     return avg_loss, epoch_metrics
 
 
-
-def save_checkpoint(model_dict, metrics_dict, output_path, is_best=False, wandb_run=None):
-    """
-    Save model checkpoint with metrics, plus wandb_run if provided.
-    """
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    checkpoint = {**model_dict, **metrics_dict}
-
-    if wandb_run is not None:
-        checkpoint["wandb_run"] = wandb_run
-
-    torch.save(checkpoint, output_path)
-    print(f"Saved checkpoint to {output_path}")
-
-
-def create_global_text_pool(train_dataset, val_dataset, test_dataset=None):
-    train_reports = train_dataset.get_all_reports()
-    val_reports = val_dataset.get_all_reports()
-    test_reports = test_dataset.get_all_reports() if test_dataset is not None else []
-
-    seen = {}
-    for r in train_reports:
-        if r not in seen:
-            seen[r] = len(seen)
-    for r in val_reports:
-        if r not in seen:
-            seen[r] = len(seen)
-    for r in test_reports:
-        if r not in seen:
-            seen[r] = len(seen)
-
-    all_global_reports = [None] * len(seen)
-    for report, idx in seen.items():
-        all_global_reports[idx] = report
-
-    return all_global_reports
-
-
-def precompute_global_text_embeddings(
-    text_encoder, all_global_reports, tokenizer, device, batch_size=64, num_workers=4
-):
-    """
-    Return:
-       all_global_reports => the same unique list
-       all_global_text_embeddings => shape [num_unique, emb_dim]
-    """
-    from torch.utils.data import Dataset, DataLoader
-
-    class GlobalTextDataset(Dataset):
-        def __init__(self, texts, tokenizer):
-            self.texts = texts
-            self.tokenizer = tokenizer
-
-        def __len__(self):
-            return len(self.texts)
-
-        def __getitem__(self, idx):
-            text = self.texts[idx]
-            enc = self.tokenizer(
-                text,
-                padding="max_length",
-                truncation=True,
-                max_length=512,
-                return_tensors="pt",
-            )
-            enc = {k: v.squeeze(0) for k, v in enc.items()}
-            return enc
-
-    text_dataset = GlobalTextDataset(all_global_reports, tokenizer)
-    text_loader = DataLoader(text_dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False)
-
-    all_text_embeddings = []
-    text_encoder.eval()
-    with torch.no_grad():
-        for batch_texts in text_loader:
-            input_ids = batch_texts["input_ids"].to(device)
-            attention_mask = batch_texts["attention_mask"].to(device)
-            txt_feats = text_encoder(input_ids, attention_mask)
-            all_text_embeddings.append(txt_feats.cpu())
-    all_global_text_embeddings = torch.cat(all_text_embeddings, dim=0)
-    return all_global_reports, all_global_text_embeddings
-
 def validate_epoch(
     video_encoder,
     text_encoder,
@@ -743,36 +650,12 @@ def validate_epoch(
     rank=0,
     world_size=1,
     epoch=0,
-    all_text_embeddings=None,
-    all_reports=None,
-    output_dir="outputs",
-    report_to_global_index=None,
-    use_val_only_pool=True,
     log_temperature=None,
 ):
     """
-    Validation epoch with retrieval computation and logging.
-
-    This version assumes your VideoEncoder already does aggregation internally,
-    so video_embeds will be shape (B, emb_dim) for either single-video or multi-video.
-
-    Args:
-        video_encoder, text_encoder: Models
-        dataloader: Validation DataLoader
-        device: torch device
-        wandb_run: W&B logger
-        rank: DDP rank
-        world_size: DDP world size
-        epoch: current epoch
-        all_text_embeddings: precomputed text embeddings for the pool (val-only or global)
-        all_reports: corresponding reports (val-only or global)
-        report_to_global_index: mapping from report to index in `all_reports`
-        use_val_only_pool (bool): If True, evaluate retrieval using only the val set embeddings
-        log_temperature: learned temperature for contrastive loss
-
-    Returns:
-        avg_loss, epoch_metrics, examples_dict
-          where examples_dict includes info about best/worst retrieval examples
+    Validation epoch with Val-Only retrieval:
+      1) Compute both video_embeds and text_embeds for the val set
+      2) At the end, do retrieval among these val samples
     """
     video_encoder.eval()
     text_encoder.eval()
@@ -780,191 +663,137 @@ def validate_epoch(
     total_loss = 0.0
     num_batches = 0
 
-    # We'll collect these stats over the whole validation set
-    epoch_metrics = {
-        "Recall@1_V2T": 0.0,
-        "Recall@5_V2T": 0.0,
-        "Recall@10_V2T": 0.0,
-        "Recall@50_V2T": 0.0,
-        "MRR_V2T": 0.0,
-        "NDCG@5_V2T": 0.0,
-        "MedianRank_V2T": 0.0,
-        "video_norm": 0.0,
-        "text_norm": 0.0,
-        "alignment_score": 0.0,
-        "MAP": 0.0,
-    }
-
-    # Store item-level (study-level or video-level) embeddings
+    # We'll collect the val set embeddings for retrieval
     all_video_embeddings = []
-    all_paths = []
-    all_ground_truth_reports = []
+    all_text_embeddings = []
 
-    if rank == 0:
-        progress = tqdm(dataloader, desc=f"Validation Epoch {epoch}")
-    else:
-        progress = dataloader
+    # We might also store file paths or study_ids if you want
+    all_paths = []
 
     with torch.no_grad():
-        for batch_idx, (videos, encoded_texts, study_ids) in enumerate(progress):
-            # videos => shape [B, C, F, H, W] for single-video
-            #         or shape [B, N, C, F, H, W] for multi-video
-            # aggregator is inside video_encoder => output => [B, emb_dim]
-            videos = videos.to(device).float()
+        if rank == 0:
+            progress = tqdm(dataloader, desc=f"Validation Epoch {epoch}")
+        else:
+            progress = dataloader
 
+        for batch_idx, (videos, encoded_texts, study_ids) in enumerate(progress):
+            videos = videos.to(device).float()
             input_ids = encoded_texts["input_ids"].to(device)
             attention_mask = encoded_texts["attention_mask"].to(device)
 
-            # Forward pass (aggregator is inside VideoEncoder)
+            # aggregator is inside video_encoder => output => [B, emb_dim]
             video_embeds = video_encoder(videos)
             text_embeds = text_encoder(input_ids, attention_mask)
 
-            # Compute contrastive loss
+            # Compute contrastive loss for these pairs
             loss = clip_style_loss(video_embeds, text_embeds, log_temperature)
             total_loss += loss.item()
             num_batches += 1
-            # Collect embeddings
-            all_video_embeddings.append(video_embeds.cpu())
 
-            # If we're using MultiVideoDataset:
+            # Store embeddings for retrieval
+            all_video_embeddings.append(video_embeds.cpu())
+            all_text_embeddings.append(text_embeds.cpu())
+
+            # For debugging or referencing:
             if hasattr(dataloader.dataset, "get_video_paths"):
+                # multi-video logic
                 for sid in study_ids:
-                    # get the *list* of underlying video paths
                     vid_list = dataloader.dataset.get_video_paths(sid)
                     if len(vid_list) > 0:
-                        # e.g. store just the *first* path
                         all_paths.append(vid_list[0])
                     else:
-                        # fallback if no paths
                         all_paths.append(str(sid))
             else:
-                # single-video dataset => 'study_ids' is actually the direct file path
-                for p in study_ids:
-                    all_paths.append(str(p))
-
-            # Collect ground truth text
-            batch_reports = dataloader.dataset.get_reports(study_ids)
-            all_ground_truth_reports.extend(batch_reports)
+                for sid in study_ids:
+                    all_paths.append(str(sid))
 
             del loss, video_embeds, text_embeds
             torch.cuda.empty_cache()
-    # -- Aggregate DDP losses if needed --
+
     if world_size > 1:
         loss_tensor = torch.tensor([total_loss, float(num_batches)], device=device)
         dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
         total_loss, num_batches = loss_tensor.tolist()
 
-    # -- Compute average loss --
     avg_loss = total_loss / num_batches if num_batches > 0 else float("inf")
-
-    # Edge case: if no valid batches, return
-    if num_batches == 0 or len(all_video_embeddings) == 0:
+    if num_batches == 0:
         if rank == 0:
             print("No validation data processed.")
-        return avg_loss, epoch_metrics, {
-            "best_videos": [],
-            "best_reports": [],
-            "best_scores": [],
-            "worst_videos": [],
-            "worst_reports": [],
-            "worst_scores": [],
-        }
+        return avg_loss, {}, {}
 
-    # -- Concatenate all video embeddings => [N_items, emb_dim] --
+    # Concatenate all embeddings across the val set
     all_video_embeddings = torch.cat(all_video_embeddings, dim=0).to(device)
+    all_text_embeddings = torch.cat(all_text_embeddings, dim=0).to(device)
 
-    # -- Normalize and compute similarity --
-    all_text_embeddings = all_text_embeddings.to(device)
+    # Normalize
     all_video_embeddings = nn.functional.normalize(all_video_embeddings, dim=1)
     all_text_embeddings = nn.functional.normalize(all_text_embeddings, dim=1)
+
+    # Similarity matrix => shape [num_val_samples, num_val_samples]
     similarity_matrix = torch.matmul(all_video_embeddings, all_text_embeddings.T)
 
-    # -- Compute summary norms (just for logging) --
-    # (Truncate to the same shape if there's a mismatch in length, purely for norm calculation)
-    max_len = min(all_video_embeddings.size(0), all_text_embeddings.size(0))
-    nm = compute_embedding_norms(
-        all_video_embeddings[:max_len],
-        all_text_embeddings[:max_len],
-    )
+    # Compute retrieval metrics. For simplicity, we assume each sample i
+    # matches only the text i. (1-to-1 alignment.)
+    gt_tensor = torch.arange(similarity_matrix.size(0), device=device)
+
+    # Example metrics
+    epoch_metrics = {}
+    k_values = [1, 5, 10, 50]
+    k_values = [k for k in k_values if k <= similarity_matrix.size(0)]
+    if len(k_values) > 0:
+        # compute recall@k
+        rec_metrics = compute_recall_at_k(similarity_matrix, gt_tensor, k_values)
+        epoch_metrics.update(rec_metrics)
+
+        # MRR
+        mrr_res = compute_mrr(similarity_matrix, gt_tensor)
+        epoch_metrics["MRR_V2T"] = mrr_res["MRR_V2T"]
+
+        # NDCG@5
+        epoch_metrics["NDCG@5_V2T"] = compute_ndcg(similarity_matrix, gt_tensor, k=5)
+
+        # MedianRank
+        epoch_metrics["MedianRank_V2T"] = compute_median_rank(similarity_matrix, gt_tensor)
+
+        # MAP
+        epoch_metrics["MAP"] = compute_map(similarity_matrix, gt_tensor)
+    else:
+        print("No valid k values found for recall or MRR, NDCG, MedianRank, MAP calculations.")
+
+    # Optional: compute alignment score, embedding norms, etc.
+    nm = compute_embedding_norms(all_video_embeddings, all_text_embeddings)
     epoch_metrics["video_norm"] = nm["video_norm"]
     epoch_metrics["text_norm"] = nm["text_norm"]
+    epoch_metrics["alignment_score"] = compute_alignment_score(all_video_embeddings, all_text_embeddings)
 
-    # -- Compute retrieval metrics if possible --
-    num_items, num_texts = similarity_matrix.shape
-    if num_items > 0 and num_texts > 0:
-        # Convert each ground-truth report -> global index
-        global_gt_indices = []
-        for gt_text in all_ground_truth_reports:
-            global_gt_indices.append(report_to_global_index[gt_text])
-        gt_tensor = torch.tensor(global_gt_indices, device=device)
-
-
-        num_items, num_texts = similarity_matrix.shape
-        max_k = min(num_items, num_texts)
-        k_values = [k for k in [1, 5, 10, 50] if k <= max_k]
-# Now do your recall, MRR, etc.
-        if len(k_values) > 0:
-            recall_metrics = compute_recall_at_k(similarity_matrix, gt_tensor, k_values)
-            epoch_metrics.update(recall_metrics)
-
-            epoch_metrics["MRR_V2T"] = compute_mrr(similarity_matrix, gt_tensor)["MRR_V2T"]
-            epoch_metrics["NDCG@5_V2T"] = compute_ndcg(similarity_matrix, gt_tensor, k=5)
-            epoch_metrics["MedianRank_V2T"] = compute_median_rank(similarity_matrix, gt_tensor)
-            epoch_metrics["MAP"] = compute_map(similarity_matrix, gt_tensor)
-        else:
-            print("No valid k values found for recall, MRR, NDCG, MedianRank, or MAP.")
-
-        # Alignment score over truncated set
-        truncated_video = all_video_embeddings[:max_len]
-        truncated_text = all_text_embeddings[:max_len]
-        epoch_metrics["alignment_score"] = compute_alignment_score(
-            truncated_video, truncated_text
-        )
-
-    # -- Optionally log best/worst retrieval examples --
-    best_videos = []
-    best_reports = []
-    worst_videos = []
-    worst_reports = []
-
-    if use_val_only_pool:
-        # Log or export retrieval results
-        log_val_only_retrievals(
-            similarity_matrix=similarity_matrix,
-            all_paths=all_paths,
-            all_ground_truth_reports=all_ground_truth_reports,
-            all_reports=all_reports,
-            epoch=epoch,
-            wandb_run=wandb_run,
-            output_dir=output_dir,
-            k=1,  # number of best/worst examples to highlight
-            report_to_global_index=report_to_global_index,
-        )
-
-    # -- Print final results --
     if rank == 0:
         print(f"[Val] Epoch={epoch}, Loss={avg_loss:.4f}")
+        # You could log best/worst retrieval examples here, or just skip
 
-    return (
-        avg_loss,
-        epoch_metrics,
-        {
-            "best_videos": best_videos,
-            "best_reports": best_reports,
-            "best_scores": [x["similarity_score"] for x in best_reports],
-            "worst_videos": worst_videos,
-            "worst_reports": worst_reports,
-            "worst_scores": [x["similarity_score"] for x in worst_reports],
-        },
-    )
+    return avg_loss, epoch_metrics, {}
 
+
+def save_checkpoint(model_dict, metrics_dict, output_path, is_best=False, wandb_run_id=None):
+    """
+    Save model checkpoint with metrics, plus wandb_run if provided.
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint = {**model_dict, **metrics_dict}
+
+    if wandb_run_id is not None:
+        checkpoint["wandb_run_id"] = wandb_run_id
+
+    torch.save(checkpoint, output_path)
+    print(f"Saved checkpoint to {output_path}")
 
 
 def save_unique_texts_csv(output_dir, unique_texts):
-    import csv
     """
     Save the unique text list to a CSV for debugging or reference.
+    (In val-only approach, you might not need it, but it's here if you do.)
     """
+    import csv
     csv_path = os.path.join(output_dir, "unique_val_texts.csv")
     with open(csv_path, mode="w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
@@ -982,11 +811,12 @@ def main(rank=0, world_size=1, args=None):
         start_epoch = 0
         best_val_loss = float("inf")
         best_epoch = -1
+        patience_counter = 0
+
         if args.resume and args.resume_checkpoint:
             (wandb_run, start_epoch, best_val_loss, best_epoch) = preview_checkpoint_for_resuming(
                 args.resume_checkpoint
             )
-
 
         if rank == 0:
             wandb_kwargs = {
@@ -1000,7 +830,6 @@ def main(rank=0, world_size=1, args=None):
                 print(f"[W&B] Resuming run_id={wandb_run}")
             else:
                 print("[W&B] Starting new run (no run_id found).")
-
             wandb_run = wandb.init(**wandb_kwargs)
 
         # C) Setup training
@@ -1018,34 +847,22 @@ def main(rank=0, world_size=1, args=None):
         train_dataset = training_setup["train_dataset"]
         val_dataset = training_setup["val_dataset"]
         log_temperature = training_setup["log_temperature"]
-        is_distributed = world_size>1
+        is_distributed = world_size > 1
 
         # D) If resume, fully load checkpoint states
         if args.resume and args.resume_checkpoint:
             load_full_checkpoint(args.resume_checkpoint, device, training_setup)
 
-        # Now you have start_epoch, best_val_loss, best_epoch from preview 
-        # (or defaults if checkpoint not found).
         print(f"[Resume] start_epoch={start_epoch}, best_val_loss={best_val_loss}, best_epoch={best_epoch}")
 
-        # E) Build the "val-only" text embedding pool
-        val_reports = val_dataset.get_all_reports()
-        val_unique_reports = list(dict.fromkeys(val_reports))
-        val_report_to_index = {r: i for i, r in enumerate(val_unique_reports)}
-
-
-        output_subdir = generate_output_dir_name(args, wandb_run)
-        full_output_path = os.path.join(args.output_dir, output_subdir)
-
-
-        if rank==0:
-            if not os.path.exists(full_output_path):
-                os.makedirs(full_output_path)
-            save_unique_texts_csv(full_output_path, val_unique_reports)
+        # E) Create output directory
+        output_subdir = generate_output_dir_name(args, wandb_run.id)
+        if rank == 0:
+            if not os.path.exists(output_subdir):
+                os.makedirs(output_subdir)
 
         scaler = torch.amp.GradScaler(enabled=args.use_amp, device=device)
-
-        best_epoch = -1 if best_epoch < 0 else best_epoch
+        best_epoch = max(best_epoch, -1)
 
         # 6) Main training loop from "start_epoch" to "args.epochs"
         for epoch in range(start_epoch, args.epochs):
@@ -1067,39 +884,27 @@ def main(rank=0, world_size=1, args=None):
                 log_temperature=log_temperature,
             )
 
-            # -- Precompute text embeddings
-            val_reports, val_text_embeddings = precompute_global_text_embeddings(
-                text_encoder, val_unique_reports, train_dataset.tokenizer, device
-            )
-
-            # -- Validate
-            val_loss_valpool, val_metrics_valpool, _ = validate_epoch(
+            # -- Validate (val-only retrieval)
+            val_loss, val_metrics, _ = validate_epoch(
                 video_encoder=video_encoder,
                 text_encoder=text_encoder,
                 dataloader=val_loader,
                 device=device,
                 wandb_run=wandb_run,
-                rank=0,
-                world_size=1,
+                rank=rank,
+                world_size=world_size,
                 epoch=epoch,
-                all_text_embeddings=val_text_embeddings,
-                all_reports=val_unique_reports,
-                output_dir=full_output_path,
-                report_to_global_index=val_report_to_index,
-                use_val_only_pool=True,
                 log_temperature=log_temperature,
             )
-            current_val_loss = val_loss_valpool
-            del val_text_embeddings
-            torch.cuda.empty_cache()
 
+            current_val_loss = val_loss
             if rank == 0 and wandb_run is not None:
                 log_data = {
                     "epoch": epoch,
                     "train/loss": train_loss,
                     "train/learning_rate": optimizer.param_groups[0]["lr"],
-                    "val_only/loss": val_loss_valpool,
-                    **{f"val_only/{k}": v for k, v in val_metrics_valpool.items()},
+                    "val/loss": val_loss,
+                    **{f"val/{k}": v for k, v in val_metrics.items()},
                 }
                 log_data["best_val_loss"] = best_val_loss
                 if log_temperature is not None:
@@ -1112,7 +917,7 @@ def main(rank=0, world_size=1, args=None):
             if scheduler is not None:
                 scheduler.step()
 
-            # Early stopping
+            # Early stopping logic
             if current_val_loss < best_val_loss:
                 previous_best = best_val_loss
                 best_val_loss = current_val_loss
@@ -1125,7 +930,9 @@ def main(rank=0, world_size=1, args=None):
                         print(f"Early stopping triggered at epoch {epoch+1} with no improvement.")
                     break
 
+            # Save checkpoints
             if rank == 0:
+                is_best = (best_epoch == epoch)
                 model_dict = {
                     "video_encoder": (
                         video_encoder.module.state_dict() if is_distributed else video_encoder.state_dict()
@@ -1137,27 +944,26 @@ def main(rank=0, world_size=1, args=None):
                     "scheduler": scheduler.state_dict() if scheduler is not None else None,
                     "epoch": epoch,
                 }
-
                 metrics_dict = {
                     "train_loss": train_loss,
-                    "val_loss_valpool": val_loss_valpool,
+                    "val_loss": val_loss,
                     "best_val_loss": best_val_loss,
                     "best_epoch": best_epoch,
                     **train_metrics,
-                    **val_metrics_valpool,
+                    **val_metrics,
                 }
 
-                checkpoint_dir = Path(full_output_path) / "checkpoints"
+                checkpoint_dir = Path(output_subdir) / "checkpoints"
                 checkpoint_dir.mkdir(parents=True, exist_ok=True)
                 latest_path = checkpoint_dir / "latest.pt"
-                save_checkpoint(model_dict, metrics_dict, latest_path)
+                save_checkpoint(model_dict, metrics_dict, latest_path, wandb_run_id=wandb_run.id)
                 print(f"\nSaved latest checkpoint at epoch {epoch + 1}")
 
-                if best_epoch == epoch:
+                if is_best:
                     best_path = checkpoint_dir / "best.pt"
-                    save_checkpoint(model_dict, metrics_dict, best_path, is_best=True)
+                    save_checkpoint(model_dict, metrics_dict, best_path, is_best=True, wandb_run_id=wandb_run.id)
                     print(
-                        f"\nNew best model saved! Val Loss (val-only): {current_val_loss:.4f} "
+                        f"\nNew best model saved! Val Loss: {current_val_loss:.4f} "
                         f"(previous: {previous_best:.4f})"
                     )
                     wandb_run.log(
@@ -1178,7 +984,7 @@ def main(rank=0, world_size=1, args=None):
         if dist.is_initialized():
             cleanup_ddp()
 
- 
+
 if __name__ == "__main__":
     args = parse_args()
     num_gpus = torch.cuda.device_count()

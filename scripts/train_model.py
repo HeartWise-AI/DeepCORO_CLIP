@@ -7,6 +7,7 @@ each val batch in validate_epoch and do retrieval among those samples only.
 import argparse
 import os
 import pickle
+from site import abs_paths
 import sys
 from datetime import timedelta
 from pathlib import Path
@@ -640,6 +641,36 @@ def train_epoch(
 
     return avg_loss, epoch_metrics
 
+def build_unique_text_embeddings(unique_texts, text_encoder, device, batch_size=8):
+    """
+    Encode all unique texts into a single tensor of embeddings.
+    """
+    from transformers import AutoTokenizer
+
+    text_encoder.eval()
+    tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")  # or your chosen model
+
+    all_embeds = []
+    with torch.no_grad():
+        for i in range(0, len(unique_texts), batch_size):
+            chunk = unique_texts[i : i + batch_size]
+            encoded = tokenizer(
+                chunk,
+                padding=True,
+                truncation=True,
+                max_length=128,
+                return_tensors="pt",
+            )
+            encoded_input_ids = encoded["input_ids"].to(device)
+            encoded_attn = encoded["attention_mask"].to(device)
+
+            # Pass through your text encoder
+            embeds = text_encoder(encoded_input_ids, encoded_attn)
+            all_embeds.append(embeds.cpu())
+
+    # [M, dim]
+    all_text_embeddings = torch.cat(all_embeds, dim=0)
+    return all_text_embeddings
 
 def validate_epoch(
     video_encoder,
@@ -650,12 +681,20 @@ def validate_epoch(
     rank=0,
     world_size=1,
     epoch=0,
+    all_reports=None,            # <--- list of unique reports
+    output_dir="outputs",
+    report_to_global_index=None, # <--- maps report string -> unique integer
+    use_val_only_pool=True,
     log_temperature=None,
 ):
     """
-    Validation epoch with Val-Only retrieval:
-      1) Compute both video_embeds and text_embeds for the val set
-      2) At the end, do retrieval among these val samples
+    Validation epoch with Val-Only retrieval using *unique* text embeddings:
+
+      1) For each batch, we compute BOTH video embeddings AND text embeddings (for local contrastive loss).
+      2) We also collect these text embeddings in 'all_text_embeds' for optional usage.
+      3) Then we build one text embedding per unique text (val_unique_reports).
+      4) We do [N x M] retrieval among videos vs. unique text embeddings.
+      5) For each video i, the correct text index is report_to_global_index[ gt_report ].
     """
     video_encoder.eval()
     text_encoder.eval()
@@ -663,9 +702,11 @@ def validate_epoch(
     total_loss = 0.0
     num_batches = 0
 
-    # We'll collect the val set embeddings for retrieval
+    # We'll collect the val set video embeddings in 'all_video_embeddings'
+    # We'll also collect the *per-sample text embeddings* in 'all_text_embeds'
     all_video_embeddings = []
-    all_text_embeddings = []
+    all_text_embeddings_per_sample = []
+    all_ground_truth_texts = []  # For each sample's ground-truth text
 
     # We might also store file paths or study_ids if you want
     all_paths = []
@@ -677,39 +718,42 @@ def validate_epoch(
             progress = dataloader
 
         for batch_idx, (videos, encoded_texts, study_ids) in enumerate(progress):
+            # 1) Compute video embeddings
             videos = videos.to(device).float()
+            video_embeds = video_encoder(videos)
+
+            # 2) Also compute text embeddings (for local contrastive loss)
             input_ids = encoded_texts["input_ids"].to(device)
             attention_mask = encoded_texts["attention_mask"].to(device)
-
-            # aggregator is inside video_encoder => output => [B, emb_dim]
-            video_embeds = video_encoder(videos)
             text_embeds = text_encoder(input_ids, attention_mask)
 
-            # Compute contrastive loss for these pairs
+            # 3) Local contrastive loss
             loss = clip_style_loss(video_embeds, text_embeds, log_temperature)
             total_loss += loss.item()
             num_batches += 1
 
-            # Store embeddings for retrieval
-            all_video_embeddings.append(video_embeds.cpu())
-            all_text_embeddings.append(text_embeds.cpu())
+            # Collect them for optional analysis/logging
+            all_video_embeddings.append(video_embeds.cpu())  # shape [B, dim]
+            all_text_embeddings_per_sample.append(text_embeds.cpu())  # shape [B, dim]
 
-            # For debugging or referencing:
+            # 4) Ground truth text strings
+            batch_reports = dataloader.dataset.get_reports(study_ids)
+            all_ground_truth_texts.extend(batch_reports)
+
+            # 5) (Optional) store file paths
             if hasattr(dataloader.dataset, "get_video_paths"):
-                # multi-video logic
                 for sid in study_ids:
                     vid_list = dataloader.dataset.get_video_paths(sid)
-                    if len(vid_list) > 0:
-                        all_paths.append(vid_list[0])
-                    else:
-                        all_paths.append(str(sid))
+                    all_paths.append(vid_list[0] if len(vid_list) > 0 else str(sid))
             else:
                 for sid in study_ids:
                     all_paths.append(str(sid))
 
+            # Cleanup
             del loss, video_embeds, text_embeds
             torch.cuda.empty_cache()
 
+    # -- Average the total loss over all batches
     if world_size > 1:
         loss_tensor = torch.tensor([total_loss, float(num_batches)], device=device)
         dist.all_reduce(loss_tensor, op=dist.ReduceOp.SUM)
@@ -721,57 +765,93 @@ def validate_epoch(
             print("No validation data processed.")
         return avg_loss, {}, {}
 
-    # Concatenate all embeddings across the val set
+    # -- 6) Concatenate all video embeddings => [N, dim]
     all_video_embeddings = torch.cat(all_video_embeddings, dim=0).to(device)
-    all_text_embeddings = torch.cat(all_text_embeddings, dim=0).to(device)
-
-    # Normalize
     all_video_embeddings = nn.functional.normalize(all_video_embeddings, dim=1)
-    all_text_embeddings = nn.functional.normalize(all_text_embeddings, dim=1)
 
-    # Similarity matrix => shape [num_val_samples, num_val_samples]
-    similarity_matrix = torch.matmul(all_video_embeddings, all_text_embeddings.T)
+    # Concatenate all text embeddings => [N, dim] (per-sample text embeddings)
+    all_text_embeddings_per_sample = torch.cat(all_text_embeddings_per_sample, dim=0).to(device)
+    all_text_embeddings_per_sample = nn.functional.normalize(all_text_embeddings_per_sample, dim=1)
 
-    # Compute retrieval metrics. For simplicity, we assume each sample i
-    # matches only the text i. (1-to-1 alignment.)
-    gt_tensor = torch.arange(similarity_matrix.size(0), device=device)
+    N = all_video_embeddings.size(0)
+    assert N == all_text_embeddings_per_sample.size(0), \
+        f"video_embeds count ({N}) != text_embeds count ({all_text_embeddings_per_sample.size(0)})"
 
-    # Example metrics
+    # 7) Also build a single text embedding for each unique report => [M, dim]
+    unique_text_embeds = build_unique_text_embeddings(
+        all_reports,  # the *unique* list
+        text_encoder,
+        device=device,
+        batch_size=8
+    )
+
+    unique_text_embeds = unique_text_embeds.to(device)
+    unique_text_embeds = nn.functional.normalize(unique_text_embeds, dim=1)  # shape [M, dim]
+
+    # 8) [N, M] similarity matrix
+    similarity_matrix = torch.matmul(all_video_embeddings, unique_text_embeds.T)
+
+    # 9) For each sample i, find the correct unique index
+    gt_indices = []
+    for i in range(N):
+        gt_text = all_ground_truth_texts[i]
+        gt_idx = report_to_global_index[gt_text]
+        gt_indices.append(gt_idx)
+    gt_indices = torch.tensor(gt_indices, device=device, dtype=torch.long)
+
+    # 10) Compute retrieval metrics
     epoch_metrics = {}
     k_values = [1, 5, 10, 50]
-    k_values = [k for k in k_values if k <= similarity_matrix.size(0)]
+    k_values = [k for k in k_values if k <= unique_text_embeds.size(0)]
     if len(k_values) > 0:
-        # compute recall@k
-        rec_metrics = compute_recall_at_k(similarity_matrix, gt_tensor, k_values)
+        rec_metrics = compute_recall_at_k(similarity_matrix, gt_indices, k_values)
         epoch_metrics.update(rec_metrics)
 
-        # MRR
-        mrr_res = compute_mrr(similarity_matrix, gt_tensor)
+        mrr_res = compute_mrr(similarity_matrix, gt_indices)
         epoch_metrics["MRR_V2T"] = mrr_res["MRR_V2T"]
 
-        # NDCG@5
-        epoch_metrics["NDCG@5_V2T"] = compute_ndcg(similarity_matrix, gt_tensor, k=5)
-
-        # MedianRank
-        epoch_metrics["MedianRank_V2T"] = compute_median_rank(similarity_matrix, gt_tensor)
-
-        # MAP
-        epoch_metrics["MAP"] = compute_map(similarity_matrix, gt_tensor)
+        # e.g. NDCG@5, MedianRank, MAP
+        epoch_metrics["NDCG@5_V2T"] = compute_ndcg(similarity_matrix, gt_indices, k=5)
+        epoch_metrics["MedianRank_V2T"] = compute_median_rank(similarity_matrix, gt_indices)
+        epoch_metrics["MAP"] = compute_map(similarity_matrix, gt_indices)
     else:
         print("No valid k values found for recall or MRR, NDCG, MedianRank, MAP calculations.")
 
-    # Optional: compute alignment score, embedding norms, etc.
-    nm = compute_embedding_norms(all_video_embeddings, all_text_embeddings)
-    epoch_metrics["video_norm"] = nm["video_norm"]
-    epoch_metrics["text_norm"] = nm["text_norm"]
-    epoch_metrics["alignment_score"] = compute_alignment_score(all_video_embeddings, all_text_embeddings)
+    # 11) Compute embedding stats:
+    #  -> we can pass the [N,dim] all_video_embeddings and the [N,dim] text embeddings if we want
+    #     local alignment (1-to-1). 
+    #  -> or pass all_video_embeddings and unique_text_embeds if we want to see how 
+    #     the global unique text set aligns. 
+    #     (But there's only 1 correct text per sample, so local alignment is different.)
+    # For now let's do local alignment on the per-sample text embeddings:
+    nm_local = compute_embedding_norms(all_video_embeddings, all_text_embeddings_per_sample)
+    alignment_score_local = compute_alignment_score(all_video_embeddings, all_text_embeddings_per_sample)
+    epoch_metrics["video_norm_local"] = nm_local["video_norm"]
+    epoch_metrics["text_norm_local"] = nm_local["text_norm"]
+    epoch_metrics["alignment_score_local"] = alignment_score_local
+
+
+    print("similarity_matrix shape:", similarity_matrix.shape)
+    print("len(all_reports):", len(all_reports))
+
+    if use_val_only_pool:
+        log_val_only_retrievals(
+            similarity_matrix=similarity_matrix,
+            all_paths=all_paths,
+            all_ground_truth_reports=all_ground_truth_texts,
+            all_reports=all_reports,  # length M (unique)
+            epoch=epoch,
+            wandb_run=wandb_run,
+            output_dir=output_dir,
+            k=1,
+            report_to_global_index=report_to_global_index,
+        )
 
     if rank == 0:
         print(f"[Val] Epoch={epoch}, Loss={avg_loss:.4f}")
-        # You could log best/worst retrieval examples here, or just skip
+        print(f"  Stats => Local alignment: {alignment_score_local:.3f}")
 
     return avg_loss, epoch_metrics, {}
-
 
 def save_checkpoint(model_dict, metrics_dict, output_path, is_best=False, wandb_run_id=None):
     """
@@ -849,6 +929,10 @@ def main(rank=0, world_size=1, args=None):
         log_temperature = training_setup["log_temperature"]
         is_distributed = world_size > 1
 
+        val_reports = val_dataset.get_all_reports()
+        val_unique_reports = list(dict.fromkeys(val_reports))
+        val_report_to_index = {r: i for i, r in enumerate(val_unique_reports)}
+
         # D) If resume, fully load checkpoint states
         if args.resume and args.resume_checkpoint:
             load_full_checkpoint(args.resume_checkpoint, device, training_setup)
@@ -857,6 +941,13 @@ def main(rank=0, world_size=1, args=None):
 
         # E) Create output directory
         output_subdir = generate_output_dir_name(args, wandb_run.id)
+
+        if rank==0:
+            if not os.path.exists(output_subdir):
+                os.makedirs(output_subdir)
+            save_unique_texts_csv(output_subdir, val_unique_reports)
+
+
         if rank == 0:
             if not os.path.exists(output_subdir):
                 os.makedirs(output_subdir)
@@ -884,6 +975,8 @@ def main(rank=0, world_size=1, args=None):
                 log_temperature=log_temperature,
             )
 
+
+
             # -- Validate (val-only retrieval)
             val_loss, val_metrics, _ = validate_epoch(
                 video_encoder=video_encoder,
@@ -891,9 +984,13 @@ def main(rank=0, world_size=1, args=None):
                 dataloader=val_loader,
                 device=device,
                 wandb_run=wandb_run,
-                rank=rank,
-                world_size=world_size,
+                rank=0,
+                world_size=1,
                 epoch=epoch,
+                all_reports=val_unique_reports,
+                output_dir=output_subdir,
+                report_to_global_index=val_report_to_index,
+                use_val_only_pool=True,
                 log_temperature=log_temperature,
             )
 
@@ -986,6 +1083,7 @@ def main(rank=0, world_size=1, args=None):
 
 
 if __name__ == "__main__":
+
     args = parse_args()
     num_gpus = torch.cuda.device_count()
     if args.gpu is not None and args.gpu >= num_gpus:

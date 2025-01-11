@@ -1,28 +1,73 @@
-"""Logging utilities for training and evaluation."""
+"""
+Logging utilities for training and evaluation.
+"""
 
+import csv
 import math
 import os
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 import torch
 import torch.nn as nn
-import csv
 import wandb
 
-from typing import List, Dict
+
+def convert_video_for_wandb(video_path: str):
+    """
+    Convert video to MP4 format for wandb logging if needed.
+
+    Args:
+        video_path: Path to input video
+
+    Returns:
+        tuple: (output_path, is_temp) where is_temp indicates if the file needs cleanup
+    """
+    # If already MP4, return as is
+    if video_path.lower().endswith(".mp4"):
+        return video_path, False
+
+    import subprocess
+    import tempfile
+
+    # Create temporary MP4 file
+    temp_fd, temp_path = tempfile.mkstemp(suffix=".mp4")
+    os.close(temp_fd)
+
+    # Convert to MP4 using ffmpeg
+    subprocess.run(
+        ["ffmpeg", "-i", video_path, "-c:v", "libx264", "-preset", "fast", "-y", temp_path],
+        check=True,
+        capture_output=True,
+    )
+    return temp_path, True
+
+
+def cleanup_temp_video(video_path: str):
+    """
+    Delete a temporary video file if it exists.
+    """
+    try:
+        if os.path.exists(video_path):
+            os.remove(video_path)
+    except Exception as e:
+        print(f"Warning: Failed to delete temporary video {video_path}: {str(e)}")
+
 
 class WandbLogger:
-    """Wrapper for Weights & Biases logging."""
+    """
+    Wrapper for Weights & Biases logging.
+    """
 
     def __init__(
         self,
         project_name: str = "deepcoro_clip",
         experiment_name: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None,
-        mode: str = "online",
+        mode: str = "online",  # "online", "offline", or "disabled"
     ):
-        """Initialize WandB logger.
+        """
+        Initialize WandB logger.
 
         Args:
             project_name: Name of the project on WandB
@@ -58,7 +103,8 @@ class WandbLogger:
         num_batches: int,
         **kwargs,
     ) -> None:
-        """Log metrics for a training batch.
+        """
+        Log metrics for a training batch.
 
         Only logs essential training metrics (loss, lr) for continuous monitoring.
         """
@@ -90,22 +136,21 @@ class WandbLogger:
         learning_rate: Optional[float] = None,
         **kwargs,
     ) -> None:
-        """Log comprehensive metrics at the end of each epoch for training.
+        """
+        Log comprehensive metrics at the end of each epoch for training.
 
         Args:
             epoch: Current epoch number
             train_loss: Average training loss for the epoch
             learning_rate: Optional current learning rate
         """
-    
         if self.mode == "disabled":
             return
-        
-        # Skip logging epoch=0 so we don't pollute the chart
+
+        # Optionally skip logging epoch=0, if you don't want that first row
         if epoch == 0:
             return
 
-        
         self.epoch = epoch
         metrics = {
             "epoch": epoch,
@@ -132,7 +177,8 @@ class WandbLogger:
         alignment_score: Optional[float] = None,
         **kwargs,
     ) -> None:
-        """Log metrics from the 'val_only' scenario.
+        """
+        Log metrics from the 'val_only' scenario.
 
         Args:
             epoch: Current epoch number
@@ -144,12 +190,10 @@ class WandbLogger:
             alignment_score: Average cosine similarity of positive pairs (val_only)
 
         Recommended additional metrics for retrieval:
-        - NDCG@K
-        - Median Rank
-        - R@10, R@50
-        - MAP (Mean Average Precision)
-
-        If computed, log them similarly to recall and MRR below.
+          - NDCG@K
+          - Median Rank
+          - R@10, R@50
+          - MAP (Mean Average Precision)
         """
         if self.mode == "disabled":
             return
@@ -193,7 +237,8 @@ class WandbLogger:
         alignment_score: Optional[float] = None,
         **kwargs,
     ) -> None:
-        """Log metrics from the 'global_pool_val' scenario.
+        """
+        Log metrics from the 'global_pool_val' scenario.
 
         Args:
             epoch: Current epoch number
@@ -203,14 +248,6 @@ class WandbLogger:
             video_norm: Average L2 norm of video embeddings (global pool)
             text_norm: Average L2 norm of text embeddings (global pool)
             alignment_score: Average cosine similarity of positive pairs (global pool)
-
-        Recommended additional metrics for retrieval:
-        - NDCG@K
-        - Median Rank
-        - R@10, R@50
-        - MAP
-
-        If computed, log them similarly.
         """
         if self.mode == "disabled":
             return
@@ -249,34 +286,40 @@ class WandbLogger:
         caption: Optional[str] = None,
         step: Optional[int] = None,
     ) -> None:
-        """Log video or image media."""
+        """
+        Log video or image media to wandb.
+        """
         if self.mode == "disabled":
             return
 
+        mp4_path, is_temp = convert_video_for_wandb(video_path)
         wandb.log(
-            {"media": wandb.Video(video_path, caption=caption)},
+            {"media": wandb.Video(mp4_path, caption=caption)},
             step=step or self.step,
         )
-
-    def finish(self) -> None:
-        """Finish logging and close wandb run."""
-        if self.mode != "disabled":
-            wandb.finish()
+        if is_temp:
+            cleanup_temp_video(mp4_path)
 
     def log_validation_examples(
         self,
         scenario: str,  # 'val_only' or 'global_pool_val'
-        val_best_videos,
-        val_best_reports,
-        val_worst_videos,
-        val_worst_reports,
+        val_best_videos: List[str],
+        val_best_reports: List[Dict[str, Any]],
+        val_worst_videos: List[str],
+        val_worst_reports: List[Dict[str, Any]],
         epoch: int,
     ) -> None:
-        """Log validation video examples (best/worst) under the chosen scenario (val_only or global_pool_val)."""
+        """
+        Log validation video examples (best/worst) under the chosen scenario.
+        Each item in val_best_reports or val_worst_reports is a dict with keys like:
+            {
+                "ground_truth": str,
+                "predicted": List[str],
+                "similarity_score": float
+            }
+        """
         if self.mode == "disabled":
             return
-
-        from utils.logging import cleanup_temp_video, convert_video_for_wandb
 
         temp_files = []
 
@@ -287,34 +330,33 @@ class WandbLogger:
                 if is_temp:
                     temp_files.append(mp4_path)
 
-                unique_predicted_reports = []
-                seen_reports = set()
-                for text in report_data["predicted"]:
-                    if text not in seen_reports:
-                        unique_predicted_reports.append(text)
-                        seen_reports.add(text)
+                # Remove duplicates from predicted
+                seen = set()
+                unique_predicted = []
+                for txt in report_data["predicted"]:
+                    if txt not in seen:
+                        unique_predicted.append(txt)
+                        seen.add(txt)
 
                 report_html = "<br>".join(
                     [
                         f"<b>Ground Truth:</b> {report_data['ground_truth']}",
                         "<b>Top 5 Retrieved Reports:</b>",
-                        *[f"{j+1}. {text}" for j, text in enumerate(unique_predicted_reports)],
+                        *[f"{j+1}. {txt}" for j, txt in enumerate(unique_predicted)],
                     ]
                 )
 
-                # Include epoch in the keys for uniqueness
                 wandb.log(
                     {
                         f"{scenario}/qualitative/good_retrieval_epoch_{epoch}_{i}": wandb.Video(
                             mp4_path,
-                            caption=f"Good {scenario} Retrieval {i+1} (Sim: {report_data['similarity_score']:.3f})",
+                            caption=(
+                                f"Good {scenario} Retrieval {i+1} "
+                                f"(Sim: {report_data['similarity_score']:.3f})"
+                            ),
                         ),
-                        f"{scenario}/qualitative/good_reports_epoch_{epoch}_{i}": wandb.Html(
-                            report_html
-                        ),
-                        f"{scenario}/qualitative/good_similarity_epoch_{epoch}_{i}": report_data[
-                            "similarity_score"
-                        ],
+                        f"{scenario}/qualitative/good_reports_epoch_{epoch}_{i}": wandb.Html(report_html),
+                        f"{scenario}/qualitative/good_similarity_epoch_{epoch}_{i}": report_data["similarity_score"],
                         "epoch": epoch,
                     },
                     step=epoch,
@@ -330,18 +372,19 @@ class WandbLogger:
                 if is_temp:
                     temp_files.append(mp4_path)
 
-                unique_predicted_reports = []
-                seen_reports = set()
-                for text in report_data["predicted"]:
-                    if text not in seen_reports:
-                        unique_predicted_reports.append(text)
-                        seen_reports.add(text)
+                # Remove duplicates from predicted
+                seen = set()
+                unique_predicted = []
+                for txt in report_data["predicted"]:
+                    if txt not in seen:
+                        unique_predicted.append(txt)
+                        seen.add(txt)
 
                 report_html = "<br>".join(
                     [
                         f"<b>Ground Truth:</b> {report_data['ground_truth']}",
                         "<b>Top 5 Retrieved Reports:</b>",
-                        *[f"{j+1}. {text}" for j, text in enumerate(unique_predicted_reports)],
+                        *[f"{j+1}. {txt}" for j, txt in enumerate(unique_predicted)],
                     ]
                 )
 
@@ -349,14 +392,13 @@ class WandbLogger:
                     {
                         f"{scenario}/qualitative/bad_retrieval_epoch_{epoch}_{i}": wandb.Video(
                             mp4_path,
-                            caption=f"Bad {scenario} Retrieval {i+1} (Sim: {report_data['similarity_score']:.3f})",
+                            caption=(
+                                f"Bad {scenario} Retrieval {i+1} "
+                                f"(Sim: {report_data['similarity_score']:.3f})"
+                            ),
                         ),
-                        f"{scenario}/qualitative/bad_reports_epoch_{epoch}_{i}": wandb.Html(
-                            report_html
-                        ),
-                        f"{scenario}/qualitative/bad_similarity_epoch_{epoch}_{i}": report_data[
-                            "similarity_score"
-                        ],
+                        f"{scenario}/qualitative/bad_reports_epoch_{epoch}_{i}": wandb.Html(report_html),
+                        f"{scenario}/qualitative/bad_similarity_epoch_{epoch}_{i}": report_data["similarity_score"],
                         "epoch": epoch,
                     },
                     step=epoch,
@@ -365,11 +407,22 @@ class WandbLogger:
             except Exception as e:
                 print(f"Warning: Failed to log bad {scenario} video {video_path}: {str(e)}")
 
+        # Clean up any temp files
         for temp_file in temp_files:
             cleanup_temp_video(temp_file)
 
+    def finish(self) -> None:
+        """
+        Finish logging and close wandb run.
+        """
+        if self.mode != "disabled":
+            wandb.finish()
+
 
 def create_logger(args):
+    """
+    Create a wandb run based on arguments (if not resuming).
+    """
     config = {
         "batch_size": args.batch_size,
         "learning_rate": args.learning_rate,
@@ -388,8 +441,9 @@ def create_logger(args):
     for key, value in vars(args).items():
         if key not in config:
             config[key] = value
-            
-    if args.resume==False:
+
+    # If not resuming, create a new run
+    if not args.resume:
         wandb.init(
             project=args.project,
             entity=args.entity,
@@ -399,73 +453,26 @@ def create_logger(args):
     return wandb.run
 
 
-def convert_video_for_wandb(video_path):
-    """Convert video to MP4 format for wandb logging if needed.
-
-    Args:
-        video_path: Path to input video
-
-    Returns:
-        tuple: (output_path, is_temp) where is_temp indicates if the file needs cleanup
-    """
-    # If already MP4, return as is
-    if video_path.lower().endswith(".mp4"):
-        return video_path, False
-
-    import subprocess
-    import tempfile
-
-    # Create temporary MP4 file
-    temp_fd, temp_path = tempfile.mkstemp(suffix=".mp4")
-    os.close(temp_fd)
-
-
-    # Convert to MP4 using ffmpeg
-    subprocess.run(
-        ["ffmpeg", "-i", video_path, "-c:v", "libx264", "-preset", "fast", "-y", temp_path],
-        check=True,
-        capture_output=True,
-    )
-    return temp_path, True
-
-
-def cleanup_temp_video(video_path):
-    """Delete temporary video file if it exists."""
-    try:
-        if os.path.exists(video_path):
-            os.remove(video_path)
-    except Exception as e:
-        print(f"Warning: Failed to delete temporary video {video_path}: {str(e)}")
-
+# ----------------------------------------------------------------------
+# Retrieval & metrics functions below
+# ----------------------------------------------------------------------
 
 def get_best_and_worst_retrievals(similarity_matrix, paths, reports, k=2):
-    """Get the best and worst retrievals based on similarity scores, along with their top text matches.
-
-    Args:
-        similarity_matrix: Tensor of shape (num_videos, num_queries)
-        paths: List of video paths
-        reports: List of report texts
-        k: Number of best/worst examples to return
-
-    Returns:
-        tuple: (best_indices, worst_indices, best_scores, worst_scores, best_text_indices, worst_text_indices)
     """
-    # Get mean similarity score for each video-query pair
+    Get the best and worst retrievals based on average similarity scores across the row,
+    along with their top text matches.
+    similarity_matrix: [N, M]
+    """
     mean_similarities = similarity_matrix.mean(dim=1)
-
-    # Adjust k to not exceed batch size
     k = min(k, len(mean_similarities))
 
-    # Get indices of best and worst k videos
     best_values, best_indices = torch.topk(mean_similarities, k=k)
     worst_values, worst_indices = torch.topk(mean_similarities, k=k, largest=False)
 
-    # Get top-5 text matches for each video
     best_text_indices = []
     worst_text_indices = []
 
     for idx in best_indices:
-        # Get top N text matches for this video, where N is min(5, batch_size)
         n_texts = min(5, similarity_matrix.size(1))
         top_n_texts = torch.topk(similarity_matrix[idx], k=n_texts)[1]
         unique_texts = []
@@ -479,7 +486,6 @@ def get_best_and_worst_retrievals(similarity_matrix, paths, reports, k=2):
         best_text_indices.append(torch.tensor(unique_texts))
 
     for idx in worst_indices:
-        # Get top N text matches for this video, where N is min(5, batch_size)
         n_texts = min(5, similarity_matrix.size(1))
         top_n_texts = torch.topk(similarity_matrix[idx], k=n_texts)[1]
         unique_texts = []
@@ -504,54 +510,35 @@ def get_best_and_worst_retrievals(similarity_matrix, paths, reports, k=2):
 
 def compute_ndcg(similarity_matrix: torch.Tensor, global_gt_indices: torch.Tensor, k=5) -> float:
     """
-    Compute NDCG@k for each query and average over all queries.
-    Simplified assumption: one correct answer per query.
-
-    Args:
-        similarity_matrix (torch.Tensor): [num_queries, num_candidates]
-        global_gt_indices (torch.Tensor): [num_queries], each entry is the index of the correct text
-        k (int): Rank cutoff
-
-    Returns:
-        float: Average NDCG@k over all queries.
+    Compute NDCG@k for each query and average over all queries (1 relevant doc per query).
     """
     num_queries = similarity_matrix.size(0)
     if num_queries == 0:
         return 0.0
 
-    # Sort candidates by similarity in descending order
     sorted_indices = torch.argsort(similarity_matrix, dim=1, descending=True)
-
     ndcg_values = []
     for i in range(num_queries):
         correct_idx = global_gt_indices[i].item()
-        # Find the rank of the correct index
         ranking = (sorted_indices[i] == correct_idx).nonzero(as_tuple=True)[0]
         if ranking.numel() == 0:
-            # Correct item not found (should not happen if all candidates included)
             ndcg_values.append(0.0)
             continue
 
         rank = ranking.item()
         if rank < k:
-            # DCG = 1 / log2(rank+2)
             dcg = 1.0 / math.log2(rank + 2)
         else:
             dcg = 0.0
-
-        # Ideal DCG (IDCG) = 1 since there's only one relevant doc at best rank
         idcg = 1.0
         ndcg_values.append(dcg / idcg)
 
     return float(torch.tensor(ndcg_values).mean().item())
 
 
-def compute_median_rank(
-    similarity_matrix: torch.Tensor, global_gt_indices: torch.Tensor
-) -> float:
+def compute_median_rank(similarity_matrix: torch.Tensor, global_gt_indices: torch.Tensor) -> float:
     """
-    Compute the median rank of the correct item over all queries.
-    Lower is better.
+    Compute the median rank of the correct item over all queries. Lower is better.
     """
     num_queries = similarity_matrix.size(0)
     if num_queries == 0:
@@ -563,10 +550,10 @@ def compute_median_rank(
         correct_idx = global_gt_indices[i].item()
         ranking = (sorted_indices[i] == correct_idx).nonzero(as_tuple=True)[0]
         if ranking.numel() == 0:
-            # Not found, assign large rank
+            # Not found
             ranks.append(similarity_matrix.size(1))
         else:
-            rank = ranking.item() + 1  # +1 because ranks are 1-based
+            rank = ranking.item() + 1
             ranks.append(rank)
 
     ranks = torch.tensor(ranks, dtype=torch.float)
@@ -576,10 +563,7 @@ def compute_median_rank(
 
 def compute_map(similarity_matrix: torch.Tensor, global_gt_indices: torch.Tensor) -> float:
     """
-    Compute mean average precision (MAP).
-    Assuming exactly one relevant doc per query.
-    AP = 1/rank_of_correct_item
-    MAP = average of AP over all queries
+    Compute mean average precision (MAP) for a single relevant doc per query scenario.
     """
     num_queries = similarity_matrix.size(0)
     if num_queries == 0:
@@ -591,14 +575,74 @@ def compute_map(similarity_matrix: torch.Tensor, global_gt_indices: torch.Tensor
         correct_idx = global_gt_indices[i].item()
         ranking = (sorted_indices[i] == correct_idx).nonzero(as_tuple=True)[0]
         if ranking.numel() == 0:
-            # Correct not found, AP=0
             aps.append(0.0)
         else:
             rank = ranking.item() + 1
-            ap = 1.0 / rank
-            aps.append(ap)
-
+            aps.append(1.0 / rank)
     return float(torch.tensor(aps).mean().item())
+
+
+def compute_recall_at_k(similarity_matrix, global_gt_indices, k_values=[1, 5]):
+    """
+    Compute Recall@k for each row (video->text).
+    """
+    metrics = {}
+    for k in k_values:
+        v2t_topk = torch.topk(similarity_matrix, k, dim=1)[1]
+        v2t_correct = (v2t_topk == global_gt_indices.unsqueeze(1))
+        recall = (v2t_correct.sum(dim=1) > 0).float().mean().item()
+        metrics[f"Recall@{k}_V2T"] = recall
+    return metrics
+
+
+def compute_mrr(similarity_matrix, global_gt_indices):
+    """
+    Compute MRR for each row, with a single correct doc per row.
+    """
+    device = similarity_matrix.device
+    target_scores = similarity_matrix.gather(1, global_gt_indices.unsqueeze(1))
+    v2t_ranks = (similarity_matrix >= target_scores).sum(1).float()
+    v2t_mrr = (1.0 / v2t_ranks).mean().item()
+    return {"MRR_V2T": v2t_mrr}
+
+
+def compute_embedding_norms(video_features, text_features):
+    """
+    Compute average L2 norm for video and text embeddings.
+    """
+    video_norms = torch.norm(video_features, dim=1).mean().item()
+    text_norms = torch.norm(text_features, dim=1).mean().item()
+    return {"video_norm": video_norms, "text_norm": text_norms}
+
+
+def compute_alignment_score(
+    video_features,
+    text_features,
+    all_video_embeddings=None,
+    all_text_embeddings=None,
+    global_ground_truth_indices_tensor=None,
+):
+    """
+    Compute average cosine similarity of positive pairs.
+    If 'all_video_embeddings', 'all_text_embeddings', and 'global_ground_truth_indices_tensor'
+    are provided, compute global alignment. Otherwise, compute local alignment.
+    """
+    if (
+        all_video_embeddings is not None
+        and all_text_embeddings is not None
+        and global_ground_truth_indices_tensor is not None
+    ):
+        correct_text_embeddings = all_text_embeddings[global_ground_truth_indices_tensor]
+        normalized_video = nn.functional.normalize(all_video_embeddings, dim=1)
+        normalized_text = nn.functional.normalize(correct_text_embeddings, dim=1)
+        alignment_scores = (normalized_video * normalized_text).sum(dim=1)
+        return alignment_scores.mean().item()
+    else:
+        normalized_video = nn.functional.normalize(video_features, dim=1)
+        normalized_text = nn.functional.normalize(text_features, dim=1)
+        alignment_scores = (normalized_video * normalized_text).sum(dim=1)
+        return alignment_scores.mean().item()
+
 
 def log_val_only_retrievals(
     similarity_matrix: torch.Tensor,
@@ -609,28 +653,22 @@ def log_val_only_retrievals(
     wandb_run,
     output_dir: str,
     k: int = 1,
-    report_to_global_index=None,  # <--- Add this parameter
+    report_to_global_index=None,
 ):
     """
     Log best and worst retrieval examples for val-only scenario.
-    Writes out a CSV with top-5 predictions per video, logs best/worst samples to wandb.
+    Writes out CSV with top-5 predictions per video, logs best/worst samples to wandb.
 
-    Args:
-        similarity_matrix: [N, M] matrix (N = #videos, M = #text embeddings)
-        all_paths: List of video file paths
-        all_ground_truth_reports: Ground-truth report for each video
-        all_reports: Full list of text reports (used for indexing)
-        epoch: Current epoch
-        wandb_run: The wandb.Run object for logging
-        output_dir: Directory to save CSV and other artifacts
-        k: # of best/worst items to highlight in the logs
-        report_to_global_index: Dictionary mapping each text -> its unique index
+    similarity_matrix: [N, M]
+    all_paths: [N]
+    all_ground_truth_reports: [N]
+    all_reports: [M]
     """
-    # Create CSV file listing top-5 predictions for each video
-    val_csv_path = os.path.join(output_dir, f"val_epoch{epoch}.csv")
-    os.makedirs(os.path.dirname(val_csv_path), exist_ok=True)
+    # Make sure output dir exists
+    os.makedirs(output_dir, exist_ok=True)
 
-    with open(val_csv_path, mode="w", newline="") as csvfile:
+    val_csv_path = os.path.join(output_dir, f"val_epoch{epoch}.csv")
+    with open(val_csv_path, mode="w", newline="", encoding="utf-8") as csvfile:
         writer = csv.writer(csvfile)
         header = [
             "FileName",
@@ -654,27 +692,23 @@ def log_val_only_retrievals(
             predicted_sims = [similarity_matrix[i, idx].item() for idx in top_5_text_indices]
 
             row_data = [path]
-
-            # 1) Get the ground truth text
             gt_text = all_ground_truth_reports[i]
 
-            # 2) Convert to unique report index (if dictionary is provided)
-            if report_to_global_index is not None and gt_text in report_to_global_index:
+            # Convert ground-truth text to index
+            if report_to_global_index and gt_text in report_to_global_index:
                 gt_idx = report_to_global_index[gt_text]
             else:
-                gt_idx = -1  # fallback if not found or no dictionary
+                gt_idx = -1
 
             row_data.append(gt_idx)
 
-            # Then append predicted top-5
             for p_idx, p_sim in zip(predicted_indices, predicted_sims):
                 row_data.append(p_idx)
                 row_data.append(f"{p_sim:.4f}")
 
             writer.writerow(row_data)
 
-    # Now compute best/worst examples based on max similarity
-    # (unchanged)
+    # best/worst by max similarity
     max_scores, _ = similarity_matrix.max(dim=1)
     best_scores, best_indices = torch.topk(max_scores, k=k)
     worst_scores, worst_indices = torch.topk(max_scores, k=k, largest=False)
@@ -716,13 +750,13 @@ def log_val_only_retrievals(
             }
         )
 
-    # Log best/worst to wandb if available
+    # Optionally log best/worst to wandb
     if wandb_run is not None:
-        # -- log best example(s) --
+        # Log best
         if val_best_videos:
             for i, (video_path, report_data) in enumerate(zip(val_best_videos, val_best_reports)):
                 mp4_path, is_temp = convert_video_for_wandb(video_path)
-                # Log the video
+                # Log video
                 wandb_run.log(
                     {
                         f"qualitative/good_retrieval": wandb.Video(
@@ -735,7 +769,7 @@ def log_val_only_retrievals(
                 )
                 # Build HTML
                 predicted_html = "<br>".join(
-                    [f"{j+1}. {text}" for j, text in enumerate(report_data["predicted"])]
+                    [f"{j+1}. {txt}" for j, txt in enumerate(report_data["predicted"])]
                 )
                 ground_truth_html = (
                     f"<b>Ground Truth:</b> {report_data['ground_truth']}<br>"
@@ -747,15 +781,14 @@ def log_val_only_retrievals(
                         "epoch": epoch,
                     }
                 )
-                # Cleanup
                 if is_temp:
                     cleanup_temp_video(mp4_path)
 
-        # -- log worst example(s) --
+        # Log worst
         if val_worst_videos:
             for i, (video_path, report_data) in enumerate(zip(val_worst_videos, val_worst_reports)):
                 mp4_path, is_temp = convert_video_for_wandb(video_path)
-                # Log the video
+                # Log video
                 wandb_run.log(
                     {
                         f"qualitative/bad_retrieval": wandb.Video(
@@ -768,7 +801,7 @@ def log_val_only_retrievals(
                 )
                 # Build HTML
                 predicted_html = "<br>".join(
-                    [f"{j+1}. {text}" for j, text in enumerate(report_data["predicted"])]
+                    [f"{j+1}. {txt}" for j, txt in enumerate(report_data["predicted"])]
                 )
                 ground_truth_html = (
                     f"<b>Ground Truth:</b> {report_data['ground_truth']}<br>"
@@ -780,85 +813,5 @@ def log_val_only_retrievals(
                         "epoch": epoch,
                     }
                 )
-                # Cleanup
                 if is_temp:
                     cleanup_temp_video(mp4_path)
-
-
-def compute_recall_at_k(similarity_matrix, global_gt_indices, k_values=[1, 5]):
-    batch_size = similarity_matrix.shape[0]
-    metrics = {}
-
-    for k in k_values:
-        v2t_topk = torch.topk(similarity_matrix, k, dim=1)[1]
-        v2t_correct = v2t_topk == global_gt_indices.unsqueeze(1)
-        v2t_recall = (v2t_correct.sum(dim=1) > 0).float().mean().item()
-        metrics[f"Recall@{k}_V2T"] = v2t_recall
-        ## A report text can haev multiple video ground truths so cant calculate t2v
-        # t2v_topk = torch.topk(similarity_matrix.t(), k, dim=1)[1]
-        # t2v_correct = t2v_topk == global_gt_indices.unsqueeze(1)
-        # t2v_recall = (t2v_correct.sum(dim=1) > 0).float().mean().item()
-        # metrics[f"Recall@{k}_T2V"] = t2v_recall
-
-    return metrics
-
-
-def compute_mrr(similarity_matrix, global_gt_indices):
-    batch_size = similarity_matrix.shape[0]
-    device = similarity_matrix.device
-
-    # Video to Text
-    target_scores = similarity_matrix.gather(1, global_gt_indices.unsqueeze(1))
-    v2t_ranks = (similarity_matrix >= target_scores).sum(1).float()
-    v2t_mrr = (1 / v2t_ranks).mean().item()
-
-    return {"MRR_V2T": v2t_mrr}
-
-
-def compute_embedding_norms(video_features, text_features):
-    """Compute L2 norms of video and text embeddings."""
-    video_norms = torch.norm(video_features, dim=1).mean().item()
-    text_norms = torch.norm(text_features, dim=1).mean().item()
-    return {"video_norm": video_norms, "text_norm": text_norms}
-
-
-def compute_alignment_score(
-    video_features,
-    text_features,
-    all_video_embeddings=None,
-    all_text_embeddings=None,
-    global_ground_truth_indices_tensor=None,
-):
-    """
-    Compute average cosine similarity of positive pairs.
-
-    Parameters:
-    - video_features: torch.Tensor (batch local video embeddings)
-    - text_features: torch.Tensor (batch local text embeddings)
-    - all_video_embeddings: torch.Tensor of all validation video embeddings [N_videos, dim] (optional)
-    - all_text_embeddings: torch.Tensor of all global text embeddings [N_texts, dim] (optional)
-    - global_ground_truth_indices_tensor: torch.Tensor of global GT indices for each video (optional)
-
-    If all_video_embeddings, all_text_embeddings, and global_ground_truth_indices_tensor
-    are provided, compute global alignment using global embeddings.
-
-    Otherwise, compute local alignment score assuming a one-to-one mapping between
-    video_features[i] and text_features[i].
-    """
-    if (
-        all_video_embeddings is not None
-        and all_text_embeddings is not None
-        and global_ground_truth_indices_tensor is not None
-    ):
-        # Global alignment scenario (for validation)
-        correct_text_embeddings = all_text_embeddings[global_ground_truth_indices_tensor]
-        normalized_video = nn.functional.normalize(all_video_embeddings, dim=1)
-        normalized_text = nn.functional.normalize(correct_text_embeddings, dim=1)
-        alignment_scores = (normalized_video * normalized_text).sum(dim=1)
-        return alignment_scores.mean().item()
-    else:
-        # Local alignment scenario (for training)
-        normalized_video = nn.functional.normalize(video_features, dim=1)
-        normalized_text = nn.functional.normalize(text_features, dim=1)
-        alignment_scores = (normalized_video * normalized_text).sum(dim=1)
-        return alignment_scores.mean().item()

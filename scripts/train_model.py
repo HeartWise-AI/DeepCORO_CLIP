@@ -939,21 +939,8 @@ def main(rank=0, world_size=1, args=None):
 
         print(f"[Resume] start_epoch={start_epoch}, best_val_loss={best_val_loss}, best_epoch={best_epoch}")
 
-<<<<<<< HEAD
         # E) Create output directory
         output_subdir = generate_output_dir_name(args, wandb_run.id)
-=======
-        # E) Build the "val-only" text embedding pool
-        val_reports = val_dataset.get_all_reports()
-        val_unique_reports = list(dict.fromkeys(val_reports))
-        val_report_to_index = {r: i for i, r in enumerate(val_reports)}
-        val_unique_report_to_index = {r: i for i, r in enumerate(val_unique_reports)}
-
-
-        output_subdir = generate_output_dir_name(args, wandb_run.id)
-        full_output_path = os.path.join(args.output_dir, output_subdir)
-
->>>>>>> 72049c8 (fixed wandb_run id logging)
 
         if rank==0:
             if not os.path.exists(output_subdir):

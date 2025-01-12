@@ -694,11 +694,10 @@ def log_val_only_retrievals(
             row_data = [path]
             gt_text = all_ground_truth_reports[i]
 
+
             # Convert ground-truth text to index
-            if report_to_global_index and gt_text in report_to_global_index:
-                gt_idx = report_to_global_index[gt_text]
-            else:
-                gt_idx = -1
+            gt_idx = report_to_global_index[gt_text]
+
 
             row_data.append(gt_idx)
 

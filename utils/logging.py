@@ -443,13 +443,14 @@ def create_logger(args):
             config[key] = value
 
     # If not resuming, create a new run
-    if not args.resume:
+    if args.resume == False:
         wandb.init(
             project=args.project,
             entity=args.entity,
             name=args.tag,
             config=config,
         )
+        
     return wandb.run
 
 

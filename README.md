@@ -250,82 +250,67 @@ nvidia-smi -l 1  # Monitor GPU usage every second
 - Training metrics are logged to Weights & Biases
 - Includes loss, learning rate, batch size
 - Access via WandB dashboard
+## Parameters
 
-## Multi-Video Parameters
+### Training Parameters
+- `epochs`: Number of training epochs (default: 50)
+- `batch_size`: Samples per batch (default: 12) 
+- `num_workers`: Subprocesses for data loading (default: 16)
+- `learning_rate`: Optimizer learning rate (default: 0.0001)
+- `temperature`: Contrastive loss temperature (default: 0.07)
 
-- **multi_video**: Enables the use of multiple videos per study for training and evaluation.
-- **n_video**: Specifies the number of videos to be used per study.
-- **scorn**: The column name used as a unique identifier for grouping videos by study.
-- **aggregate_function**: The function used to aggregate embeddings from multiple videos. Options include `mean`, `max`, and `median`.
+### Data Parameters
+- `data_filename`: CSV file containing data (default: `data/reports/reports_sampled_no_conclusion.csv`)
+- `root`: Root data directory (default: ".")
+- `target_label`: Target text column name (default: `Report`)
+- `datapoint_loc_label`: File paths column name (default: `FileName`)
+- `frames`: Frames to sample per video (default: 16)
+- `stride`: Frame sampling stride (default: 2)
 
-## Default Configuration Parameters
+### Model Parameters
+- `model_name`: Video backbone model (default: `mvit`)
+- `pretrained`: Use pretrained model (default: `true`)
 
-Here are the default configuration parameters used in `config/default_config.yaml`:
+### Checkpointing
+- `resume`: Resume from checkpoint (default: `false`)
+- `resume_checkpoint`: Path to checkpoint file for resuming training
+- `save_best`: Best model save criterion (default: `loss`)
 
-- **Training parameters**
-  - **epochs**: Number of training epochs. Example: `50`
-  - **batch_size**: Number of samples per batch. Example: `8`
-  - **num_workers**: Number of subprocesses for data loading. Example: `16`
-  - **learning_rate**: Learning rate for the optimizer. Example: `0.0001`
-  - **temperature**: Temperature for contrastive loss. Example: `0.07`
+### Optimization Parameters
+- `optimizer`: Optimizer type (default: `RAdam`)
+- `weight_decay`: Optimizer weight decay (default: 0.000001)
+- `scheduler_type`: Learning rate scheduler (default: `step`)
+- `lr_step_period`: Learning rate step period (default: 15)
+- `factor`: Scheduler factor (default: 0.3)
 
-- **Data parameters**
-  - **data_filename**: Path to the CSV file containing data. Example: `data/reports/reports_sampled_300_study_ids.csv`
-  - **root**: Root directory for data. Example: `.`
-  - **target_label**: Column name for target text. Example: `Report`
-  - **datapoint_loc_label**: Column name for file paths. Example: `FileName`
-  - **frames**: Number of frames to sample from each video. Example: `16`
-  - **stride**: Frame sampling stride. Example: `2`
+### Distributed Training
+- `gpu`: GPU index (default: 1)
+- `local_rank`: Local rank for distributed training (default: -1)
 
-- **Model parameters**
-  - **model_name**: Name of the video backbone model. Example: `mvit`
-  - **pretrained**: Whether to use a pretrained model. Example: `true`
+### Logging Parameters
+- `project`: W&B project name (default: `deepCORO_CLIP`)
+- `entity`: W&B entity name (default: `mhi_ai`)
+- `tag`: W&B run tag (default: `DeepCORO_Clip_Sweep_Learnable_Temp_Full`)
 
-- **Optimization parameters**
-  - **optimizer**: Type of optimizer to use. Example: `RAdam`
-  - **weight_decay**: Weight decay for the optimizer. Example: `0.000001`
-  - **scheduler_type**: Type of learning rate scheduler. Example: `step`
-  - **lr_step_period**: Period for learning rate step. Example: `15`
-  - **factor**: Factor for learning rate scheduler. Example: `0.3`
+### Multi-Video Parameters
+- `multi_video`: Enable multiple videos per study (default: `true`)
+- `max_num_videos`: Maximum videos per study (default: 5)
+- `groupby_column`: Column for grouping videos by study (default: `StudyInstanceUID`)
+- `shuffle_videos`: Randomly sample videos within groups (default: `true`)
+- `seed`: Random seed for reproducibility (default: 42)
 
-- **Distributed training**
-  - **gpu**: GPU index to use. Example: `2`
-  - **local_rank**: Local rank for distributed training. Example: `-1`
+### Additional Parameters
+- `output_dir`: Output directory (default: `outputs`)
+- `use_amp`: Use automatic mixed precision (default: `true`)
+- `device`: Training device (default: `cuda`)
 
-- **Logging parameters**
-  - **project**: Name of the W&B project. Example: `deepCORO_CLIP`
-  - **entity**: W&B entity name. Example: `mhi_ai`
-  - **tag**: Tag for the W&B run. Example: `DeepCORO_Clip_Sweep_Learnable_Temp_Full`
-  - **multi_video**: Enable multi-video per study. Example: `true`
-  - **n_video**: Number of videos per study. Example: `4`
-  - **scorn**: Column name for study ID. Example: `StudyInstanceUID`
-  - **aggregate_function**: Function to aggregate video embeddings. Example: `mean`
 
-- **Additional parameters**
-  - **output_dir**: Directory to save outputs. Example: `outputs`
-  - **seed**: Random seed for reproducibility. Example: `0`
-  - **use_amp**: Use automatic mixed precision. Example: `true`
-  - **device**: Device to use for training. Example: `cuda`
-  - **period**: Period for logging. Example: `1`
+### Data Augmentation
+- `random_augment`: Enable random augmentations (default: `true`)
+- `resize`: Image resize dimension (default: 224)
+- `apply_mask`: Apply image masking (default: `false`)
+- `period`: Num of frames of sampling stride (default: 1)
 
-- **Metrics control**
-  - **optimization_threshold**: Metric for optimization threshold. Example: `g_mean`
-  - **plot_prediction_distribution**: Plot prediction distribution. Example: `true`
-  - **plot_metrics_moving_threshold**: Plot metrics with moving threshold. Example: `true`
-  - **num_bootstrap**: Number of bootstrap samples. Example: `100`
-  - **quantile_bootstrap**: Quantile for bootstrap. Example: `0.05`
-
-- **Data augmentation**
-  - **random_augment**: Enable random augmentations. Example: `true`
-  - **resize**: Resize dimension for images. Example: `224`
-  - **apply_mask**: Apply mask to images. Example: `false`
-  - **view_count**: Number of views. Example: `null`
-
-- **Checkpointing**
-  - **save_best**: Criterion to save the best model. Example: `loss`
-  - **resume**: Resume training from checkpoint. Example: `false`
-
-## Training
 
 ### Use Config Files
 

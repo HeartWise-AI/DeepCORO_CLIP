@@ -507,14 +507,17 @@ def custom_collate_fn(batch):
 
 
 
+import random
+
 class MultiVideoDataset(Dataset):
     """
     Groups video paths by some 'study' key (like StudyInstanceUID).
-    Each item => up to N videos, each with exactly 16 frames.
+    Each item => up to N videos, each with exactly 16 frames (for MViT).
     Returns shape => (N,16,H,W,3) as raw floats, plus text, plus study_id.
 
-    We do NOT accept an 'aggregator' param here. 
-    If you want aggregator logic, handle it in the training loop (or collate).
+    - If `shuffle_=True`, then if a study has more than N videos,
+      we randomly sample N of them (shuffle). Otherwise we take the
+      first N in the original order.
     """
 
     def __init__(
@@ -524,27 +527,31 @@ class MultiVideoDataset(Dataset):
         split: str,
         target_label: Optional[str] = "Report",
         datapoint_loc_label: str = "FileName",
-        scorn: str = "StudyInstanceUID",
-        num_videos: int = 4,
+        groupby_column: str = "StudyInstanceUID",
+        max_num_videos: int = 4,
         backbone: str = "mvit",  # forcibly for 16 frames
         resize: int = 224,
         mean=(0.485, 0.456, 0.406),
         std=(0.229, 0.224, 0.225),
         random_augment: bool = False,
+        shuffle_videos: bool = False,         
+        seed: Optional[int] = None,          
     ):
         super().__init__()
         self.root = pathlib.Path(root)
         self.filename = data_filename
         self.split = split
         self.datapoint_loc_label = datapoint_loc_label
-        self.scorn = scorn
-        self.num_videos = num_videos
+        self.groupby_column = groupby_column
+        self.max_num_videos = max_num_videos
         self.backbone = backbone.lower()
         self.resize = resize
         self.mean = mean
         self.std = std
         self.random_augment = random_augment
-        self.backbone = backbone.lower()
+        self.shuffle_videos = shuffle_videos
+        if seed is not None:
+            random.seed(seed)  # so we can have reproducible sampling if desired
 
         # We'll store the text in a dictionary: study_to_text[sid] => str
         # We'll store the list of video paths: study_to_videos[sid] => [paths...]
@@ -556,8 +563,8 @@ class MultiVideoDataset(Dataset):
         df_split = df[df["Split"].str.lower() == split.lower()].copy()
 
         for i, row in df_split.iterrows():
-            sid = str(row[self.scorn])
-            fpath = row[datapoint_loc_label]
+            sid = str(row[self.groupby_column])
+            fpath = row[self.datapoint_loc_label]
             if not os.path.exists(fpath):
                 continue
             if sid not in self.study_to_videos:
@@ -584,11 +591,19 @@ class MultiVideoDataset(Dataset):
         vid_paths = self.study_to_videos[sid]
         text_report = self.study_to_text[sid]
 
-        if len(vid_paths) > self.num_videos:
-            vid_paths = vid_paths[: self.num_videos]
+        # If there are more than max_num_videos paths, either slice them in order OR randomly sample
+        if len(vid_paths) > self.max_num_videos:
+            if self.shuffle_videos:
+                # random sample exactly max_num_videos
+                chosen_paths = random.sample(vid_paths, self.max_num_videos)
+            else:
+                # keep original order
+                chosen_paths = vid_paths[: self.max_num_videos]
+        else:
+            chosen_paths = vid_paths  # less or equal => use all
 
         loaded = []
-        for vp in vid_paths:
+        for vp in chosen_paths:
             try:
                 arr = load_video(
                     vp,
@@ -603,8 +618,8 @@ class MultiVideoDataset(Dataset):
                 arr = np.zeros((16, self.resize, self.resize, 3), dtype=np.float32)
             loaded.append(arr)
 
-        # if fewer than num_videos => pad with zeros
-        while len(loaded) < self.num_videos:
+        # If fewer than max_num_videos => pad with zeros
+        while len(loaded) < self.max_num_videos:
             arr = np.zeros((16, self.resize, self.resize, 3), dtype=np.float32)
             loaded.append(arr)
 
@@ -630,6 +645,7 @@ class MultiVideoDataset(Dataset):
 
     def get_all_reports(self):
         return [self.study_to_text[sid] for sid in self.study_ids]
+    
     def get_video_paths(self, sid: str) -> List[str]:
         return self.study_to_videos.get(sid, [])
 

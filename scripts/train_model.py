@@ -141,9 +141,9 @@ def parse_args():
 
     # Multi-video parameters
     parser.add_argument("--multi_video", action="store_true", help="Enable multi-video per study")
-    parser.add_argument("--n_video", type=int, default=4, help="Number of videos per study")
+    parser.add_argument("--max_num_videos", type=int, default=4, help="Number of videos per study")
     parser.add_argument(
-        "--scorn",
+        "--groupby_column",
         type=str,
         default="StudyInstanceUID",
         help="Column name for study ID or similar grouping key",
@@ -155,6 +155,8 @@ def parse_args():
         choices=["mean", "max", "median"],
         help="Aggregation function across multi-video embeddings",
     )
+    parser.add_argument("--shuffle_videos", action="store_true", help="Shuffle videos for each study")
+    parser.add_argument("--seed", type=int, default=None, help="Random seed for video sampling")
 
     args = parser.parse_args()
 
@@ -258,13 +260,6 @@ def generate_output_dir_name(args, run_id):
 def setup_training(args, rank=0):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    wandb_run = None
-    if rank == 0:
-        wandb_run = create_logger(args)
-        if wandb_run is not None and len(wandb.config.keys()) > 0:
-            for key, value in wandb.config.items():
-                if hasattr(args, key):
-                    setattr(args, key, value)
 
     # === Stats
     mean, std = None, None
@@ -336,12 +331,14 @@ def setup_training(args, rank=0):
             split="train",
             target_label=args.target_label,
             datapoint_loc_label=args.datapoint_loc_label,
-            scorn=args.scorn,
-            num_videos=args.n_video,
+            groupby_column=args.groupby_column,
+            max_num_videos=args.max_num_videos,
             mean=(mean.tolist() if mean is not None else [0.485, 0.456, 0.406]),
             std=(std.tolist() if std is not None else [0.229, 0.224, 0.225]),
             random_augment=args.random_augment,
             backbone=args.model_name,
+            shuffle_videos=args.shuffle_videos,
+            seed=args.seed,
         )
         val_dataset = MultiVideoDataset(
             root=args.root,
@@ -349,11 +346,13 @@ def setup_training(args, rank=0):
             split="val",
             target_label=args.target_label,
             datapoint_loc_label=args.datapoint_loc_label,
-            scorn=args.scorn,
-            num_videos=args.n_video,
+            groupby_column=args.groupby_column,
+            max_num_videos=args.max_num_videos,
             mean=mean.tolist() if mean is not None else [0.485, 0.456, 0.406],
             std=std.tolist() if std is not None else [0.229, 0.224, 0.225],
             backbone=args.model_name,
+            shuffle_videos=False,
+            seed=args.seed,
         )
     else:
         train_dataset = VideoDataset(
@@ -1000,10 +999,14 @@ def main(rank=0, world_size=1, args=None):
                 wandb_kwargs["id"] = wandb_run.id
                 wandb_kwargs["resume"] = "allow"
                 print(f"[W&B] Resuming run_id={wandb_run.id}")
+                wandb_run = wandb.init(**wandb_kwargs)
             else:
+                wandb_run = create_logger(args)
+                if wandb_run is not None and len(wandb.config.keys()) > 0:
+                    for key, value in wandb.config.items():
+                        if hasattr(args, key):
+                            setattr(args, key, value)
                 print("[W&B] Starting new run (no run_id found).")
-
-            wandb_run = wandb.init(**wandb_kwargs)
 
         # C) Setup training
         training_setup = setup_training(args, rank=rank)

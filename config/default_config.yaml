@@ -30,7 +30,7 @@ lr_step_period: 15    # Step the LR every 15 epochs instead of 110
 factor: 0.3
 
 # Distributed training
-gpu: 2
+gpu: 1
 local_rank: -1
 
 # Logging parameters
@@ -38,29 +38,18 @@ project: deepCORO_CLIP
 entity: mhi_ai
 tag: DeepCORO_Clip_Sweep_Learnable_Temp_Full
 multi_video: true
-n_video: 5
-scorn: StudyInstanceUID
+max_num_videos: 5
+groupby_column: StudyInstanceUID
+shuffle_videos: true
+seed: 42
 
 # Additional parameters
 output_dir: outputs
-seed: 0
 use_amp: true
 device: cuda
 period: 1
-
-# Metrics control
-metrics_control:
-  optimization_threshold: g_mean
-  plot_prediction_distribution: true
-  plot_metrics_moving_threshold: true
-  num_bootstrap: 100
-  quantile_bootstrap: 0.05
 
 # Data augmentation (enable random augmentations to reduce overfitting)
 random_augment: true
 resize: 224
 apply_mask: false
-view_count: null
-
-# Checkpointing
-save_best: loss

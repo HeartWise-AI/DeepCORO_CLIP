@@ -27,7 +27,10 @@ class HeartWiseConfig:
     datapoint_loc_label: str
     frames: int
     stride: int
-
+    multi_video: bool
+    num_videos: int
+    groupby_column: str
+    shuffle_videos: bool
     # Model parameters
     model_name: str
     pretrained: bool

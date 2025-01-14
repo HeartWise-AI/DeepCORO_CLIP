@@ -48,7 +48,7 @@ class TextEncoder(nn.Module):
         
         # Load model and get its config
         self.bert = AutoModel.from_pretrained(model_name)
-        config = self.bert.config
+        hidden_size = self.bert.config.hidden_size
 
         # Freeze a portion of BERT's encoder layers
         self._freeze_partial_bert()
@@ -56,17 +56,10 @@ class TextEncoder(nn.Module):
         # Project from BERT hidden size to match video encoder
         self.proj = nn.Sequential(
             nn.Dropout(self.dropout),
-            nn.Linear(config.hidden_size, output_dim),
+            nn.Linear(hidden_size, output_dim),
             nn.ReLU(inplace=True),
             nn.Dropout(self.dropout)
         )
-
-        # Print model configuration for debugging
-        print(f"Initialized TextEncoder with:")
-        print(f"  model_name: {model_name}")
-        print(f"  hidden_size: {config.hidden_size}")
-        print(f"  vocab_size: {config.vocab_size}")
-        print(f"  output_dim: {output_dim}")
 
     def _freeze_partial_bert(self):
         """

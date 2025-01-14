@@ -5,38 +5,23 @@ import torch.nn as nn
 from torchvision.models.video import mvit_v2_s, r3d_18
 
 from utils.registry import ModelRegistry
-
+from models.video_aggregator import VideoAggregator
 
 
 class TransformerHead(nn.Module):
     """Transformer head for video classification."""
 
     def __init__(self, dim_in: int, num_classes: int, dropout: float = 0.5):
-        """Initialize transformer head.
-
-        Args:
-            dim_in (int): Input dimension from backbone
-            num_classes (int): Number of output classes/dimensions
-            dropout (float): Dropout probability
-        """
         super().__init__()
         self.norm = nn.LayerNorm(dim_in)
         self.dropout = nn.Dropout(dropout)
         self.fc = nn.Linear(dim_in, num_classes)
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass.
-
-        Args:
-            x (torch.Tensor): Input tensor of shape [batch_size, dim_in]
-
-        Returns:
-            torch.Tensor: Output tensor of shape [batch_size, num_classes]
-        """
         x = self.norm(x)
         x = self.dropout(x)
         x = self.fc(x)
         return x
+
 
 @ModelRegistry.register("video_encoder")
 class VideoEncoder(nn.Module):
@@ -44,13 +29,13 @@ class VideoEncoder(nn.Module):
 
     def __init__(
         self, 
-        backbone="mvit", 
-        input_channels=3, 
-        num_frames=16, 
-        pretrained=True, 
-        output_dim=512, 
-        dropout=0.2,
-        freeze_ratio=0.8
+        backbone: str = "mvit", 
+        input_channels: int = 3, 
+        num_frames: int = 16, 
+        pretrained: bool = True, 
+        output_dim: int = 512, 
+        dropout: float = 0.2,
+        freeze_ratio: float = 0.8
     ):
         """Initialize the video encoder.
 
@@ -62,28 +47,18 @@ class VideoEncoder(nn.Module):
             output_dim (int): Output dimension of the encoder
         """
         super().__init__()
-        self.backbone = backbone
-        self.input_channels = input_channels
-        self.num_frames = num_frames
-        self.output_dim = output_dim
-        self.dropout = dropout
-        self.freeze_ratio = freeze_ratio
-        
-        # Convert grayscale to 3 channels if needed
-        if input_channels == 1:
-            self.to_rgb = nn.Sequential(
-                # First expand to 3 channels
-                nn.Conv3d(1, 3, kernel_size=1, bias=False),
-                nn.BatchNorm3d(3),
-                nn.ReLU(inplace=True),
-            )
-        else:
-            self.to_rgb = nn.Identity()
+        self.backbone: str = backbone
+        self.input_channels: int = input_channels
+        self.num_frames: int = num_frames
+        self.output_dim: int = output_dim
+        self.dropout: float = dropout
+        self.freeze_ratio: float = freeze_ratio
+
 
         # Load the specified backbone with pretrained weights if specified
         if backbone == "mvit":
             # Load the pretrained MViT v2 S
-            self.model = mvit_v2_s(weights="KINETICS400_V1" if pretrained else None)
+            self.model: nn.Module = mvit_v2_s(weights="KINETICS400_V1" if pretrained else None)
             # self.model.head is a Sequential. We find the final nn.Linear layer:
             in_features = None
             for layer in reversed(self.model.head):
@@ -96,26 +71,33 @@ class VideoEncoder(nn.Module):
 
             # Replace classification head with Identity
             self.model.head = nn.Identity()
-
+        
         elif backbone == "r3d":
-            self.model = r3d_18(pretrained=pretrained)
-            in_features = 512  # R3D-18's hidden dimension
-            self.model.fc = TransformerHead(dim_in=in_features, num_classes=output_dim)
-            self.proj = nn.Identity()
+            self.model: nn.Module = r3d_18(pretrained=pretrained)
+            in_features: int = self.model.fc.in_features
+            self.model.fc = nn.Identity()
+            
         else:
             raise ValueError(f"Unsupported backbone: {backbone}")
                 
         # Freeze partial layers
         self._freeze_partial_layers()
-        
+                
         # Projection from backbone dimension -> output_dim
-        # (includes dropout to help regularize)
         self.proj = nn.Sequential(
             nn.Dropout(self.dropout),
             nn.Linear(in_features, output_dim),
             nn.ReLU(inplace=True),
-            nn.Dropout(self.dropout)
-        )        
+            nn.Dropout(self.dropout),
+        )
+        
+        # Aggregator: small transformer to combine multiple segments
+        self.aggregator = VideoAggregator(
+            embedding_dim=output_dim,
+            num_heads=4,
+            dropout=self.dropout,
+            use_positional_encoding=True
+        )
 
     def _freeze_partial_layers(self):
         """
@@ -133,37 +115,36 @@ class VideoEncoder(nn.Module):
 
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass of the video encoder.
-
-        Args:
-            x (torch.Tensor): Input tensor of shape [batch_size, channels, frames, height, width]
-
-        Returns:
-            torch.Tensor: Output features of shape [batch_size, output_dim]
         """
-
-        # Input shape: [batch_size, channels, frames, height, width]
-        # Backbone expects [batch_size, channels, time, height, width]
-
-        # Convert grayscale to RGB if needed
-        if self.input_channels == 1:
-            # Take only the first channel if input has 3 channels
-            if x.shape[1] == 3:
-                x = x[:, 0:1]
-            x = self.to_rgb(x)  # [B, 3, T, H, W]
-        else:
-            x = self.to_rgb(x)  # Pass through Identity if not grayscale
-
-        # Forward through the backbone model
-        x = self.model(
-            x
-        )  # Output shape: [batch_size, kinetics_classes] for mvit or [batch_size, output_dim] for r3d
-
-        # Project to desired output dimension if needed
-        x = self.proj(x)  # Output shape: [batch_size, output_dim]
+        Expects shape: [B, N, T, H, W, C]
+            B= batch size,
+            N= # of segments or videos per study,
+            T= #frames,
+            H= height,
+            W= width,
+            C= channels=3
+        We'll reorder => [B,N,C,T,H,W], flatten => [B*N, C, T, H, W],
+        pass through the backbone, then aggregator => [B, output_dim].
+        """
+        # Reorder last dimension (C) to after N => [B, N, C, T, H, W]
+        x = x.permute(0, 1, 5, 2, 3, 4)  # Now shape: [B, N, 3, T, H, W]
+        B, N, C, T, H, W = x.shape
+        
+        # Flatten => [B*N, 3, T, H, W]
+        x = x.view(B*N, C, T, H, W)
+        
+        # Pass through backbone => [B*N, in_features]
+        x = self.model(x)
+        # Then projection => [B*N, output_dim]
+        x = self.proj(x)
+        
+        # Reshape => [B, N, output_dim]
+        x = x.view(B, N, self.output_dim)
+        
+        # aggregator => [B, output_dim]
+        x = self.aggregator(x)
 
         return x
-
 
 
 

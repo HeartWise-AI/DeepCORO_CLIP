@@ -284,9 +284,6 @@ def custom_collate_fn(batch):
     # Stack videos - handle both tensor and numpy inputs
     videos = torch.stack([torch.from_numpy(v) for v in videos])  # Shape: [B, F, H, W, C]
 
-    # Permute dimensions from [B, F, H, W, C] to [B, C, F, H, W] for MViT
-    videos = videos.permute(0, 4, 1, 2, 3)
-
     # Combine encoded texts
     if encoded_texts[0] is not None:
         combined_texts = {

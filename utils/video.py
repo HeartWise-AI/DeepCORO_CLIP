@@ -75,7 +75,6 @@ def load_video(
     # Force 16 frames for MViT backbone
     if backbone.lower() == "mvit":
         n_frames = 16
-        stride = 1
 
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -115,7 +114,7 @@ def load_video(
 
     t, c, h, w = video.shape
 
-    # Frame sampling
+    # Force exactly n_frames or 16 frames for MViT
     if backbone.lower() == "mvit":
         # Exactly 16 frames
         if t < 16:
@@ -124,6 +123,7 @@ def load_video(
         elif t > 16:
             indices = torch.linspace(0, t - 1, 16).long()
             video = video[indices]
+        expected_frames = 16
     else:
         # Keep original frame count to n_frames
         if t < n_frames:
@@ -132,6 +132,7 @@ def load_video(
         elif t > n_frames:
             indices = torch.linspace(0, t - 1, n_frames).long()
             video = video[indices]
+        expected_frames = n_frames
 
     if normalize:
         if mean is None or std is None:

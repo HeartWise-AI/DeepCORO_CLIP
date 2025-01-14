@@ -26,7 +26,7 @@ from utils.registry import (
 from utils.files_handler import generate_output_dir_name
 from dataloaders.stats_dataset import get_stats_dataloader
 from dataloaders.video_dataset import get_distributed_video_dataloader
-
+from dataloaders.multi_video_dataset import get_distributed_multi_video_dataloader
 
 def load_train_objs(
     config: HeartWiseConfig,
@@ -99,24 +99,44 @@ def load_train_objs(
     print(f"Rank: {config.gpu} - mean: {mean} - std: {std}")
 
 
-    train_loader: DataLoader = get_distributed_video_dataloader(
-        config, 
-        split="train", 
-        mean=(mean.tolist() if mean is not None else [0.485, 0.456, 0.406]),
-        std=(std.tolist() if std is not None else [0.229, 0.224, 0.225]),
-        shuffle=True,
-        num_replicas=config.world_size,
-        rank=config.gpu,
-    )
-    val_loader: DataLoader = get_distributed_video_dataloader(
-        config, 
-        split="val", 
-        mean=(mean.tolist() if mean is not None else [0.485, 0.456, 0.406]),
-        std=(std.tolist() if std is not None else [0.229, 0.224, 0.225]),
-        shuffle=False,
-        num_replicas=config.world_size,
-        rank=config.gpu,
-    )
+    if config.multi_video:
+        train_loader: DataLoader = get_distributed_multi_video_dataloader(
+            config, 
+            split="train",
+            mean=(mean.tolist() if mean is not None else [0.485, 0.456, 0.406]),
+            std=(std.tolist() if std is not None else [0.229, 0.224, 0.225]),
+            shuffle=True,
+            num_replicas=config.world_size,
+            rank=config.gpu,
+        )
+        val_loader: DataLoader = get_distributed_multi_video_dataloader(
+            config, 
+            split="val", 
+            mean=(mean.tolist() if mean is not None else [0.485, 0.456, 0.406]),
+            std=(std.tolist() if std is not None else [0.229, 0.224, 0.225]),
+            shuffle=False,
+            num_replicas=config.world_size,
+            rank=config.gpu,
+        )
+    else:
+        train_loader: DataLoader = get_distributed_video_dataloader(
+            config, 
+            split="train", 
+            mean=(mean.tolist() if mean is not None else [0.485, 0.456, 0.406]),
+            std=(std.tolist() if std is not None else [0.229, 0.224, 0.225]),
+            shuffle=True,
+            num_replicas=config.world_size,
+            rank=config.gpu,
+        )
+        val_loader: DataLoader = get_distributed_video_dataloader(
+            config, 
+            split="val", 
+            mean=(mean.tolist() if mean is not None else [0.485, 0.456, 0.406]),
+            std=(std.tolist() if std is not None else [0.229, 0.224, 0.225]),
+            shuffle=False,
+            num_replicas=config.world_size,
+            rank=config.gpu,
+        )
 
     # Create models
     video_encoder: VideoEncoder = ModelRegistry.get(

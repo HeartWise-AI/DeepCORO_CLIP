@@ -1,12 +1,12 @@
 # sweep_config.yaml
 command:
   - torchrun
-  - "--nproc_per_node=4"
+  - "--nproc_per_node=2"
   - "--master_port=29500"
   - "scripts/train_model_multi_gpu.py"
   - ${args}
 
-name: "test_dropout"
+name: "robert_dataset_subset_10k"
 project: "dev_deep_coro_clip"
 entity: "jacques-delfrate"
 
@@ -52,7 +52,7 @@ parameters:
   debug:
     values: [false]
   data_filename:
-    values: ["data/reports/reports_with_splits_subset.csv"]
+    values: ["data/reports/robert_dataset_subset_10k.csv"]
   root:
     values: ["."]
   target_label:
@@ -62,15 +62,23 @@ parameters:
   frames:
     values: [16]
   stride:
-    values: [1, 2, 3]
+    values: [2]
   model_name:
     values: ["mvit"]
+  multi_video:
+    values: [true]
+  num_videos:
+    values: [5]
+  shuffle_videos:
+    values: [true]
+  groupby_column:
+    values: ["StudyInstanceUID"]
   pretrained:
     values: [true]
   weight_decay:
     values: [0.000001]
   seed:
-    values: [0]
+    values: [42]
   use_amp:
     values: [true]
   device:
@@ -108,7 +116,7 @@ parameters:
   tag:
     values: ["mvit_pretrained"]
   name:
-    values: ["test_dropout"]
+    values: ["robert_dataset_subset_10k"]
   project:
     values: ["dev_deep_coro_clip"]
   entity:

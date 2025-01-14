@@ -195,13 +195,30 @@ class VideoContrastiveLearningRunner:
             if batch["videos"] is None or batch["encoded_texts"] is None:
                 continue
                 
-            step_inputs, paths = self._preprocess_inputs(batch)
+            step_inputs, paths_or_sids = self._preprocess_inputs(batch)
+            
+            # If not multi-video, add a singleton dimension to the video tensor 
+            if not self.config.multi_video:
+                step_inputs['videos'] = step_inputs['videos'].unsqueeze(1) # VideoEncoder expects (B,Nvideos,T,H,W,3)
+            
+            # Run step
             batch_metrics, embeddings = step_fn(**step_inputs)
+            
+            # Append embeddings to lists
             all_video_embeddings.append(embeddings["video_embeddings"].cpu())
             all_text_embeddings.append(embeddings["text_embeddings"].cpu())
-            all_paths.extend(paths)
+            if self.config.multi_video:
+                for sid in paths_or_sids:
+                    # get the *list* of underlying video paths
+                    vid_list = dataloader.dataset.get_video_paths(sid)
+                    if len(vid_list) > 0:
+                        # e.g. store just the *first* path
+                        all_paths.append(vid_list[0])
+            else:
+                all_paths.extend(paths_or_sids)
+                
             all_ground_truth_reports.extend(
-                dataloader.dataset.get_reports(paths)
+                dataloader.dataset.get_reports(paths_or_sids)
             )
             
             # Accumulate metrics

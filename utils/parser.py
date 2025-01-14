@@ -46,7 +46,11 @@ class HeartWiseParser:
         data_group.add_argument('--datapoint_loc_label', type=str)
         data_group.add_argument('--frames', type=int)
         data_group.add_argument('--stride', type=int)
-
+        data_group.add_argument('--multi_video', type=str2bool)
+        data_group.add_argument('--num_videos', type=int)
+        data_group.add_argument('--groupby_column', type=str)
+        data_group.add_argument('--shuffle_videos', type=str2bool)
+        
         # Model parameters
         model_group = parser.add_argument_group('Model')
         model_group.add_argument('--model_name', type=str)

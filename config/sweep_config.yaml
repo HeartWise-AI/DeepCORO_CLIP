@@ -30,7 +30,7 @@ parameters:
   factor:
     values: [0.1, 0.3, 0.5]
   batch_size:
-    values: [8, 16, 32]
+    values: [8, 14, 16]
   temperature:
     min: 0.05
     max: 0.15
@@ -111,8 +111,10 @@ parameters:
     values: [null]
   save_best:
     values: ["loss"]
-  resume:
+  resume_training:
     values: [false]
+  checkpoint:
+    values: [null]
   tag:
     values: ["mvit_pretrained"]
   name:

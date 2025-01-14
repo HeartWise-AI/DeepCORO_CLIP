@@ -103,7 +103,16 @@ class VideoContrastiveLearningRunner:
         text_embeddings = torch.cat(all_embeddings, dim=0)
         return text_embeddings, report_to_index
 
-    def train(self):              
+    def train(self):    
+        if self.config.resume_training and not self.config.checkpoint:
+            raise ValueError("Flag 'resume_training' is set, but no checkpoint provided")
+        
+        if self.config.resume_training and self.config.checkpoint:
+            print(f"[VideoContrastiveLearningRunner] Resuming from checkpoint: {self.config.checkpoint}")
+            wandb_run, start_epoch, best_val_loss, best_epoch = self._preview_checkpoint_for_resuming(
+                self.config.checkpoint
+            )
+        
         # Training loop
         for epoch in range(self.config.epochs):           
             # Synchronize before epoch starts
@@ -135,15 +144,21 @@ class VideoContrastiveLearningRunner:
                 torch.distributed.barrier(device_ids=[self.device])
             
             # Update best model based on validation performance
-            is_best = False
             if val_metrics["val/loss"] < self.best_val_loss:
                 previous_best = self.best_val_loss
                 self.best_val_loss = val_metrics["val/loss"]
                 self.best_epoch = epoch
-                is_best = True
                 if self.config.is_ref_device:   
                     print(f"\nNew best model! Val Loss: {val_metrics['val/loss']:.4f} "
                           f"(previous: {previous_best:.4f})")
+                    self._save_checkpoint(
+                        epoch=epoch,
+                        metrics={
+                            **train_metrics,
+                            **val_metrics
+                        },
+                        is_best=True
+                    )                    
                                 
             if self.config.is_ref_device:
                 self._save_checkpoint(
@@ -152,7 +167,7 @@ class VideoContrastiveLearningRunner:
                         **train_metrics,
                         **val_metrics
                     },
-                    is_best=is_best
+                    is_best=False
                 )
                 
             # Learning rate scheduler step if it exists
@@ -329,10 +344,65 @@ class VideoContrastiveLearningRunner:
         # Save checkpoint
         save_path = os.path.join(
             checkpoint_dir, 
-            f"best_epoch_{epoch + 1}.pt" if is_best else f"checkpoint_{epoch + 1}.pt"
+            f"best_epoch.pt" if is_best else f"checkpoint.pt"
         )
         torch.save(checkpoint, save_path)
         print(f"\nSaved {'best' if is_best else 'latest'} checkpoint at epoch {epoch + 1}")
+
+    def _preview_checkpoint_for_resuming(self, checkpoint_path: str):
+        """
+        Quick "preview" function that loads minimal fields from the checkpoint 
+        on CPU, to retrieve wandb_run, epoch, best_val_loss, best_epoch, etc.
+        Returns:
+        wandb_run (str or None)
+        start_epoch (int)
+        best_val_loss (float)
+        best_epoch (int)
+        """
+        if not os.path.isfile(checkpoint_path):
+            print(f"Warning: checkpoint not found at {checkpoint_path}.")
+            return None, 0, float('inf'), -1
+
+        print(f"[Preview] Loading minimal info from checkpoint: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+
+        wandb_run = checkpoint.get("wandb_run", None)
+        start_epoch = checkpoint.get("epoch", -1) + 1
+        best_val_loss = checkpoint.get("best_val_loss", float("inf"))
+        best_epoch = checkpoint.get("best_epoch", -1)
+
+        print(
+            f"[Preview] Found run_id={wandb_run}, "
+            f"start_epoch={start_epoch}, best_val_loss={best_val_loss}, best_epoch={best_epoch}"
+        )
+        return wandb_run, start_epoch, best_val_loss, best_epoch
+
+    def _load_full_checkpoint(self, checkpoint_path: str, device, training_setup):
+        """
+        After the model/optimizer/etc. is initialized, call this 
+        to actually load states from the checkpoint into them.
+        """
+        if not os.path.isfile(checkpoint_path):
+            print(f"Warning: checkpoint not found at {checkpoint_path}. No loading done.")
+            return
+
+        print(f"[Full Load] Loading checkpoint from: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+
+        video_encoder = training_setup["video_encoder"]
+        text_encoder = training_setup["text_encoder"]
+        optimizer = training_setup["optimizer"]
+        scheduler = training_setup["scheduler"]
+
+        if "video_encoder" in checkpoint:
+            video_encoder.load_state_dict(checkpoint["video_encoder"], strict=False)
+        if "text_encoder" in checkpoint:
+            text_encoder.load_state_dict(checkpoint["text_encoder"], strict=False)
+
+        if "optimizer" in checkpoint and checkpoint["optimizer"]:
+            optimizer.load_state_dict(checkpoint["optimizer"])
+        if "scheduler" in checkpoint and checkpoint["scheduler"] and scheduler is not None:
+            scheduler.load_state_dict(checkpoint["scheduler"])
 
     def _run_batch(
         self, 

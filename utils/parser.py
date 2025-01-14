@@ -5,7 +5,8 @@ from utils.parser_typing import (
     str2bool, 
     parse_dict, 
     parse_list, 
-    parse_optional_int
+    parse_optional_int,
+    parse_optional_str
 )
 
 class HeartWiseParser:
@@ -84,7 +85,8 @@ class HeartWiseParser:
         # Checkpointing parameters
         checkpoint_group = parser.add_argument_group('Checkpointing')
         checkpoint_group.add_argument('--save_best', type=str)
-        checkpoint_group.add_argument('--resume', type=str2bool)
+        checkpoint_group.add_argument('--resume_training', type=str2bool)
+        checkpoint_group.add_argument('--checkpoint', type=parse_optional_str)
 
         # Logging parameters
         sweep_group = parser.add_argument_group('Sweep')

@@ -35,3 +35,8 @@ def parse_optional_int(string):
         return int(string)
     except (ValueError, TypeError) as e:
         raise argparse.ArgumentTypeError(f'Invalid integer or None value: {string}. Error: {str(e)}') 
+
+def parse_optional_str(string):
+    if string.lower() == 'none' or string == '':
+        return None
+    return string

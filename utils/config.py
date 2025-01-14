@@ -31,6 +31,7 @@ class HeartWiseConfig:
     num_videos: int
     groupby_column: str
     shuffle_videos: bool
+    
     # Model parameters
     model_name: str
     pretrained: bool
@@ -66,7 +67,8 @@ class HeartWiseConfig:
 
     # Checkpointing parameters
     save_best: str
-    resume: bool
+    resume_training: bool
+    checkpoint: Optional[str]
     
     # Logging parameters
     tag: str

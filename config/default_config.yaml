@@ -1,12 +1,12 @@
 # Training parameters
 epochs: 50
-batch_size: 4
-num_workers: 24     # 24 is okay, but 4 is often enough for a small dataset
+batch_size: 12
+num_workers: 16
 learning_rate: 0.0001
 temperature: 0.07    # More typical CLIP-like initial temperature
 
 # Data parameters
-data_filename: data/reports/reports_sampled_no_conclusion_96.csv
+data_filename: data/reports/reports_sampled_no_conclusion.csv
 root: "."
 target_label: Report
 datapoint_loc_label: FileName
@@ -16,6 +16,11 @@ stride: 2
 # Model parameters
 model_name: mvit
 pretrained: true
+
+# Checkpointing
+resume: false
+resume_checkpoint: outputs/deepCORO_CLIP/DeepCORO_Clip_Sweep_Learnable_Temp_Full_mvit_b12_f16_RAdam_lr0.0001_20250105-140102_4prjnaxn/checkpoints/latest.pt
+
 
 # Optimization parameters
 optimizer: RAdam
@@ -32,28 +37,19 @@ local_rank: -1
 project: deepCORO_CLIP
 entity: mhi_ai
 tag: DeepCORO_Clip_Sweep_Learnable_Temp_Full
+multi_video: true
+max_num_videos: 5
+groupby_column: StudyInstanceUID
+shuffle_videos: true
+seed: 42
 
 # Additional parameters
 output_dir: outputs
-seed: 0
 use_amp: true
 device: cuda
 period: 1
-
-# Metrics control
-metrics_control:
-  optimization_threshold: g_mean
-  plot_prediction_distribution: true
-  plot_metrics_moving_threshold: true
-  num_bootstrap: 100
-  quantile_bootstrap: 0.05
 
 # Data augmentation (enable random augmentations to reduce overfitting)
 random_augment: true
 resize: 224
 apply_mask: false
-view_count: null
-
-# Checkpointing
-save_best: loss
-resume: false

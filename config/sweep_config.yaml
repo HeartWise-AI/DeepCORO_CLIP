@@ -28,12 +28,12 @@ parameters:
     values: [20, 30, 40]
 
   batch_size:
-    values: [16, 24, 32]
+    values: [8, 10, 12]
 
   temperature:
     distribution: uniform
     min: 0.05
-    max: 0.5
+    max: 0.15
 
   random_augment:
     values: [true, false]

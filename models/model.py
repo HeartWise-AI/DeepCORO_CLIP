@@ -2,9 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.models.video import (
-    mvit_v1_b,
-    r3d_18,
     mvit_v2_s,
+    r3d_18,
+    mvit_v1_b,
 )
 from transformers import AutoModel, AutoTokenizer
 
@@ -18,6 +18,90 @@ def get_tokenizer(model_name="microsoft/BiomedNLP-PubMedBERT-base-uncased-abstra
         padding_side="right",
         truncation_side="right",
     )
+
+
+class VideoAggregator(nn.Module):
+    """
+    Learnable aggregator for combining multiple video embeddings.
+    Uses a transformer-based approach with self-attention to learn
+    relationships between different video segments.
+    
+    Input: [batch_size, num_segments, embedding_dim]
+    Output: [batch_size, embedding_dim]
+    """
+    def __init__(
+        self,
+        embedding_dim: int,
+        num_heads: int = 4,
+        dropout: float = 0.1,
+        use_positional_encoding: bool = True
+    ):
+        super().__init__()
+        self.embedding_dim = embedding_dim
+        self.use_positional_encoding = use_positional_encoding
+        
+        # Positional encoding for sequence awareness
+        if use_positional_encoding:
+            self.pos_encoding = nn.Parameter(
+                torch.zeros(1, 512, embedding_dim)  # Max sequence length of 512
+            )
+            nn.init.trunc_normal_(self.pos_encoding, std=0.02)
+        
+        # Multi-head self-attention layer
+        self.self_attn = nn.MultiheadAttention(
+            embed_dim=embedding_dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True
+        )
+        
+        # MLP for final transformation
+        self.mlp = nn.Sequential(
+            nn.Linear(embedding_dim, embedding_dim * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(embedding_dim * 2, embedding_dim)
+        )
+        
+        # Layer norms
+        self.norm1 = nn.LayerNorm(embedding_dim)
+        self.norm2 = nn.LayerNorm(embedding_dim)
+        
+        # Dropout
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: Video embeddings [batch_size, num_segments, embedding_dim]
+        Returns:
+            Aggregated embedding [batch_size, embedding_dim]
+        """
+        B, N, D = x.shape
+        
+        # Add positional encoding if enabled
+        if self.use_positional_encoding:
+            x = x + self.pos_encoding[:, :N, :]
+        
+        # Self-attention block
+        residual = x
+        x = self.norm1(x)
+        x, _ = self.self_attn(x, x, x)
+        x = self.dropout(x)
+        x = residual + x
+        
+        # MLP block
+        residual = x
+        x = self.norm2(x)
+        x = self.mlp(x)
+        x = residual + x
+        
+        # Aggregate across segments using a learned weighting (softmax).
+        attention_weights = F.softmax(x.mean(dim=-1), dim=-1)  # shape: [B, N]
+        # Weighted sum => shape: [B, D]
+        x = torch.bmm(attention_weights.unsqueeze(1), x).squeeze(1)
+        
+        return x
 
 
 class TransformerHead(nn.Module):
@@ -68,17 +152,15 @@ class VideoEncoder(nn.Module):
         if self.backbone == "mvit":
             # Load the pretrained MViT v2 S
             self.model = mvit_v2_s(weights="KINETICS400_V1" if pretrained else None)
-            # self.model.head is a Sequential. We find the final nn.Linear layer:
             in_features = None
+            # Replace classification head with Identity
+            # self.model.head is a Sequential, we find the final nn.Linear layer:
             for layer in reversed(self.model.head):
                 if isinstance(layer, nn.Linear):
                     in_features = layer.in_features
                     break
-            # If we didn't find a linear, default to a known dimension (e.g., 768)
             if in_features is None:
                 in_features = 768
-
-            # Replace classification head with Identity
             self.model.head = nn.Identity()
 
         elif self.backbone == "r3d":
@@ -90,12 +172,19 @@ class VideoEncoder(nn.Module):
             raise ValueError(f"Unsupported backbone: {self.backbone}")
 
         # Projection from backbone dimension -> output_dim
-        # (includes dropout to help regularize)
         self.proj = nn.Sequential(
             nn.Dropout(self.dropout_p),
             nn.Linear(in_features, output_dim),
             nn.ReLU(inplace=True),
             nn.Dropout(self.dropout_p),
+        )
+
+        # Aggregator: small transformer to combine multiple segments
+        self.aggregator = VideoAggregator(
+            embedding_dim=output_dim,
+            num_heads=4,
+            dropout=dropout,
+            use_positional_encoding=True
         )
 
         # Freeze partial layers
@@ -116,9 +205,35 @@ class VideoEncoder(nn.Module):
                 param.requires_grad = False
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Pass through backbone
-        x = self.model(x)        # shape: [batch_size, in_features]
-        x = self.proj(x)         # final projection layers
+        """
+        Expects shape: [B, N, T, H, W, C]
+            B= batch size,
+            N= # of segments or videos per study,
+            T= #frames,
+            H= height,
+            W= width,
+            C= channels=3
+        We'll reorder => [B,N,C,T,H,W], flatten => [B*N, C, T, H, W],
+        pass through the backbone, then aggregator => [B, output_dim].
+        """
+        # Reorder last dimension (C) to after N => [B, N, C, T, H, W]
+        x = x.permute(0, 1, 5, 2, 3, 4)  # Now shape: [B, N, 3, T, H, W]
+        B, N, C, T, H, W = x.shape
+        
+        # Flatten => [B*N, 3, T, H, W]
+        x = x.view(B*N, C, T, H, W)
+        
+        # Pass through backbone => [B*N, in_features]
+        x = self.model(x)
+        # Then projection => [B*N, output_dim]
+        x = self.proj(x)
+        
+        # Reshape => [B, N, output_dim]
+        x = x.view(B, N, self.output_dim)
+
+        # aggregator => [B, output_dim]
+        x = self.aggregator(x)
+
         return x
 
 

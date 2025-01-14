@@ -72,8 +72,14 @@ datapoint_loc_label: FileName
 frames: 16
 
 # Model parameters
-model_name: mvit_v2_s
+model_name: mvit
 pretrained: true
+
+# Multi-video parameters
+multi_video: true
+n_video: 4
+scorn: StudyInstanceUID
+aggregate_function: mean
 
 # Logging parameters
 project: deepcoro_clip
@@ -94,7 +100,7 @@ output_dir: outputs
 
 - **Override config values with CLI arguments**:
     ```bash
-    python scripts/train_model.py --config config/default_config.yaml --batch-size 16 --lr 0.0001
+    python scripts/train_model.py --config config/default_config.yaml --batch-size 16 --lr 0.0001 --n_video 4 --scorn StudyInstanceUID --aggregate_function mean
     ```
 
 ### Single GPU Training
@@ -244,4 +250,71 @@ nvidia-smi -l 1  # Monitor GPU usage every second
 - Training metrics are logged to Weights & Biases
 - Includes loss, learning rate, batch size
 - Access via WandB dashboard
-````
+## Parameters
+
+### Training Parameters
+- `epochs`: Number of training epochs (default: 50)
+- `batch_size`: Samples per batch (default: 12) 
+- `num_workers`: Subprocesses for data loading (default: 16)
+- `learning_rate`: Optimizer learning rate (default: 0.0001)
+- `temperature`: Contrastive loss temperature (default: 0.07)
+
+### Data Parameters
+- `data_filename`: CSV file containing data (default: `data/reports/reports_sampled_no_conclusion.csv`)
+- `root`: Root data directory (default: ".")
+- `target_label`: Target text column name (default: `Report`)
+- `datapoint_loc_label`: File paths column name (default: `FileName`)
+- `frames`: Frames to sample per video (default: 16)
+- `stride`: Frame sampling stride (default: 2)
+
+### Model Parameters
+- `model_name`: Video backbone model (default: `mvit`)
+- `pretrained`: Use pretrained model (default: `true`)
+
+### Checkpointing
+- `resume`: Resume from checkpoint (default: `false`)
+- `resume_checkpoint`: Path to checkpoint file for resuming training
+- `save_best`: Best model save criterion (default: `loss`)
+
+### Optimization Parameters
+- `optimizer`: Optimizer type (default: `RAdam`)
+- `weight_decay`: Optimizer weight decay (default: 0.000001)
+- `scheduler_type`: Learning rate scheduler (default: `step`)
+- `lr_step_period`: Learning rate step period (default: 15)
+- `factor`: Scheduler factor (default: 0.3)
+
+### Distributed Training
+- `gpu`: GPU index (default: 1)
+- `local_rank`: Local rank for distributed training (default: -1)
+
+### Logging Parameters
+- `project`: W&B project name (default: `deepCORO_CLIP`)
+- `entity`: W&B entity name (default: `mhi_ai`)
+- `tag`: W&B run tag (default: `DeepCORO_Clip_Sweep_Learnable_Temp_Full`)
+
+### Multi-Video Parameters
+- `multi_video`: Enable multiple videos per study (default: `true`)
+- `max_num_videos`: Maximum videos per study (default: 5)
+- `groupby_column`: Column for grouping videos by study (default: `StudyInstanceUID`)
+- `shuffle_videos`: Randomly sample videos within groups (default: `true`)
+- `seed`: Random seed for reproducibility (default: 42)
+
+### Additional Parameters
+- `output_dir`: Output directory (default: `outputs`)
+- `use_amp`: Use automatic mixed precision (default: `true`)
+- `device`: Training device (default: `cuda`)
+
+
+### Data Augmentation
+- `random_augment`: Enable random augmentations (default: `true`)
+- `resize`: Image resize dimension (default: 224)
+- `apply_mask`: Apply image masking (default: `false`)
+- `period`: Num of frames of sampling stride (default: 1)
+
+
+### Use Config Files
+
+- **Run with default config**:
+    ```bash
+    python scripts/train_model.py --config config/default_config.yaml
+    ```

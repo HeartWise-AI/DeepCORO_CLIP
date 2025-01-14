@@ -2,7 +2,7 @@ import os
 import pathlib
 import sys
 
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, Optional, Tuple, Dict
 
 import cv2
 import numpy as np
@@ -14,13 +14,12 @@ from torch.utils.data import Dataset
 from torchvision.transforms import v2
 from transformers import AutoTokenizer
 
-# Global variable for directory paths
 dir2 = os.path.abspath("/volume/DeepCORO_CLIP")
 dir1 = os.path.dirname(dir2)
 if dir1 not in sys.path:
     sys.path.append(dir1)
 
-from models.model import get_tokenizer
+from models.model import get_tokenizer, VideoEncoder  
 
 
 def load_video(
@@ -43,7 +42,6 @@ def load_video(
     Load and process a video with optional resizing, normalization, and augmentations.
     Returns tensor in format [F, H, W, C].
     """
-    # Force 16 frames for MViT backbone
     if backbone.lower() == "mvit":
         n_frames = 16
         stride = 1
@@ -67,43 +65,42 @@ def load_video(
 
     video = np.stack(frames, axis=0).astype(np.float32)
 
-    # Ensure video shape is [F, H, W, C]
     if video.ndim == 3:
-        video = np.expand_dims(video, axis=-1)  # [F,H,W] -> [F,H,W,C]
+        video = np.expand_dims(video, axis=-1)
     elif video.ndim != 4:
         raise ValueError(f"Invalid video shape after loading: {video.shape}")
 
-    # Convert to torch tensor [F,H,W,C]
     video = torch.from_numpy(video)
 
-    # Permute to [F,C,H,W]
+    # Permute to [F, C, H, W] if last dim is color channels
     if video.shape[-1] in [1, 3]:
         video = video.permute(0, 3, 1, 2)
 
-    # Resize spatial dimensions
+    # Resize
     if resize is not None:
         video = v2.Resize((resize, resize), antialias=True)(video)
 
     t, c, h, w = video.shape
 
-    # Frame sampling
+    # Force exactly n_frames or 16 frames for MViT
     if backbone.lower() == "mvit":
-        # Exactly 16 frames
         if t < 16:
             last_frame = video[-1:].repeat(16 - t, 1, 1, 1)
             video = torch.cat([video, last_frame], dim=0)
         elif t > 16:
             indices = torch.linspace(0, t - 1, 16).long()
             video = video[indices]
+        expected_frames = 16
     else:
-        # Keep original frame count to n_frames
         if t < n_frames:
             last_frame = video[-1:].repeat(n_frames - t, 1, 1, 1)
             video = torch.cat([video, last_frame], dim=0)
         elif t > n_frames:
             indices = torch.linspace(0, t - 1, n_frames).long()
             video = video[indices]
+        expected_frames = n_frames
 
+    # Optional normalization
     if normalize:
         if mean is None or std is None:
             raise ValueError("Mean and std must be provided for normalization.")
@@ -124,27 +121,27 @@ def load_video(
         except RuntimeError as e:
             print(f"Warning: Error applying transforms to video {video_path}: {str(e)}")
 
+    # Optional RandAugment
     if rand_augment:
         raug = [v2.RandAugment(magnitude=9, num_ops=2)]
         raug_composed = v2.Compose(raug)
         video = raug_composed(video)
 
-    # Final checks
+    # Final shape check
     t, c, h, w = video.shape
-    expected_frames = 16 if backbone.lower() == "mvit" else n_frames
     if t != expected_frames:
         raise ValueError(f"Expected {expected_frames} frames, got {t}")
     if h != resize or w != resize:
         raise ValueError(f"Expected spatial dimensions {resize}x{resize}, got {h}x{w}")
 
-    # Return [F,H,W,C]
+    # Return shape [F, H, W, C]
     video = video.permute(0, 2, 3, 1).contiguous()
     return video.numpy()
 
 
 class VideoDataset(torch.utils.data.Dataset):
     """
-    Dataset class for video-text pairs.
+    Single-video dataset class for video-text pairs.
     """
 
     def __init__(
@@ -173,7 +170,6 @@ class VideoDataset(torch.utils.data.Dataset):
         self.std = format_mean_std(std)
         self.normalize = normalize
 
-        # Extract additional parameters
         self.stride = kwargs.pop("stride", 1)
         if self.backbone.lower() == "mvit":
             self.num_frames = 16
@@ -191,6 +187,7 @@ class VideoDataset(torch.utils.data.Dataset):
         self.weighted_sampling = kwargs.pop("weighted_sampling", False)
         self.max_length = kwargs.pop("max_length", 250)
         self.clips = kwargs.pop("clips", 1)
+
         target_label = (
             [target_label]
             if target_label and not isinstance(target_label, list)
@@ -200,11 +197,9 @@ class VideoDataset(torch.utils.data.Dataset):
         self.target_transform = kwargs.pop("target_transform", None)
         self.external_test_location = kwargs.pop("external_test_location", None)
 
-        # Load data
         self.fnames, self.outcome, self.target_index = self.load_data(
             self.split, self.target_label
         )
-
 
         # Initialize tokenizer
         try:
@@ -214,18 +209,15 @@ class VideoDataset(torch.utils.data.Dataset):
             print(f"Error initializing tokenizer: {str(e)}")
             raise RuntimeError("Failed to initialize tokenizer") from e
 
-        # Validate videos if debug_mode
         if self.debug_mode:
             self.valid_indices = self._validate_all_videos()
         else:
             self.valid_indices = list(range(len(self.fnames)))
 
     def __len__(self):
-        # Return the number of valid indices
         return len(self.valid_indices)
 
     def load_data(self, split, target_label):
-        """Load data from CSV file and filter by split."""
         file_path = os.path.join(self.folder, self.filename)
         data = pd.read_csv(file_path, sep="α", engine="python")
 
@@ -280,13 +272,10 @@ class VideoDataset(torch.utils.data.Dataset):
         return fnames, outcome, target_index
 
     def _validate_all_videos(self):
-        """Pre-validate all videos to catch any issues early."""
         print("Validating all videos in dataset...")
         valid_indices = []
         self.failed_videos = []
 
-        # Note: Remove references to `orion.utils.loadvideo` since it's not defined here.
-        # We'll just do a minimal validation by trying to open the video.
         for idx, fname in enumerate(self.fnames):
             try:
                 cap = cv2.VideoCapture(fname)
@@ -326,14 +315,12 @@ class VideoDataset(torch.utils.data.Dataset):
                 backbone=self.backbone,
             )
 
-            # Ensure correct frame count for MViT
             if self.backbone.lower() == "mvit" and video.shape[0] != 16:
                 raise ValueError(f"Expected 16 frames for MViT, got {video.shape[0]}")
 
             encoded = None
             if self.target_label is not None and self.target_index is not None:
                 text = self.outcome[actual_idx]
-
                 if not isinstance(text, str):
                     text = str(text)
                 encoded = self.tokenizer(
@@ -344,19 +331,20 @@ class VideoDataset(torch.utils.data.Dataset):
                     return_tensors="pt",
                 )
                 encoded = {k: v.squeeze(0) for k, v in encoded.items()}
-                if hasattr(self, "device"):
-                    encoded = {k: v.to(self.device) for k, v in encoded.items()}
+                # If you want them on GPU, do it in the training loop, not here
             else:
                 print("No target label or target index")
                 encoded = None
+
             return video, encoded, video_fname
 
         except Exception as e:
-            # No removal of valid_indices, just raise error
             raise RuntimeError(f"Failed to load video {video_fname}: {str(e)}") from e
 
     def get_reports(self, video_paths: List[str]) -> List[str]:
-        """Get report texts for given video paths."""
+        """
+        Given a list of video file paths, return a list of text reports (strings).
+        """
         reports = []
         for path in video_paths:
             try:
@@ -369,14 +357,12 @@ class VideoDataset(torch.utils.data.Dataset):
 
     def get_all_reports(self):
         """
-        Return all reports (text outcomes) from the dataset as a list of strings.
+        Return all text outcomes from the dataset.
         """
         return [str(o) for o in self.outcome]
 
 
 class SimpleTextDataset(Dataset):
-    """Allow me to encode all reportsi n the valdiation dataset at once for validation metrics"""
-
     def __init__(self, texts, tokenizer):
         self.texts = texts
         self.tokenizer = tokenizer
@@ -393,14 +379,11 @@ class SimpleTextDataset(Dataset):
             max_length=512,
             return_tensors="pt",
         )
-        # Squeeze to remove batch dimension
         encoded = {k: v.squeeze(0) for k, v in encoded.items()}
         return encoded
 
 
 class StatsDataset(torch.utils.data.Dataset):
-    """Dataset class for calculating mean and std statistics without the Video base class."""
-
     def __init__(
         self,
         root,
@@ -453,7 +436,6 @@ class StatsDataset(torch.utils.data.Dataset):
                 fnames.append(file_name)
                 if target_index is not None:
                     outcome.append(row.iloc[target_index])
-
                 if self.max_samples and len(fnames) >= self.max_samples:
                     return fnames, outcome, target_index
 
@@ -480,7 +462,9 @@ class StatsDataset(torch.utils.data.Dataset):
 
 
 def stats_collate_fn(batch):
-    """Collate function for StatsDataset that stacks video tensors."""
+    """
+    Used for StatsDataset – collects videos into a single tensor for mean/std calc.
+    """
     valid_samples = [item for item in batch if item[0] is not None]
     if not valid_samples:
         raise RuntimeError("No valid samples in batch")
@@ -489,19 +473,26 @@ def stats_collate_fn(batch):
 
 
 def format_mean_std(input_value):
-    """Format mean/std values to proper list format."""
+    """
+    Helper to ensure mean/std are lists (e.g. [0.485, 0.456, 0.406])
+    """
     if isinstance(input_value, (int, float)):
         return [float(input_value)]
     return input_value
 
 
-def custom_collate_fn(
-    batch: List[Tuple[np.ndarray, Any, str]]
-) -> Tuple[torch.Tensor, dict, List[str]]:
-    """Custom collate function to handle video and text data."""
+def custom_collate_fn(batch):
+    """
+    Original single-video collate: 
+      returns raw video tensor => shape [B, C, F, H, W].
+      also returns text dict => input_ids, attention_mask, shape [B, seq_len]
+      plus paths => list of file paths
+    """
     videos, encoded_texts, paths = zip(*batch)
-
     videos = torch.stack([torch.from_numpy(v) for v in videos])
+    # videos shape => [B, F, H, W, C]
+    # reorder to => [B, C, F, H, W]
+    videos = videos.permute(0, 4, 1, 2, 3)
 
     if encoded_texts[0] is not None:
         combined_texts = {
@@ -512,3 +503,168 @@ def custom_collate_fn(
         combined_texts = None
 
     return videos, combined_texts, paths
+
+
+
+
+import random
+
+class MultiVideoDataset(Dataset):
+    """
+    Groups video paths by some 'study' key (like StudyInstanceUID).
+    Each item => up to N videos, each with exactly 16 frames (for MViT).
+    Returns shape => (N,16,H,W,3) as raw floats, plus text, plus study_id.
+
+    - If `shuffle_=True`, then if a study has more than N videos,
+      we randomly sample N of them (shuffle). Otherwise we take the
+      first N in the original order.
+    """
+
+    def __init__(
+        self,
+        root: str,
+        data_filename: str,
+        split: str,
+        target_label: Optional[str] = "Report",
+        datapoint_loc_label: str = "FileName",
+        groupby_column: str = "StudyInstanceUID",
+        max_num_videos: int = 4,
+        backbone: str = "mvit",  # forcibly for 16 frames
+        resize: int = 224,
+        mean=(0.485, 0.456, 0.406),
+        std=(0.229, 0.224, 0.225),
+        random_augment: bool = False,
+        shuffle_videos: bool = False,         
+        seed: Optional[int] = None,          
+    ):
+        super().__init__()
+        self.root = pathlib.Path(root)
+        self.filename = data_filename
+        self.split = split
+        self.datapoint_loc_label = datapoint_loc_label
+        self.groupby_column = groupby_column
+        self.max_num_videos = max_num_videos
+        self.backbone = backbone.lower()
+        self.resize = resize
+        self.mean = mean
+        self.std = std
+        self.random_augment = random_augment
+        self.shuffle_videos = shuffle_videos
+        if seed is not None:
+            random.seed(seed)  # so we can have reproducible sampling if desired
+
+        # We'll store the text in a dictionary: study_to_text[sid] => str
+        # We'll store the list of video paths: study_to_videos[sid] => [paths...]
+        self.study_to_videos: Dict[str, List[str]] = {}
+        self.study_to_text: Dict[str, str] = {}
+        
+        csv_path = self.root / self.filename
+        df = pd.read_csv(csv_path, sep="α", engine="python")
+        df_split = df[df["Split"].str.lower() == split.lower()].copy()
+
+        for i, row in df_split.iterrows():
+            sid = str(row[self.groupby_column])
+            fpath = row[self.datapoint_loc_label]
+            if not os.path.exists(fpath):
+                continue
+            if sid not in self.study_to_videos:
+                self.study_to_videos[sid] = []
+            self.study_to_videos[sid].append(fpath)
+
+            # store text in dictionary
+            if target_label in row:
+                self.study_to_text[sid] = str(row[target_label])
+            else:
+                self.study_to_text[sid] = "No Report"
+
+        self.study_ids = sorted(list(self.study_to_videos.keys()))
+        print(f"[MultiVideoDataset] Found {len(self.study_ids)} studies in split='{split}'")
+
+        # 3) Initialize tokenizer
+        self.tokenizer = get_tokenizer()
+
+    def __len__(self):
+        return len(self.study_ids)
+
+    def __getitem__(self, idx):
+        sid = self.study_ids[idx]
+        vid_paths = self.study_to_videos[sid]
+        text_report = self.study_to_text[sid]
+
+        # If there are more than max_num_videos paths, either slice them in order OR randomly sample
+        if len(vid_paths) > self.max_num_videos:
+            if self.shuffle_videos:
+                # random sample exactly max_num_videos
+                chosen_paths = random.sample(vid_paths, self.max_num_videos)
+            else:
+                # keep original order
+                chosen_paths = vid_paths[: self.max_num_videos]
+        else:
+            chosen_paths = vid_paths  # less or equal => use all
+
+        loaded = []
+        for vp in chosen_paths:
+            try:
+                arr = load_video(
+                    vp,
+                    n_frames=16,
+                    resize=self.resize,
+                    mean=self.mean,
+                    std=self.std,
+                    backbone=self.backbone,
+                )  # shape => (16,224,224,3)
+            except Exception as e:
+                print(f"Warning: {vp} load error: {e}")
+                arr = np.zeros((16, self.resize, self.resize, 3), dtype=np.float32)
+            loaded.append(arr)
+
+        # If fewer than max_num_videos => pad with zeros
+        while len(loaded) < self.max_num_videos:
+            arr = np.zeros((16, self.resize, self.resize, 3), dtype=np.float32)
+            loaded.append(arr)
+
+        # stack => (N,16,H,W,3)
+        multi_stack = np.stack(loaded, axis=0)
+
+        # tokenize text
+        encoded = self.tokenizer(
+            text_report,
+            padding="max_length",
+            truncation=True,
+            max_length=512,
+            return_tensors="pt",
+        )
+        encoded = {k: v.squeeze(0) for k, v in encoded.items()}
+        return multi_stack, encoded, sid
+
+    def get_reports(self, study_ids: List[str]) -> List[str]:
+        out = []
+        for sid in study_ids:
+            out.append(self.study_to_text.get(sid, ""))
+        return out
+
+    def get_all_reports(self):
+        return [self.study_to_text[sid] for sid in self.study_ids]
+    
+    def get_video_paths(self, sid: str) -> List[str]:
+        return self.study_to_videos.get(sid, [])
+
+def multi_video_collate_fn(batch):
+    """
+    Collate multi-video items:
+     - (multi_stack, text_dict, sid)
+    multi_stack shape => (N,16,H,W,3)
+    We'll stack => shape (B,N,16,H,W,3)
+    Also stack text => (B, seq_len)
+
+    Return => (video_tensor, text_dict, [sid,...])
+    """
+    multi_stacks, text_list, sid_list = zip(*batch)
+    # shape => (B,N,16,H,W,3)
+    video_tensor = torch.from_numpy(np.stack(multi_stacks, axis=0))  # => float32
+
+    input_ids = torch.stack([x["input_ids"] for x in text_list], dim=0)
+    attention_mask = torch.stack([x["attention_mask"] for x in text_list], dim=0)
+    text_dict = {"input_ids": input_ids, "attention_mask": attention_mask}
+
+    return video_tensor, text_dict, list(sid_list)

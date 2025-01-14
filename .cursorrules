@@ -1,0 +1,104 @@
+DeepCORO_CLIP/
+│
+├── .cursorrules         <-- Cursor tool configuration and project structure
+├── .gitignore          <-- Git ignore patterns
+├── .pre-commit-config.yaml <-- Pre-commit hook configurations
+├── README.md           <-- Project documentation and setup instructions
+├── pyproject.toml      <-- Python project metadata and dependencies
+├── uv.lock             <-- Lock file for dependencies
+│
+├── config/
+│   ├── default_config.yaml    <-- Default model and training configurations
+│   ├── sweep_config.yaml      <-- Hyperparameter sweep configurations
+│   └── runner.sh             <-- Training runner script
+│
+├── models/
+│   └── model.py              <-- Core model architecture definitions
+│
+├── scripts/
+│   └── train_model.py        <-- Training script for the model
+│
+├── utils/
+│   ├── data_processing/
+│   │   ├── __init__.py
+│   │   └── video.py         <-- Video processing utilities
+│   └── logging.py           <-- Logging utilities
+│
+├── data/
+│   └── reports/
+│       └── reports_sampled_no_conclusion_96.csv  <-- Dataset files
+│
+├── outputs/
+│   └── deepCORO_CLIP/       <-- Model outputs and checkpoints
+│
+├── notebooks/
+│   ├── run_sweep.ipynb      <-- Hyperparameter sweep notebook
+│   ├── generate_dataset.ipynb <-- Dataset generation and processing
+│   └── Plot_result_example.ipynb <-- Results visualization
+│
+├── dist/                    <-- Distribution builds
+│   └── .gitignore
+│
+└── wandb/                   <-- Weights & Biases logging directory
+
+# Ignore patterns below:
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+.env
+.venv
+env/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Project specific
+wandb/
+outputs/
+*.ipynb_checkpoints/
+lightning_logs/
+
+# Data and models
+*.pkl
+*.pth
+*.ckpt
+*.pt
+
+# Logs and databases
+*.log
+*.sqlite3
+
+# OS specific
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db 

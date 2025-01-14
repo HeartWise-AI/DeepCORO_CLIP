@@ -93,7 +93,6 @@ class WandbLogger:
         self,
         epoch: int,
         train_loss: float,
-        val_loss: Optional[float] = None,
         learning_rate: Optional[float] = None,
         recall_metrics: Optional[Dict[str, float]] = None,
         mrr_metrics: Optional[Dict[str, float]] = None,

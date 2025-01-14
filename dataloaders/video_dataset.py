@@ -16,7 +16,7 @@ from utils.video import load_video, format_mean_std
 
 class VideoDataset(torch.utils.data.Dataset):
     """
-    Dataset class for video-text pairs. Incorporates logic from the old Video class directly.
+    Single-video dataset class for video-text pairs.
     """
 
     def __init__(
@@ -45,7 +45,6 @@ class VideoDataset(torch.utils.data.Dataset):
         self.std = format_mean_std(std)
         self.normalize = normalize
 
-        # Extract additional parameters
         self.stride = kwargs.pop("stride", 1)
         if self.backbone.lower() == "mvit":
             self.num_frames = 16
@@ -63,6 +62,7 @@ class VideoDataset(torch.utils.data.Dataset):
         self.weighted_sampling = kwargs.pop("weighted_sampling", False)
         self.max_length = kwargs.pop("max_length", 250)
         self.clips = kwargs.pop("clips", 1)
+
         target_label = (
             [target_label]
             if target_label and not isinstance(target_label, list)
@@ -72,24 +72,9 @@ class VideoDataset(torch.utils.data.Dataset):
         self.target_transform = kwargs.pop("target_transform", None)
         self.external_test_location = kwargs.pop("external_test_location", None)
 
-        # Load data
         self.fnames, self.outcome, self.target_index = self.load_data(
             self.split, self.target_label
         )
-
-        # Weighted sampling logic
-        if self.weighted_sampling and self.target_label and self.target_index is not None:
-            labels = np.array(
-                [self.outcome[ind][self.target_index] for ind in range(len(self.outcome))],
-                dtype=int,
-            )
-            weights = 1 - (np.bincount(labels) / len(labels))
-            self.weight_list = np.zeros(len(labels))
-            for label_val in range(len(weights)):
-                weight = weights[label_val]
-                self.weight_list[np.where(labels == label_val)] = weight
-        else:
-            self.weight_list = None
 
         # Initialize tokenizer
         try:
@@ -99,14 +84,15 @@ class VideoDataset(torch.utils.data.Dataset):
             print(f"Error initializing tokenizer: {str(e)}")
             raise RuntimeError("Failed to initialize tokenizer") from e
 
-        # Validate videos if debug_mode
         if self.debug_mode:
             self.valid_indices = self._validate_all_videos()
         else:
             self.valid_indices = list(range(len(self.fnames)))
 
+    def __len__(self):
+        return len(self.valid_indices)
+
     def load_data(self, split, target_label):
-        """Load data from CSV file and filter by split."""
         file_path = os.path.join(self.folder, self.filename)
         data = pd.read_csv(file_path, sep="α", engine="python")
 
@@ -161,13 +147,10 @@ class VideoDataset(torch.utils.data.Dataset):
         return fnames, outcome, target_index
 
     def _validate_all_videos(self):
-        """Pre-validate all videos to catch any issues early."""
         print("Validating all videos in dataset...")
         valid_indices = []
         self.failed_videos = []
 
-        # Note: Remove references to `orion.utils.loadvideo` since it's not defined here.
-        # We'll just do a minimal validation by trying to open the video.
         for idx, fname in enumerate(self.fnames):
             try:
                 cap = cv2.VideoCapture(fname)
@@ -207,7 +190,6 @@ class VideoDataset(torch.utils.data.Dataset):
                 backbone=self.backbone,
             )
 
-            # Ensure correct frame count for MViT
             if self.backbone.lower() == "mvit" and video.shape[0] != 16:
                 raise ValueError(f"Expected 16 frames for MViT, got {video.shape[0]}")
 
@@ -216,41 +198,28 @@ class VideoDataset(torch.utils.data.Dataset):
                 text = self.outcome[actual_idx]
                 if not isinstance(text, str):
                     text = str(text)
-                try:
-                    encoded = self.tokenizer(
-                        text,
-                        padding="max_length",
-                        max_length=512,
-                        truncation=True,
-                        return_tensors="pt",
-                    )
-                    encoded = {k: v.squeeze(0) for k, v in encoded.items()}
-                    if hasattr(self, "device"):
-                        encoded = {k: v.to(self.device) for k, v in encoded.items()}
-                except Exception as e:
-                    raise RuntimeError(f"Failed to tokenize text for {video_fname}: {str(e)}")
+                encoded = self.tokenizer(
+                    text,
+                    padding="max_length",
+                    max_length=512,
+                    truncation=True,
+                    return_tensors="pt",
+                )
+                encoded = {k: v.squeeze(0) for k, v in encoded.items()}
+                # If you want them on GPU, do it in the training loop, not here
+            else:
+                print("No target label or target index")
+                encoded = None
 
             return video, encoded, video_fname
 
         except Exception as e:
-            self.remove_invalid_video(index)
             raise RuntimeError(f"Failed to load video {video_fname}: {str(e)}") from e
 
-    def remove_invalid_video(self, index: int):
-        """Remove a video from valid_indices if it's found invalid."""
-        if index in self.valid_indices:
-            invalid_path = self.fnames[self.valid_indices[index]]
-            self.valid_indices.remove(index)
-            print(
-                f"Removed invalid video at index {index} ({invalid_path}). "
-                f"Remaining valid videos: {len(self.valid_indices)}"
-            )
-
-    def __len__(self):
-        return len(self.valid_indices)
-
     def get_reports(self, video_paths: List[str]) -> List[str]:
-        """Get report texts for given video paths."""
+        """
+        Given a list of video file paths, return a list of text reports (strings).
+        """
         reports = []
         for path in video_paths:
             try:
@@ -263,7 +232,7 @@ class VideoDataset(torch.utils.data.Dataset):
 
     def get_all_reports(self):
         """
-        Return all reports (text outcomes) from the dataset as a list of strings.
+        Return all text outcomes from the dataset.
         """
         return [str(o) for o in self.outcome]
     

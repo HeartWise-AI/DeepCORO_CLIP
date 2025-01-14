@@ -17,11 +17,10 @@ metric:
   goal: minimize
 
 parameters:
-  learning_rate:
+  lr:
     distribution: log_uniform_values
     min: 1e-6
     max: 1e-4
-
   optimizer:
     values: ["AdamW", "RAdam"]
   scheduler_type:

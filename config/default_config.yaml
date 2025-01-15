@@ -30,7 +30,7 @@ lr_step_period: 15    # Step the LR every 15 epochs instead of 110
 factor: 0.3
 
 # Distributed training
-gpu: 1
+gpu: 0
 local_rank: -1
 
 # Logging parameters
@@ -48,6 +48,9 @@ output_dir: outputs
 use_amp: true
 device: cuda
 period: 1
+
+video_freeze_ratio: 0.8
+text_freeze_ratio: 0.5
 
 # Data augmentation (enable random augmentations to reduce overfitting)
 random_augment: true

@@ -9,7 +9,7 @@ metric:
 parameters:
   learning_rate:
     distribution: log_uniform_values
-    min: 1e-6
+    min: 1e-5
     max: 1e-4
 
   optimizer:
@@ -28,7 +28,7 @@ parameters:
     values: [20, 30, 40]
 
   batch_size:
-    values: [8, 10, 12]
+    values: [10, 12]
 
   temperature:
     distribution: uniform
@@ -45,10 +45,10 @@ parameters:
     max: 0.5
 
   video_freeze_ratio:
-    values: [0.0, 0.5, 1.0]
+    values: [0.0, 0.5, 0.8, 1.0]
 
   text_freeze_ratio:
-    values: [0.0, 0.5, 1.0]
+    values: [0.0, 0.5, 0.8, 1.0]
 
   patience:
     values: [3, 5, 8, 10]

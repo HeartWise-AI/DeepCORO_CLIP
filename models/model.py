@@ -1,3 +1,5 @@
+import random
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -154,7 +156,6 @@ class VideoEncoder(nn.Module):
             self.model = mvit_v2_s(weights="KINETICS400_V1" if pretrained else None)
             in_features = None
             # Replace classification head with Identity
-            # self.model.head is a Sequential, we find the final nn.Linear layer:
             for layer in reversed(self.model.head):
                 if isinstance(layer, nn.Linear):
                     in_features = layer.in_features
@@ -228,7 +229,7 @@ class VideoEncoder(nn.Module):
         # Then projection => [B*N, output_dim]
         x = self.proj(x)
         
-        # Reshape => [B, N, output_dim]
+        # Reshape => [B, N, self.output_dim]
         x = x.view(B, N, self.output_dim)
 
         # aggregator => [B, output_dim]

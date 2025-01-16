@@ -6,8 +6,8 @@ command:
   - "scripts/train_model_multi_gpu.py"
   - ${args}
 
-name: "robert_dataset_subset_10k"
-project: "dev_deep_coro_clip"
+name: "dev-deepcoro_clip"
+project: "dev-deepcoro_clip"
 entity: "jacques-delfrate"
 
 method: bayes

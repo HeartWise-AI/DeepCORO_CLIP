@@ -63,7 +63,7 @@ class HeartWiseParser:
         # System parameters
         system_group = parser.add_argument_group('System')
         system_group.add_argument('--output_dir', type=str)
-        system_group.add_argument('--seed', type=int)
+        system_group.add_argument('--seed', type=parse_optional_int)
         system_group.add_argument('--use_amp', type=str2bool)
         system_group.add_argument('--device', type=str)
         system_group.add_argument('--period', type=int)

@@ -10,9 +10,11 @@ import torch
 from torch.utils.data import DataLoader
 
 from utils.ddp import DS
+from utils.seed import seed_worker
 from utils.config import HeartWiseConfig
 from models.text_encoder import get_tokenizer
 from utils.video import load_video, format_mean_std
+
 
 class VideoDataset(torch.utils.data.Dataset):
     """
@@ -308,4 +310,5 @@ def get_distributed_video_dataloader(
         pin_memory=True,
         drop_last=True,
         collate_fn=custom_collate_fn,
+        worker_init_fn=seed_worker,
     )

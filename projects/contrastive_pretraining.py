@@ -199,15 +199,21 @@ def load_train_objs(
     scaler: GradScaler = GradScaler() if config.use_amp else None
 
     if config.is_ref_device:
+        wandb.config.update(
+            {
+                "train_dataset_size": len(train_loader),
+                "val_dataset_size": len(val_loader),
+            },
+            allow_val_change=True,
+        )        
         print("\n=== Dataset Information ===")
-        print(f"Training:   {len(train_loader):,} videos")
-        print(f"Validation: {len(val_loader):,} videos")
-        print(f"Total:      {len(train_loader) + len(val_loader):,} videos")
+        print(f"Training:   {len(train_loader):,} batches per GPU")
+        print(f"Validation: {len(val_loader):,} batches per GPU")
+        print(f"Total:      {(len(train_loader) + len(val_loader)):,} batches per GPU")
         print(f"\nBatch Size: {config.batch_size}")
-        print(f"Training Batches: {len(train_loader) // config.batch_size:,}")
-        print(
-            f"Validation Batches: {len(val_loader) // config.batch_size + (1 if len(val_loader) % config.batch_size else 0):,}"
-        )
+        print(f"Training: {len(train_loader) * config.batch_size:,} videos per GPU")
+        print(f"Validation: {len(val_loader) * config.batch_size:,} videos per GPU")
+        print(f"Total: {(len(train_loader) + len(val_loader)) * config.batch_size:,} videos per GPU")
         print("===========================\n")
 
     return {
@@ -232,11 +238,27 @@ class ContrastivePretraining:
     ):
         self.config: HeartWiseConfig = config
     
+    def _save_texts_csv(self, output_dir, texts):
+        import csv
+        csv_path = os.path.join(output_dir, "val_texts.csv")
+        with open(csv_path, mode="w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Index", "Text"])
+            for idx, txt in enumerate(texts):
+                writer.writerow([idx, txt])
+        print(f"Saved {len(texts)} val texts to {csv_path}")    
+    
     def run(self):
         training_setup: dict[str, Any] = load_train_objs(
             config=self.config
         )
-                
+
+        if self.config.is_ref_device:
+            self._save_texts_csv(
+                output_dir=training_setup["full_output_path"],
+                texts=training_setup["val_loader"].dataset.get_all_reports(),
+            )
+
         runner: VideoContrastiveLearningRunner = RunnerRegistry.get(
             name="video_contrastive_learning"
         )(

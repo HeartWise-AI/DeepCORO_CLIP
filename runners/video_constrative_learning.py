@@ -211,7 +211,7 @@ class VideoContrastiveLearningRunner:
                 continue
                 
             step_inputs, paths_or_sids = self._preprocess_inputs(batch)
-            
+
             # If not multi-video, add a singleton dimension to the video tensor 
             if not self.config.multi_video:
                 step_inputs['videos'] = step_inputs['videos'].unsqueeze(1) # VideoEncoder expects (B,Nvideos,T,H,W,3)
@@ -227,8 +227,9 @@ class VideoContrastiveLearningRunner:
                     # get the *list* of underlying video paths
                     vid_list = dataloader.dataset.get_video_paths(sid)
                     if len(vid_list) > 0:
-                        # e.g. store just the *first* path
                         all_paths.append(vid_list[0])
+                    else:
+                        all_paths.append(str(sid))
             else:
                 all_paths.extend(paths_or_sids)
                 
@@ -252,14 +253,13 @@ class VideoContrastiveLearningRunner:
         epoch_metrics = {
             k: v / batch_idx for k, v in epoch_metrics.items()
         }
-
+        
         # Process embeddings for recall computation
         all_video_embeddings = torch.cat(all_video_embeddings, dim=0).to(self.device)
         all_text_embeddings = torch.cat(all_text_embeddings, dim=0).to(self.device)
-        
-        # Get unique texts and create mapping
-        unique_texts = list(dict.fromkeys(all_ground_truth_reports))
-        text_to_idx = {text: idx for idx, text in enumerate(unique_texts)}
+                
+        # Get texts and create mapping
+        text_to_idx = {text: idx for idx, text in enumerate(all_ground_truth_reports)}
         
         # Create ground truth indices - map each video to index of its text
         ground_truth_indices = torch.tensor([
@@ -268,7 +268,7 @@ class VideoContrastiveLearningRunner:
 
         # Get embeddings for unique texts only
         unique_text_embeddings = []
-        for text in unique_texts:
+        for text in all_ground_truth_reports:
             # Find first occurrence of this text
             idx = all_ground_truth_reports.index(text)
             unique_text_embeddings.append(all_text_embeddings[idx])
@@ -283,13 +283,13 @@ class VideoContrastiveLearningRunner:
             all_video_embeddings_normalized, 
             unique_text_embeddings_normalized.T
         )
-        
+
         # After computing similarity matrix and before computing metrics
         if mode == "val" and self.config.is_ref_device:
             log_best_worst_retrievals(
                 similarity_matrix=similarity_matrix,
                 all_paths=all_paths,
-                unique_texts=unique_texts,
+                unique_texts=all_ground_truth_reports,
                 ground_truth_indices=ground_truth_indices,
                 epoch=epoch
             )

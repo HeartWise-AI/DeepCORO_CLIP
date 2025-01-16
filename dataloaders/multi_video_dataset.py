@@ -10,6 +10,7 @@ from typing import Dict, List, Optional
 from torch.utils.data import Dataset, DataLoader
 
 from utils.ddp import DS
+from utils.seed import seed_worker
 from utils.video import load_video
 from utils.config import HeartWiseConfig
 from models.text_encoder import get_tokenizer
@@ -56,12 +57,17 @@ class MultiVideoDataset(Dataset):
         self.random_augment = random_augment
         self.shuffle_videos = shuffle_videos
         self.seed = seed
-        
-        print(f"[MultiVideoDataset] shuffle_videos={shuffle_videos}")
+        print(f"[MultiVideoDataset] resize={self.resize}")
+        print(f"[MultiVideoDataset] mean={self.mean}")
+        print(f"[MultiVideoDataset] std={self.std}")
+        print(f"[MultiVideoDataset] shuffle_videos={self.shuffle_videos}")
+        print(f"[MultiVideoDataset] seed={self.seed}")
 
         if self.seed is not None:
             random.seed(self.seed)
             print(f"[MultiVideoDataset] seed={self.seed} for random video sampling")
+        else:
+            print(f"[MultiVideoDataset] no seed for random video sampling")
 
         # We'll store the text in a dictionary: study_to_text[sid] => str
         # We'll store the list of video paths: study_to_videos[sid] => [paths...]
@@ -71,11 +77,12 @@ class MultiVideoDataset(Dataset):
         csv_path = self.root / self.filename
         df = pd.read_csv(csv_path, sep="α", engine="python")
         df_split = df[df["Split"].str.lower() == split.lower()].copy()
-
+        missing_studies = 0
         for _, row in df_split.iterrows():
             sid = str(row[self.groupby_column])
             fpath = row[self.datapoint_loc_label]
             if not os.path.exists(fpath):
+                missing_studies += 1
                 continue
             self.study_to_videos[sid].append(fpath)
 
@@ -84,7 +91,8 @@ class MultiVideoDataset(Dataset):
 
         self.study_ids = sorted(list(self.study_to_videos.keys()))
         print(f"[MultiVideoDataset] Found {len(self.study_ids)} studies in split='{split}'")
-
+        print(f"[MultiVideoDataset] Missing {missing_studies} studies in split='{split}'")
+        
         # 3) Initialize tokenizer
         self.tokenizer = get_tokenizer()
 
@@ -222,4 +230,5 @@ def get_distributed_multi_video_dataloader(
         pin_memory=True,
         drop_last=True,
         collate_fn=multi_video_collate_fn,
+        worker_init_fn=seed_worker,
     )

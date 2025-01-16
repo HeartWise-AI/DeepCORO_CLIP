@@ -5,6 +5,7 @@ import pathlib
 import pandas as pd
 from torch.utils.data import DataLoader
 
+from utils.seed import seed_worker
 from utils.video import load_video
 from utils.config import HeartWiseConfig
 
@@ -117,5 +118,6 @@ def get_stats_dataloader(config: HeartWiseConfig):
         num_workers=config.num_workers,
         shuffle=False,
         collate_fn=stats_collate_fn,
+        worker_init_fn=seed_worker,
     )    
     

@@ -8,11 +8,11 @@ import wandb
 import torch
 from pprint import pprint
 
+from utils.seed import set_seed
 from utils.parser import HeartWiseParser
 from utils.config import HeartWiseConfig
 from utils.registry import ProjectRegistry
 from utils.ddp import ddp_setup, ddp_cleanup
-
 from projects import ContrastivePretraining
 
 # Add project root to path
@@ -25,6 +25,10 @@ def load_yaml_config(file_path):
         return yaml.safe_load(file)
 
 def run_contrastive_pretraining(config: HeartWiseConfig):
+    
+    # Set seed for reproducibility
+    set_seed(config.seed)
+    
     # Initialize process group with explicit device ID and world size
     ddp_setup(
         gpu_id=config.gpu, 

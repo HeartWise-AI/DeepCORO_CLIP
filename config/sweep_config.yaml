@@ -19,7 +19,7 @@ metric:
 parameters:
   lr:
     distribution: log_uniform_values
-    min: 1e-6
+    min: 1e-5
     max: 1e-4
   optimizer:
     values: ["AdamW", "RAdam"]
@@ -30,7 +30,8 @@ parameters:
   factor:
     values: [0.1, 0.3, 0.5]
   batch_size:
-    values: [8, 14, 16]
+    values: [10, 12]
+
   temperature:
     min: 0.05
     max: 0.15
@@ -40,7 +41,8 @@ parameters:
     min: 0.0
     max: 0.5    
   video_freeze_ratio:
-    values: [0.0, 0.5, 1.0]    
+    values: [0.0, 0.5, 0.8, 1.0]
+
   text_freeze_ratio:
     values: [0.0, 0.5, 1.0]
   epochs:

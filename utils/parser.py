@@ -1,9 +1,8 @@
 import os
 import argparse
-from utils.config import HeartWiseConfig
+from utils.config import HeartWiseConfig, BaseConfig, SweepConfig
 from utils.parser_typing import (
     str2bool, 
-    parse_dict, 
     parse_list, 
     parse_optional_int,
     parse_optional_str
@@ -21,6 +20,10 @@ class HeartWiseParser:
     def parse_config() -> HeartWiseConfig:
         """Parse command line arguments and load config file."""
         parser = argparse.ArgumentParser(description="Train DeepCORO_CLIP model")
+
+        # base config
+        base_group = parser.add_argument_group('Base')
+        base_group.add_argument('--base_config', type=str, required=True)
 
         # Training parameters
         train_group = parser.add_argument_group('Training')
@@ -71,7 +74,6 @@ class HeartWiseParser:
         # Loss and metrics parameters
         metrics_group = parser.add_argument_group('Loss and Metrics')
         metrics_group.add_argument('--loss_name', type=str)
-        metrics_group.add_argument('--metrics_control', type=parse_dict)
         metrics_group.add_argument('--recall_k', type=parse_list)
         metrics_group.add_argument('--ndcg_k', type=parse_list)
 
@@ -96,10 +98,21 @@ class HeartWiseParser:
         sweep_group.add_argument('--entity', type=str)
 
         args = parser.parse_args()
-        
-        # Load config
-        config = HeartWiseConfig.from_args(args)
 
+        # Load base config from yaml
+        base_config: BaseConfig = BaseConfig.from_yaml(args.base_config)
+        print(f"Base config: {base_config}")
+        # Create sweep config from args
+        sweep_config: SweepConfig = SweepConfig.from_args(args)
+        print(f"Sweep config: {sweep_config}")
+        
+        # Create HeartWiseConfig from both configs
+        config: HeartWiseConfig = HeartWiseConfig.from_config(
+            base_config, 
+            sweep_config
+        )
+        print(f"HeartWise config: {config}")
+        
         # Set GPU info
         HeartWiseParser.set_gpu_info(config)
         

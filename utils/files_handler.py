@@ -1,5 +1,12 @@
 import os
-import time
+import yaml
+from typing import Dict, Any
+
+def load_yaml(config_path: str) -> Dict[str, Any]:
+    """Load configuration from YAML file."""
+    with open(config_path) as f:
+        config = yaml.safe_load(f)
+    return config
 
 def generate_output_dir_name(args, run_id):
     """

@@ -418,6 +418,24 @@ class WandbLogger:
         if self.mode != "disabled":
             wandb.finish()
 
+def log_gradient_norms(model, wandb_run=None, prefix=""):
+    """
+    Logs the L2 norm of gradients across the model's parameters.
+    You can adjust to log per-layer or per-parameter if needed.
+    """
+    total_norm = 0.0
+    param_count = 0
+    for name, p in model.named_parameters():
+        if p.grad is not None:
+            param_norm = p.grad.data.norm(2)  # L2 norm
+            total_norm += param_norm.item() ** 2
+            param_count += 1
+    
+    total_norm = total_norm**0.5
+    if wandb_run:
+        wandb_run.log({f"{prefix}grad_norm": total_norm})
+    else:
+        print(f"{prefix}grad_norm={total_norm:.4f}")
 
 def create_logger(args):
     """

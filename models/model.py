@@ -10,7 +10,6 @@ from torchvision.models.video import (
 )
 from transformers import AutoModel, AutoTokenizer
 
-
 def get_tokenizer(model_name="microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract-fulltext"):
     """Get the tokenizer with proper configuration."""
     return AutoTokenizer.from_pretrained(
@@ -22,88 +21,129 @@ def get_tokenizer(model_name="microsoft/BiomedNLP-PubMedBERT-base-uncased-abstra
     )
 
 
-class VideoAggregator(nn.Module):
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class TransformerBlock(nn.Module):
     """
-    Learnable aggregator for combining multiple video embeddings.
-    Uses a transformer-based approach with self-attention to learn
-    relationships between different video segments.
-    
-    Input: [batch_size, num_segments, embedding_dim]
-    Output: [batch_size, embedding_dim]
+    A single Transformer-style block with:
+      - LayerNorm -> Multihead Attn -> Dropout -> Residual
+      - LayerNorm -> MLP -> Dropout -> Residual
+    """
+    def __init__(self, embedding_dim, num_heads, dropout):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(embedding_dim)
+        self.attn = nn.MultiheadAttention(
+            embed_dim=embedding_dim,
+            num_heads=num_heads,
+            dropout=dropout,
+            batch_first=True,
+        )
+        self.dropout1 = nn.Dropout(dropout)
+
+        self.norm2 = nn.LayerNorm(embedding_dim)
+        self.mlp = nn.Sequential(
+            nn.Linear(embedding_dim, embedding_dim * 4),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(embedding_dim * 4, embedding_dim),
+        )
+        self.dropout2 = nn.Dropout(dropout)
+
+    def forward(self, x):
+        # Self-Attention
+        residual = x
+        x = self.norm1(x)
+        attn_out, _ = self.attn(x, x, x)  # shape: [B, N, D]
+        x = residual + self.dropout1(attn_out)
+
+        # MLP
+        residual = x
+        x = self.norm2(x)
+        x = self.mlp(x)
+        x = residual + self.dropout2(x)
+        return x
+
+
+class EnhancedVideoAggregator(nn.Module):
+    """
+    A multi-layer Transformer-based aggregator that:
+      1. Optionally applies a learnable positional encoding.
+      2. Passes tokens through several Transformer blocks.
+      3. Uses a learnable query vector to attend over all segments.
+
+    Input:
+      - x: [B, N, D], where B is batch size, N is # of segments, D is embedding dimension.
+    Output:
+      - [B, D]: aggregated embedding per sample in the batch.
     """
     def __init__(
         self,
         embedding_dim: int,
         num_heads: int = 4,
         dropout: float = 0.1,
-        use_positional_encoding: bool = True
+        use_positional_encoding: bool = True,
+        aggregator_depth: int = 2,
+        max_segments: int = 512
     ):
         super().__init__()
         self.embedding_dim = embedding_dim
         self.use_positional_encoding = use_positional_encoding
-        
-        # Positional encoding for sequence awareness
-        if use_positional_encoding:
+        self.aggregator_depth = aggregator_depth
+
+        # Optional learnable positional encoding
+        if self.use_positional_encoding:
             self.pos_encoding = nn.Parameter(
-                torch.zeros(1, 512, embedding_dim)  # Max sequence length of 512
+                torch.zeros(1, max_segments, embedding_dim)  # up to max_segments
             )
             nn.init.trunc_normal_(self.pos_encoding, std=0.02)
-        
-        # Multi-head self-attention layer
-        self.self_attn = nn.MultiheadAttention(
-            embed_dim=embedding_dim,
-            num_heads=num_heads,
-            dropout=dropout,
-            batch_first=True
-        )
-        
-        # MLP for final transformation
-        self.mlp = nn.Sequential(
-            nn.Linear(embedding_dim, embedding_dim * 2),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(embedding_dim * 2, embedding_dim)
-        )
-        
-        # Layer norms
-        self.norm1 = nn.LayerNorm(embedding_dim)
-        self.norm2 = nn.LayerNorm(embedding_dim)
-        
-        # Dropout
-        self.dropout = nn.Dropout(dropout)
+        else:
+            self.pos_encoding = None
+
+        # Stacked Transformer blocks
+        self.blocks = nn.ModuleList([
+            TransformerBlock(embedding_dim, num_heads, dropout)
+            for _ in range(aggregator_depth)
+        ])
+
+        # Final LayerNorm
+        self.final_ln = nn.LayerNorm(embedding_dim)
+
+        # Learnable query for segment attention
+        self.attn_query = nn.Parameter(torch.randn(1, 1, embedding_dim))
+        nn.init.normal_(self.attn_query, std=0.02)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Args:
-            x: Video embeddings [batch_size, num_segments, embedding_dim]
-        Returns:
-            Aggregated embedding [batch_size, embedding_dim]
+        x: [B, N, D]
+        Return: [B, D] aggregated representation.
         """
         B, N, D = x.shape
-        
-        # Add positional encoding if enabled
-        if self.use_positional_encoding:
-            x = x + self.pos_encoding[:, :N, :]
-        
-        # Self-attention block
-        residual = x
-        x = self.norm1(x)
-        x, _ = self.self_attn(x, x, x)
-        x = self.dropout(x)
-        x = residual + x
-        
-        # MLP block
-        residual = x
-        x = self.norm2(x)
-        x = self.mlp(x)
-        x = residual + x
-        
-        # Aggregate across segments using a learned weighting (softmax).
-        attention_weights = F.softmax(x.mean(dim=-1), dim=-1)  # shape: [B, N]
-        # Weighted sum => shape: [B, D]
-        x = torch.bmm(attention_weights.unsqueeze(1), x).squeeze(1)
-        
-        return x
+
+        # Apply positional encoding if enabled
+        if self.pos_encoding is not None:
+            # Add the positional embeddings for the first N positions
+            x = x + self.pos_encoding[:, :N, :]  # shape: [1, N, D] broadcast
+
+        # Pass through each Transformer block
+        for block in self.blocks:
+            x = block(x)
+
+        # Final LayerNorm
+        x = self.final_ln(x)
+
+        # Learnable query-based attention
+        # attn_query: [1, 1, D] => expand to [B, 1, D]
+        query = self.attn_query.expand(B, -1, -1)         # shape: [B, 1, D]
+        # Dot-product => [B, 1, N]
+        attn_scores = torch.matmul(query, x.transpose(1, 2))
+        # Normalize to get attention weights
+        attn_weights = F.softmax(attn_scores, dim=-1)     # shape: [B, 1, N]
+
+        # Weighted sum of segments => [B, 1, D] => [B, D]
+        out = torch.bmm(attn_weights, x).squeeze(1)       # shape: [B, D]
+        return out
 
 
 class TransformerHead(nn.Module):
@@ -125,12 +165,7 @@ class TransformerHead(nn.Module):
 class VideoEncoder(nn.Module):
     """
     Video encoder with optional dropout & partial-freeze logic.
-
-    - `freeze_ratio` ∈ [0..1] => fraction of backbone layers to keep frozen.
-      Example:
-        freeze_ratio=1.0 => unfreeze everything,
-        freeze_ratio=0.0 => freeze all,
-        freeze_ratio=0.8 => freeze bottom 80% of parameters, unfreeze top 20%.
+    - More standard: uses aggregator => EnhancedVideoAggregator (multi-layer).
     """
 
     def __init__(
@@ -141,7 +176,9 @@ class VideoEncoder(nn.Module):
         pretrained=True,
         output_dim=512,
         dropout=0.2,
+        num_heads=4,
         freeze_ratio=0.8,
+        aggregator_depth=2,        # NEW: how many layers in aggregator
     ):
         super().__init__()
         self.backbone = backbone
@@ -151,6 +188,7 @@ class VideoEncoder(nn.Module):
         self.dropout_p = dropout
         self.freeze_ratio = freeze_ratio
 
+        # 1) Build backbone
         if self.backbone == "mvit":
             # Load the pretrained MViT v2 S
             self.model = mvit_v2_s(weights="KINETICS400_V1" if pretrained else None)
@@ -168,34 +206,30 @@ class VideoEncoder(nn.Module):
             self.model = r3d_18(pretrained=pretrained)
             in_features = self.model.fc.in_features
             self.model.fc = nn.Identity()
-
         else:
             raise ValueError(f"Unsupported backbone: {self.backbone}")
 
-        # Projection from backbone dimension -> output_dim
+        # 2) Projection (use GELU instead of ReLU)
         self.proj = nn.Sequential(
             nn.Dropout(self.dropout_p),
             nn.Linear(in_features, output_dim),
-            nn.ReLU(inplace=True),
+            nn.GELU(),
             nn.Dropout(self.dropout_p),
         )
 
-        # Aggregator: small transformer to combine multiple segments
-        self.aggregator = VideoAggregator(
+        # 3) Enhanced aggregator
+        self.aggregator = EnhancedVideoAggregator(
             embedding_dim=output_dim,
-            num_heads=4,
+            num_heads=num_heads,
             dropout=dropout,
-            use_positional_encoding=True
+            use_positional_encoding=True,
+            aggregator_depth=aggregator_depth,
         )
 
-        # Freeze partial layers
+        # 4) Freeze partial layers
         self._freeze_partial_layers()
 
     def _freeze_partial_layers(self):
-        """
-        Freeze a fraction (1 - freeze_ratio) of the backbone's layers
-        (from bottom to top), leaving top fraction = freeze_ratio un-frozen.
-        """
         all_named_params = list(self.model.named_parameters())
         total_count = len(all_named_params)
         train_count = int(self.freeze_ratio * total_count)
@@ -207,43 +241,35 @@ class VideoEncoder(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Expects shape: [B, N, T, H, W, C]
-            B= batch size,
-            N= # of segments or videos per study,
-            T= #frames,
-            H= height,
-            W= width,
-            C= channels=3
-        We'll reorder => [B,N,C,T,H,W], flatten => [B*N, C, T, H, W],
-        pass through the backbone, then aggregator => [B, output_dim].
+        x: shape => [B, N, T, H, W, C]
+        We'll reorder => [B, N, C, T, H, W], flatten => [B*N, C, T, H, W],
+        pass backbone => aggregator => [B, output_dim].
         """
-        # Reorder last dimension (C) to after N => [B, N, C, T, H, W]
-        x = x.permute(0, 1, 5, 2, 3, 4)  # Now shape: [B, N, 3, T, H, W]
+        # reorder => [B, N, C, T, H, W]
+        x = x.permute(0, 1, 5, 2, 3, 4)  # [B,N,3,T,H,W]
         B, N, C, T, H, W = x.shape
-        
-        # Flatten => [B*N, 3, T, H, W]
+
+        # flatten => [B*N, C, T, H, W]
         x = x.view(B*N, C, T, H, W)
-        
-        # Pass through backbone => [B*N, in_features]
-        x = self.model(x)
-        # Then projection => [B*N, output_dim]
-        x = self.proj(x)
-        
-        # Reshape => [B, N, self.output_dim]
-        x = x.view(B, N, self.output_dim)
+
+        # pass backbone => [B*N, in_features]
+        feats = self.model(x)
+        # projection => [B*N, output_dim]
+        feats = self.proj(feats)
+
+        # reshape => [B, N, output_dim]
+        feats = feats.view(B, N, self.output_dim)
 
         # aggregator => [B, output_dim]
-        x = self.aggregator(x)
+        out = self.aggregator(feats)
 
-        return x
+        return out
 
 
 class TextEncoder(nn.Module):
     """
     Text encoder with optional dropout & partial-freeze.
-
-    - `freeze_ratio`: fraction of BERT layers to keep trainable (the rest are frozen).
-    - final projection uses dropout to help with regularization.
+    - Uses BERT-based backbone and final projection with GELU.
     """
 
     def __init__(
@@ -259,25 +285,22 @@ class TextEncoder(nn.Module):
         self.dropout_p = dropout
         self.freeze_ratio = freeze_ratio
 
+        # 1) BERT (or other) backbone
         self.bert = AutoModel.from_pretrained(model_name)
         hidden_size = self.bert.config.hidden_size
 
-        # Freeze a portion of BERT's encoder layers
+        # 2) Freeze partial layers
         self._freeze_partial_bert()
 
-        # Final projection
+        # 3) Final projection (using GELU)
         self.proj = nn.Sequential(
             nn.Dropout(self.dropout_p),
             nn.Linear(hidden_size, output_dim),
-            nn.ReLU(inplace=True),
+            nn.GELU(),
             nn.Dropout(self.dropout_p),
         )
 
     def _freeze_partial_bert(self):
-        """
-        Freeze the bottom portion of the BERT parameters, leaving
-        a fraction `freeze_ratio` trainable from the top.
-        """
         all_named_params = list(self.bert.named_parameters())
         total_count = len(all_named_params)
         train_count = int(self.freeze_ratio * total_count)
@@ -288,7 +311,7 @@ class TextEncoder(nn.Module):
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        # CLS token: outputs.last_hidden_state[:, 0]
+        # use CLS token
         cls_token = outputs.last_hidden_state[:, 0]
         return self.proj(cls_token)
 
@@ -299,16 +322,20 @@ def clip_style_loss(
     """
     Compute the CLIP-style cross-entropy loss over video-text pairs.
     """
+    # L2 normalize
     video_features = F.normalize(video_features, dim=1)
     text_features = F.normalize(text_features, dim=1)
 
+    # similarity => [B, B]
     similarity_matrix = torch.matmul(video_features, text_features.t())
 
+    # temperature
     temp = torch.exp(log_temp)
     logits = similarity_matrix / temp
 
+    # standard targets
     targets = torch.arange(logits.size(0), device=logits.device)
 
     loss_i2t = F.cross_entropy(logits, targets)
     loss_t2i = F.cross_entropy(logits.t(), targets)
-    return (loss_i2t + loss_t2i) / 2.0
+    return (loss_i2t + loss_t2i) * 0.5

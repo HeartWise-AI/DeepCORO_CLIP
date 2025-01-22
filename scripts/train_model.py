@@ -5,7 +5,6 @@ Training script for DeepCORO_CLIP model with a built-in VideoAggregator inside V
 
 import argparse
 import os
-import pickle
 import sys
 import random
 import numpy as np
@@ -49,6 +48,7 @@ from utils.logging import (
     compute_embedding_norms,
     compute_recall_at_k,
     compute_mrr,
+    log_gradient_norms,
 )
 
 
@@ -133,6 +133,8 @@ def parse_args():
     parser.add_argument("--pretrained", action="store_true", help="Use pretrained backbone")
 
     parser.add_argument("--dropout", type=float, default=0.2, help="Dropout probability in heads")
+    parser.add_argument("--num_heads", type=int, default=1, help="Number of heads in heads")
+    parser.add_argument("--aggregator_depth", type=int, default=1, help="Depth of aggregator")
     parser.add_argument(
         "--video_freeze_ratio",
         type=float,
@@ -461,6 +463,8 @@ def setup_training(args, wandb_run, rank=0):
         pretrained=args.pretrained,
         output_dim=512,
         dropout=args.dropout,
+        aggregator_depth=args.aggregator_depth,
+        num_heads=args.num_heads,
         freeze_ratio=args.video_freeze_ratio,
     ).to(device).float()
     text_encoder = TextEncoder(
@@ -611,7 +615,7 @@ def train_epoch(
         progress = dataloader
 
     for batch_idx, batch in enumerate(progress):
-        try:
+        try:    
             videos, encoded_texts, _ = batch
             videos = videos.to(device, non_blocking=True).float()
             input_ids = encoded_texts["input_ids"].to(device, non_blocking=True)
@@ -619,6 +623,10 @@ def train_epoch(
 
             optimizer.zero_grad(set_to_none=True)
 
+            if batch_idx < 2:  # only print the first couple times
+                print(f"[Debug] videos shape before aggregator: {videos.shape}")
+                # Or if aggregator is in video_encoder, print inside video_encoder forward, e.g.:
+                # print(f"[Debug] aggregator input shape: {x.shape}") 
             # unify shape for aggregator (N dimension if single)
             if videos.dim() == 5:
                 videos = videos.unsqueeze(1)
@@ -629,7 +637,23 @@ def train_epoch(
                     text_embeds = text_encoder(input_ids, attention_mask)
                     loss = clip_style_loss(video_embeds, text_embeds, log_temperature)
 
+                # Backprop
                 scaler.scale(loss).backward()
+
+                # Unscale once here
+                scaler.unscale_(optimizer)
+
+                # Now log gradient norms
+                log_gradient_norms(
+                    video_encoder, wandb_run,
+                    prefix="train/video_encoder/",
+                )
+                log_gradient_norms(
+                    text_encoder, wandb_run,
+                    prefix="train/text_encoder/",
+                )
+
+                # Step and update
                 scaler.step(optimizer)
                 scaler.update()
             else:
@@ -637,6 +661,10 @@ def train_epoch(
                 text_embeds = text_encoder(input_ids, attention_mask)
                 loss = clip_style_loss(video_embeds, text_embeds, log_temperature)
                 loss.backward()
+                # Log gradient norms (unscaled)
+                log_gradient_norms(video_encoder, wandb_run, step=(epoch * len(dataloader) + batch_idx), prefix="train/video_encoder/")
+                log_gradient_norms(text_encoder, wandb_run, step=(epoch * len(dataloader) + batch_idx), prefix="train/text_encoder/")
+
                 optimizer.step()
 
             total_loss += loss.item()
@@ -774,7 +802,6 @@ def validate_epoch(
     rank=0,
     world_size=1,
     epoch=0,
-    all_text_embeddings=None,
     all_reports=None,
     output_dir="outputs",
     report_to_global_index=None,
@@ -1000,7 +1027,7 @@ def main(rank=0, world_size=1, args=None):
                     for key, value in wandb.config.items():
                         if hasattr(args, key):
                             setattr(args, key, value)
-                print("[W&B] Starting new run (no run_id found).")
+                print(f"[W&B] Starting new run (no run_id found) with ID: {wandb_run.id}")
 
         training_setup = setup_training(args, wandb_run, rank=rank)
 
@@ -1034,7 +1061,7 @@ def main(rank=0, world_size=1, args=None):
                 os.makedirs(full_output_path)
             save_texts_csv(full_output_path, val_reports)
 
-        scaler = torch.amp.GradScaler(enabled=args.use_amp, device=device)
+        scaler = torch.amp.GradScaler(device=device) if args.use_amp else None
 
         best_epoch = -1 if best_epoch < 0 else best_epoch
         patience_counter = 0
@@ -1066,7 +1093,6 @@ def main(rank=0, world_size=1, args=None):
                 rank=0,
                 world_size=1,
                 epoch=epoch,
-                all_text_embeddings=None,
                 all_reports=val_reports,
                 output_dir=full_output_path,
                 report_to_global_index=val_report_to_index,
@@ -1138,7 +1164,7 @@ def main(rank=0, world_size=1, args=None):
 
                 if best_epoch == epoch:
                     best_path = checkpoint_dir / "best.pt"
-                    save_checkpoint(model_dict, metrics_dict, best_path, is_best=True)
+                    save_checkpoint(model_dict, metrics_dict, best_path, is_best=True, wandb_run=wandb_run.id)
                     print(
                         f"\nNew best model saved! Val Loss (val-only): {current_val_loss:.4f} "
                         f"(previous: {previous_best:.4f})"

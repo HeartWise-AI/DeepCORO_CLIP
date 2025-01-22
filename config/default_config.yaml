@@ -19,8 +19,7 @@ pretrained: true
 
 # Checkpointing
 resume: false
-resume_checkpoint: outputs/deepCORO_CLIP/DeepCORO_Clip_Sweep_Learnable_Temp_Full_mvit_b12_f16_RAdam_lr0.0001_20250105-140102_4prjnaxn/checkpoints/latest.pt
-
+resume_checkpoint: outputs/deepCORO_CLIP/DeepCORO_Clip_Sweep_Learnable_Temp_Full_mvit_b12_f16_RAdam_lr0.0001_20250114-190320_2o5xoevj/checkpoints/latest.pt
 
 # Optimization parameters
 optimizer: RAdam
@@ -28,9 +27,10 @@ weight_decay: 0.000001
 scheduler_type: step
 lr_step_period: 15    # Step the LR every 15 epochs instead of 110
 factor: 0.3
+dropout: 0.49
 
 # Distributed training
-gpu: 0
+gpu: 2
 local_rank: -1
 
 # Logging parameters

@@ -9,7 +9,7 @@ metric:
 parameters:
   learning_rate:
     distribution: log_uniform_values
-    min: 1e-5
+    min: 5e-6
     max: 1e-4
 
   optimizer:
@@ -18,6 +18,9 @@ parameters:
   scheduler_type:
     values: ["step", "cosine"]
 
+  max_num_videos:
+    values: [4]
+
   lr_step_period:
     values: [5, 10, 15]
 
@@ -25,36 +28,42 @@ parameters:
     values: [0.1, 0.3, 0.5]
 
   epochs:
-    values: [20, 30, 40]
+    values: [20, 30]
 
   batch_size:
-    values: [10, 12]
+    values: [10]
+  
+  gpu:
+    values: [1]
 
+  num_heads:
+    values: [1, 2, 4]
+
+  aggregator_depth:
+    values: [1, 2]
+  
   temperature:
     distribution: uniform
-    min: 0.05
-    max: 0.15
-
-  random_augment:
-    values: [true, false]
+    min: 0.07
+    max: 0.12
 
   # New hyperparameters:
   dropout:
     distribution: uniform
     min: 0.0
-    max: 0.5
+    max: 0.20
 
   video_freeze_ratio:
-    values: [0.0, 0.5, 0.8, 1.0]
+    values: [0.5, 0.6, 0.8, 0.9, 1.0]
 
   text_freeze_ratio:
-    values: [0.0, 0.5, 0.8, 1.0]
+    values: [0.8, 0.9, 0.7, 1.0]
 
   patience:
     values: [3, 5, 8, 10]
     
   stride:
-    values: [1, 2, 3]
+    values: [2, 3]
 
 command:
   - bash

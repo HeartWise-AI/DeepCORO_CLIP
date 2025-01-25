@@ -483,13 +483,38 @@ def setup_training(args, wandb_run, rank=0):
     log_temperature = nn.Parameter(torch.log(temp_tensor))
 
     optimizer_class = getattr(torch.optim, args.optimizer)
+    
+    # Different learning rates for different components
+    param_groups = [
+        {
+            'params': video_encoder.model.parameters(),  # Main video backbone
+            'lr': args.learning_rate,
+            'name': 'video_backbone'
+        },
+        {
+            'params': video_encoder.aggregator.parameters(),  # Multihead attention aggregator
+            'lr': args.learning_rate * 5.0,  # Higher learning rate for aggregator
+            'name': 'video_aggregator'
+        },
+        {
+            'params': video_encoder.proj.parameters(),  # Video projection
+            'lr': args.learning_rate,
+            'name': 'video_proj'
+        },
+        {
+            'params': text_encoder.parameters(),  # Entire text encoder
+            'lr': 0.000009,  # Lower learning rate for text encoder
+            'name': 'text_encoder'
+        },
+        {
+            'params': [log_temperature],  # Temperature parameter
+            'lr': args.learning_rate,
+            'name': 'temperature'
+        }
+    ]
+    
     optimizer = optimizer_class(
-        [
-            {"params": video_encoder.parameters()},
-            {"params": text_encoder.parameters()},
-            {"params": [log_temperature]},
-        ],
-        lr=args.learning_rate,
+        param_groups,
         weight_decay=args.weight_decay,
     )
 
@@ -504,6 +529,12 @@ def setup_training(args, wandb_run, rank=0):
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
             T_max=args.epochs,
+        )
+    elif args.scheduler_type == "cosine_warm_restart":
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer,
+            T_0=10,
+            last_epoch=-1
         )
 
     if rank == 0 and wandb_run is not None:
@@ -675,6 +706,9 @@ def train_epoch(
                     {
                         "train_loss": f"{loss.item():.4f}",
                         "avg_train_loss": f"{(total_loss / num_batches):.4f}",
+                        "lr_video": f"{optimizer.param_groups[0]['lr']:.2e}",  # Video backbone
+                        "lr_attn": f"{optimizer.param_groups[1]['lr']:.2e}",   # Attention
+                        "lr_text": f"{optimizer.param_groups[3]['lr']:.2e}",   # Text encoder
                     }
                 )
 
@@ -1107,11 +1141,16 @@ def main(rank=0, world_size=1, args=None):
                 log_data = {
                     "epoch": epoch,
                     "train/loss": train_loss,
-                    "train/learning_rate": optimizer.param_groups[0]["lr"],
                     "val_only/loss": val_loss_valpool,
                     **{f"val_only/{k}": v for k, v in val_metrics_valpool.items()},
                     "best_val_loss": best_val_loss,
                 }
+
+                # Log learning rates for each parameter group
+                for group in optimizer.param_groups:
+                    if 'name' in group:
+                        log_data[f"lr/{group['name']}"] = group['lr']
+
                 if log_temperature is not None:
                     current_temp = torch.exp(log_temperature).item()
                     log_data["temp"] = current_temp

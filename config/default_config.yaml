@@ -30,7 +30,7 @@ factor: 0.3
 dropout: 0.49
 
 # Distributed training
-gpu: 2
+gpu: 0
 local_rank: -1
 
 # Logging parameters

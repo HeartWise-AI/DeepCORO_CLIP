@@ -16,7 +16,7 @@ parameters:
     values: ["AdamW", "RAdam"]
 
   scheduler_type:
-    values: ["step", "cosine", "cosine_warm_restart"]
+    values: ["step", "cosine"]
 
   max_num_videos:
     values: [4]
@@ -34,7 +34,7 @@ parameters:
     values: [10]
   
   gpu:
-    values: [1]
+    values: [0]
 
   num_heads:
     values: [1, 2, 4]
@@ -50,11 +50,11 @@ parameters:
   # New hyperparameters:
   dropout:
     distribution: uniform
-    min: 0.0
-    max: 0.20
+    min: 0.15
+    max: 0.25
 
   video_freeze_ratio:
-    values: [0.5, 0.6, 0.8, 0.9, 1.0]
+    values: [0.5, 0.85, 0.8, 0.9]
 
   text_freeze_ratio:
     values: [0.8, 0.9, 0.7, 1.0]
@@ -63,7 +63,7 @@ parameters:
     values: [3, 5, 8, 10]
     
   stride:
-    values: [2, 3]
+    values: [1, 2, 3]
 
 command:
   - bash

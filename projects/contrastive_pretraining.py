@@ -149,6 +149,8 @@ def load_train_objs(
         output_dim=512,
         freeze_ratio=config.video_freeze_ratio,
         dropout=config.dropout,
+        num_heads=config.num_heads,
+        aggregator_depth=config.aggregator_depth,
     )
     video_encoder = video_encoder.to(config.gpu).float()
 
@@ -176,14 +178,39 @@ def load_train_objs(
         torch.log(torch.tensor([config.temperature], dtype=torch.float32, device=config.gpu))
     )
 
+    # Different learning rates for different components
+    param_groups = [
+        {
+            'params': video_encoder.module.model.parameters(),  # Main video backbone
+            'lr': config.lr,
+            'name': 'video_backbone'
+        },
+        {
+            'params': video_encoder.module.aggregator.parameters(),  # Multihead attention aggregator
+            'lr': config.lr * 5.0,  # Higher learning rate for aggregator
+            'name': 'video_aggregator'
+        },
+        {
+            'params': video_encoder.module.proj.parameters(),  # Video projection
+            'lr': config.lr,
+            'name': 'video_proj'
+        },
+        {
+            'params': text_encoder.parameters(),  # Entire text encoder
+            'lr': 0.000009,  # Lower learning rate for text encoder
+            'name': 'text_encoder'
+        },
+        {
+            'params': [log_temperature],  # Temperature parameter
+            'lr': config.lr,
+            'name': 'temperature'
+        }
+    ]
+
     # Include the temperature parameter in the optimizer
     optimizer_class: torch.optim.Optimizer = getattr(torch.optim, config.optimizer)
     optimizer: torch.optim.Optimizer = optimizer_class(
-        [
-            {"params": video_encoder.parameters()},
-            {"params": text_encoder.parameters()},
-            {"params": [log_temperature]},
-        ],
+        param_groups,
         lr=config.lr,
         weight_decay=config.weight_decay,
     )

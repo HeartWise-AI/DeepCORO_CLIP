@@ -46,18 +46,18 @@ class TextEncoder(nn.Module):
         self.freeze_ratio = freeze_ratio
         self.dropout = dropout
         
-        # Load model and get its config
+        # 1) BERT (or other) backbone
         self.bert = AutoModel.from_pretrained(model_name)
         hidden_size = self.bert.config.hidden_size
 
-        # Freeze a portion of BERT's encoder layers
+        # 2) Freeze partial layers
         self._freeze_partial_bert()
 
-        # Project from BERT hidden size to match video encoder
+        # 3) Final projection (using GELU)
         self.proj = nn.Sequential(
             nn.Dropout(self.dropout),
             nn.Linear(hidden_size, output_dim),
-            nn.ReLU(inplace=True),
+            nn.GELU(),
             nn.Dropout(self.dropout)
         )
 
@@ -86,7 +86,8 @@ class TextEncoder(nn.Module):
         """
         # Get BERT features and take CLS token output
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        features = outputs.last_hidden_state[:, 0]  # Take CLS token
+        # use CLS token
+        features = outputs.last_hidden_state[:, 0]
 
         # Project to match video encoder dimension
         return self.proj(features)

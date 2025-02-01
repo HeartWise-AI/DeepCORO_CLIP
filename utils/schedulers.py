@@ -18,6 +18,12 @@ def get_scheduler(
             step_size=step_size, 
             gamma=factor
         )
+    elif scheduler_name == 'cosine_warm_restart':
+        return torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer,
+            T_0=10,
+            last_epoch=-1
+        )
     else:
         raise ValueError(f"Scheduler {scheduler_name} not found")
 

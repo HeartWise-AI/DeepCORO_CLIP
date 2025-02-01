@@ -62,6 +62,8 @@ class HeartWiseParser:
         model_group.add_argument('--video_freeze_ratio', type=float)
         model_group.add_argument('--text_freeze_ratio', type=float)
         model_group.add_argument('--dropout', type=float)
+        model_group.add_argument('--num_heads', type=int)
+        model_group.add_argument('--aggregator_depth', type=int)
         
         # System parameters
         system_group = parser.add_argument_group('System')

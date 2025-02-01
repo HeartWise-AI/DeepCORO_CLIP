@@ -5,7 +5,7 @@ import torch.nn as nn
 from torchvision.models.video import mvit_v2_s, r3d_18
 
 from utils.registry import ModelRegistry
-from models.video_aggregator import VideoAggregator
+from models.video_aggregator import EnhancedVideoAggregator
 
 
 class TransformerHead(nn.Module):
@@ -35,7 +35,9 @@ class VideoEncoder(nn.Module):
         pretrained: bool = True, 
         output_dim: int = 512, 
         dropout: float = 0.2,
-        freeze_ratio: float = 0.8
+        num_heads: int = 4,
+        freeze_ratio: float = 0.8,
+        aggregator_depth: int = 2
     ):
         """Initialize the video encoder.
 
@@ -55,7 +57,7 @@ class VideoEncoder(nn.Module):
         self.freeze_ratio: float = freeze_ratio
 
 
-        # Load the specified backbone with pretrained weights if specified
+        # 1) Build backbone
         if backbone == "mvit":
             # Load the pretrained MViT v2 S
             self.model: nn.Module = mvit_v2_s(weights="KINETICS400_V1" if pretrained else None)
@@ -80,24 +82,25 @@ class VideoEncoder(nn.Module):
         else:
             raise ValueError(f"Unsupported backbone: {backbone}")
                 
-        # Freeze partial layers
-        self._freeze_partial_layers()
-                
-        # Projection from backbone dimension -> output_dim
+        # 2) Projection (use GELU instead of ReLU)
         self.proj = nn.Sequential(
             nn.Dropout(self.dropout),
             nn.Linear(in_features, output_dim),
-            nn.ReLU(inplace=True),
+            nn.GELU(),
             nn.Dropout(self.dropout),
-        )
-        
-        # Aggregator: small transformer to combine multiple segments
-        self.aggregator = VideoAggregator(
+        )                
+                
+        # 3) Enhanced aggregator
+        self.aggregator = EnhancedVideoAggregator(
             embedding_dim=output_dim,
-            num_heads=4,
+            num_heads=num_heads,
             dropout=self.dropout,
-            use_positional_encoding=True
-        )
+            use_positional_encoding=True,
+            aggregator_depth=aggregator_depth
+        )                
+                
+        # 4) Freeze partial layers
+        self._freeze_partial_layers()
 
     def _freeze_partial_layers(self):
         """
@@ -134,17 +137,17 @@ class VideoEncoder(nn.Module):
         x = x.view(B*N, C, T, H, W)
         
         # Pass through backbone => [B*N, in_features]
-        x = self.model(x)
+        feats = self.model(x)
         # Then projection => [B*N, output_dim]
-        x = self.proj(x)
+        feats = self.proj(feats)
         
         # Reshape => [B, N, output_dim]
-        x = x.view(B, N, self.output_dim)
+        feats = feats.view(B, N, self.output_dim)
         
         # aggregator => [B, output_dim]
-        x = self.aggregator(x)
+        out = self.aggregator(feats)
 
-        return x
+        return out
 
 
 

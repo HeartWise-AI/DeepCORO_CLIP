@@ -26,17 +26,19 @@ def contrastive_loss(
     video_features = nn.functional.normalize(video_features, dim=1)
     text_features = nn.functional.normalize(text_features, dim=1)
 
+    # similarity => [B, B]
     similarity_matrix = torch.matmul(video_features, text_features.t())
 
-    # Scale by temperature (lower temp => sharper distribution)
-    similarity_matrix = similarity_matrix / torch.exp(log_temp)
+    # temperature
+    temp = torch.exp(log_temp)
+    logits = similarity_matrix / temp
 
-    # Create labels for matching pairs
-    labels = torch.arange(len(video_features), device=video_features.device)
+    # standard targets
+    targets = torch.arange(logits.size(0), device=logits.device)
 
     # Compute loss in both directions and average
-    loss_v = nn.CrossEntropyLoss()(similarity_matrix, labels)
-    loss_t = nn.CrossEntropyLoss()(similarity_matrix.t(), labels)
-    loss = (loss_v + loss_t) / 2
+    loss_v = nn.CrossEntropyLoss()(similarity_matrix, targets)
+    loss_t = nn.CrossEntropyLoss()(similarity_matrix.t(), targets)
+    loss = (loss_v + loss_t) * 0.5
 
     return loss

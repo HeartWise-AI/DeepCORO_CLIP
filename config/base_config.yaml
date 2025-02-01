@@ -7,19 +7,19 @@ period: !!int 1
 device: !!str cuda
 
 # Dataset parameters
-data_filename: !!str data/reports/reports_with_splits_subset.csv
+data_filename: !!str data/reports/reports_sampled_300_study_ids.csv
 root: !!str "."
 target_label: !!str Report
 datapoint_loc_label: !!str FileName
 frames: !!int 16
-stride: !!int 2
+stride: !!int 1
 multi_video: !!bool true
 num_videos: !!int 5
 groupby_column: !!str StudyInstanceUID
 shuffle_videos: !!bool true
 
 # Seed
-seed: !!int 15
+seed: !!int 42
 
 # Model parameters
 model_name: !!str mvit
@@ -33,7 +33,7 @@ save_best: !!str loss
 
 # Metrics
 # Recall @k
-recall_k: [1, 5, 10, 50]
+recall_k: [1, 5, 10]
 # NDCG @k
 ndcg_k: [5]
 

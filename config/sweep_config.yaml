@@ -10,7 +10,7 @@ command:
 
 name: "dev_deep_coro_clip"
 project: "dev_deep_coro_clip"
-entity: "jacques-delfrate"
+entity: "mhi_ai"
 
 method: bayes
 
@@ -20,31 +20,29 @@ metric:
 
 parameters:
   lr:
-    distribution: log_uniform_values
-    min: 1e-5
-    max: 1e-4
+    values: [0.0001]
   optimizer:
-    values: ["AdamW", "RAdam"]
+    values: ["RAdam"]
   scheduler_type:
-    values: ["cosine", "step"]
+    values: ["step"]
   lr_step_period:
-    values: [1]
+    values: [15]
   factor:
-    values: [0.1, 0.3, 0.5]
+    values: [0.3]
   batch_size:
-    values: [10, 12]
+    values: [8]
+  num_heads:
+    values: [2]
+  aggregator_depth:
+    values: [2]
   temperature:
-    min: 0.05
-    max: 0.15
-    distribution: uniform 
+    values: [0.07]
   dropout:
-    distribution: uniform
-    min: 0.0
-    max: 0.5    
+    values: [0.2]
   video_freeze_ratio:
-    values: [0.0, 0.5, 0.8, 1.0]
+    values: [0.8]
   text_freeze_ratio:
-    values: [0.0, 0.5, 1.0]
+    values: [0.5]
   weight_decay:
     values: [0.000001]
   loss_name:
@@ -56,7 +54,7 @@ parameters:
   project:
     values: ["dev_deep_coro_clip"]
   entity:
-    values: ["jacques-delfrate"]
+    values: ["mhi_ai"]
 
 early_terminate:
   type: hyperband

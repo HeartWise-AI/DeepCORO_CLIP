@@ -24,7 +24,11 @@ from utils.metrics import (
     compute_embedding_norms, 
     compute_alignment_score
 )
-from utils.logging import log_best_worst_retrievals
+from utils.logging import (
+    log_best_worst_retrievals, 
+    log_gradient_norms,
+    save_retrieval_results
+)
 
 from models.video_encoder import VideoEncoder
 from models.text_encoder import TextEncoder
@@ -265,25 +269,25 @@ class VideoContrastiveLearningRunner:
         ground_truth_indices = torch.tensor([
             text_to_idx[text] for text in all_ground_truth_reports
         ], device=self.device)
-
-        # Get embeddings for unique texts only
-        unique_text_embeddings = []
-        for text in all_ground_truth_reports:
-            # Find first occurrence of this text
-            idx = all_ground_truth_reports.index(text)
-            unique_text_embeddings.append(all_text_embeddings[idx])
-        unique_text_embeddings = torch.stack(unique_text_embeddings)
+        
+        # # Get embeddings for unique texts only
+        # unique_text_embeddings = []
+        # for text in all_ground_truth_reports:
+        #     # Find first occurrence of this text
+        #     idx = all_ground_truth_reports.index(text)
+        #     unique_text_embeddings.append(all_text_embeddings[idx])
+        # unique_text_embeddings = torch.stack(unique_text_embeddings)
                     
         # Normalize embeddings
         all_video_embeddings_normalized = nn.functional.normalize(all_video_embeddings, dim=1)
-        unique_text_embeddings_normalized = nn.functional.normalize(unique_text_embeddings, dim=1)
+        all_text_embeddings_normalized = nn.functional.normalize(all_text_embeddings, dim=1)
         
         # Compute similarity matrix between videos and unique texts
         similarity_matrix = torch.matmul(
             all_video_embeddings_normalized, 
-            unique_text_embeddings_normalized.T
+            all_text_embeddings_normalized.T
         )
-
+        
         # After computing similarity matrix and before computing metrics
         if mode == "val" and self.config.is_ref_device:
             log_best_worst_retrievals(
@@ -292,6 +296,14 @@ class VideoContrastiveLearningRunner:
                 unique_texts=all_ground_truth_reports,
                 ground_truth_indices=ground_truth_indices,
                 epoch=epoch
+            )
+            save_retrieval_results(
+                similarity_matrix=similarity_matrix,
+                all_paths=all_paths,
+                all_ground_truth_reports=all_ground_truth_reports,
+                report_to_global_index=text_to_idx,
+                epoch=epoch,
+                output_dir=self.output_dir
             )
 
         # Compute metrics on this GPU's portion of data
@@ -444,6 +456,19 @@ class VideoContrastiveLearningRunner:
             # Backward pass
             self.scaler.scale(loss).backward()
             
+            # Unscale once here
+            self.scaler.unscale_(self.optimizer)
+
+            # Now log gradient norms
+            log_gradient_norms(
+                self.video_encoder,
+                prefix="train/video_encoder/",
+            )
+            log_gradient_norms(
+                self.text_encoder,
+                prefix="train/text_encoder/",
+            )
+            
             # Optimizer step
             self.scaler.step(self.optimizer)
             self.scaler.update()
@@ -462,6 +487,16 @@ class VideoContrastiveLearningRunner:
             
             loss.backward()
 
+            # Now log gradient norms
+            log_gradient_norms(
+                self.video_encoder,
+                prefix="train/video_encoder/",
+            )
+            log_gradient_norms(
+                self.text_encoder,
+                prefix="train/text_encoder/",
+            )
+            
             self.optimizer.step()           
         
         # Compute metrics
@@ -477,7 +512,7 @@ class VideoContrastiveLearningRunner:
             
         return {
             "loss": loss.detach(), 
-            "learning_rate": self.optimizer.param_groups[0]["lr"],
+            **{f"lr/{param_group['name']}": param_group['lr'] for param_group in self.optimizer.param_groups},
             "temperature": self.log_temp.exp().detach(), # add temperature to metrics for wandb logging
             **{k: v.detach() if torch.is_tensor(v) else v for k, v in metrics.items()}
         }, {

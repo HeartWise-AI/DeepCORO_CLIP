@@ -1,4 +1,4 @@
-from dataclasses import dataclass, asdict, field
+from dataclasses import dataclass, asdict
 from typing import Dict, Any, Optional, List
 
 from utils.files_handler import load_yaml
@@ -77,6 +77,8 @@ class SweepConfig:
     dropout: float
     video_freeze_ratio: float
     text_freeze_ratio: float
+    num_heads: int
+    aggregator_depth: int
     
     # Logging parameters
     tag: str
@@ -120,6 +122,8 @@ class HeartWiseConfig:
     video_freeze_ratio: float
     text_freeze_ratio: float
     dropout: float
+    num_heads: int
+    aggregator_depth: int
     
     # Optimization parameters
     optimizer: str

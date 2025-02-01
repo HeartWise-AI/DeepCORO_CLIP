@@ -3,9 +3,10 @@ Logging utilities for training and evaluation.
 """
 
 import os
-import torch
+import csv
 import wandb
-
+import torch
+import torch.nn as nn
 from datetime import datetime
 from typing import Any, Dict, Optional, List
 
@@ -472,6 +473,23 @@ def get_best_and_worst_retrievals(similarity_matrix, paths, reports, k=2):
         worst_text_indices,
     )
 
+def log_gradient_norms(model: nn.Module, prefix: str = ""):
+    """
+    Logs the L2 norm of gradients across the model's parameters.
+    You can adjust to log per-layer or per-parameter if needed.
+    """
+    total_norm = 0.0
+    param_count = 0
+    for _, p in model.named_parameters():
+        if p.grad is not None:
+            param_norm = p.grad.data.norm(2)  # L2 norm
+            total_norm += param_norm.item() ** 2
+            param_count += 1
+
+    total_norm = total_norm**0.5
+    wandb.log({f"{prefix}grad_norm": total_norm})
+
+
 
 def create_logger(config: HeartWiseConfig):
     """Create logger with proper WandB configuration.
@@ -605,3 +623,53 @@ def _log_retrieval(
     if is_temp:
         cleanup_temp_video(mp4_path)
 
+
+
+def save_retrieval_results(
+    similarity_matrix: torch.Tensor,
+    all_paths: List[str],
+    all_ground_truth_reports: List[str],
+    report_to_global_index: Dict[str, int],
+    epoch: int,
+    output_dir: str
+) -> None:
+    
+    val_csv_path = os.path.join(output_dir, f"val_epoch{epoch}.csv")
+    with open(val_csv_path, mode="w", newline="", encoding="utf-8") as csvfile:
+        writer = csv.writer(csvfile)
+        header = [
+            "FileName",
+            "ground_truth_idx",
+            "predicted_idx_1",
+            "sim_1",
+            "predicted_idx_2",
+            "sim_2",
+            "predicted_idx_3",
+            "sim_3",
+            "predicted_idx_4",
+            "sim_4",
+            "predicted_idx_5",
+            "sim_5",
+        ]
+        writer.writerow(header)
+
+        for i, path in enumerate(all_paths):
+            top_5_text_indices = torch.argsort(similarity_matrix[i], descending=True)[:5]
+            predicted_indices = [idx.item() for idx in top_5_text_indices]
+            predicted_sims = [similarity_matrix[i, idx].item() for idx in top_5_text_indices]
+
+            row_data = [path]
+            gt_text = all_ground_truth_reports[i]
+
+
+            # Convert ground-truth text to index
+            gt_idx = report_to_global_index[gt_text]
+
+
+            row_data.append(gt_idx)
+
+            for p_idx, p_sim in zip(predicted_indices, predicted_sims):
+                row_data.append(p_idx)
+                row_data.append(f"{p_sim:.4f}")
+
+            writer.writerow(row_data)

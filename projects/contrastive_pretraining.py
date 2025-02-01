@@ -108,6 +108,7 @@ def load_train_objs(
             shuffle=True,
             num_replicas=config.world_size,
             rank=config.gpu,
+            drop_last=True,
         )
         val_loader: DataLoader = get_distributed_multi_video_dataloader(
             config, 
@@ -117,6 +118,7 @@ def load_train_objs(
             shuffle=False,
             num_replicas=config.world_size,
             rank=config.gpu,
+            drop_last=False,
         )
     else:
         train_loader: DataLoader = get_distributed_video_dataloader(
@@ -127,6 +129,7 @@ def load_train_objs(
             shuffle=True,
             num_replicas=config.world_size,
             rank=config.gpu,
+            drop_last=True,
         )
         val_loader: DataLoader = get_distributed_video_dataloader(
             config, 
@@ -136,6 +139,7 @@ def load_train_objs(
             shuffle=False,
             num_replicas=config.world_size,
             rank=config.gpu,
+            drop_last=False,
         )
 
     # Create models

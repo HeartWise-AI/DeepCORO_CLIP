@@ -278,6 +278,7 @@ def get_distributed_video_dataloader(
     shuffle: bool,
     num_replicas: Optional[int] = None,
     rank: Optional[int] = None,
+    drop_last: bool = True,
 ) -> DataLoader:
     # Create the video dataset
     video_dataset = VideoDataset(
@@ -308,7 +309,7 @@ def get_distributed_video_dataloader(
         sampler=sampler,
         num_workers=config.num_workers,
         pin_memory=True,
-        drop_last=True,
+        drop_last=drop_last,
         collate_fn=custom_collate_fn,
         worker_init_fn=seed_worker,
     )

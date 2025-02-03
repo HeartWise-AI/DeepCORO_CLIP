@@ -10,47 +10,9 @@ def get_loss_fn(loss_name: str) -> nn.Module:
     if using DDP, you might choose 'contrastive_ddp'.
     """
     if loss_name == "contrastive":
-        return contrastive_loss
-    elif loss_name == "contrastive_ddp":
         return contrastive_loss_ddp
     else:
         raise ValueError(f"Loss function {loss_name} not found")
-
-def contrastive_loss(
-    video_features: torch.Tensor, 
-    text_features: torch.Tensor, 
-    log_temp: torch.Tensor = torch.log(torch.tensor(0.1))
-) -> torch.Tensor:
-    """
-    Compute CLIP-style bidirectional contrastive loss for video and text embeddings.
-    
-    Args:
-        video_features (torch.Tensor): [B, D] video embeddings.
-        text_features (torch.Tensor): [B, D] text embeddings.
-        log_temp (torch.Tensor): Log temperature scalar.
-        
-    Returns:
-        torch.Tensor: Scalar loss value.
-    """
-    # Normalize embeddings.
-    video_features = F.normalize(video_features, dim=1)
-    text_features = F.normalize(text_features, dim=1)
-    
-    # Compute similarity matrix of shape [B, B].
-    similarity_matrix = torch.matmul(video_features, text_features.t())
-    
-    # Apply temperature scaling.
-    temp = torch.exp(log_temp)
-    logits = similarity_matrix / temp
-
-    # Create targets: assume the i-th video corresponds to the i-th text.
-    targets = torch.arange(logits.size(0), device=logits.device)
-
-    # Compute cross-entropy loss in both directions.
-    loss_v2t = F.cross_entropy(logits, targets)
-    loss_t2v = F.cross_entropy(logits.t(), targets)
-    loss = 0.5 * (loss_v2t + loss_t2v)
-    return loss
 
 ###############################################################################
 # DDP-aware version: uses a custom autograd gather to preserve gradients.

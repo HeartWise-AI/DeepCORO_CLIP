@@ -20,7 +20,7 @@ metric:
 
 parameters:
   lr:
-    values: [0.00003437789228576786]
+    values: [0.0001]
   optimizer:
     values: ["RAdam"]
   scheduler_type:

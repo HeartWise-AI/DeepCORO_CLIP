@@ -1,22 +1,23 @@
 # Training parameters
-epochs: !!int 10
-num_workers: !!int 12
+epochs: !!int 20
+num_workers: !!int 16
 debug: !!bool false
 use_amp: !!bool true
 period: !!int 1
 device: !!str cuda
 
 # Dataset parameters
-data_filename: !!str data/reports/reports_sampled_300_study_ids.csv
+data_filename: !!str data/reports/reports_sampled_no_conclusion.csv
 root: !!str "."
 target_label: !!str Report
 datapoint_loc_label: !!str FileName
 frames: !!int 16
-stride: !!int 1
+stride: !!int 2
 multi_video: !!bool true
-num_videos: !!int 5
+num_videos: !!int 4
 groupby_column: !!str StudyInstanceUID
 shuffle_videos: !!bool true
+batch_size: !!int 10
 
 # Seed
 seed: !!int 42
@@ -25,9 +26,25 @@ seed: !!int 42
 model_name: !!str mvit
 pretrained: !!bool true
 
+# Optimizer parameters
+learning_rate: !!float 0.00003437789228576786
+optimizer: !!str RAdam
+weight_decay: !!float 0.000001
+scheduler_type: !!str step
+lr_step_period: !!int 5
+factor: !!float 0.3
+
+# Model architecture parameters
+num_heads: !!int 4
+aggregator_depth: !!int 1
+temperature: !!float 0.1025642383149142
+dropout: !!float 0.09078949362395336
+video_freeze_ratio: !!float 0.8
+text_freeze_ratio: !!float 1.0
+
 # Checkpointing
 resume_training: !!bool false
-checkpoint: !!str outputs/deepCORO_CLIP/DeepCORO_Clip_Sweep_Learnable_Temp_Full_mvit_b12_f16_RAdam_lr0.0001_20250105-140102_4prjnaxn/checkpoints/latest.pt
+checkpoint: !!str outputs/deepCORO_CLIP/DeepCORO_Clip_Sweep_Learnable_Temp_Full_mvit_b12_f16_RAdam_lr0.0001_20250114-190320_2o5xoevj/checkpoints/latest.pt
 output_dir: !!str outputs
 save_best: !!str loss
 
@@ -38,8 +55,7 @@ recall_k: [1, 5, 10]
 ndcg_k: [5]
 
 # Data augmentation
-rand_augment: !!bool false
+rand_augment: !!bool true
 resize: !!int 224
-apply_mask: !!bool false
 view_count: !!null null
-
+apply_mask: !!bool false

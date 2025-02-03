@@ -5,11 +5,7 @@ import torch.nn as nn
 from typing import List
 
 
-def compute_recall_at_k(
-    similarity_matrix: torch.Tensor, 
-    global_gt_indices: torch.Tensor, 
-    k_values: List[int]
-) -> dict[str, float]:
+def compute_recall_at_k(similarity_matrix, global_gt_indices, k_values=[1, 5]):
     """
     Compute recall@k for video->text retrieval.
     
@@ -22,18 +18,23 @@ def compute_recall_at_k(
     Returns:
         Dictionary containing recall scores for each k value
     """
-    metrics: dict[str, float] = {}
-
+    metrics = {}
+    num_candidates = similarity_matrix.size(1)
     for k in k_values:
-        # For each video, get the indices of the k most similar texts
-        v2t_topk: torch.Tensor = torch.topk(similarity_matrix, k, dim=1)[1]  # shape: [n_videos, k]
-        # Check if the ground truth text index is in the top k predictions
-        v2t_correct: torch.Tensor = v2t_topk == global_gt_indices.unsqueeze(1)  # shape: [n_videos, k]
-        # A prediction is correct if the ground truth appears anywhere in top k
-        v2t_recall: float = (v2t_correct.sum(dim=1) > 0).float().mean().item()
-        metrics[f"Recall@{k}_V2T"] = v2t_recall
-
+        # If there are fewer candidates than k, adjust k to avoid the error.
+        if num_candidates < k:
+            print(f"Warning: similarity matrix has only {num_candidates} candidates; adjusting Recall@{k} to Recall@{num_candidates}.")
+            k_use = num_candidates
+        else:
+            k_use = k
+        # Get the indices of the top-k candidates.
+        v2t_topk = torch.topk(similarity_matrix, k_use, dim=1)[1]  # shape: [n_videos, k_use]
+        # Compare with ground truth indices.
+        v2t_correct = (v2t_topk == global_gt_indices.unsqueeze(1))
+        recall = (v2t_correct.sum(dim=1) > 0).float().mean().item()
+        metrics[f"Recall@{k}"] = recall
     return metrics
+
 
 
 def compute_mrr(
@@ -101,7 +102,6 @@ def compute_alignment_score(
         alignment_scores: torch.Tensor = (normalized_video * normalized_text).sum(dim=1)
         return alignment_scores.mean().item()
 
-
 def compute_ndcg_at_k(
     similarity_matrix: torch.Tensor, 
     global_gt_indices: torch.Tensor, 
@@ -120,6 +120,7 @@ def compute_ndcg_at_k(
         float: Average NDCG@k over all queries.
     """
     num_queries: int = similarity_matrix.size(0)
+    num_candidates: int = similarity_matrix.size(1)
     if num_queries == 0:
         return 0.0
 
@@ -128,6 +129,9 @@ def compute_ndcg_at_k(
 
     metrics: dict[str, float] = {}
     for k in k_values:
+        # Adjust k if it's larger than number of candidates
+        effective_k: int = min(k, num_candidates)
+        
         ndcg_values: list[float] = []
         for i in range(num_queries):
             correct_idx: int = global_gt_indices[i].item()
@@ -139,7 +143,7 @@ def compute_ndcg_at_k(
                 continue
 
             rank: int = ranking.item()
-            if rank < k:
+            if rank < effective_k:
                 # DCG = 1 / log2(rank+2)
                 dcg: float = 1.0 / math.log2(rank + 2)
             else:

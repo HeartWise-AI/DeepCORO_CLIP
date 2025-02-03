@@ -28,6 +28,15 @@ from dataloaders.stats_dataset import get_stats_dataloader
 from dataloaders.video_dataset import get_distributed_video_dataloader
 from dataloaders.multi_video_dataset import get_distributed_multi_video_dataloader
 
+def stats_collate_fn(batch):
+    """Collate function for StatsDataset that stacks video tensors."""
+    valid_samples = [item for item in batch if item[0] is not None]
+    if not valid_samples:
+        raise RuntimeError("No valid samples in batch")
+    videos = torch.stack([torch.from_numpy(sample[0]) for sample in valid_samples])
+    return videos
+
+
 def load_train_objs(
     config: HeartWiseConfig,
 )->dict:
@@ -55,13 +64,6 @@ def load_train_objs(
 
         stats_loader: DataLoader = get_stats_dataloader(config)
 
-        num_stats_samples = min(100, 1000)
-        print(f"Stats dataset length: {len(stats_loader)}")
-        if len(stats_loader) > num_stats_samples:
-            indices = torch.linspace(0, len(stats_loader) - 1, num_stats_samples).long().tolist()
-            stats_loader = torch.utils.data.Subset(stats_loader, indices)
-
-        print(f"\nUsing {num_stats_samples} samples for statistics calculation")
         print(f"Frame count per video: {config.frames}")
 
         mean_sum, squared_sum, pixel_count = 0.0, 0.0, 0
@@ -78,7 +80,6 @@ def load_train_objs(
         print("\nDataset Statistics:")
         print(f"Mean: {mean.tolist()}")
         print(f"Std:  {std.tolist()}")
-        print(f"Calculated from {num_stats_samples} samples ({pixel_count:,} pixels)")
         print("===========================\n")                    
     
     # Broadcast stats if distributed

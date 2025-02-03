@@ -282,14 +282,16 @@ class VideoContrastiveLearningRunner:
         all_video_embeddings_normalized = nn.functional.normalize(all_video_embeddings, dim=1)
         all_text_embeddings_normalized = nn.functional.normalize(all_text_embeddings, dim=1)
         
-        # Compute similarity matrix between videos and unique texts
-        similarity_matrix = torch.matmul(
-            all_video_embeddings_normalized, 
-            all_text_embeddings_normalized.T
-        )
+
         
         # After computing similarity matrix and before computing metrics
         if mode == "val" and self.config.is_ref_device:
+            # Compute similarity matrix between videos and unique texts
+            similarity_matrix = torch.matmul(
+                all_video_embeddings_normalized, 
+                all_text_embeddings_normalized.T
+            )
+            
             log_best_worst_retrievals(
                 similarity_matrix=similarity_matrix,
                 all_paths=all_paths,

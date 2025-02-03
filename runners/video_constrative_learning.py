@@ -306,21 +306,21 @@ class VideoContrastiveLearningRunner:
                 output_dir=self.output_dir
             )
 
-        # Compute metrics on this GPU's portion of data
-        recall_metrics = compute_recall_at_k(similarity_matrix, ground_truth_indices, k_values=self.config.recall_k)
-        mrr_score = compute_mrr(similarity_matrix, ground_truth_indices)
-        map_score = compute_map(similarity_matrix, ground_truth_indices)
-        median_rank_score = compute_median_rank(similarity_matrix, ground_truth_indices)
-        ndcg_score = compute_ndcg_at_k(similarity_matrix, ground_truth_indices, k_values=self.config.ndcg_k)
-        
-        # Update dictionary with hashmap type metrics
-        epoch_metrics.update(recall_metrics)
-        epoch_metrics.update(mrr_score)
-        epoch_metrics.update(ndcg_score)
-        
-        # Update dictionary with float type metrics
-        epoch_metrics['MAP'] = map_score
-        epoch_metrics['MedianRank_V2T'] = median_rank_score
+            # Compute metrics on this GPU's portion of data
+            recall_metrics = compute_recall_at_k(similarity_matrix, ground_truth_indices, k_values=self.config.recall_k)
+            mrr_score = compute_mrr(similarity_matrix, ground_truth_indices)
+            map_score = compute_map(similarity_matrix, ground_truth_indices)
+            median_rank_score = compute_median_rank(similarity_matrix, ground_truth_indices)
+            ndcg_score = compute_ndcg_at_k(similarity_matrix, ground_truth_indices, k_values=self.config.ndcg_k)
+            
+            # Update dictionary with hashmap type metrics
+            epoch_metrics.update(recall_metrics)
+            epoch_metrics.update(mrr_score)
+            epoch_metrics.update(ndcg_score)
+            
+            # Update dictionary with float type metrics
+            epoch_metrics['MAP'] = map_score
+            epoch_metrics['MedianRank_V2T'] = median_rank_score
 
         # Gather and average all metrics across GPUs
         gathered_metrics = {

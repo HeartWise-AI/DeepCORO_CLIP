@@ -208,7 +208,7 @@ class VideoContrastiveLearningRunner:
         all_text_embeddings = []
         all_paths = []
         all_ground_truth_reports = []
-        
+                
         # Run batches
         for batch_idx, batch in enumerate(progress, start=1):
             if batch["videos"] is None or batch["encoded_texts"] is None:
@@ -253,6 +253,9 @@ class VideoContrastiveLearningRunner:
                     "avg_loss": f"{(total_loss / batch_idx):.4f}"
                 })
 
+            del batch_metrics, embeddings
+            torch.cuda.empty_cache()
+
         # Compute means for all metrics
         epoch_metrics = {
             k: v / batch_idx for k, v in epoch_metrics.items()
@@ -281,8 +284,6 @@ class VideoContrastiveLearningRunner:
         # Normalize embeddings
         all_video_embeddings_normalized = nn.functional.normalize(all_video_embeddings, dim=1)
         all_text_embeddings_normalized = nn.functional.normalize(all_text_embeddings, dim=1)
-        
-
         
         # After computing similarity matrix and before computing metrics
         if mode == "val" and self.config.is_ref_device:

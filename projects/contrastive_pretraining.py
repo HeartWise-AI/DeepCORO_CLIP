@@ -188,22 +188,26 @@ def load_train_objs(
         {
             'params': video_encoder.module.model.parameters(),  # Main video backbone
             'lr': config.lr,
-            'name': 'video_backbone'
+            'name': 'video_backbone',
+            'weight_decay': config.video_weight_decay
         },
         {
             'params': video_encoder.module.aggregator.parameters(),  # Multihead attention aggregator
             'lr': config.lr * 5.0,  # Higher learning rate for aggregator
-            'name': 'video_aggregator'
+            'name': 'video_aggregator',
+            'weight_decay': config.video_weight_decay
         },
         {
             'params': video_encoder.module.proj.parameters(),  # Video projection
             'lr': config.lr,
-            'name': 'video_proj'
+            'name': 'video_proj',
+            'weight_decay': config.video_weight_decay
         },
         {
             'params': text_encoder.parameters(),  # Entire text encoder
             'lr': 0.000009,  # Lower learning rate for text encoder
-            'name': 'text_encoder'
+            'name': 'text_encoder',
+            'weight_decay': config.text_weight_decay
         },
         {
             'params': [log_temperature],  # Temperature parameter

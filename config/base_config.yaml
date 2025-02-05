@@ -29,7 +29,6 @@ pretrained: !!bool true
 # Optimizer parameters
 learning_rate: !!float 0.00003437789228576786
 optimizer: !!str RAdam
-weight_decay: !!float 0.000001
 scheduler_type: !!str step
 lr_step_period: !!int 5
 factor: !!float 0.3

@@ -221,7 +221,7 @@ def load_train_objs(
     optimizer: torch.optim.Optimizer = optimizer_class(
         param_groups,
         lr=config.lr,
-        weight_decay=config.weight_decay,
+        weight_decay=config.video_weight_decay
     )
 
     scheduler: LRScheduler = get_scheduler(

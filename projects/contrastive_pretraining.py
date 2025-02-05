@@ -220,8 +220,7 @@ def load_train_objs(
     optimizer_class: torch.optim.Optimizer = getattr(torch.optim, config.optimizer)
     optimizer: torch.optim.Optimizer = optimizer_class(
         param_groups,
-        lr=config.lr,
-        weight_decay=config.video_weight_decay
+        lr=config.lr
     )
 
     scheduler: LRScheduler = get_scheduler(
@@ -314,5 +313,4 @@ class ContrastivePretraining:
         )
         
         runner.train() 
-
 

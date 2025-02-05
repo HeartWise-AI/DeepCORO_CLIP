@@ -43,7 +43,9 @@ parameters:
     values: [0.8]
   text_freeze_ratio:
     values: [0.95]
-  weight_decay:
+  video_weight_decay:
+    values: [0.000001]
+  text_weight_decay:
     values: [0.000001]
   loss_name:
     values: ["contrastive"]

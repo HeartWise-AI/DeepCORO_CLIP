@@ -47,6 +47,10 @@ class BaseConfig:
     save_best: str
     resume_training: bool
     checkpoint: Optional[str]
+
+    # Optimizer parameters
+    text_weight_decay: float
+    video_weight_decay: float
     
     @classmethod
     def from_yaml(cls, yaml_path: str) -> 'BaseConfig':

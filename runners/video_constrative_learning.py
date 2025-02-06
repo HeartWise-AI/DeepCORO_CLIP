@@ -51,6 +51,7 @@ class VideoContrastiveLearningRunner:
         lr_scheduler: LRScheduler,
         loss_fn: callable,
         output_dir: str,
+        report_to_global_index: dict[str, int]
     ):
         # Add validation for recall_k
         if not isinstance(config.recall_k, list):
@@ -75,6 +76,7 @@ class VideoContrastiveLearningRunner:
         self.best_val_loss = float('inf')
         self.best_epoch = -1
         self.log_temp = log_temp
+        self.report_to_global_index: dict[str, int] = report_to_global_index
         
     def _compute_text_embeddings(self, reports: list[str]) -> tuple[torch.Tensor, dict[str, int]]:
         """Compute text embeddings for a list of reports."""
@@ -140,31 +142,35 @@ class VideoContrastiveLearningRunner:
                 mode="val", 
                 epoch=epoch
             )
+            
+            if self.world_size > 1:
+                torch.distributed.barrier(device_ids=[self.device])
+            
             if self.config.is_ref_device:
                 wandb.log(val_metrics)
             
             # Synchronize after validation
             if self.world_size > 1:
                 torch.distributed.barrier(device_ids=[self.device])
-            
-            # Update best model based on validation performance
-            if val_metrics["val/loss"] < self.best_val_loss:
-                previous_best = self.best_val_loss
-                self.best_val_loss = val_metrics["val/loss"]
-                self.best_epoch = epoch
-                if self.config.is_ref_device:   
-                    print(f"\nNew best model! Val Loss: {val_metrics['val/loss']:.4f} "
-                          f"(previous: {previous_best:.4f})")
-                    self._save_checkpoint(
-                        epoch=epoch,
-                        metrics={
-                            **train_metrics,
-                            **val_metrics
-                        },
-                        is_best=True
-                    )                    
+            print(f"gpu_id sync log barrier: {self.device}")         
                                 
             if self.config.is_ref_device:
+                # Update best model based on validation performance
+                if val_metrics["val/loss"] < self.best_val_loss:
+                    previous_best = self.best_val_loss
+                    self.best_val_loss = val_metrics["val/loss"]
+                    self.best_epoch = epoch
+                    if self.config.is_ref_device:   
+                        print(f"\nNew best model! Val Loss: {val_metrics['val/loss']:.4f} "
+                            f"(previous: {previous_best:.4f})")
+                        self._save_checkpoint(
+                            epoch=epoch,
+                            metrics={
+                                **train_metrics,
+                                **val_metrics
+                            },
+                            is_best=True
+                        )                          
                 self._save_checkpoint(
                     epoch=epoch,
                     metrics={
@@ -173,7 +179,10 @@ class VideoContrastiveLearningRunner:
                     },
                     is_best=False
                 )
+            if self.world_size > 1:
+                torch.distributed.barrier(device_ids=[self.device])
                 
+            print(f"gpu_id after saving checkpoint: {self.device}")
             # Learning rate scheduler step if it exists
             if self.lr_scheduler:
                 self.lr_scheduler.step()
@@ -208,6 +217,8 @@ class VideoContrastiveLearningRunner:
         all_text_embeddings = []
         all_paths = []
         all_ground_truth_reports = []
+                
+        torch.cuda.empty_cache()                    
                 
         # Run batches
         for batch_idx, batch in enumerate(progress, start=1):
@@ -253,9 +264,6 @@ class VideoContrastiveLearningRunner:
                     "avg_loss": f"{(total_loss / batch_idx):.4f}"
                 })
 
-            del batch_metrics, embeddings
-            torch.cuda.empty_cache()
-
         # Compute means for all metrics
         epoch_metrics = {
             k: v / batch_idx for k, v in epoch_metrics.items()
@@ -265,56 +273,82 @@ class VideoContrastiveLearningRunner:
         all_video_embeddings = torch.cat(all_video_embeddings, dim=0).to(self.device)
         all_text_embeddings = torch.cat(all_text_embeddings, dim=0).to(self.device)
                 
-        # Get texts and create mapping
-        text_to_idx = {text: idx for idx, text in enumerate(all_ground_truth_reports)}
-        
-        # Create ground truth indices - map each video to index of its text
-        ground_truth_indices = torch.tensor([
-            text_to_idx[text] for text in all_ground_truth_reports
-        ], device=self.device)
-        
-        # # Get embeddings for unique texts only
-        # unique_text_embeddings = []
-        # for text in all_ground_truth_reports:
-        #     # Find first occurrence of this text
-        #     idx = all_ground_truth_reports.index(text)
-        #     unique_text_embeddings.append(all_text_embeddings[idx])
-        # unique_text_embeddings = torch.stack(unique_text_embeddings)
-                    
+        global_gt_indices = []
+        for gt_text in all_ground_truth_reports:
+            global_gt_indices.append(self.report_to_global_index[gt_text])
+        gt_indices_tensor = torch.tensor(global_gt_indices, device=self.device)
+                            
         # Normalize embeddings
         all_video_embeddings_normalized = nn.functional.normalize(all_video_embeddings, dim=1)
         all_text_embeddings_normalized = nn.functional.normalize(all_text_embeddings, dim=1)
-        
+                
         # After computing similarity matrix and before computing metrics
-        if mode == "val" and self.config.is_ref_device:
+        if mode == "val":
             # Compute similarity matrix between videos and unique texts
             similarity_matrix = torch.matmul(
                 all_video_embeddings_normalized, 
                 all_text_embeddings_normalized.T
             )
             
-            log_best_worst_retrievals(
-                similarity_matrix=similarity_matrix,
-                all_paths=all_paths,
-                unique_texts=all_ground_truth_reports,
-                ground_truth_indices=ground_truth_indices,
-                epoch=epoch
-            )
-            save_retrieval_results(
-                similarity_matrix=similarity_matrix,
-                all_paths=all_paths,
-                all_ground_truth_reports=all_ground_truth_reports,
-                report_to_global_index=text_to_idx,
-                epoch=epoch,
-                output_dir=self.output_dir
-            )
+            # Gather results from all GPUs
+            if self.world_size > 1:
+                # Gather similarity matrices
+                gathered_similarity = [torch.zeros_like(similarity_matrix) for _ in range(self.world_size)]
+                torch.distributed.all_gather(gathered_similarity, similarity_matrix)
+                similarity_matrix = torch.cat(gathered_similarity, dim=0)
 
-            # Compute metrics on this GPU's portion of data
-            recall_metrics = compute_recall_at_k(similarity_matrix, ground_truth_indices, k_values=self.config.recall_k)
-            mrr_score = compute_mrr(similarity_matrix, ground_truth_indices)
-            map_score = compute_map(similarity_matrix, ground_truth_indices)
-            median_rank_score = compute_median_rank(similarity_matrix, ground_truth_indices)
-            ndcg_score = compute_ndcg_at_k(similarity_matrix, ground_truth_indices, k_values=self.config.ndcg_k)
+                # Gather paths
+                gathered_paths = [None for _ in range(self.world_size)]
+                torch.distributed.all_gather_object(gathered_paths, all_paths)
+                all_paths = [p for paths in gathered_paths for p in paths]
+
+                # Gather ground truth reports
+                gathered_reports = [None for _ in range(self.world_size)]
+                torch.distributed.all_gather_object(gathered_reports, all_ground_truth_reports)
+                all_ground_truth_reports = [r for reports in gathered_reports for r in reports]
+                # Update text_to_idx mapping with all gathered reports
+                text_to_idx = {text: idx for idx, text in enumerate(all_ground_truth_reports)}
+                
+                # Gather ground truth indices
+                gathered_indices = [torch.zeros_like(gt_indices_tensor) for _ in range(self.world_size)]
+                torch.distributed.all_gather(gathered_indices, gt_indices_tensor)
+                gt_indices_tensor = torch.cat(gathered_indices, dim=0)
+
+                # Synchronize
+                torch.distributed.barrier(device_ids=[self.device])
+
+            print(f"[GPU {self.device}] After gathering:")
+            print(f"all_paths: {len(all_paths)}")
+            print(f"all_ground_truth_reports: {len(all_ground_truth_reports)}")
+            print(f"ground_truth_indices: {len(gt_indices_tensor)}")
+            print(f"similarity_matrix: {similarity_matrix.shape}")
+            print(f"unique texts in mapping: {len(text_to_idx)}")
+
+            # Only log and save on reference device
+            if self.config.is_ref_device:
+                log_best_worst_retrievals(
+                    similarity_matrix=similarity_matrix,
+                    all_paths=all_paths,
+                    unique_texts=all_ground_truth_reports,
+                    ground_truth_indices=gt_indices_tensor,
+                    epoch=epoch
+                )
+                save_retrieval_results(
+                    similarity_matrix=similarity_matrix,
+                    all_paths=all_paths,
+                    all_ground_truth_reports=all_ground_truth_reports,
+                    report_to_global_index=text_to_idx,
+                    epoch=epoch,
+                    output_dir=self.output_dir,
+                    gpu_id=self.device
+                )
+
+            # Compute metrics using gathered data
+            recall_metrics = compute_recall_at_k(similarity_matrix, gt_indices_tensor, k_values=self.config.recall_k)
+            mrr_score = compute_mrr(similarity_matrix, gt_indices_tensor)
+            map_score = compute_map(similarity_matrix, gt_indices_tensor)
+            median_rank_score = compute_median_rank(similarity_matrix, gt_indices_tensor)
+            ndcg_score = compute_ndcg_at_k(similarity_matrix, gt_indices_tensor, k_values=self.config.ndcg_k)
             
             # Update dictionary with hashmap type metrics
             epoch_metrics.update(recall_metrics)
@@ -324,6 +358,10 @@ class VideoContrastiveLearningRunner:
             # Update dictionary with float type metrics
             epoch_metrics['MAP'] = map_score
             epoch_metrics['MedianRank_V2T'] = median_rank_score
+
+        # Synchronize after computing validation metrics
+        if self.world_size > 1:
+            torch.distributed.barrier(device_ids=[self.device])
 
         # Gather and average all metrics across GPUs
         gathered_metrics = {
@@ -459,6 +497,10 @@ class VideoContrastiveLearningRunner:
             # Backward pass
             self.scaler.scale(loss).backward()
             
+            # Synchronize before gradient operations
+            if self.world_size > 1:
+                torch.distributed.barrier(device_ids=[self.device])     
+            
             # Unscale once here
             self.scaler.unscale_(self.optimizer)
 
@@ -472,9 +514,17 @@ class VideoContrastiveLearningRunner:
                 prefix="train/text_encoder/",
             )
             
+            # Synchronize before optimizer step
+            if self.world_size > 1:
+                torch.distributed.barrier(device_ids=[self.device])
+            
             # Optimizer step
             self.scaler.step(self.optimizer)
             self.scaler.update()
+            
+            # Synchronize after optimizer step
+            if self.world_size > 1:
+                torch.distributed.barrier(device_ids=[self.device])
             
             # Convert embeddings to float32 for metrics computation (AMP can cause issues later on)
             video_embeddings = video_embeddings.float()
@@ -490,6 +540,10 @@ class VideoContrastiveLearningRunner:
             
             loss.backward()
 
+            # Synchronize before gradient operations
+            if self.world_size > 1:
+                torch.distributed.barrier(device_ids=[self.device])
+
             # Now log gradient norms
             log_gradient_norms(
                 self.video_encoder,
@@ -499,8 +553,16 @@ class VideoContrastiveLearningRunner:
                 self.text_encoder,
                 prefix="train/text_encoder/",
             )
+            # Synchronize before optimizer step
+            if self.world_size > 1:
+                torch.distributed.barrier(device_ids=[self.device])
             
+            # Optimizer step
             self.optimizer.step()           
+        
+            # Synchronize after optimizer step
+            if self.world_size > 1:
+                torch.distributed.barrier(device_ids=[self.device])
         
         # Compute metrics
         with torch.no_grad():            

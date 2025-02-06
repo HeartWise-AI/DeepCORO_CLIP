@@ -291,6 +291,11 @@ class ContrastivePretraining:
                 texts=training_setup["val_loader"].dataset.get_all_reports(),
             )
 
+        val_reports = training_setup["val_loader"].dataset.get_all_reports()
+        val_report_to_index = {r: i for i, r in enumerate(val_reports)}
+        print(f"val_report_to_index: {len(val_report_to_index)}")
+        print(f"val dataset size: {len(training_setup['val_loader'].dataset)}")
+
         runner: VideoContrastiveLearningRunner = RunnerRegistry.get(
             name="video_contrastive_learning"
         )(
@@ -307,6 +312,7 @@ class ContrastivePretraining:
             lr_scheduler=training_setup["scheduler"],
             loss_fn=get_loss_fn(self.config.loss_name),
             output_dir=training_setup["full_output_path"],
+            report_to_global_index=val_report_to_index,
         )
         
         runner.train() 

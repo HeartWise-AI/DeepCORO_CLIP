@@ -45,3 +45,10 @@ data/
 # Jupyter
 .ipynb_checkpoints
 *.ipynb_checkpoints/ 
+
+# Sweep
+wandb/
+logs/
+
+# CSV
+*.csv

@@ -631,10 +631,12 @@ def save_retrieval_results(
     all_ground_truth_reports: List[str],
     report_to_global_index: Dict[str, int],
     epoch: int,
-    output_dir: str
+    output_dir: str,
+    gpu_id: int
 ) -> None:
-    
-    val_csv_path = os.path.join(output_dir, f"val_epoch{epoch}.csv")
+    print(f"gpu_id: {gpu_id}")
+    val_csv_path = os.path.join(output_dir, f"val_epoch{epoch}_gpu{gpu_id}.csv")
+    print(f"Saving retrieval results to {val_csv_path}")
     with open(val_csv_path, mode="w", newline="", encoding="utf-8") as csvfile:
         writer = csv.writer(csvfile)
         header = [

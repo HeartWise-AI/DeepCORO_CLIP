@@ -631,8 +631,7 @@ def save_retrieval_results(
     all_ground_truth_reports: List[str],
     report_to_global_index: Optional[Dict[str, int]],
     epoch: int,
-    output_dir: str,
-    gpu_id: int
+    output_dir: str
 ) -> None:
     """
     Save retrieval results to a CSV, showing top-5 predicted indices and their similarities
@@ -640,7 +639,6 @@ def save_retrieval_results(
     ground-truth index.
     """
     val_csv_path = os.path.join(output_dir, f"val_epoch{epoch}.csv")
-
     with open(val_csv_path, mode="w", newline="", encoding="utf-8") as csvfile:
         writer = csv.writer(csvfile)
         header = [

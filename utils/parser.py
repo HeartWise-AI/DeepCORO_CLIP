@@ -1,6 +1,6 @@
 import os
 import argparse
-from utils.config import HeartWiseConfig, BaseConfig, SweepConfig
+from utils.config import HeartWiseConfig
 from utils.parser_typing import (
     str2bool, 
     parse_list, 
@@ -102,18 +102,10 @@ class HeartWiseParser:
         args = parser.parse_args()
 
         # Load base config from yaml
-        base_config: BaseConfig = BaseConfig.from_yaml(args.base_config)
-        print(f"Base config: {base_config}")
-        # Create sweep config from args
-        sweep_config: SweepConfig = SweepConfig.from_args(args)
-        print(f"Sweep config: {sweep_config}")
+        config: HeartWiseConfig = HeartWiseConfig.from_yaml(args.base_config)
         
-        # Create HeartWiseConfig from both configs
-        config: HeartWiseConfig = HeartWiseConfig.from_config(
-            base_config, 
-            sweep_config
-        )
-        print(f"HeartWise config: {config}")
+        # Create sweep config from args
+        config: HeartWiseConfig = HeartWiseConfig.update_config_with_args(config, args)
         
         # Set GPU info
         HeartWiseParser.set_gpu_info(config)

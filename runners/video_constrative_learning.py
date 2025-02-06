@@ -424,7 +424,17 @@ class VideoContrastiveLearningRunner:
             retrieval_metrics.update(ndcg_score)
             retrieval_metrics["MAP"] = map_score
             retrieval_metrics["MedianRank_V2T"] = median_rank_score
-
+            # ------------------------------
+            # Approach A: Save val_texts.csv
+            # in the exact NxN order
+            # ------------------------------
+            df_texts = pd.DataFrame({
+                "Index": range(len(global_reports)),
+                "Text": global_reports
+            })
+            texts_csv_path = os.path.join(self.output_dir, f"val_texts.csv")
+            df_texts.to_csv(texts_csv_path, index=False)
+            print(f"[DEBUG rank={self.device}] Saved val_texts.csv with {len(global_reports)} lines at {texts_csv_path}")
             print(
                 f"[DEBUG rank={self.device}] Completed retrieval metrics & logging for val at epoch={epoch}"
             )

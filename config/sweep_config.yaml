@@ -1,7 +1,7 @@
 # sweep_config.yaml
 command:
   - torchrun
-  - "--nproc_per_node=3"
+  - "--nproc_per_node=1"
   - "--master_port=29500"
   - "scripts/train_model_multi_gpu.py"
   - "--base_config"
@@ -10,7 +10,7 @@ command:
 
 name: "dev_deep_coro_clip"
 project: "dev_deep_coro_clip"
-entity: "mhi_ai"
+entity: "jacques-delfrate"
 
 method: bayes
 
@@ -20,7 +20,7 @@ metric:
 
 parameters:
   lr:
-    values: [0.00003437789228576786]
+    values: [0.00002087457921275152]
   optimizer:
     values: ["RAdam"]
   scheduler_type:
@@ -28,7 +28,7 @@ parameters:
   lr_step_period:
     values: [15]
   factor:
-    values: [0.3]
+    values: [0.1]
   batch_size:
     values: [10]
   num_heads:
@@ -36,13 +36,13 @@ parameters:
   aggregator_depth:
     values: [2]
   temperature:
-    values: [0.07]
+    values: [0.08944473130286856]
   dropout:
-    values: [0.2]
+    values: [0.21500802783103076]
   video_freeze_ratio:
-    values: [0.8]
+    values: [0.9]
   text_freeze_ratio:
-    values: [0.95]
+    values: [0.8]
   weight_decay:
     values: [0.000001]
   loss_name:
@@ -54,7 +54,7 @@ parameters:
   project:
     values: ["dev_deep_coro_clip"]
   entity:
-    values: ["mhi_ai"]
+    values: ["jacques-delfrate"]
 
 early_terminate:
   type: hyperband

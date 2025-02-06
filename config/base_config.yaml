@@ -1,5 +1,5 @@
 # Training parameters
-epochs: !!int 20
+epochs: !!int 10
 num_workers: !!int 16
 debug: !!bool false
 use_amp: !!bool true
@@ -7,12 +7,12 @@ period: !!int 1
 device: !!str cuda
 
 # Dataset parameters
-data_filename: !!str data/reports/reports_sampled_no_conclusion.csv
+data_filename: !!str data/reports/reports_sampled_300_study_ids.csv
 root: !!str "."
 target_label: !!str Report
 datapoint_loc_label: !!str FileName
 frames: !!int 16
-stride: !!int 2
+stride: !!int 1
 multi_video: !!bool true
 num_videos: !!int 4
 groupby_column: !!str StudyInstanceUID
@@ -27,20 +27,21 @@ model_name: !!str mvit
 pretrained: !!bool true
 
 # Optimizer parameters
-learning_rate: !!float 0.00003437789228576786
 optimizer: !!str RAdam
 weight_decay: !!float 0.000001
 scheduler_type: !!str step
+lr: !!float 0.00002087457921275152
 lr_step_period: !!int 5
-factor: !!float 0.3
+factor: !!float 0.1
+loss_name: !!str contrastive
 
 # Model architecture parameters
-num_heads: !!int 4
-aggregator_depth: !!int 1
-temperature: !!float 0.1025642383149142
-dropout: !!float 0.09078949362395336
-video_freeze_ratio: !!float 0.8
-text_freeze_ratio: !!float 1.0
+num_heads: !!int 2
+aggregator_depth: !!int 2
+temperature: !!float 0.08944473130286856
+dropout: !!float 0.21500802783103076
+video_freeze_ratio: !!float 0.9
+text_freeze_ratio: !!float 0.8
 
 # Checkpointing
 resume_training: !!bool false
@@ -50,7 +51,7 @@ save_best: !!str loss
 
 # Metrics
 # Recall @k
-recall_k: [1, 5, 10]
+recall_k: [1, 5, 10, 50]
 # NDCG @k
 ndcg_k: [5]
 
@@ -59,3 +60,9 @@ rand_augment: !!bool true
 resize: !!int 224
 view_count: !!null null
 apply_mask: !!bool false
+
+# wandb parameters
+tag: !!str mvit_pretrained
+name: !!str dev_deep_coro_clip
+project: !!str dev_deep_coro_clip
+entity: !!str mhi_ai

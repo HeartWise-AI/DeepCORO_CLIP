@@ -629,14 +629,18 @@ def save_retrieval_results(
     similarity_matrix: torch.Tensor,
     all_paths: List[str],
     all_ground_truth_reports: List[str],
-    report_to_global_index: Dict[str, int],
+    report_to_global_index: Optional[Dict[str, int]],
     epoch: int,
     output_dir: str,
     gpu_id: int
 ) -> None:
-    print(f"gpu_id: {gpu_id}")
-    val_csv_path = os.path.join(output_dir, f"val_epoch{epoch}_gpu{gpu_id}.csv")
-    print(f"Saving retrieval results to {val_csv_path}")
+    """
+    Save retrieval results to a CSV, showing top-5 predicted indices and their similarities
+    for each sample. If report_to_global_index is None, we default to using row index i as the
+    ground-truth index.
+    """
+    val_csv_path = os.path.join(output_dir, f"val_epoch{epoch}.csv")
+
     with open(val_csv_path, mode="w", newline="", encoding="utf-8") as csvfile:
         writer = csv.writer(csvfile)
         header = [
@@ -660,18 +664,20 @@ def save_retrieval_results(
             predicted_indices = [idx.item() for idx in top_5_text_indices]
             predicted_sims = [similarity_matrix[i, idx].item() for idx in top_5_text_indices]
 
-            row_data = [path]
             gt_text = all_ground_truth_reports[i]
 
+            # If we have a mapping dict, use it. Otherwise just use row index i.
+            if report_to_global_index is not None:
+                gt_idx = report_to_global_index[gt_text]
+            else:
+                gt_idx = i
 
-            # Convert ground-truth text to index
-            gt_idx = report_to_global_index[gt_text]
-
-
-            row_data.append(gt_idx)
+            row_data = [path, gt_idx]
 
             for p_idx, p_sim in zip(predicted_indices, predicted_sims):
                 row_data.append(p_idx)
                 row_data.append(f"{p_sim:.4f}")
 
             writer.writerow(row_data)
+
+    print(f"Saved retrieval results to {val_csv_path}")

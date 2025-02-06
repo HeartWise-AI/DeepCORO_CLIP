@@ -14,7 +14,7 @@ datapoint_loc_label: !!str FileName
 frames: !!int 16
 stride: !!int 1
 multi_video: !!bool true
-num_videos: !!int 4
+num_videos: !!int 5
 groupby_column: !!str StudyInstanceUID
 shuffle_videos: !!bool true
 batch_size: !!int 10

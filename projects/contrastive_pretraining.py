@@ -288,11 +288,6 @@ class ContrastivePretraining:
             config=self.config
         )
 
-        if self.config.is_ref_device:
-            self._save_texts_csv(
-                output_dir=training_setup["full_output_path"],
-                texts=training_setup["val_loader"].dataset.get_all_reports(),
-            )
 
         val_reports = training_setup["val_loader"].dataset.get_all_reports()
         val_report_to_index = {r: i for i, r in enumerate(val_reports)}

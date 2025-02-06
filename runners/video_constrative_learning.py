@@ -4,38 +4,43 @@ import numpy as np
 
 import torch
 import torch.nn as nn
-
+import torch.distributed as dist
 from torch.optim import AdamW
-from torch.amp import GradScaler
+from torch.cuda.amp import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
 
 from tqdm import tqdm
+import pickle
 
 from utils.ddp import gather_loss
 from utils.config import HeartWiseConfig
 from utils.registry import RunnerRegistry
 from utils.metrics import (
-    compute_mrr, 
+    compute_mrr,
     compute_map,
     compute_ndcg_at_k,
     compute_median_rank,
-    compute_recall_at_k, 
-    compute_embedding_norms, 
-    compute_alignment_score
+    compute_recall_at_k,
+    compute_embedding_norms,
+    compute_alignment_score,
 )
 from utils.logging import (
-    log_best_worst_retrievals, 
+    log_best_worst_retrievals,
     log_gradient_norms,
-    save_retrieval_results
+    save_retrieval_results,
 )
-
 from models.video_encoder import VideoEncoder
 from models.text_encoder import TextEncoder
 
 
-@RunnerRegistry.register('video_contrastive_learning')
+@RunnerRegistry.register("video_contrastive_learning")
 class VideoContrastiveLearningRunner:
+    """
+    This class runs a video contrastive learning pipeline using a VideoEncoder and TextEncoder.
+    It handles both training and validation loops in a distributed data-parallel setting.
+    """
+
     def __init__(
         self,
         config: HeartWiseConfig,
@@ -52,14 +57,33 @@ class VideoContrastiveLearningRunner:
         loss_fn: callable,
         output_dir: str,
     ):
-        # Add validation for recall_k
+        """
+        Initialize the runner with provided configurations, data loaders, and modules.
+
+        :param config: HeartWiseConfig object with run/training configuration.
+        :param device: Integer specifying the GPU index.
+        :param world_size: Number of GPUs used in DDP.
+        :param train_loader: DataLoader for training dataset.
+        :param val_loader: DataLoader for validation dataset.
+        :param video_encoder: VideoEncoder model.
+        :param text_encoder: TextEncoder model.
+        :param optimizer: AdamW optimizer instance.
+        :param scaler: GradScaler for automatic mixed precision.
+        :param log_temp: Logarithm of temperature used in contrastive loss.
+        :param lr_scheduler: Learning rate scheduler.
+        :param loss_fn: Contrastive loss function callable.
+        :param output_dir: Directory where checkpoints and outputs will be saved.
+        :raises ValueError: If recall_k or ndcg_k are not lists of ints.
+        """
         if not isinstance(config.recall_k, list):
-            raise ValueError("config.recall_k must be a list of integers, "
-                             f"got {type(config.recall_k)}")
+            raise ValueError(
+                f"config.recall_k must be a list of ints, got {type(config.recall_k)}"
+            )
         if not isinstance(config.ndcg_k, list):
-            raise ValueError("config.ndcg_k must be a list of integers, "
-                             f"got {type(config.ndcg_k)}")
-        
+            raise ValueError(
+                f"config.ndcg_k must be a list of ints, got {type(config.ndcg_k)}"
+            )
+
         self.config: HeartWiseConfig = config
         self.device: int = device
         self.world_size: int = world_size
@@ -72,311 +96,423 @@ class VideoContrastiveLearningRunner:
         self.lr_scheduler: LRScheduler = lr_scheduler
         self.loss_fn: callable = loss_fn
         self.output_dir: str = output_dir
-        self.best_val_loss = float('inf')
+        self.best_val_loss = float("inf")
         self.best_epoch = -1
         self.log_temp = log_temp
-        
-    def _compute_text_embeddings(self, reports: list[str]) -> tuple[torch.Tensor, dict[str, int]]:
-        """Compute text embeddings for a list of reports."""
-        report_to_index = {r: i for i, r in enumerate(reports)}
-        
-        # Tokenize all reports
-        encoded_texts = self.train_loader.dataset.tokenizer(
-            reports,
-            padding=True,
-            truncation=True,
-            return_tensors="pt"
-        )
-        
-        # Move to device
-        input_ids = encoded_texts["input_ids"].to(self.device)
-        attention_mask = encoded_texts["attention_mask"].to(self.device)
-        
-        # Compute embeddings in batches
-        batch_size = 256
-        all_embeddings = []
-        
-        with torch.no_grad():
-            for i in range(0, len(reports), batch_size):
-                batch_input_ids = input_ids[i:i + batch_size]
-                batch_attention_mask = attention_mask[i:i + batch_size]
-                
-                embeddings = self.text_encoder(batch_input_ids, batch_attention_mask)
-                all_embeddings.append(embeddings)
-                
-        text_embeddings = torch.cat(all_embeddings, dim=0)
-        return text_embeddings, report_to_index
 
-    def train(self):    
+    def train(self):
+        """
+        Main training loop. Iterates through epochs, performing:
+          - Training step
+          - Validation step
+          - Checkpoint saving
+          - LR scheduling
+
+        :raises ValueError: If `resume_training` is True but `checkpoint` is not provided.
+        """
         if self.config.resume_training and not self.config.checkpoint:
             raise ValueError("Flag 'resume_training' is set, but no checkpoint provided")
-        
+
         if self.config.resume_training and self.config.checkpoint:
-            print(f"[VideoContrastiveLearningRunner] Resuming from checkpoint: {self.config.checkpoint}")
+            print(
+                f"[VideoContrastiveLearningRunner] Resuming from checkpoint: {self.config.checkpoint}"
+            )
             wandb_run, start_epoch, best_val_loss, best_epoch = self._preview_checkpoint_for_resuming(
                 self.config.checkpoint
             )
-        
-        # Training loop
-        for epoch in range(self.config.epochs):           
-            # Synchronize before epoch starts
+        else:
+            start_epoch = 0
+
+        for epoch in range(start_epoch, self.config.epochs):
+            # Synchronize before epoch starts (DDP barrier)
             if self.world_size > 1:
-                torch.distributed.barrier(device_ids=[self.device])
-                
+                dist.barrier()
+
             # Training phase
-            train_metrics = self._run_epoch(
-                mode="train", 
-                epoch=epoch
-            )
-            if self.config.is_ref_device:
+            train_metrics = self._run_epoch(mode="train", epoch=epoch)
+            if self.config.is_ref_device or (self.device == 0):
+                # Let wandb auto-increment steps
                 wandb.log(train_metrics)
-            
-            # Synchronize before validation
+                print(f"[DEBUG] rank={self.device} => Logged train metrics to W&B")
+
+            # Sync before validation
             if self.world_size > 1:
-                torch.distributed.barrier(device_ids=[self.device])
-                
+                dist.barrier()
+
             # Validation phase
-            val_metrics = self._run_epoch(
-                mode="val", 
-                epoch=epoch
-            )
-            if self.config.is_ref_device:
+            val_metrics = self._run_epoch(mode="val", epoch=epoch)
+            if self.config.is_ref_device or (self.device == 0):
+                # Let wandb auto-increment steps
                 wandb.log(val_metrics)
-            
-            # Synchronize after validation
+                print(f"[DEBUG] rank={self.device} => Logged val metrics to W&B")
+
+            # Sync after validation
             if self.world_size > 1:
-                torch.distributed.barrier(device_ids=[self.device])
-            
-            # Update best model based on validation performance
+                dist.barrier()
+
+            # Update best model
             if val_metrics["val/loss"] < self.best_val_loss:
-                previous_best = self.best_val_loss
+                prev_best = self.best_val_loss
                 self.best_val_loss = val_metrics["val/loss"]
                 self.best_epoch = epoch
-                if self.config.is_ref_device:   
-                    print(f"\nNew best model! Val Loss: {val_metrics['val/loss']:.4f} "
-                          f"(previous: {previous_best:.4f})")
+                if self.config.is_ref_device or (self.device == 0):
+                    print(
+                        f"\nNew best model! Val Loss: {val_metrics['val/loss']:.4f} "
+                        f"(previous: {prev_best:.4f})"
+                    )
                     self._save_checkpoint(
                         epoch=epoch,
-                        metrics={
-                            **train_metrics,
-                            **val_metrics
-                        },
-                        is_best=True
-                    )                    
-                                
-            if self.config.is_ref_device:
+                        metrics={**train_metrics, **val_metrics},
+                        is_best=True,
+                    )
+
+            # Always save "latest" checkpoint
+            if self.config.is_ref_device or (self.device == 0):
                 self._save_checkpoint(
                     epoch=epoch,
-                    metrics={
-                        **train_metrics,
-                        **val_metrics
-                    },
-                    is_best=False
+                    metrics={**train_metrics, **val_metrics},
+                    is_best=False,
                 )
-                
-            # Learning rate scheduler step if it exists
+
+            # LR scheduler step
             if self.lr_scheduler:
                 self.lr_scheduler.step()
 
-    def _run_epoch(
-        self, 
-        mode: str,
-        epoch: int,
-    ) -> dict[str, float]:
+    def _gather_tensor_along_batch(self, local_tensor: torch.Tensor, world_size: int) -> torch.Tensor:
+        """
+        Gathers tensors across multiple ranks along the batch dimension (dim=0).
+
+        :param local_tensor: Local tensor to gather from current rank.
+        :param world_size: Number of participating ranks.
+        :return: Concatenated tensor containing data from all ranks.
+        """
+        if not dist.is_initialized() or world_size < 2:
+            return local_tensor
+
+        device = local_tensor.device
+        local_size = torch.tensor([local_tensor.shape[0]], device=device, dtype=torch.long)
+        sizes_list = [torch.zeros_like(local_size) for _ in range(world_size)]
+        dist.all_gather(sizes_list, local_size)
+        sizes_list = [s.item() for s in sizes_list]
+        max_size = max(sizes_list)
+
+        # Pad to max_size along dim=0
+        if local_tensor.dim() == 1:
+            pad = (0, max_size - local_tensor.shape[0])
+            padded = torch.nn.functional.pad(local_tensor, pad, "constant", 0)
+        else:
+            pad_rows = max_size - local_tensor.shape[0]
+            if pad_rows > 0:
+                padded = torch.nn.functional.pad(local_tensor, (0, 0, 0, pad_rows))
+            else:
+                padded = local_tensor
+
+        gathered = [torch.zeros_like(padded) for _ in range(world_size)]
+        dist.all_gather(gathered, padded)
+
+        cat = torch.stack(gathered, dim=0)
+        out_list = []
+        for rank_idx in range(world_size):
+            actual_size = sizes_list[rank_idx]
+            if local_tensor.dim() == 1:
+                out_list.append(cat[rank_idx, :actual_size])
+            else:
+                out_list.append(cat[rank_idx, :actual_size, :])
+        return torch.cat(out_list, dim=0)
+
+    def _gather_strings_across_gpus(
+        self, local_strings: list[str], world_size: int, device: torch.device
+    ) -> list[str]:
+        """
+        Gathers lists of strings from multiple ranks into one combined list.
+
+        :param local_strings: List of strings on the current rank.
+        :param world_size: Number of participating ranks.
+        :param device: CUDA device.
+        :return: Combined list of strings from all ranks.
+        """
+        if not dist.is_initialized() or world_size < 2:
+            return local_strings
+
+        import pickle
+
+        local_data_bytes = pickle.dumps(local_strings)
+        local_size = torch.tensor([len(local_data_bytes)], dtype=torch.long, device=device)
+
+        sizes_list = [torch.zeros_like(local_size) for _ in range(world_size)]
+        dist.all_gather(sizes_list, local_size)
+        sizes_list = [s.item() for s in sizes_list]
+        max_size = max(sizes_list)
+
+        local_buffer = torch.zeros(max_size, dtype=torch.uint8, device=device)
+        local_buffer[: local_size.item()] = torch.as_tensor(
+            list(local_data_bytes), dtype=torch.uint8, device=device
+        )
+
+        all_buffers = [torch.zeros(max_size, dtype=torch.uint8, device=device) for _ in range(world_size)]
+        dist.all_gather(all_buffers, local_buffer)
+
+        out_list = []
+        for rank_idx, buf in enumerate(all_buffers):
+            size = sizes_list[rank_idx]
+            valid_bytes = buf[:size].cpu().numpy().tobytes()
+            str_list = pickle.loads(valid_bytes)
+            out_list.extend(str_list)
+
+        return out_list
+
+    def _run_epoch(self, mode: str, epoch: int) -> dict[str, float]:
+        """
+        Runs either a training or validation epoch. Gathers embeddings across ranks
+        and optionally computes NxN retrieval metrics on rank 0.
+
+        :param mode: One of ["train", "val"] indicating the mode.
+        :param epoch: Current epoch index.
+        :return: Dictionary of metrics, averaged over all batches and reduced across ranks.
+        """
         assert mode in ["train", "val"]
-        
-        # Set model mode
+
         self.video_encoder.train(mode == "train")
         self.text_encoder.train(mode == "train")
-        
-        # Initialize metrics
+
         total_loss = 0.0
         epoch_metrics = {}
-        
-        # Get appropriate dataloader
-        dataloader = self.train_loader if mode == "train" else self.val_loader
-        
-        # Get appropriate step function
-        step_fn = self._train_step if mode == "train" else self._val_step      
-        
-        # Progress bar
-        tqdm_desc = f'Running {mode} Epoch {epoch + 1}'
-        progress = tqdm(dataloader, desc=tqdm_desc) if self.device == 0 else dataloader
 
-        # Collect embeddings for validation
-        all_video_embeddings = []
-        all_text_embeddings = []
-        all_paths = []
-        all_ground_truth_reports = []
-                
-        # Run batches
-        for batch_idx, batch in enumerate(progress, start=1):
+        dataloader = self.train_loader if mode == "train" else self.val_loader
+        step_fn = self._train_step if mode == "train" else self._val_step
+
+        # Store local embeddings & text for retrieval computations
+        all_video_embeddings_local = []
+        all_text_embeddings_local = []
+        all_paths_local = []
+        all_ground_truth_reports_local = []
+
+        tqdm_desc = f"[GPU {self.device}] Running {mode} Epoch {epoch + 1}"
+        if (self.config.is_ref_device or (self.device == 0)):
+            data_iter = tqdm(dataloader, desc=tqdm_desc)
+        else:
+            data_iter = dataloader
+
+        batch_count = 0
+        for batch_idx, batch in enumerate(data_iter, start=1):
             if batch["videos"] is None or batch["encoded_texts"] is None:
                 continue
-                
+
             step_inputs, paths_or_sids = self._preprocess_inputs(batch)
 
-            # If not multi-video, add a singleton dimension to the video tensor 
             if not self.config.multi_video:
-                step_inputs['videos'] = step_inputs['videos'].unsqueeze(1) # VideoEncoder expects (B,Nvideos,T,H,W,3)
-            
-            # Run step
+                # shape => [B, 1, T, H, W, C]
+                step_inputs["videos"] = step_inputs["videos"].unsqueeze(1)
+
             batch_metrics, embeddings = step_fn(**step_inputs)
-            
-            # Append embeddings to lists
-            all_video_embeddings.append(embeddings["video_embeddings"].cpu())
-            all_text_embeddings.append(embeddings["text_embeddings"].cpu())
+
+            # Store embeddings on CPU
+            all_video_embeddings_local.append(embeddings["video_embeddings"].cpu())
+            all_text_embeddings_local.append(embeddings["text_embeddings"].cpu())
+
             if self.config.multi_video:
                 for sid in paths_or_sids:
-                    # get the *list* of underlying video paths
                     vid_list = dataloader.dataset.get_video_paths(sid)
                     if len(vid_list) > 0:
-                        all_paths.append(vid_list[0])
+                        all_paths_local.append(vid_list[0])
                     else:
-                        all_paths.append(str(sid))
+                        all_paths_local.append(str(sid))
             else:
-                all_paths.extend(paths_or_sids)
-                
-            all_ground_truth_reports.extend(
-                dataloader.dataset.get_reports(paths_or_sids)
-            )
-            
-            # Accumulate metrics
+                all_paths_local.extend(paths_or_sids)
+
+            all_ground_truth_reports_local.extend(dataloader.dataset.get_reports(paths_or_sids))
+
+            # accumulate metrics
             for k, v in batch_metrics.items():
-                epoch_metrics[k] = epoch_metrics.get(k, 0) + v
-                        
-            # Update progress bar
-            total_loss += batch_metrics["loss"]
-            if self.device == 0:
-                progress.set_postfix({
-                    f"{mode}_loss": f"{batch_metrics['loss']:.4f}",
-                    "avg_loss": f"{(total_loss / batch_idx):.4f}"
-                })
+                epoch_metrics[k] = epoch_metrics.get(k, 0.0) + float(v)
+
+            total_loss += float(batch_metrics["loss"])
+            batch_count += 1
+
+            if (self.config.is_ref_device or (self.device == 0)) and mode == "train":
+                data_iter.set_postfix(
+                    {
+                        f"{mode}_loss": f"{batch_metrics['loss']:.4f}",
+                        "avg_loss": f"{(total_loss / batch_count):.4f}",
+                    }
+                )
 
             del batch_metrics, embeddings
             torch.cuda.empty_cache()
 
-        # Compute means for all metrics
-        epoch_metrics = {
-            k: v / batch_idx for k, v in epoch_metrics.items()
-        }
-        
-        # Process embeddings for recall computation
-        all_video_embeddings = torch.cat(all_video_embeddings, dim=0).to(self.device)
-        all_text_embeddings = torch.cat(all_text_embeddings, dim=0).to(self.device)
-                
-        # Get texts and create mapping
-        text_to_idx = {text: idx for idx, text in enumerate(all_ground_truth_reports)}
-        
-        # Create ground truth indices - map each video to index of its text
-        ground_truth_indices = torch.tensor([
-            text_to_idx[text] for text in all_ground_truth_reports
-        ], device=self.device)
-        
-        # # Get embeddings for unique texts only
-        # unique_text_embeddings = []
-        # for text in all_ground_truth_reports:
-        #     # Find first occurrence of this text
-        #     idx = all_ground_truth_reports.index(text)
-        #     unique_text_embeddings.append(all_text_embeddings[idx])
-        # unique_text_embeddings = torch.stack(unique_text_embeddings)
-                    
-        # Normalize embeddings
-        all_video_embeddings_normalized = nn.functional.normalize(all_video_embeddings, dim=1)
-        all_text_embeddings_normalized = nn.functional.normalize(all_text_embeddings, dim=1)
-        
-        # After computing similarity matrix and before computing metrics
-        if mode == "val" and self.config.is_ref_device:
-            # Compute similarity matrix between videos and unique texts
-            similarity_matrix = torch.matmul(
-                all_video_embeddings_normalized, 
-                all_text_embeddings_normalized.T
-            )
-            
-            log_best_worst_retrievals(
-                similarity_matrix=similarity_matrix,
-                all_paths=all_paths,
-                unique_texts=all_ground_truth_reports,
-                ground_truth_indices=ground_truth_indices,
-                epoch=epoch
-            )
-            save_retrieval_results(
-                similarity_matrix=similarity_matrix,
-                all_paths=all_paths,
-                all_ground_truth_reports=all_ground_truth_reports,
-                report_to_global_index=text_to_idx,
-                epoch=epoch,
-                output_dir=self.output_dir
+        # finalize epoch metrics
+        if batch_count > 0:
+            for k in epoch_metrics.keys():
+                epoch_metrics[k] /= batch_count
+
+        # 1) Concat local feats
+        if len(all_video_embeddings_local) > 0:
+            local_video_feats = torch.cat(all_video_embeddings_local, dim=0).to(self.device)
+            local_text_feats = torch.cat(all_text_embeddings_local, dim=0).to(self.device)
+        else:
+            local_video_feats = torch.empty((0, 512), device=self.device)
+            local_text_feats = torch.empty((0, 512), device=self.device)
+
+        if (self.config.is_ref_device or (self.device == 0)):
+            print(
+                f"[DEBUG rank={self.device}] local_video_feats={local_video_feats.shape}, "
+                f"local_text_feats={local_text_feats.shape}, mode={mode}"
             )
 
-            # Compute metrics on this GPU's portion of data
-            recall_metrics = compute_recall_at_k(similarity_matrix, ground_truth_indices, k_values=self.config.recall_k)
+        # 2) gather across GPUs
+        global_video_feats = self._gather_tensor_along_batch(local_video_feats, self.world_size)
+        global_text_feats = self._gather_tensor_along_batch(local_text_feats, self.world_size)
+
+        # 3) gather paths & reports
+        global_paths = self._gather_strings_across_gpus(
+            all_paths_local, self.world_size, device=local_video_feats.device
+        )
+        global_reports = self._gather_strings_across_gpus(
+            all_ground_truth_reports_local, self.world_size, device=local_video_feats.device
+        )
+
+        # Optionally compute NxN retrieval metrics on rank 0
+        retrieval_metrics = {}
+        if mode == "val" and (self.config.is_ref_device or (self.device == 0)):
+            print(
+                f"[DEBUG rank={self.device}] Starting NxN sim matrix with {global_video_feats.shape[0]} items."
+            )
+            global_video_feats = nn.functional.normalize(global_video_feats, dim=1)
+            global_text_feats = nn.functional.normalize(global_text_feats, dim=1)
+
+            similarity_matrix = torch.matmul(global_video_feats, global_text_feats.t())
+            print(
+                f"[DEBUG rank={self.device}] NxN sim matrix done. shape={similarity_matrix.shape}"
+            )
+
+            # Instead of mapping text -> index, just use each row = its own correct index
+            ground_truth_indices = torch.arange(global_text_feats.size(0), device=self.device)
+
+            # log best/worst retrievals
+            log_best_worst_retrievals(
+                similarity_matrix=similarity_matrix,
+                all_paths=global_paths,
+                # It's still okay to pass these as "unique_texts"; each row is just a text now.
+                unique_texts=global_reports,
+                ground_truth_indices=ground_truth_indices,
+                epoch=epoch,
+            )
+
+            # For saving retrieval results, we no longer pass a report_to_global_index
+            save_retrieval_results(
+                similarity_matrix=similarity_matrix,
+                all_paths=global_paths,
+                all_ground_truth_reports=global_reports,
+                report_to_global_index=None,  # No dictionary
+                epoch=epoch,
+                output_dir=self.output_dir,
+            )
+
+            # compute retrieval metrics
+            recall_metrics = compute_recall_at_k(
+                similarity_matrix, ground_truth_indices, k_values=self.config.recall_k
+            )
             mrr_score = compute_mrr(similarity_matrix, ground_truth_indices)
             map_score = compute_map(similarity_matrix, ground_truth_indices)
             median_rank_score = compute_median_rank(similarity_matrix, ground_truth_indices)
-            ndcg_score = compute_ndcg_at_k(similarity_matrix, ground_truth_indices, k_values=self.config.ndcg_k)
-            
-            # Update dictionary with hashmap type metrics
-            epoch_metrics.update(recall_metrics)
-            epoch_metrics.update(mrr_score)
-            epoch_metrics.update(ndcg_score)
-            
-            # Update dictionary with float type metrics
-            epoch_metrics['MAP'] = map_score
-            epoch_metrics['MedianRank_V2T'] = median_rank_score
+            ndcg_score = compute_ndcg_at_k(
+                similarity_matrix, ground_truth_indices, k_values=self.config.ndcg_k
+            )
 
-        # Gather and average all metrics across GPUs
-        gathered_metrics = {
-            f"{mode}/{k}": gather_loss([v], self.device) 
-            for k, v in epoch_metrics.items()
-        }
-        
+            retrieval_metrics.update(recall_metrics)
+            retrieval_metrics.update(mrr_score)
+            retrieval_metrics.update(ndcg_score)
+            retrieval_metrics["MAP"] = map_score
+            retrieval_metrics["MedianRank_V2T"] = median_rank_score
+
+            print(
+                f"[DEBUG rank={self.device}] Completed retrieval metrics & logging for val at epoch={epoch}"
+            )
+        else:
+            # Non-zero ranks: placeholders for the same metrics
+            for k_val in self.config.recall_k:
+                retrieval_metrics[f"Recall@{k_val}"] = 0.0
+            retrieval_metrics.update({
+                "MRR": 0.0,
+                "MAP": 0.0,
+                "MedianRank_V2T": 0.0,
+            })
+            for k_val in self.config.ndcg_k:
+                retrieval_metrics[f"NDCG@{k_val}"] = 0.0
+
+        epoch_metrics.update(retrieval_metrics)
+
+        # 4) reduce final epoch metrics across ranks
+        gathered_metrics = {}
+        for k, v in epoch_metrics.items():
+            gathered_metrics[f"{mode}/{k}"] = self._maybe_reduce_metric(k, v)
+
         return gathered_metrics
 
+    def _maybe_reduce_metric(self, name: str, val: float) -> float:
+        """
+        Optionally reduces (averages) a metric value across all ranks in DDP.
+
+        :param name: Metric name (unused here, but can be helpful for debug).
+        :param val: Metric value on current rank.
+        :return: Mean metric value across all ranks, if DDP is initialized. Otherwise, returns val.
+        """
+        if dist.is_initialized() and self.world_size > 1:
+            t = torch.tensor([val], dtype=torch.float, device=self.device)
+            dist.all_reduce(t, op=dist.ReduceOp.AVG)
+            return t.item()
+        else:
+            return val
+
     def _save_checkpoint(self, epoch: int, metrics: dict, is_best: bool = False):
-        checkpoint_dir: str = os.path.join(self.output_dir, "checkpoints")
+        """
+        Saves model checkpoint (including model weights, optimizer, scheduler, and metrics).
+
+        :param epoch: Current epoch index.
+        :param metrics: Dictionary of metrics to be saved.
+        :param is_best: If True, saves as 'best_epoch.pt'. Otherwise, saves as 'checkpoint.pt'.
+        """
+        checkpoint_dir = os.path.join(self.output_dir, "checkpoints")
         os.makedirs(checkpoint_dir, exist_ok=True)
-        
+
         model_dict = {
-            "video_encoder": self.video_encoder.module.state_dict() 
-                if hasattr(self.video_encoder, "module") 
-                else self.video_encoder.state_dict(),
-            "text_encoder": self.text_encoder.module.state_dict() 
-                if hasattr(self.text_encoder, "module") 
-                else self.text_encoder.state_dict(),
+            "video_encoder": self.video_encoder.module.state_dict()
+            if hasattr(self.video_encoder, "module")
+            else self.video_encoder.state_dict(),
+            "text_encoder": self.text_encoder.module.state_dict()
+            if hasattr(self.text_encoder, "module")
+            else self.text_encoder.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "scheduler": self.lr_scheduler.state_dict() if self.lr_scheduler else None,
             "epoch": epoch,
         }
-        
+
         checkpoint = {
             **model_dict,
             **metrics,
             "best_val_loss": self.best_val_loss,
-            "best_epoch": self.best_epoch
+            "best_epoch": self.best_epoch,
         }
-        
-        # Save checkpoint
+
         save_path = os.path.join(
-            checkpoint_dir, 
-            f"best_epoch.pt" if is_best else f"checkpoint.pt"
+            checkpoint_dir, "best_epoch.pt" if is_best else "checkpoint.pt"
         )
         torch.save(checkpoint, save_path)
-        print(f"\nSaved {'best' if is_best else 'latest'} checkpoint at epoch {epoch + 1}")
+        print(
+            f"\nSaved {'best' if is_best else 'latest'} checkpoint at epoch {epoch + 1} to {save_path}"
+        )
 
     def _preview_checkpoint_for_resuming(self, checkpoint_path: str):
         """
-        Quick "preview" function that loads minimal fields from the checkpoint 
-        on CPU, to retrieve wandb_run, epoch, best_val_loss, best_epoch, etc.
-        Returns:
-        wandb_run (str or None)
-        start_epoch (int)
-        best_val_loss (float)
-        best_epoch (int)
+        Loads minimal info (epoch, best_val_loss) from a checkpoint to preview
+        before deciding on a full resume.
+
+        :param checkpoint_path: Path to the checkpoint file.
+        :return: (wandb_run, start_epoch, best_val_loss, best_epoch) tuple of checkpoint info.
         """
         if not os.path.isfile(checkpoint_path):
             print(f"Warning: checkpoint not found at {checkpoint_path}.")
-            return None, 0, float('inf'), -1
+            return None, 0, float("inf"), -1
 
         print(f"[Preview] Loading minimal info from checkpoint: {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
@@ -387,15 +523,25 @@ class VideoContrastiveLearningRunner:
         best_epoch = checkpoint.get("best_epoch", -1)
 
         print(
-            f"[Preview] Found run_id={wandb_run}, "
-            f"start_epoch={start_epoch}, best_val_loss={best_val_loss}, best_epoch={best_epoch}"
+            f"[Preview] Found run_id={wandb_run}, start_epoch={start_epoch}, "
+            f"best_val_loss={best_val_loss}, best_epoch={best_epoch}"
         )
         return wandb_run, start_epoch, best_val_loss, best_epoch
 
     def _load_full_checkpoint(self, checkpoint_path: str, device, training_setup):
         """
-        After the model/optimizer/etc. is initialized, call this 
-        to actually load states from the checkpoint into them.
+        Loads a full checkpoint including encoders, optimizer, and scheduler states.
+
+        :param checkpoint_path: Path to the checkpoint file.
+        :param device: Device on which to map the checkpoint.
+        :param training_setup: Dict containing model/optimizer references, e.g.
+          {
+            "video_encoder": self.video_encoder,
+            "text_encoder": self.text_encoder,
+            "optimizer": self.optimizer,
+            "scheduler": self.lr_scheduler
+          }
+        :return: None. Modifies models/optimizer in-place.
         """
         if not os.path.isfile(checkpoint_path):
             print(f"Warning: checkpoint not found at {checkpoint_path}. No loading done.")
@@ -419,149 +565,143 @@ class VideoContrastiveLearningRunner:
         if "scheduler" in checkpoint and checkpoint["scheduler"] and scheduler is not None:
             scheduler.load_state_dict(checkpoint["scheduler"])
 
-    def _run_batch(
-        self, 
-        batch: dict[str, torch.Tensor], 
-        step_fn: callable
-    ) -> dict[str, torch.Tensor]:
-        inputs: dict[str, torch.Tensor] = self._preprocess_inputs(batch)               
-        return step_fn(**inputs)
+    def _preprocess_inputs(self, batch: dict) -> tuple[dict, list[str]]:
+        """
+        Moves raw batch data (videos, texts) to GPU and returns a dictionary suitable
+        for the model step, along with a list of paths or IDs for each sample.
 
-    def _preprocess_inputs(
-        self, 
-        batch: dict[str, torch.Tensor]
-    ) -> tuple[dict[str, torch.Tensor], list[str]]:
+        :param batch: Dictionary containing 'videos', 'encoded_texts', and 'paths'.
+        :return: (step_inputs, paths_or_sids)
+        """
         return {
             "videos": batch["videos"].to(self.device).float(),
-            "input_ids": batch["encoded_texts"]["input_ids"].to(self.device), 
-            "attention_mask": batch["encoded_texts"]["attention_mask"].to(self.device)
+            "input_ids": batch["encoded_texts"]["input_ids"].to(self.device),
+            "attention_mask": batch["encoded_texts"]["attention_mask"].to(self.device),
         }, batch["paths"]
 
     def _train_step(
-        self, 
-        videos: torch.Tensor,
-        input_ids: torch.Tensor, 
-        attention_mask: torch.Tensor, 
-    ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:  
-        # Zero gradients at the start
+        self, videos: torch.Tensor, input_ids: torch.Tensor, attention_mask: torch.Tensor
+    ) -> tuple[dict, dict]:
+        """
+        Performs a single training step, including forward, backward, gradient update,
+        and metric computation.
+
+        :param videos: Tensor of shape [B, num_clips, T, H, W, C].
+        :param input_ids: Encoded text token IDs.
+        :param attention_mask: Attention mask for text.
+        :return: (batch_metrics, embeddings) where
+          - batch_metrics is a dictionary with loss, alignment scores, etc.
+          - embeddings is a dictionary with 'video_embeddings' and 'text_embeddings'.
+        """
         self.optimizer.zero_grad()
-        
-        # Forward pass
+
         if self.scaler:
-            with torch.amp.autocast('cuda'):
-                # Get features
+            with torch.amp.autocast("cuda"):
                 video_embeddings = self.video_encoder(videos)
                 text_embeddings = self.text_encoder(input_ids, attention_mask)
-
-                # Compute loss
                 loss = self.loss_fn(video_embeddings, text_embeddings, self.log_temp)
 
-            # Backward pass
             self.scaler.scale(loss).backward()
-            
-            # Unscale once here
             self.scaler.unscale_(self.optimizer)
 
-            # Now log gradient norms
-            log_gradient_norms(
-                self.video_encoder,
-                prefix="train/video_encoder/",
-            )
-            log_gradient_norms(
-                self.text_encoder,
-                prefix="train/text_encoder/",
-            )
-            
-            # Optimizer step
+            # Log gradient norms
+            log_gradient_norms(self.video_encoder, prefix="train/video_encoder/")
+            log_gradient_norms(self.text_encoder, prefix="train/text_encoder/")
+
             self.scaler.step(self.optimizer)
             self.scaler.update()
-            
-            # Convert embeddings to float32 for metrics computation (AMP can cause issues later on)
+
             video_embeddings = video_embeddings.float()
-            text_embeddings = text_embeddings.float()                    
-            
+            text_embeddings = text_embeddings.float()
         else:
-            # Get features
             video_embeddings = self.video_encoder(videos)
             text_embeddings = self.text_encoder(input_ids, attention_mask)
-            
-            # Compute loss
-            loss = self.loss_fn(video_embeddings, text_embeddings, self.log_temp)  # Use normalized features
-            
+            loss = self.loss_fn(video_embeddings, text_embeddings, self.log_temp)
+
             loss.backward()
 
-            # Now log gradient norms
-            log_gradient_norms(
-                self.video_encoder,
-                prefix="train/video_encoder/",
-            )
-            log_gradient_norms(
-                self.text_encoder,
-                prefix="train/text_encoder/",
-            )
-            
-            self.optimizer.step()           
-        
-        # Compute metrics
-        with torch.no_grad():            
-            # Compute metrics
+            log_gradient_norms(self.video_encoder, prefix="train/video_encoder/")
+            log_gradient_norms(self.text_encoder, prefix="train/text_encoder/")
+
+            self.optimizer.step()
+
+        # metrics
+        with torch.no_grad():
             embedding_norms = compute_embedding_norms(video_embeddings, text_embeddings)
             alignment_score = compute_alignment_score(video_embeddings, text_embeddings)
-            
+
         metrics = {
             **embedding_norms,
-            "alignment_score": alignment_score
+            "alignment_score": alignment_score,
         }
-            
-        return {
-            "loss": loss.detach(), 
-            **{f"lr/{param_group['name']}": param_group['lr'] for param_group in self.optimizer.param_groups},
-            "temperature": self.log_temp.exp().detach(), # add temperature to metrics for wandb logging
-            **{k: v.detach() if torch.is_tensor(v) else v for k, v in metrics.items()}
-        }, {
-            "video_embeddings": video_embeddings,
-            "text_embeddings": text_embeddings
-        }
+
+        lr_metrics = {}
+        for i, pg in enumerate(self.optimizer.param_groups):
+            lr_metrics[f"lr/group_{i}"] = pg["lr"]
+
+        return (
+            {
+                "loss": loss.detach().item(),
+                **lr_metrics,
+                "temperature": self.log_temp.exp().detach().item(),
+                **{
+                    k: v.detach().item() if torch.is_tensor(v) else v
+                    for k, v in metrics.items()
+                },
+            },
+            {
+                "video_embeddings": video_embeddings,
+                "text_embeddings": text_embeddings,
+            },
+        )
 
     def _val_step(
-        self,
-        videos: torch.Tensor,
-        input_ids: torch.Tensor, 
-        attention_mask: torch.Tensor, 
-    ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
-            
+        self, videos: torch.Tensor, input_ids: torch.Tensor, attention_mask: torch.Tensor
+    ) -> tuple[dict, dict]:
+        """
+        Performs a single validation step (forward pass + metric computation).
+
+        :param videos: Tensor of shape [B, num_clips, T, H, W, C].
+        :param input_ids: Encoded text token IDs.
+        :param attention_mask: Attention mask for text.
+        :return: (batch_metrics, embeddings) similar to _train_step, but without backprop.
+        """
         with torch.no_grad():
-            with torch.amp.autocast('cuda'):
-                # Get features
+            with torch.amp.autocast("cuda"):
                 video_features = self.video_encoder(videos)
-                text_features = self.text_encoder(
-                    input_ids, 
-                    attention_mask
-                )
-                                
+                text_features = self.text_encoder(input_ids, attention_mask)
                 loss = self.loss_fn(video_features, text_features, self.log_temp)
 
-            # Compute metrics
             embedding_norms = compute_embedding_norms(video_features, text_features)
             alignment_score = compute_alignment_score(video_features, text_features)
-            
-        metrics = {
-            **embedding_norms,
-            "alignment_score": alignment_score
-        }
-        
-        return {
-            "loss": loss.detach(),
-            "temperature": self.log_temp.exp().detach(), # add temperature to metrics for wandb logging
-            **{k: v.detach() if torch.is_tensor(v) else v for k, v in metrics.items()}
-        }, {
-            "video_embeddings": video_features.float(),
-            "text_embeddings": text_features.float()
-        }
 
+        metrics = {"alignment_score": alignment_score, **embedding_norms}
+
+        return (
+            {
+                "loss": loss.detach().item(),
+                "temperature": self.log_temp.exp().detach().item(),
+                **{
+                    k: v.detach().item() if torch.is_tensor(v) else v
+                    for k, v in metrics.items()
+                },
+            },
+            {
+                "video_embeddings": video_features.float(),
+                "text_embeddings": text_features.float(),
+            },
+        )
 
     def validate(self):
+        """
+        Optional method for a dedicated validation-only routine.
+        Currently unimplemented.
+        """
         pass
 
     def test(self):
+        """
+        Optional method for a dedicated test routine.
+        Currently unimplemented.
+        """
         pass

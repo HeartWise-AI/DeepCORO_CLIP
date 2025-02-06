@@ -1,0 +1,138 @@
+Base config: BaseConfig(epochs=20, num_workers=16, debug=False, data_filename='data/reports/reports_sampled_300_study_ids.csv', root='.', target_label='Report', datapoint_loc_label='FileName', frames=16, stride=2, multi_video=True, num_videos=4, groupby_column='StudyInstanceUID', shuffle_videos=True, model_name='mvit', pretrained=True, output_dir='outputs', seed=42, use_amp=True, device='cuda', period=1, recall_k=[1, 5, 10], ndcg_k=[5], rand_augment=True, resize=224, apply_mask=False, view_count=None, save_best='loss', resume_training=False, checkpoint='outputs/deepCORO_CLIP/DeepCORO_Clip_Sweep_Learnable_Temp_Full_mvit_b12_f16_RAdam_lr0.0001_20250114-190320_2o5xoevj/checkpoints/latest.pt', text_weight_decay=1e-05, video_weight_decay=0.0001)
+Sweep config: SweepConfig(batch_size=10, lr=9.937439780866302e-05, optimizer='AdamW', scheduler_type='step', lr_step_period=15, factor=0.28226725679413667, video_weight_decay=2.7106896608541784e-06, text_weight_decay=4.470620260013158e-07, loss_name='contrastive', temperature=0.0798930434731445, dropout=0.2231857159865702, video_freeze_ratio=0.820397411636463, text_freeze_ratio=0.9446025097692076, num_heads=4, aggregator_depth=1, tag='mvit_pretrained', name='dev_deep_coro_clip', project='dev_deep_coro_clip', entity='mhi_ai')
+HeartWise config: HeartWiseConfig(lr=9.937439780866302e-05, batch_size=10, epochs=20, num_workers=16, debug=False, temperature=0.0798930434731445, data_filename='data/reports/reports_sampled_300_study_ids.csv', root='.', target_label='Report', datapoint_loc_label='FileName', frames=16, stride=2, multi_video=True, num_videos=4, groupby_column='StudyInstanceUID', shuffle_videos=True, model_name='mvit', pretrained=True, video_freeze_ratio=0.820397411636463, text_freeze_ratio=0.9446025097692076, dropout=0.2231857159865702, num_heads=4, aggregator_depth=1, optimizer='AdamW', scheduler_type='step', lr_step_period=15, factor=0.28226725679413667, video_weight_decay=2.7106896608541784e-06, text_weight_decay=4.470620260013158e-07, output_dir='outputs', seed=42, use_amp=True, device='cuda', period=1, loss_name='contrastive', recall_k=[1, 5, 10], ndcg_k=[5], rand_augment=True, resize=224, apply_mask=False, view_count=None, save_best='loss', resume_training=False, checkpoint='outputs/deepCORO_CLIP/DeepCORO_Clip_Sweep_Learnable_Temp_Full_mvit_b12_f16_RAdam_lr0.0001_20250114-190320_2o5xoevj/checkpoints/latest.pt', tag='mvit_pretrained', name='dev_deep_coro_clip', project='dev_deep_coro_clip', entity='mhi_ai')
+running main with gpu 0
+Base config: BaseConfig(epochs=20, num_workers=16, debug=False, data_filename='data/reports/reports_sampled_300_study_ids.csv', root='.', target_label='Report', datapoint_loc_label='FileName', frames=16, stride=2, multi_video=True, num_videos=4, groupby_column='StudyInstanceUID', shuffle_videos=True, model_name='mvit', pretrained=True, output_dir='outputs', seed=42, use_amp=True, device='cuda', period=1, recall_k=[1, 5, 10], ndcg_k=[5], rand_augment=True, resize=224, apply_mask=False, view_count=None, save_best='loss', resume_training=False, checkpoint='outputs/deepCORO_CLIP/DeepCORO_Clip_Sweep_Learnable_Temp_Full_mvit_b12_f16_RAdam_lr0.0001_20250114-190320_2o5xoevj/checkpoints/latest.pt', text_weight_decay=1e-05, video_weight_decay=0.0001)
+Sweep config: SweepConfig(batch_size=10, lr=9.937439780866302e-05, optimizer='AdamW', scheduler_type='step', lr_step_period=15, factor=0.28226725679413667, video_weight_decay=2.7106896608541784e-06, text_weight_decay=4.470620260013158e-07, loss_name='contrastive', temperature=0.0798930434731445, dropout=0.2231857159865702, video_freeze_ratio=0.820397411636463, text_freeze_ratio=0.9446025097692076, num_heads=4, aggregator_depth=1, tag='mvit_pretrained', name='dev_deep_coro_clip', project='dev_deep_coro_clip', entity='mhi_ai')
+HeartWise config: HeartWiseConfig(lr=9.937439780866302e-05, batch_size=10, epochs=20, num_workers=16, debug=False, temperature=0.0798930434731445, data_filename='data/reports/reports_sampled_300_study_ids.csv', root='.', target_label='Report', datapoint_loc_label='FileName', frames=16, stride=2, multi_video=True, num_videos=4, groupby_column='StudyInstanceUID', shuffle_videos=True, model_name='mvit', pretrained=True, video_freeze_ratio=0.820397411636463, text_freeze_ratio=0.9446025097692076, dropout=0.2231857159865702, num_heads=4, aggregator_depth=1, optimizer='AdamW', scheduler_type='step', lr_step_period=15, factor=0.28226725679413667, video_weight_decay=2.7106896608541784e-06, text_weight_decay=4.470620260013158e-07, output_dir='outputs', seed=42, use_amp=True, device='cuda', period=1, loss_name='contrastive', recall_k=[1, 5, 10], ndcg_k=[5], rand_augment=True, resize=224, apply_mask=False, view_count=None, save_best='loss', resume_training=False, checkpoint='outputs/deepCORO_CLIP/DeepCORO_Clip_Sweep_Learnable_Temp_Full_mvit_b12_f16_RAdam_lr0.0001_20250114-190320_2o5xoevj/checkpoints/latest.pt', tag='mvit_pretrained', name='dev_deep_coro_clip', project='dev_deep_coro_clip', entity='mhi_ai')
+running main with gpu 1
+("Config: {'lr': 9.937439780866302e-05, 'batch_size': 10, 'epochs': 20, "
+ "'num_workers': 16, 'debug': False, 'temperature': 0.0798930434731445, "
+ "'data_filename': 'data/reports/reports_sampled_300_study_ids.csv', 'root': "
+ "'.', 'target_label': 'Report', 'datapoint_loc_label': 'FileName', 'frames': "
+ "16, 'stride': 2, 'multi_video': True, 'num_videos': 4, 'groupby_column': "
+ "'StudyInstanceUID', 'shuffle_videos': True, 'model_name': 'mvit', "
+ "'pretrained': True, 'video_freeze_ratio': 0.820397411636463, "
+ "'text_freeze_ratio': 0.9446025097692076, 'dropout': 0.2231857159865702, "
+ "'num_heads': 4, 'aggregator_depth': 1, 'optimizer': 'AdamW', "
+ "'scheduler_type': 'step', 'lr_step_period': 15, 'factor': "
+ "0.28226725679413667, 'video_weight_decay': 2.7106896608541784e-06, "
+ "'text_weight_decay': 4.470620260013158e-07, 'output_dir': 'outputs', 'seed': "
+ "42, 'use_amp': True, 'device': 'cuda', 'period': 1, 'loss_name': "
+ "'contrastive', 'recall_k': [1, 5, 10], 'ndcg_k': [5], 'rand_augment': True, "
+ "'resize': 224, 'apply_mask': False, 'view_count': None, 'save_best': 'loss', "
+ "'resume_training': False, 'checkpoint': "
+ "'outputs/deepCORO_CLIP/DeepCORO_Clip_Sweep_Learnable_Temp_Full_mvit_b12_f16_RAdam_lr0.0001_20250114-190320_2o5xoevj/checkpoints/latest.pt', "
+ "'tag': 'mvit_pretrained', 'name': 'dev_deep_coro_clip', 'project': "
+ "'dev_deep_coro_clip', 'entity': 'mhi_ai'}")
+f0a85bca3128:7406:7406 [0] NCCL INFO Bootstrap : Using eth0:172.17.0.2<0>
+f0a85bca3128:7406:7406 [0] NCCL INFO NET/Plugin: No plugin found (libnccl-net.so)
+f0a85bca3128:7406:7406 [0] NCCL INFO NET/Plugin: Plugin load returned 2 : libnccl-net.so: cannot open shared object file: No such file or directory : when loading libnccl-net.so
+f0a85bca3128:7406:7406 [0] NCCL INFO NET/Plugin: Using internal network plugin.
+f0a85bca3128:7406:7406 [0] NCCL INFO cudaDriverVersion 12040
+NCCL version 2.21.5+cuda12.4
+f0a85bca3128:7407:7407 [1] NCCL INFO cudaDriverVersion 12040
+f0a85bca3128:7407:7407 [1] NCCL INFO Bootstrap : Using eth0:172.17.0.2<0>
+f0a85bca3128:7407:7407 [1] NCCL INFO NET/Plugin: No plugin found (libnccl-net.so)
+f0a85bca3128:7407:7407 [1] NCCL INFO NET/Plugin: Plugin load returned 2 : libnccl-net.so: cannot open shared object file: No such file or directory : when loading libnccl-net.so
+f0a85bca3128:7407:7407 [1] NCCL INFO NET/Plugin: Using internal network plugin.
+f0a85bca3128:7406:7473 [0] NCCL INFO Failed to open libibverbs.so[.1]
+f0a85bca3128:7406:7473 [0] NCCL INFO NET/Socket : Using [0]eth0:172.17.0.2<0>
+f0a85bca3128:7406:7473 [0] NCCL INFO Using non-device net plugin version 0
+f0a85bca3128:7406:7473 [0] NCCL INFO Using network Socket
+f0a85bca3128:7407:7474 [1] NCCL INFO Failed to open libibverbs.so[.1]
+f0a85bca3128:7407:7474 [1] NCCL INFO NET/Socket : Using [0]eth0:172.17.0.2<0>
+f0a85bca3128:7407:7474 [1] NCCL INFO Using non-device net plugin version 0
+f0a85bca3128:7407:7474 [1] NCCL INFO Using network Socket
+f0a85bca3128:7407:7474 [1] NCCL INFO ncclCommInitRank comm 0x5624db6910f0 rank 1 nranks 2 cudaDev 1 nvmlDev 1 busId 25000 commId 0x1af338245e7a081b - Init START
+f0a85bca3128:7406:7473 [0] NCCL INFO ncclCommInitRank comm 0x55a150b85a30 rank 0 nranks 2 cudaDev 0 nvmlDev 0 busId 1000 commId 0x1af338245e7a081b - Init START
+f0a85bca3128:7406:7473 [0] NCCL INFO Setting affinity for GPU 0 to ff000000,00000000,ff000000
+f0a85bca3128:7407:7474 [1] NCCL INFO Setting affinity for GPU 1 to ff0000,00000000,00ff0000
+f0a85bca3128:7406:7473 [0] NCCL INFO comm 0x55a150b85a30 rank 0 nRanks 2 nNodes 1 localRanks 2 localRank 0 MNNVL 0
+f0a85bca3128:7406:7473 [0] NCCL INFO Channel 00/02 :    0   1
+f0a85bca3128:7406:7473 [0] NCCL INFO Channel 01/02 :    0   1
+f0a85bca3128:7407:7474 [1] NCCL INFO comm 0x5624db6910f0 rank 1 nRanks 2 nNodes 1 localRanks 2 localRank 1 MNNVL 0
+f0a85bca3128:7406:7473 [0] NCCL INFO Trees [0] 1/-1/-1->0->-1 [1] 1/-1/-1->0->-1
+f0a85bca3128:7406:7473 [0] NCCL INFO P2P Chunksize set to 131072
+f0a85bca3128:7407:7474 [1] NCCL INFO Trees [0] -1/-1/-1->1->0 [1] -1/-1/-1->1->0
+f0a85bca3128:7407:7474 [1] NCCL INFO P2P Chunksize set to 131072
+f0a85bca3128:7407:7474 [1] NCCL INFO Channel 00/0 : 1[1] -> 0[0] via P2P/CUMEM
+f0a85bca3128:7407:7474 [1] NCCL INFO Channel 01/0 : 1[1] -> 0[0] via P2P/CUMEM
+f0a85bca3128:7406:7473 [0] NCCL INFO Channel 00/0 : 0[0] -> 1[1] via P2P/CUMEM
+f0a85bca3128:7406:7473 [0] NCCL INFO Channel 01/0 : 0[0] -> 1[1] via P2P/CUMEM
+f0a85bca3128:7406:7473 [0] NCCL INFO Connected all rings
+f0a85bca3128:7406:7473 [0] NCCL INFO Connected all trees
+f0a85bca3128:7407:7474 [1] NCCL INFO Connected all rings
+f0a85bca3128:7407:7474 [1] NCCL INFO Connected all trees
+f0a85bca3128:7407:7474 [1] NCCL INFO threadThresholds 8/8/64 | 16/8/64 | 512 | 512
+f0a85bca3128:7407:7474 [1] NCCL INFO 2 coll channels, 2 collnet channels, 0 nvls channels, 2 p2p channels, 2 p2p channels per peer
+f0a85bca3128:7406:7473 [0] NCCL INFO threadThresholds 8/8/64 | 16/8/64 | 512 | 512
+f0a85bca3128:7406:7473 [0] NCCL INFO 2 coll channels, 2 collnet channels, 0 nvls channels, 2 p2p channels, 2 p2p channels per peer
+f0a85bca3128:7406:7473 [0] NCCL INFO TUNER/Plugin: Plugin load returned 2 : libnccl-net.so: cannot open shared object file: No such file or directory : when loading libnccl-tuner.so
+f0a85bca3128:7406:7473 [0] NCCL INFO TUNER/Plugin: Using internal tuner plugin.
+f0a85bca3128:7406:7473 [0] NCCL INFO ncclCommInitRank comm 0x55a150b85a30 rank 0 nranks 2 cudaDev 0 nvmlDev 0 busId 1000 commId 0x1af338245e7a081b - Init COMPLETE
+f0a85bca3128:7407:7474 [1] NCCL INFO TUNER/Plugin: Plugin load returned 2 : libnccl-net.so: cannot open shared object file: No such file or directory : when loading libnccl-tuner.so
+f0a85bca3128:7407:7474 [1] NCCL INFO TUNER/Plugin: Using internal tuner plugin.
+f0a85bca3128:7407:7474 [1] NCCL INFO ncclCommInitRank comm 0x5624db6910f0 rank 1 nranks 2 cudaDev 1 nvmlDev 1 busId 25000 commId 0x1af338245e7a081b - Init COMPLETE
+
+=== Calculating Dataset Statistics ===
+Frame count per video: 16
+
+Dataset Statistics:
+Mean: [114.5306625366211, 114.5306625366211, 114.5306625366211]
+Std:  [36.459014892578125, 36.459014892578125, 36.459014892578125]
+===========================
+
+Rank: 0 - mean: tensor([114.5307, 114.5307, 114.5307]) - std: tensor([36.4590, 36.4590, 36.4590])
+[MultiVideoDataset] resize=224
+[MultiVideoDataset] mean=[114.5306625366211, 114.5306625366211, 114.5306625366211]
+[MultiVideoDataset] std=[36.459014892578125, 36.459014892578125, 36.459014892578125]
+[MultiVideoDataset] shuffle_videos=True
+[MultiVideoDataset] seed=42
+[MultiVideoDataset] seed=42 for random video sampling
+Rank: 1 - mean: tensor([114.5307, 114.5307, 114.5307]) - std: tensor([36.4590, 36.4590, 36.4590])
+[MultiVideoDataset] resize=224
+[MultiVideoDataset] mean=[114.5306625366211, 114.5306625366211, 114.5306625366211]
+[MultiVideoDataset] std=[36.459014892578125, 36.459014892578125, 36.459014892578125]
+[MultiVideoDataset] shuffle_videos=True
+[MultiVideoDataset] seed=42
+[MultiVideoDataset] seed=42 for random video sampling
+[MultiVideoDataset] Found 273 studies in split='train'[MultiVideoDataset] Found 273 studies in split='train'
+[MultiVideoDataset] Missing 0 studies in split='train'
+
+[MultiVideoDataset] Missing 0 studies in split='train'
+[MultiVideoDataset] resize=224
+[MultiVideoDataset] mean=[114.5306625366211, 114.5306625366211, 114.5306625366211]
+[MultiVideoDataset] std=[36.459014892578125, 36.459014892578125, 36.459014892578125]
+[MultiVideoDataset] shuffle_videos=True
+[MultiVideoDataset] seed=42
+[MultiVideoDataset] seed=42 for random video sampling
+[MultiVideoDataset] resize=224
+[MultiVideoDataset] mean=[114.5306625366211, 114.5306625366211, 114.5306625366211]
+[MultiVideoDataset] std=[36.459014892578125, 36.459014892578125, 36.459014892578125]
+[MultiVideoDataset] shuffle_videos=True
+[MultiVideoDataset] seed=42
+[MultiVideoDataset] seed=42 for random video sampling
+[MultiVideoDataset] Found 27 studies in split='val'
+[MultiVideoDataset] Missing 0 studies in split='val'
+[MultiVideoDataset] Found 27 studies in split='val'
+[MultiVideoDataset] Missing 0 studies in split='val'
+
+=== Dataset Information ===
+Training:   13 batches per GPU
+Validation: 2 batches per GPU
+Total:      15 batches per GPU
+
+Batch Size: 10
+Training: 130 videos per GPU
+Validation: 20 videos per GPU
+Total: 150 videos per GPU
+===========================
+
+Saved 27 val texts to outputs/dev_deep_coro_clip/mvit_pretrained_mvit_b10_f16_AdamW_lr9.937439780866302e-05_20250206-030017_lan4eb7g/val_texts.csv
+[DEBUG rank=1] local_video_feats = torch.Size([130, 512]), local_text_feats = torch.Size([130, 512])
+Error: name '_gather_tensor_along_batch' is not defined
+f0a85bca3128:7407:7479 [1] NCCL INFO [Service thread] Connection closed by localRank 1
+[DEBUG rank=0] local_video_feats = torch.Size([130, 512]), local_text_feats = torch.Size([130, 512])
+Error: name '_gather_tensor_along_batch' is not defined
+f0a85bca3128:7407:19081 [1] NCCL INFO comm 0x5624db6910f0 rank 1 nranks 2 cudaDev 1 busId 25000 - Abort COMPLETE

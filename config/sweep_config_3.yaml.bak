@@ -74,6 +74,8 @@ parameters:
 
   batch_size:
     values: [10]
+  num_videos:
+    values: [3, 4, 5]
   loss_name:
     values: ["contrastive"]
   tag:

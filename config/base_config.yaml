@@ -28,12 +28,13 @@ pretrained: !!bool true
 
 # Optimizer parameters
 optimizer: !!str RAdam
-weight_decay: !!float 0.000001
 scheduler_type: !!str step
 lr: !!float 0.00002087457921275152
 lr_step_period: !!int 5
 factor: !!float 0.1
 loss_name: !!str contrastive
+video_weight_decay: !!float 0.000001
+text_weight_decay: !!float 0.000001
 
 # Model architecture parameters
 num_heads: !!int 2

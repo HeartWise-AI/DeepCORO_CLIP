@@ -39,7 +39,8 @@ class HeartWiseConfig:
     scheduler_type: str
     lr_step_period: int
     factor: float
-    weight_decay: float
+    video_weight_decay: float
+    text_weight_decay: float
 
     # System parameters
     output_dir: str

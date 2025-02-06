@@ -39,6 +39,22 @@ def run_contrastive_pretraining(config: HeartWiseConfig):
         if config.is_ref_device:
             wandb.init()
             pprint(f"Config: {config.to_dict()}")
+            
+            # List of parameters controlled by sweep
+            sweep_params = {
+                'lr', 'batch_size', 'temperature', 'video_freeze_ratio',
+                'text_freeze_ratio', 'dropout', 'num_heads', 'aggregator_depth',
+                'optimizer', 'scheduler_type', 'lr_step_period', 'factor',
+                'weight_decay', 'loss_name', 'tag', 'name', 'project', 'entity'
+            }
+            
+            # Filter out sweep-controlled parameters
+            config_dict = {k: v for k, v in config.to_dict().items() if k not in sweep_params}
+            
+            wandb.config.update(
+                config_dict,
+                allow_val_change=True
+            )        
         else:
             wandb.init(mode='disabled')
             

@@ -8,20 +8,6 @@ from utils.registry import ModelRegistry
 from models.video_aggregator import EnhancedVideoAggregator
 
 
-class TransformerHead(nn.Module):
-    """Transformer head for video classification."""
-
-    def __init__(self, dim_in: int, num_classes: int, dropout: float = 0.5):
-        super().__init__()
-        self.norm = nn.LayerNorm(dim_in)
-        self.dropout = nn.Dropout(dropout)
-        self.fc = nn.Linear(dim_in, num_classes)
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.norm(x)
-        x = self.dropout(x)
-        x = self.fc(x)
-        return x
-
 
 @ModelRegistry.register("video_encoder")
 class VideoEncoder(nn.Module):

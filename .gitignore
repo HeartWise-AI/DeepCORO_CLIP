@@ -16,6 +16,8 @@ lib64/
 parts/
 sdist/
 var/
+logs/
+log/
 wheels/
 *.egg-info/
 .installed.cfg
@@ -45,3 +47,10 @@ data/
 # Jupyter
 .ipynb_checkpoints
 *.ipynb_checkpoints/ 
+
+# Sweep
+wandb/
+logs/
+
+# CSV
+*.csv

@@ -15,32 +15,32 @@ DeepCORO_CLIP is a deep learning model for echocardiography video interpretation
 1. **Clone the Repository**:
 
    ```bash
-   git clone https://github.com/yourusername/DeepCORO_CLIP.git
+   https://github.com/HeartWise-AI/DeepCORO_CLIP.git
    cd DeepCORO_CLIP
    ```
 
-1. **Install Dependencies**:
-   First install uv (Mandatory):
+2. **Set up Virtual Environment**:
 
    ```bash
-   # On macOS and Linux
-   curl -LsSf https://astral.sh/uv/install.sh | sh
+   python3 -m venv .venv
+   source .venv/bin/activate  # On Linux/Mac
+   pip install --upgrade pip
+   pip install uv
    ```
 
-   Then install dependencies:
+2. **Install Dependencies**:
+   Install dependencies:
 
    ```bash
    # Using uv
    uv sync
    ```
 
-1. **Activate Virtual Environment** (do this every time you start):
+3. **Install yq required for sweep**:
 
    ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate  # On Linux/Mac
-   # or
-   .venv\Scripts\activate     # On Windows
+   wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq && \
+   chmod +x /usr/bin/yq
    ```
 
 1. **Log into Weights & Biases (optional)**:
@@ -51,43 +51,106 @@ DeepCORO_CLIP is a deep learning model for echocardiography video interpretation
 
 ## Configuration Files
 
-Training parameters (batch size, epochs, model name, data paths) are defined in YAML config files under `config/`.
+The project uses two main types of configuration files located in the `config/` directory:
 
-**Example: `config/default_config.yaml`**:
+### Base Configuration (`base_config.yaml`)
 
-````yaml
+Contains the default settings for training and model parameters:
+
+```yaml
 # Training parameters
-epochs: 50
-batch_size: 32
-num_workers: 4
-lr: 5e-5
+epochs: 10
+num_workers: 12
 debug: false
-temp: 0.1
+use_amp: true
 
-# Data parameters
-data_filename: processed/reports/reports_sampled_1000.csv
-root: data/
-target_label: Report
-datapoint_loc_label: FileName
+# Dataset parameters
+data_filename: data/reports/reports_with_splits_subset.csv
 frames: 16
+stride: 2
+multi_video: true
+num_videos: 5
 
 # Model parameters
 model_name: mvit
 pretrained: true
 
-# Multi-video parameters
-multi_video: true
-n_video: 4
-scorn: StudyInstanceUID
-aggregate_function: mean
+# Data augmentation
+rand_augment: false
+resize: 224
+apply_mask: false
+```
 
-# Logging parameters
-project: deepcoro_clip
-entity: your_wandb_entity
-tag: experiment_tag
-output_dir: outputs
+### Sweep Configuration (`sweep_config.yaml`)
 
+Used for hyperparameter optimization with Weights & Biases:
 
+```yaml
+method: bayes
+metric:
+  name: val/loss
+  goal: minimize
+
+parameters:
+  lr:
+    distribution: log_uniform_values
+    min: 1e-5
+    max: 1e-4
+  optimizer:
+    values: ["AdamW", "RAdam"]
+  scheduler_type:
+    values: ["cosine", "step"]
+  batch_size:
+    values: [10, 12]
+  temperature:
+    min: 0.05
+    max: 0.15
+    distribution: uniform
+  dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.5
+  video_freeze_ratio:
+    values: [0.0, 0.5, 0.8, 1.0]
+  text_freeze_ratio:
+    values: [0.0, 0.5, 1.0]
+```
+
+### Running Hyperparameter Sweeps
+
+The project provides a convenient script `scripts/run_sweep.sh` for running hyperparameter sweeps:
+
+```bash
+# Basic usage
+./scripts/run_sweep.sh --selected_gpus 0,1 --sweep_config config/sweep_config.yaml --count 5
+
+# Arguments:
+#   --selected_gpus    Comma-separated list of GPU IDs to use (default: 1,3)
+#   --sweep_config     Path to the sweep configuration file (default: config/sweep_config.yaml)
+#   --count           Number of runs to execute (default: 5)
+```
+
+The script will:
+1. Automatically update the sweep config with the correct number of GPUs
+2. Initialize a W&B sweep and generate a sweep ID
+3. Start the sweep agent with the specified number of runs
+4. Log all outputs to `logs/sweep_<SWEEP_ID>_<timestamp>.log`
+
+You can monitor your sweep progress at: `https://wandb.ai/<entity>/<project>/sweeps/<SWEEP_ID>`
+
+#### Manual Sweep Setup
+
+Alternatively, you can run sweeps manually:
+
+```bash
+# Initialize the sweep
+wandb sweep config/sweep_config.yaml
+
+# Start an agent (replace SWEEP_ID with the ID from the previous command)
+wandb agent your_entity/your_project/SWEEP_ID
+```
+
+The sweep uses Bayesian optimization to find the best hyperparameters, with early termination using the Hyperband algorithm to stop underperforming runs.
 
 ## Training
 
@@ -113,7 +176,7 @@ python scripts/train_model.py --config config/default_config.yaml --gpu 0
 ### Multi-GPU Training
 
 ```bash
-torchrun --nproc_per_node=2 scripts/train_model_multi_gpu.py --config config/default_config.yaml
+torchrun --nproc_per_node=1 scripts/train_model_multi_gpu.py --base_config config/base_config.yaml
 ```
 
 

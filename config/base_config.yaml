@@ -1,0 +1,69 @@
+# Training parameters
+epochs: !!int 10
+num_workers: !!int 16
+debug: !!bool false
+use_amp: !!bool true
+period: !!int 1
+device: !!str cuda
+
+# Dataset parameters
+data_filename: !!str data/reports/reports_sampled_no_conclusion.csv
+root: !!str "."
+target_label: !!str Report
+datapoint_loc_label: !!str FileName
+frames: !!int 16
+stride: !!int 1
+multi_video: !!bool true
+num_videos: !!int 4
+groupby_column: !!str StudyInstanceUID
+shuffle_videos: !!bool true
+batch_size: !!int 10
+
+# Seed
+seed: !!int 42
+
+# Model parameters
+model_name: !!str mvit
+pretrained: !!bool true
+
+# Optimizer parameters
+optimizer: !!str RAdam
+scheduler_type: !!str step
+lr: !!float 0.00002087457921275152
+lr_step_period: !!int 5
+factor: !!float 0.1
+loss_name: !!str contrastive_ddp
+video_weight_decay: !!float 0.000001
+text_weight_decay: !!float 0.000001
+
+# Model architecture parameters
+num_heads: !!int 2
+aggregator_depth: !!int 2
+temperature: !!float 0.08944473130286856
+dropout: !!float 0.21500802783103076
+video_freeze_ratio: !!float 0.9
+text_freeze_ratio: !!float 0.8
+
+# Checkpointing
+resume_training: !!bool false
+checkpoint: !!str outputs/deepCORO_CLIP/DeepCORO_Clip_Sweep_Learnable_Temp_Full_mvit_b12_f16_RAdam_lr0.0001_20250114-190320_2o5xoevj/checkpoints/latest.pt
+output_dir: !!str outputs
+save_best: !!str loss
+
+# Metrics
+# Recall @k
+recall_k: [1, 5, 10, 50]
+# NDCG @k
+ndcg_k: [5]
+
+# Data augmentation
+rand_augment: !!bool true
+resize: !!int 224
+view_count: !!null null
+apply_mask: !!bool false
+
+# wandb parameters
+tag: !!str mvit_pretrained
+name: !!str dev_deep_coro_clip
+project: !!str dev_deep_coro_clip
+entity: !!str mhi_ai

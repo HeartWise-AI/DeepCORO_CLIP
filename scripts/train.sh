@@ -14,8 +14,8 @@ print_usage() {
 }
 
 # Default values
-SELECTED_GPUS="0,1,2"
-CONFIG_PATH="configs/default_config.yaml"
+SELECTED_GPUS="0"
+CONFIG_PATH="config/base_config.yaml"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -67,4 +67,4 @@ torchrun \
     --nnodes=1 \
     --node_rank=0 \
     scripts/train_model_multi_gpu.py \
-    --config $CONFIG_PATH
+    --base_config $CONFIG_PATH

@@ -4,7 +4,6 @@ import pandas as pd
 
 import torch
 import torch.nn as nn
-import torch.distributed as dist
 from torch.optim import AdamW
 from torch.cuda.amp import GradScaler
 from torch.utils.data import DataLoader
@@ -12,7 +11,7 @@ from torch.optim.lr_scheduler import LRScheduler
 
 from tqdm import tqdm
 
-from utils.ddp import gather_loss
+from utils.enums import RunMode
 from utils.config import HeartWiseConfig
 from utils.registry import RunnerRegistry
 from utils.metrics import (
@@ -55,7 +54,6 @@ class VideoContrastiveLearningRunner:
         lr_scheduler: LRScheduler,
         loss_fn: callable,
         output_dir: str,
-        report_to_global_index: dict[str, int]
     ):
         """
         Initialize the runner with provided configurations, data loaders, and modules.
@@ -100,36 +98,25 @@ class VideoContrastiveLearningRunner:
         self.best_epoch = -1
         self.log_temp = log_temp
 
-    def train(self):
+    def train(
+        self, 
+        start_epoch: int = 0, 
+        end_epoch: int = 10,
+    ):
         """
         Main training loop. Iterates through epochs, performing:
           - Training step
           - Validation step
           - Checkpoint saving
           - LR scheduling
-
-        :raises ValueError: If `resume_training` is True but `checkpoint` is not provided.
         """
-        if self.config.resume_training and not self.config.checkpoint:
-            raise ValueError("Flag 'resume_training' is set, but no checkpoint provided")
-
-        if self.config.resume_training and self.config.checkpoint:
-            print(
-                f"[VideoContrastiveLearningRunner] Resuming from checkpoint: {self.config.checkpoint}"
-            )
-            wandb_run, start_epoch, best_val_loss, best_epoch = self._preview_checkpoint_for_resuming(
-                self.config.checkpoint
-            )
-        else:
-            start_epoch = 0
-
-        for epoch in range(start_epoch, self.config.epochs):
+        for epoch in range(start_epoch, end_epoch):
             # Synchronize before epoch starts (DDP barrier)
             if self.world_size > 1:
-                dist.barrier()
+                torch.distributed.barrier(device_ids=[self.device])
 
             # Training phase
-            train_metrics = self._run_epoch(mode="train", epoch=epoch)
+            train_metrics = self._run_epoch(mode=RunMode.TRAIN, epoch=epoch)
             if self.config.is_ref_device or (self.device == 0):
                 # Let wandb auto-increment steps
                 wandb.log(train_metrics)
@@ -137,11 +124,11 @@ class VideoContrastiveLearningRunner:
 
             # Sync before validation
             if self.world_size > 1:
-                dist.barrier()
+                torch.distributed.barrier(device_ids=[self.device])
 
             # Validation phase
             val_metrics = self._run_epoch(
-                mode="val", 
+                mode=RunMode.VALIDATION, 
                 epoch=epoch
             )
             
@@ -198,13 +185,13 @@ class VideoContrastiveLearningRunner:
         :param world_size: Number of participating ranks.
         :return: Concatenated tensor containing data from all ranks.
         """
-        if not dist.is_initialized() or world_size < 2:
+        if self.config.world_size < 2:
             return local_tensor
 
         device = local_tensor.device
         local_size = torch.tensor([local_tensor.shape[0]], device=device, dtype=torch.long)
         sizes_list = [torch.zeros_like(local_size) for _ in range(world_size)]
-        dist.all_gather(sizes_list, local_size)
+        torch.distributed.all_gather(sizes_list, local_size)
         sizes_list = [s.item() for s in sizes_list]
         max_size = max(sizes_list)
 
@@ -220,7 +207,7 @@ class VideoContrastiveLearningRunner:
                 padded = local_tensor
 
         gathered = [torch.zeros_like(padded) for _ in range(world_size)]
-        dist.all_gather(gathered, padded)
+        torch.distributed.all_gather(gathered, padded)
 
         cat = torch.stack(gathered, dim=0)
         out_list = []
@@ -243,7 +230,7 @@ class VideoContrastiveLearningRunner:
         :param device: CUDA device.
         :return: Combined list of strings from all ranks.
         """
-        if not dist.is_initialized() or world_size < 2:
+        if self.config.world_size < 2:
             return local_strings
 
         import pickle
@@ -252,7 +239,7 @@ class VideoContrastiveLearningRunner:
         local_size = torch.tensor([len(local_data_bytes)], dtype=torch.long, device=device)
 
         sizes_list = [torch.zeros_like(local_size) for _ in range(world_size)]
-        dist.all_gather(sizes_list, local_size)
+        torch.distributed.all_gather(sizes_list, local_size)
         sizes_list = [s.item() for s in sizes_list]
         max_size = max(sizes_list)
 
@@ -262,7 +249,7 @@ class VideoContrastiveLearningRunner:
         )
 
         all_buffers = [torch.zeros(max_size, dtype=torch.uint8, device=device) for _ in range(world_size)]
-        dist.all_gather(all_buffers, local_buffer)
+        torch.distributed.all_gather(all_buffers, local_buffer)
 
         out_list = []
         for rank_idx, buf in enumerate(all_buffers):
@@ -273,7 +260,11 @@ class VideoContrastiveLearningRunner:
 
         return out_list
 
-    def _run_epoch(self, mode: str, epoch: int) -> dict[str, float]:
+    def _run_epoch(
+        self, 
+        mode: str, 
+        epoch: int
+    ) -> dict[str, float]:
         """
         Runs either a training or validation epoch. Gathers embeddings across ranks
         and optionally computes NxN retrieval metrics on rank 0.
@@ -282,7 +273,7 @@ class VideoContrastiveLearningRunner:
         :param epoch: Current epoch index.
         :return: Dictionary of metrics, averaged over all batches and reduced across ranks.
         """
-        assert mode in ["train", "val"]
+        assert mode in [RunMode.TRAIN, RunMode.VALIDATION]
 
         self.video_encoder.train(mode == "train")
         self.text_encoder.train(mode == "train")
@@ -385,7 +376,7 @@ class VideoContrastiveLearningRunner:
 
         # Optionally compute NxN retrieval metrics on rank 0
         retrieval_metrics = {}
-        if mode == "val" and (self.config.is_ref_device or (self.device == 0)):
+        if mode == "val" and self.config.is_ref_device:
             print(
                 f"[DEBUG rank={self.device}] Starting NxN sim matrix with {global_video_feats.shape[0]} items."
             )
@@ -479,9 +470,9 @@ class VideoContrastiveLearningRunner:
         :param val: Metric value on current rank.
         :return: Mean metric value across all ranks, if DDP is initialized. Otherwise, returns val.
         """
-        if dist.is_initialized() and self.world_size > 1:
+        if self.config.world_size > 1:
             t = torch.tensor([val], dtype=torch.float, device=self.device)
-            dist.all_reduce(t, op=dist.ReduceOp.AVG)
+            torch.distributed.all_reduce(t, op=torch.distributed.ReduceOp.AVG)
             return t.item()
         else:
             return val
@@ -507,6 +498,7 @@ class VideoContrastiveLearningRunner:
             "optimizer": self.optimizer.state_dict(),
             "scheduler": self.lr_scheduler.state_dict() if self.lr_scheduler else None,
             "epoch": epoch,
+            "scaler": self.scaler.state_dict() if self.scaler else None,
         }
 
         checkpoint = {
@@ -672,8 +664,8 @@ class VideoContrastiveLearningRunner:
         }
 
         lr_metrics = {}
-        for i, pg in enumerate(self.optimizer.param_groups):
-            lr_metrics[f"lr/group_{i}"] = pg["lr"]
+        for pg in self.optimizer.param_groups:
+            lr_metrics[f"lr/{pg['name']}"] = pg["lr"]
 
         return (
             {
@@ -735,9 +727,8 @@ class VideoContrastiveLearningRunner:
         """
         pass
 
-    def test(self):
+    def inference(self):
         """
-        Optional method for a dedicated test routine.
-        Currently unimplemented.
+        Method for a dedicated inference.
         """
         pass

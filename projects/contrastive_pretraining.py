@@ -15,6 +15,7 @@ from models.video_encoder import VideoEncoder
 from runners.video_constrative_learning import VideoContrastiveLearningRunner
 
 from utils.ddp import DDP
+from utils.enums import RunMode
 from utils.losses import get_loss_fn
 from utils.config import HeartWiseConfig
 from utils.schedulers import get_scheduler
@@ -273,7 +274,11 @@ class ContrastivePretraining:
     ):
         self.config: HeartWiseConfig = config
     
-    def _save_texts_csv(self, output_dir, texts):
+    def _save_texts_csv(
+        self, 
+        output_dir: str, 
+        texts: list[str]
+    ):
         import csv
         csv_path = os.path.join(output_dir, "val_texts.csv")
         with open(csv_path, mode="w", newline="", encoding="utf-8") as f:
@@ -283,16 +288,47 @@ class ContrastivePretraining:
                 writer.writerow([idx, txt])
         print(f"Saved {len(texts)} val texts to {csv_path}")    
     
+    def _load_checkpoint(
+        self, 
+        checkpoint_path: str
+    )->dict[str, Any]:
+        if not self.config.resume_training:
+            raise ValueError("Flag 'resume_training' is set, but no checkpoint provided")
+
+        if not os.path.exists(self.config.checkpoint):
+            raise ValueError(f"Checkpoint file does not exist: {self.config.checkpoint}")
+        
+        print(
+            f"[VideoContrastiveLearningRunner] Resuming from checkpoint: {self.config.checkpoint}"
+        )
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        return checkpoint
+    
+    def _update_training_setup_with_checkpoint(
+        self, 
+        training_setup: dict[str, Any], 
+        checkpoint: dict[str, Any]
+    )->dict[str, Any]:
+        print(f"Resuming from checkpoint: {checkpoint.keys()}")
+        training_setup["video_encoder"].module.load_state_dict(checkpoint["video_encoder"])
+        training_setup["text_encoder"].module.load_state_dict(checkpoint["text_encoder"])
+        training_setup["optimizer"].load_state_dict(checkpoint["optimizer"])
+        training_setup["scheduler"].load_state_dict(checkpoint["scheduler"])
+        training_setup["scaler"].load_state_dict(checkpoint["scaler"])
+        training_setup["log_temp"].data.copy_(checkpoint["train/temperature"])
+        return training_setup
+    
     def run(self):
         training_setup: dict[str, Any] = load_train_objs(
             config=self.config
         )
 
-
-        val_reports = training_setup["val_loader"].dataset.get_all_reports()
-        val_report_to_index = {r: i for i, r in enumerate(val_reports)}
-        print(f"val_report_to_index: {len(val_report_to_index)}")
-        print(f"val dataset size: {len(training_setup['val_loader'].dataset)}")
+        start_epoch = 0
+        if self.config.resume_training:
+            checkpoint = self._load_checkpoint(self.config.checkpoint)
+            training_setup = self._update_training_setup_with_checkpoint(training_setup, checkpoint)
+            start_epoch = checkpoint["epoch"]
+            print(f"Resuming from epoch: {start_epoch}")
 
         runner: VideoContrastiveLearningRunner = RunnerRegistry.get(
             name="video_contrastive_learning"
@@ -310,8 +346,15 @@ class ContrastivePretraining:
             lr_scheduler=training_setup["scheduler"],
             loss_fn=get_loss_fn(self.config.loss_name),
             output_dir=training_setup["full_output_path"],
-            report_to_global_index=val_report_to_index,
         )
-        
-        runner.train() 
+        if self.config.mode == RunMode.TRAIN:
+            end_epoch = start_epoch + self.config.epochs
+            runner.train(
+                start_epoch=start_epoch, 
+                end_epoch=end_epoch
+            ) 
+        elif self.config.mode == RunMode.INFERENCE:
+            runner.inference()
+        else:
+            raise ValueError(f"Invalid mode: {self.config.mode}, must be one of {RunMode.TRAIN} or {RunMode.INFERENCE}")
 

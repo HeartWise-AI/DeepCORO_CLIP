@@ -12,6 +12,7 @@ class HeartWiseConfig:
     num_workers: int
     debug: bool
     temperature: float
+    mode: str
 
     # Data parameters
     data_filename: str

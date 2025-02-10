@@ -33,7 +33,8 @@ class HeartWiseParser:
         train_group.add_argument('--num_workers', type=int)
         train_group.add_argument('--debug', type=str2bool)
         train_group.add_argument('--temperature', type=float)
-
+        train_group.add_argument('--mode', type=str)
+        
         # Optimization parameters
         optim_group = parser.add_argument_group('Optimization')
         optim_group.add_argument('--optimizer', type=str)

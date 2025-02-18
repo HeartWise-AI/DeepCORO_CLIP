@@ -1,6 +1,6 @@
 command:
   - torchrun
-  - "--nproc_per_node=2"
+  - "--nproc_per_node=4"
   - "--master_port=29500"
   - "scripts/train_model_multi_gpu.py"
   - "--base_config"
@@ -73,9 +73,9 @@ parameters:
     max: 1e-6
 
   batch_size:
-    values: [10]
+    values: [20]
   num_videos:
-    values: [3, 4, 5]
+    values: [6,7,8,9]
   loss_name:
     values: ["contrastive"]
   tag:

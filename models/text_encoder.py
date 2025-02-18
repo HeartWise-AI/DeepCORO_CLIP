@@ -17,7 +17,7 @@ def get_tokenizer(model_name="microsoft/BiomedNLP-PubMedBERT-base-uncased-abstra
     return AutoTokenizer.from_pretrained(
         model_name,
         use_fast=True,
-        model_max_length=512,
+        model_max_length=1024,
         padding_side="right",
         truncation_side="right",
     )

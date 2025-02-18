@@ -22,7 +22,7 @@ DeepCORO_CLIP is a deep learning model for echocardiography video interpretation
 2. **Set up Virtual Environment**:
 
    ```bash
-   python3 -m venv .venv
+   python3 -m venv .deepcoro
    source .venv/bin/activate  # On Linux/Mac
    pip install --upgrade pip
    pip install uv
@@ -43,11 +43,56 @@ DeepCORO_CLIP is a deep learning model for echocardiography video interpretation
    chmod +x /usr/bin/yq
    ```
 
-1. **Log into Weights & Biases (optional)**:
+4. **Log into Weights & Biases (optional)**:
 
    ```bash
    wandb login
    ```
+
+5. If CV2 error:
+
+```CV2 error:  libGL.so.1: cannot open shared object file
+
+```
+
+```bash
+sudo apt update
+sudo apt install libgl1-mesa-glx
+sudo apt-get update
+sudo apt-get install libglib2.0-0
+sudo ldconfig
+```
+
+6. Make sure you have h264 installed: `ffmpeg -encoders | grep -w libx264` should return a list of encoders like this ``` V....D libx264              libx264 H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10 (codec h264)
+ V....D libx264rgb           libx264 H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10 RGB (codec h264)```
+
+ If not you must install C compiler and then get FFMPEG v.60 with H264 and then compile it yourself.
+ a. Get c compiler:
+ ```apt-get update
+apt-get install -y gcc g++ make git pkg-config autoconf automake libtool \
+                   bzip2 cmake libfreetype6-dev zlib1g-dev yasm nasm```
+	1.	Download the x264 source:
+                   ```cd /usr/local/src
+# Download a release (e.g., FFmpeg 6.0) or the latest snapshot:
+wget https://ffmpeg.org/releases/ffmpeg-6.0.tar.bz2
+tar xjf ffmpeg-6.0.tar.bz2
+cd ffmpeg-6.0```
+
+	2.	Configure x264:
+  ``./configure --prefix=/usr/local --enable-gpl --enable-libx264```
+
+3. 	Compile and install FFmpeg:
+```make -j$(nproc)
+make install```
+4. 	Update the dynamic linker run-time bindings:
+```export PATH="/usr/local/bin:$PATH"```
+  ```ldconfig```
+
+7. 	Verify the installation:
+```ffmpeg -encoders | grep -w libx264```
+
+
+
 
 ## Configuration Files
 
@@ -63,6 +108,7 @@ epochs: 10
 num_workers: 12
 debug: false
 use_amp: true
+mode: train  
 
 # Dataset parameters
 data_filename: data/reports/reports_with_splits_subset.csv

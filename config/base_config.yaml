@@ -5,9 +5,10 @@ debug: !!bool false
 use_amp: !!bool true
 period: !!int 1
 device: !!str cuda
+mode: !!str train
 
 # Dataset parameters
-data_filename: !!str data/reports/reports_sampled_no_conclusion.csv
+data_filename: !!str data/reports/reports_with_alpha_separator_with_Calcifc_Stenosis_IFR_20250108.csv
 root: !!str "."
 target_label: !!str Report
 datapoint_loc_label: !!str FileName

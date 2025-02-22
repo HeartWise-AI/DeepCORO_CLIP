@@ -22,7 +22,7 @@ DeepCORO_CLIP is a deep learning model for echocardiography video interpretation
 2. **Set up Virtual Environment**:
 
    ```bash
-   python3 -m venv .deepcoro
+   python3 -m venv .venv
    source .venv/bin/activate  # On Linux/Mac
    pip install --upgrade pip
    pip install uv

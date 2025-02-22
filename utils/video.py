@@ -134,18 +134,9 @@ def load_video(
             video = video[indices]
         expected_frames = n_frames
 
-    if normalize:
-        if mean is None or std is None:
-            raise ValueError("Mean and std must be provided for normalization.")
-        if isinstance(mean, (int, float)):
-            mean = [float(mean)] * c
-        if isinstance(std, (int, float)):
-            std = [float(std)] * c
-        mean = mean[:c]
-        std = std[:c]
-        video = v2.Normalize(mean=mean, std=std)(video)
 
     # Optional transforms
+   # Optional transforms (assumes float input)
     if video_transforms is not None:
         transforms = v2.RandomApply(torch.nn.ModuleList(video_transforms), p=0.5)
         scripted_transforms = torch.jit.script(transforms)
@@ -153,11 +144,52 @@ def load_video(
             video = scripted_transforms(video)
         except RuntimeError as e:
             print(f"Warning: Error applying transforms to video {video_path}: {str(e)}")
+    # Print mean per channel after transforms    # Print mean per channel after normalization
+    channel_means = torch.mean(video, dim=(0, 2, 3))
+    #print(f"Video mean per channel after transforms: {channel_means.tolist()}")
 
     if rand_augment:
+        # Convert video to uint8 for RandAugment
+        if video.dtype != torch.uint8:
+            video = video.to(torch.uint8)
         raug = [v2.RandAugment(magnitude=9, num_ops=2)]
         raug_composed = v2.Compose(raug)
         video = raug_composed(video)
+        video = video.to(torch.float32) 
+    # Print mean per channel after normalization
+    channel_means = torch.mean(video, dim=(0, 2, 3))
+    #print(f"Video mean per channel after RandAugment: {channel_means.tolist()}")
+
+
+    if normalize:
+        if mean is None or std is None:
+            raise ValueError("Mean and std must be provided for normalization.")
+        # Determine number of channels from video shape: (T, C, H, W)
+        t, c, h, w = video.shape
+        if isinstance(mean, (int, float)):
+            mean = [float(mean)] * c
+        if isinstance(std, (int, float)):
+            std = [float(std)] * c
+        mean = mean[:c]
+        std = std[:c]
+        video = v2.Normalize(mean=mean, std=std)(video)
+    # Print mean per channel after normalization
+    channel_means = torch.mean(video, dim=(0, 2, 3))
+    #print(f"Video mean per channel after normalization: {channel_means.tolist()}")
+
+
+    # Final checks
+    t, c, h, w = video.shape
+    expected_frames = 16 if backbone.lower() == "mvit" else n_frames
+    if t != expected_frames:
+        raise ValueError(f"Expected {expected_frames} frames, got {t}")
+    if h != resize or w != resize:
+        raise ValueError(f"Expected spatial dimensions {resize}x{resize}, got {h}x{w}")
+
+    # Return video in shape [F, H, W, C]
+    video = video.permute(0, 2, 3, 1).contiguous()
+    return video.numpy()
+
 
     # Final checks
     t, c, h, w = video.shape

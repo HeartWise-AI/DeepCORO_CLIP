@@ -123,6 +123,7 @@ def load_train_objs(
             drop_last=False,
         )
     else:
+        print("DEBUG single video")
         train_loader: DataLoader = get_distributed_video_dataloader(
             config, 
             split="train", 

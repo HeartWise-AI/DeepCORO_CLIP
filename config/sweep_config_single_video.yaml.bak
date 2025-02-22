@@ -53,7 +53,7 @@ parameters:
     max: 0.95
 
   num_heads:
-    values: [2, 4, 6, 8, 10]
+    values: [2, 4, 8, 16]
 
   aggregator_depth:
     values: [1, 2, 3, 4]
@@ -73,17 +73,15 @@ parameters:
     max: 1e-6
 
   batch_size:
-    values: [20]
-  num_videos:
-    values: [6, 7, 8]
+    values: [96]
   loss_name:
     values: ["contrastive"]
   tag:
     values: ["mvit_pretrained"]
   name:
-    values: ["dev_deep_coro_clip"]
+    values: ["dev_deep_coro_clip_single_video"]
   project:
-    values: ["dev_deep_coro_clip"]
+    values: ["dev_deep_coro_clip_single_video"]
   entity:
     values: ["mhi_ai"]
 

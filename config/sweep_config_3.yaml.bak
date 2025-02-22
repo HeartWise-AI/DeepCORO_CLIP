@@ -30,7 +30,7 @@ parameters:
     values: ["step", "cosine"]
 
   lr_step_period:
-    values: [10, 15, 20]
+    values: [15, 20, 30]
 
   factor:
     distribution: uniform
@@ -40,12 +40,12 @@ parameters:
   dropout:
     distribution: uniform
     min: 0.1
-    max: 0.3
+    max: 0.2
 
   video_freeze_ratio:
     distribution: uniform
-    min: 0.6
-    max: 0.9
+    min: 0.8
+    max: 0.95
 
   text_freeze_ratio:
     distribution: uniform
@@ -53,10 +53,10 @@ parameters:
     max: 0.95
 
   num_heads:
-    values: [2, 4]
+    values: [2, 4, 6, 8, 10]
 
   aggregator_depth:
-    values: [1, 2, 3]
+    values: [1, 2, 3, 4]
 
   temperature:
     distribution: uniform
@@ -75,7 +75,7 @@ parameters:
   batch_size:
     values: [20]
   num_videos:
-    values: [6,7,8,9]
+    values: [6, 7, 8]
   loss_name:
     values: ["contrastive"]
   tag:

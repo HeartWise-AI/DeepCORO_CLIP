@@ -47,6 +47,11 @@ dev = [
     "pre-commit>=3.3.3",
 ]
 
+test = [
+    "pytest",
+    "pytest-cov"
+]
+
 [tool.black]
 line-length = 98
 target-version = ['py310']

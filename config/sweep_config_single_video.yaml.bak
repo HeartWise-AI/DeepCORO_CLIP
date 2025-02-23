@@ -36,7 +36,7 @@ parameters:
     values: [1]
 
   num_warmup_percent:
-    values: [0.05, 0.1, 0.2]
+    values: [0.05, 0.01, 0.1]
 
   factor:
     distribution: uniform

@@ -1,5 +1,5 @@
 import torch
-from transformers import get_linear_schedule_with_warmup
+from transformers import get_linear_schedule_with_warmup, get_cosine_schedule_with_warmup, get_cosine_with_hard_restarts_schedule_with_warmup
 
 def get_scheduler(
     scheduler_name: str, 
@@ -29,10 +29,35 @@ def get_scheduler(
             last_epoch=-1
         )
     elif scheduler_name == 'linear_warmup':
-        t_total = len(train_dataloader) // num_epochs * gradient_accumulation_steps
+        # Compute total training steps: batches per epoch times epochs, adjusted for gradient accumulation.
+        t_total = (len(train_dataloader) * num_epochs) // gradient_accumulation_steps
+        print(f"t_total: {t_total}")
+        # Compute warmup steps as a fraction of the total steps.
+        num_warmup_steps = int(t_total * num_warmup_percent)
+        print(f"num_warmup_steps: {num_warmup_steps}")
         return get_linear_schedule_with_warmup(
             optimizer,
-            num_warmup_steps=int(num_epochs * num_warmup_percent),
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=t_total
+        )
+    elif scheduler_name == 'cosine_with_warmup':
+        t_total = (len(train_dataloader) * num_epochs) // gradient_accumulation_steps
+        num_warmup_steps = int(t_total * num_warmup_percent)
+        print(f"num_warmup_steps: {num_warmup_steps}")
+        print(f"t_total: {t_total}")
+        return get_cosine_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=num_warmup_steps,
+            num_training_steps=t_total
+        )
+    elif scheduler_name == 'cosine_with_hard_restarts_with_warmup':
+        t_total = (len(train_dataloader) * num_epochs) // gradient_accumulation_steps
+        num_warmup_steps = int(t_total * num_warmup_percent)
+        print(f"num_warmup_steps: {num_warmup_steps}")
+        print(f"t_total: {t_total}")
+        return get_cosine_with_hard_restarts_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=num_warmup_steps,
             num_training_steps=t_total
         )
     else:

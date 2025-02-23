@@ -200,14 +200,8 @@ def load_train_objs(
             'weight_decay': config.video_weight_decay
         },
         {
-            'params': video_encoder.module.proj.parameters(),  # Video projection
-            'lr': config.lr,
-            'name': 'video_proj',
-            'weight_decay': config.video_weight_decay
-        },
-        {
             'params': text_encoder.parameters(),  # Entire text encoder
-            'lr': 0.000009,  # Lower learning rate for text encoder
+            'lr': 0.00001,  # Lower learning rate for text encoder
             'name': 'text_encoder',
             'weight_decay': config.text_weight_decay
         },

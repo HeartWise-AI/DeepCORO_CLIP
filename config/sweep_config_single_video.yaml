@@ -27,7 +27,7 @@ parameters:
     values: ["RAdam", "AdamW"]
 
   scheduler_type:
-    values: ["linear_warmup"]
+    values: ["linear_warmup", "cosine_with_warmup", "cosine_with_hard_restarts_with_warmup"]
 
   lr_step_period:
     values: [15, 20, 30]
@@ -36,7 +36,7 @@ parameters:
     values: [1]
 
   num_warmup_percent:
-    values: [0]
+    values: [0.05, 0.1, 0.2]
 
   factor:
     distribution: uniform

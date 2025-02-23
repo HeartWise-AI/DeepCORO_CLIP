@@ -30,7 +30,6 @@ def get_scheduler(
         )
     elif scheduler_name == 'linear_warmup':
         t_total = len(train_dataloader) // num_epochs * gradient_accumulation_steps
-        
         return get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=int(num_epochs * num_warmup_percent),

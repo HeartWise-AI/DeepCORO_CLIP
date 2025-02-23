@@ -50,8 +50,7 @@ class VideoDataset(torch.utils.data.Dataset):
         self.stride = kwargs.pop("stride", 1)
         if self.backbone.lower() == "mvit":
             self.num_frames = 16
-            self.stride = 1
-            print(f"Using MViT backbone - forcing exactly {self.num_frames} frames with stride=1")
+            print(f"Using MViT backbone - forcing exactly {self.num_frames} frames with stride {self.stride}")
             if "length" in kwargs:
                 kwargs["length"] = 16
 

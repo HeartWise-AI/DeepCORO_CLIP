@@ -19,24 +19,22 @@ metric:
 
 parameters:
   lr:
-    distribution: log_uniform_values
-    min: 5e-5
-    max: 1e-4
+    values: [0.000061605]
 
   optimizer:
     values: ["RAdam", "AdamW"]
 
-  scheduler_type:
-    values: ["linear_warmup", "cosine_with_warmup", "cosine_with_hard_restarts_with_warmup"]
+  scheduler_name:
+    values: ["linear_warmup"]
 
   lr_step_period:
     values: [15, 20, 30]
 
-  gradient_accumulation_steps:
+  gradient_accumulation_steps:  
     values: [1]
 
   num_warmup_percent:
-    values: [0.05, 0.1, 0.2]
+    values: [0.1]
 
   factor:
     distribution: uniform

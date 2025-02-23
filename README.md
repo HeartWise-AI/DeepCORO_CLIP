@@ -144,7 +144,7 @@ parameters:
     max: 1e-4
   optimizer:
     values: ["AdamW", "RAdam"]
-  scheduler_type:
+  scheduler_name:
     values: ["cosine", "step"]
   batch_size:
     values: [10, 12]
@@ -388,7 +388,7 @@ nvidia-smi -l 1  # Monitor GPU usage every second
 ### Optimization Parameters
 - `optimizer`: Optimizer type (default: `RAdam`)
 - `weight_decay`: Optimizer weight decay (default: 0.000001)
-- `scheduler_type`: Learning rate scheduler (default: `step`)
+- `scheduler_name`: Learning rate scheduler (default: `step`)
 - `lr_step_period`: Learning rate step period (default: 15)
 - `factor`: Scheduler factor (default: 0.3)
 

@@ -26,7 +26,7 @@ parameters:
   optimizer:
     values: ["RAdam", "AdamW"]
 
-  scheduler_type:
+  scheduler_name:
     values: ["step", "cosine"]
 
   lr_step_period:

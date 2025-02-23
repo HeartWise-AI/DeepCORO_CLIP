@@ -132,6 +132,8 @@ class TestVideoContrastiveLearning(unittest.TestCase):
             mode=RunMode.TRAIN,
             gradient_accumulation_steps=1,
             num_warmup_percent=0.1,
+            num_hard_restarts_cycles=1.0,
+            warm_restart_tmult=1,
             
             # Model parameters
             model_name="mvit",
@@ -164,7 +166,7 @@ class TestVideoContrastiveLearning(unittest.TestCase):
             groupby_column="group_id",
             shuffle_videos=True,
             optimizer="AdamW",
-            scheduler_type="cosine",
+            scheduler_name="cosine",
             lr_step_period=1,
             factor=0.1,
             video_weight_decay=0.01,

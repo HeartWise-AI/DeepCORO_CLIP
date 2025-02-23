@@ -47,6 +47,9 @@ parameters:
     min: 0.8
     max: 0.95
 
+  stride:
+    values: [1, 2, 3]
+
   text_freeze_ratio:
     distribution: uniform
     min: 0.7

@@ -45,7 +45,8 @@ def run_contrastive_pretraining(config: HeartWiseConfig):
                 'lr', 'batch_size', 'temperature', 'video_freeze_ratio',
                 'text_freeze_ratio', 'dropout', 'num_heads', 'aggregator_depth',
                 'optimizer', 'scheduler_type', 'lr_step_period', 'factor',
-                'weight_decay', 'loss_name', 'tag', 'name', 'project', 'entity'
+                'weight_decay', 'loss_name', 'tag', 'name', 'project', 'entity',
+                'gradient_accumulation_steps', 'num_warmup_percent'
             }
             
             # Filter out sweep-controlled parameters

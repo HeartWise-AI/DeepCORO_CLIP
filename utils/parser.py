@@ -66,6 +66,8 @@ class HeartWiseParser:
         model_group.add_argument('--dropout', type=float)
         model_group.add_argument('--num_heads', type=int)
         model_group.add_argument('--aggregator_depth', type=int)
+        model_group.add_argument('--gradient_accumulation_steps', type=int)
+        model_group.add_argument('--num_warmup_percent', type=float)
         
         # System parameters
         system_group = parser.add_argument_group('System')

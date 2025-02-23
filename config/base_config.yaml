@@ -36,6 +36,8 @@ factor: !!float 0.1
 loss_name: !!str contrastive_ddp
 video_weight_decay: !!float 0.000001
 text_weight_decay: !!float 0.000001
+gradient_accumulation_steps: !!int 1
+num_warmup_percent: !!float 0.1
 
 # Model architecture parameters
 num_heads: !!int 2

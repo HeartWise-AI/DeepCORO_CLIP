@@ -229,8 +229,11 @@ def load_train_objs(
         scheduler_name=config.scheduler_type,
         optimizer=optimizer,
         num_epochs=config.epochs,
+        train_dataloader=train_loader,
         factor=config.factor,
         step_size=config.lr_step_period,
+        gradient_accumulation_steps=config.gradient_accumulation_steps,
+        num_warmup_percent=config.num_warmup_percent,
     )
 
     scaler: GradScaler = GradScaler() if config.use_amp else None

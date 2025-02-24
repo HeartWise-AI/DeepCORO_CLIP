@@ -1,3 +1,5 @@
+pipeline_project: !!str "DeepCORO_clip"
+
 # Training parameters
 epochs: !!int 30
 num_workers: !!int 32
@@ -72,3 +74,4 @@ tag: !!str mvit_pretrained
 name: !!str dev_deep_coro_clip_single_video
 project: !!str dev_deep_coro_clip_single_video
 entity: !!str mhi_ai
+use_wandb: !!bool false

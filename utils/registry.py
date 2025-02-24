@@ -1,4 +1,13 @@
-from typing import Dict, Type, Any, Optional
+
+import importlib
+import pkgutil
+
+from typing import (
+    Dict, 
+    Type, 
+    Any, 
+    Optional
+)
 
 
 class BaseRegistry:
@@ -59,3 +68,18 @@ class ConfigRegistry(BaseRegistry):
     """Registry for configs."""
     _registry: Dict[str, Type[Any]] = {}
     _registry_type: str = "config"
+
+
+def register_submodules(package_name: str, recursive: bool = True) -> None:
+    """
+    Dynamically import all submodules of a package.
+    
+    Args:
+        package_name (str): Name of the package to import.
+        recursive (bool): If True, recursively import submodules.
+    """
+    package = importlib.import_module(package_name)
+    for _, name, is_pkg in pkgutil.walk_packages(package.__path__, package.__name__ + "."):
+        importlib.import_module(name)
+        if recursive and is_pkg:
+            register_submodules(name, recursive=recursive)

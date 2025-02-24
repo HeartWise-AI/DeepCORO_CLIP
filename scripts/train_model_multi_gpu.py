@@ -44,7 +44,7 @@ def run_contrastive_pretraining(config: HeartWiseConfig):
             sweep_params = {
                 'lr', 'batch_size', 'temperature', 'video_freeze_ratio',
                 'text_freeze_ratio', 'dropout', 'num_heads', 'aggregator_depth',
-                'optimizer', 'scheduler_type', 'lr_step_period', 'factor',
+                'optimizer', 'scheduler_name', 'lr_step_period', 'factor',
                 'weight_decay', 'loss_name', 'tag', 'name', 'project', 'entity',
                 'gradient_accumulation_steps', 'num_warmup_percent'
             }

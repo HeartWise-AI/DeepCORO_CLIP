@@ -38,13 +38,15 @@ def test_config():
         
         # Optimization parameters
         optimizer="AdamW",
-        scheduler_type="cosine",
+        scheduler_name="cosine",
         lr_step_period=1,
         factor=0.1,
         video_weight_decay=0.01,
         text_weight_decay=0.01,
         gradient_accumulation_steps=1,
         num_warmup_percent=0.1,
+        num_hard_restarts_cycles=1.0,
+        warm_restart_tmult=2,
         
         # System parameters
         output_dir="./outputs",

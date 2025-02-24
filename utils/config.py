@@ -37,13 +37,15 @@ class HeartWiseConfig:
     
     # Optimization parameters
     optimizer: str
-    scheduler_type: str
+    scheduler_name: str
     lr_step_period: int
     factor: float
     video_weight_decay: float
     text_weight_decay: float
     gradient_accumulation_steps: int
     num_warmup_percent: float
+    num_hard_restarts_cycles: float
+    warm_restart_tmult: int
 
     # System parameters
     output_dir: str

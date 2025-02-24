@@ -38,7 +38,7 @@ class HeartWiseParser:
         # Optimization parameters
         optim_group = parser.add_argument_group('Optimization')
         optim_group.add_argument('--optimizer', type=str)
-        optim_group.add_argument('--scheduler_type', type=str)
+        optim_group.add_argument('--scheduler_name', type=str)
         optim_group.add_argument('--lr_step_period', type=int)
         optim_group.add_argument('--factor', type=float)
         optim_group.add_argument('--video_weight_decay', type=float)
@@ -68,6 +68,8 @@ class HeartWiseParser:
         model_group.add_argument('--aggregator_depth', type=int)
         model_group.add_argument('--gradient_accumulation_steps', type=int)
         model_group.add_argument('--num_warmup_percent', type=float)
+        model_group.add_argument('--num_hard_restarts_cycles', type=float)
+        model_group.add_argument('--warm_restart_tmult', type=int)
         
         # System parameters
         system_group = parser.add_argument_group('System')

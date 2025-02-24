@@ -510,7 +510,7 @@ def create_logger(config: HeartWiseConfig):
         "model_name": config.model_name,
         "optimizer": config.optimizer,
         "weight_decay": config.weight_decay,
-        "scheduler_type": config.scheduler_type,
+        "scheduler_name": config.scheduler_name,
         "lr_step_period": config.lr_step_period,
         "factor": config.factor,
         "frames": config.frames,

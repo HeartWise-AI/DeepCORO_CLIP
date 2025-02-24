@@ -98,6 +98,25 @@ class VideoContrastiveLearningRunner:
         self.best_epoch = -1
         self.log_temp = log_temp
 
+        # For simplicity: check the config for a known scheduler_name
+        # If it includes "_warmup" or is from HF, we treat it as per-iteration
+        self.scheduler_per_iteration = self._scheduler_is_per_iteration()
+        print(f"[DEBUG] scheduler_per_iteration: {self.scheduler_per_iteration}")
+
+    def _scheduler_is_per_iteration(self) -> bool:
+        """
+        Returns True if the chosen scheduler is a Hugging Face style that
+        expects a call to .step() per iteration (batch). Otherwise, False.
+        """
+        # We do a simpler check to change scheduler update to per epoch or per batch:
+        # Example keywords: "linear_warmup", "cosine_with_warmup", 
+        # "cosine_with_hard_restarts_with_warmup", etc.
+        sched_name = getattr(self.config, "scheduler_name", "").lower()
+        # If it matches typical HF warmup schedulers, return True
+        HF_KEYS = ["warmup", "with_warmup"]
+        return any(k in sched_name for k in HF_KEYS)
+
+
     def train(
         self, 
         start_epoch: int = 0, 
@@ -142,6 +161,11 @@ class VideoContrastiveLearningRunner:
             # Sync after validation
             if self.world_size > 1:
                 torch.distributed.barrier(device_ids=[self.device])
+            
+            # If it's an epoch-based scheduler (like StepLR, CosineAnnealingLR, etc.),
+            # call lr_scheduler.step() after each epoch
+            if self.lr_scheduler and (not self.scheduler_per_iteration):
+                self.lr_scheduler.step()
 
             # Update best model
             if val_metrics["val/loss"] < self.best_val_loss:
@@ -173,9 +197,7 @@ class VideoContrastiveLearningRunner:
                 torch.distributed.barrier(device_ids=[self.device])
                 
             print(f"gpu_id after saving checkpoint: {self.device}")
-            # Learning rate scheduler step if it exists
-            if self.lr_scheduler:
-                self.lr_scheduler.step()
+  
 
     def _gather_tensor_along_batch(self, local_tensor: torch.Tensor, world_size: int) -> torch.Tensor:
         """
@@ -308,6 +330,10 @@ class VideoContrastiveLearningRunner:
                 step_inputs["videos"] = step_inputs["videos"].unsqueeze(1)
 
             batch_metrics, embeddings = step_fn(**step_inputs)
+
+            if self.lr_scheduler and self.scheduler_per_iteration and (mode == RunMode.TRAIN):
+                print(f"[DEBUG] step_fn: {step_fn}")
+                self.lr_scheduler.step()
 
             # Store embeddings on CPU
             all_video_embeddings_local.append(embeddings["video_embeddings"].cpu())
@@ -629,6 +655,10 @@ class VideoContrastiveLearningRunner:
             if self.world_size > 1:
                 torch.distributed.barrier(device_ids=[self.device])
 
+            # Clip gradients
+            torch.nn.utils.clip_grad_norm_(self.video_encoder.parameters(), max_norm=5.0)
+            torch.nn.utils.clip_grad_norm_(self.text_encoder.parameters(), max_norm=5.0)
+
             self.scaler.step(self.optimizer)
             self.scaler.update()
 
@@ -651,8 +681,12 @@ class VideoContrastiveLearningRunner:
             if self.world_size > 1:
                 torch.distributed.barrier(device_ids=[self.device])
 
-            self.optimizer.step()
+            # Clip gradients
+            torch.nn.utils.clip_grad_norm_(self.video_encoder.parameters(), max_norm=5.0)
+            torch.nn.utils.clip_grad_norm_(self.text_encoder.parameters(), max_norm=5.0)
 
+            self.optimizer.step()
+        
         # metrics
         with torch.no_grad():
             embedding_norms = compute_embedding_norms(video_embeddings, text_embeddings)

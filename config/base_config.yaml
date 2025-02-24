@@ -1,6 +1,6 @@
 # Training parameters
-epochs: !!int 10
-num_workers: !!int 16
+epochs: !!int 30
+num_workers: !!int 32
 debug: !!bool false
 use_amp: !!bool true
 period: !!int 1
@@ -8,17 +8,17 @@ device: !!str cuda
 mode: !!str train
 
 # Dataset parameters
-data_filename: !!str data/reports/reports_with_alpha_separator_with_Calcifc_Stenosis_IFR_20250108.csv
+data_filename: !!str data/reports/reports_with_alpha_separator_with_Calcifc_Stenosis_IFR_20250108_RCA_LCA.csv
 root: !!str "."
 target_label: !!str Report
 datapoint_loc_label: !!str FileName
 frames: !!int 16
 stride: !!int 1
-multi_video: !!bool true
+multi_video: !!bool false
 num_videos: !!int 4
 groupby_column: !!str StudyInstanceUID
 shuffle_videos: !!bool true
-batch_size: !!int 10
+batch_size: !!int 64
 
 # Seed
 seed: !!int 42
@@ -29,13 +29,17 @@ pretrained: !!bool true
 
 # Optimizer parameters
 optimizer: !!str RAdam
-scheduler_type: !!str step
+scheduler_name: !!str step
 lr: !!float 0.00002087457921275152
 lr_step_period: !!int 5
 factor: !!float 0.1
 loss_name: !!str contrastive_ddp
 video_weight_decay: !!float 0.000001
 text_weight_decay: !!float 0.000001
+gradient_accumulation_steps: !!int 1
+num_warmup_percent: !!float 0.1
+num_hard_restarts_cycles: !!float 1.0
+warm_restart_tmult: !!int 2
 
 # Model architecture parameters
 num_heads: !!int 2
@@ -65,6 +69,6 @@ apply_mask: !!bool false
 
 # wandb parameters
 tag: !!str mvit_pretrained
-name: !!str dev_deep_coro_clip
-project: !!str dev_deep_coro_clip
+name: !!str dev_deep_coro_clip_single_video
+project: !!str dev_deep_coro_clip_single_video
 entity: !!str mhi_ai

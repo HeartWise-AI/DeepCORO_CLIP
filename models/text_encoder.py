@@ -50,6 +50,9 @@ class TextEncoder(nn.Module):
         self.bert = AutoModel.from_pretrained(model_name)
         hidden_size = self.bert.config.hidden_size
 
+        if hasattr(self.bert, "pooler"):
+            self.bert.pooler = None
+
         # 2) Freeze partial layers
         self._freeze_partial_bert()
 
@@ -66,6 +69,9 @@ class TextEncoder(nn.Module):
         Freeze the bottom portion of the BERT parameters, leaving
         a fraction `freeze_ratio` trainable from the top.
         """
+        if self.freeze_ratio == 0.0:  # If freeze_ratio is 0, don't freeze anything
+            return
+            
         all_named_params = list(self.bert.named_parameters())
         total_count = len(all_named_params)
         train_count = int(self.freeze_ratio * total_count)
@@ -87,7 +93,8 @@ class TextEncoder(nn.Module):
         # Get BERT features and take CLS token output
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
         # use CLS token
-        features = outputs.last_hidden_state[:, 0]
-
+        pooled = outputs.last_hidden_state[:, 0]
         # Project to match video encoder dimension
-        return self.proj(features)
+        features = self.proj(pooled)
+
+        return features

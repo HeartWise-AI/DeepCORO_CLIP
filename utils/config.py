@@ -37,11 +37,15 @@ class HeartWiseConfig:
     
     # Optimization parameters
     optimizer: str
-    scheduler_type: str
+    scheduler_name: str
     lr_step_period: int
     factor: float
     video_weight_decay: float
     text_weight_decay: float
+    gradient_accumulation_steps: int
+    num_warmup_percent: float
+    num_hard_restarts_cycles: float
+    warm_restart_tmult: int
 
     # System parameters
     output_dir: str
@@ -71,6 +75,10 @@ class HeartWiseConfig:
     name: str
     project: str
     entity: str
+
+    # Parameters with default values must come last used for testing
+    world_size: int = 1  # Number of GPUs/processes for DDP
+    is_ref_device: bool = True  # Whether this is the reference device for logging
        
     @classmethod
     def update_config_with_args(cls, base_config: 'HeartWiseConfig', args: Any) -> 'HeartWiseConfig':  

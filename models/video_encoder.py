@@ -75,7 +75,9 @@ class VideoEncoder(nn.Module):
             nn.GELU(),
             nn.Dropout(self.dropout),
         )                
-                
+        # Check if output_dim is divisible by num_heads
+        if output_dim % num_heads != 0:
+            raise ValueError(f"Output dimension ({output_dim}) must be divisible by number of heads ({num_heads})")
         # 3) Enhanced aggregator
         self.aggregator = EnhancedVideoAggregator(
             embedding_dim=output_dim,

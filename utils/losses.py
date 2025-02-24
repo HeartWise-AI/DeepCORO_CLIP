@@ -133,3 +133,47 @@ def contrastive_loss_ddp(
     loss_t2i = F.cross_entropy(logits.t(), targets)
     loss = 0.5 * (loss_i2t + loss_t2i)
     return loss
+
+class InfoNCELoss(nn.Module):
+    """
+    InfoNCE loss implementation for contrastive learning.
+    This is a wrapper around the contrastive loss functions that maintains state
+    and provides a more object-oriented interface.
+    """
+    def __init__(self, temperature: float = 0.07, use_ddp: bool = False):
+        """
+        Initialize InfoNCE loss.
+        
+        Args:
+            temperature (float): Temperature parameter for scaling logits
+            use_ddp (bool): Whether to use DDP-aware version of the loss
+        """
+        super().__init__()
+        self.temperature = temperature
+        self.use_ddp = use_ddp
+        self.log_temp = nn.Parameter(torch.log(torch.tensor(temperature)))
+        
+    def forward(
+        self,
+        video_features: torch.Tensor,
+        text_features: torch.Tensor,
+        log_temp: torch.Tensor = None
+    ) -> torch.Tensor:
+        """
+        Compute InfoNCE loss between video and text features.
+        
+        Args:
+            video_features (torch.Tensor): [B, D] video embeddings
+            text_features (torch.Tensor): [B, D] text embeddings
+            log_temp (torch.Tensor, optional): Override internal temperature
+            
+        Returns:
+            torch.Tensor: Scalar loss value
+        """
+        # Use provided temperature if given, otherwise use internal one
+        temp = log_temp if log_temp is not None else self.log_temp
+        
+        if self.use_ddp and dist.is_initialized():
+            return contrastive_loss_ddp(video_features, text_features, temp)
+        else:
+            return contrastive_loss(video_features, text_features, temp)

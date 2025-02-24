@@ -194,19 +194,13 @@ def load_train_objs(
         },
         {
             'params': video_encoder.module.aggregator.parameters(),  # Multihead attention aggregator
-            'lr': config.lr * 5.0,  # Higher learning rate for aggregator
+            'lr': config.lr * 2.0,  # Higher learning rate for aggregator
             'name': 'video_aggregator',
             'weight_decay': config.video_weight_decay
         },
         {
-            'params': video_encoder.module.proj.parameters(),  # Video projection
-            'lr': config.lr,
-            'name': 'video_proj',
-            'weight_decay': config.video_weight_decay
-        },
-        {
             'params': text_encoder.parameters(),  # Entire text encoder
-            'lr': 0.000009,  # Lower learning rate for text encoder
+            'lr': 0.00001,  # Lower learning rate for text encoder
             'name': 'text_encoder',
             'weight_decay': config.text_weight_decay
         },
@@ -225,11 +219,16 @@ def load_train_objs(
     )
 
     scheduler: LRScheduler = get_scheduler(
-        scheduler_name=config.scheduler_type,
+        scheduler_name=config.scheduler_name,
         optimizer=optimizer,
         num_epochs=config.epochs,
+        train_dataloader=train_loader,
         factor=config.factor,
         step_size=config.lr_step_period,
+        gradient_accumulation_steps=config.gradient_accumulation_steps,
+        num_warmup_percent=config.num_warmup_percent,
+        num_hard_restarts_cycles=config.num_hard_restarts_cycles,
+        warm_restart_tmult=config.warm_restart_tmult,
     )
 
     scaler: GradScaler = GradScaler() if config.use_amp else None

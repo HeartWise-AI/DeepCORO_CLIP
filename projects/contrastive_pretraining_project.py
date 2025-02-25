@@ -323,9 +323,7 @@ class ContrastivePretrainingProject:
         return training_setup
     
     def run(self):
-        training_setup: dict[str, Any] = self._setup_training_objects(
-            config=self.config
-        )
+        training_setup: dict[str, Any] = self._setup_training_objects()
 
         start_epoch = 0
         if self.config.resume_training:

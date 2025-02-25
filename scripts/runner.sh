@@ -110,5 +110,5 @@ torchrun \
     --master_port=29500 \
     --nnodes=1 \
     --node_rank=0 \
-    scripts/train_model_multi_gpu.py \
+    scripts/main.py \
     --base_config $CONFIG_PATH

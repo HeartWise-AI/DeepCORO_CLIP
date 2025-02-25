@@ -1,7 +1,8 @@
-import unittest
-import tempfile
-import shutil
 import os
+import sys
+import shutil
+import tempfile
+import unittest
 from unittest.mock import patch
 
 import numpy as np
@@ -13,9 +14,9 @@ from torch.utils.data import Dataset, DataLoader
 from models.video_encoder import VideoEncoder
 from models.text_encoder import TextEncoder
 from runners.video_constrative_learning import VideoContrastiveLearningRunner
-from utils.config import HeartWiseConfig
+from utils.parser import HeartWiseParser
 from utils.enums import RunMode
-from utils.losses import InfoNCELoss
+from utils.losses import get_loss_fn
 
 class DummyDataset(Dataset):
     """Dummy dataset that generates random video and text data."""
@@ -120,72 +121,11 @@ class TestVideoContrastiveLearning(unittest.TestCase):
         # Create temp directory for outputs
         self.temp_dir = tempfile.mkdtemp()
         
-        # Create test config with additional required attributes
-        self.test_config = HeartWiseConfig(
-            # Training parameters
-            lr=1e-4,
-            batch_size=2,  # Smaller batch size for testing
-            epochs=2,  # Fewer epochs for testing
-            num_workers=0,  # No workers for testing
-            debug=True,
-            temperature=0.07,
-            mode=RunMode.TRAIN,
-            gradient_accumulation_steps=1,
-            num_warmup_percent=0.1,
-            num_hard_restarts_cycles=1.0,
-            warm_restart_tmult=1,
-            
-            # Model parameters
-            model_name="mvit",
-            pretrained=False,  # Don't use pretrained for testing
-            video_freeze_ratio=0.0,  # Don't freeze for testing
-            text_freeze_ratio=0.0,  # Don't freeze for testing
-            dropout=0.1,
-            num_heads=8,
-            aggregator_depth=2,
-            
-            # System parameters
-            output_dir=self.temp_dir,
-            seed=42,
-            use_amp=False,  # Disable AMP for testing
-            device="cpu",  # Use CPU for testing
-            period=1,
-            world_size=1,  # Add world_size
-            is_ref_device=True,  # Add is_ref_device
-            
-            
-            # Other parameters from original config...
-            data_filename="test_data.csv",
-            root="./data",
-            target_label="test_label",
-            datapoint_loc_label="video_path",
-            frames=16,  # Reduced frames for testing
-            stride=2,
-            multi_video=True,
-            num_videos=2,  # Reduced videos for testing
-            groupby_column="group_id",
-            shuffle_videos=True,
-            optimizer="AdamW",
-            scheduler_name="cosine",
-            lr_step_period=1,
-            factor=0.1,
-            video_weight_decay=0.01,
-            text_weight_decay=0.01,
-            loss_name="InfoNCE",
-            recall_k=[1, 5],
-            ndcg_k=[5],
-            rand_augment=False,  # Disable augmentation for testing
-            resize=224,
-            apply_mask=False,
-            view_count=None,
-            save_best="loss",
-            resume_training=False,
-            checkpoint=None,
-            tag="test",
-            name="test_run",
-            project="test_project",
-            entity="test_entity"
-        )
+        # Create test config by simulating CLI arguments
+        original_argv = sys.argv.copy()
+        sys.argv = [sys.argv[0], "--base_config", "tests/config/base_config.yaml", "--output_dir", self.temp_dir]
+        self.test_config = HeartWiseParser.parse_config()
+        sys.argv = original_argv
         
         # Create models with test settings
         self.video_encoder = VideoEncoder(
@@ -212,7 +152,14 @@ class TestVideoContrastiveLearning(unittest.TestCase):
         ], lr=1e-4)
         
         # Create loss function with test settings
-        self.loss_fn = InfoNCELoss(temperature=0.07, use_ddp=False)
+        kwargs = {
+            "temperature": 0.07,
+            "use_ddp": False
+        }
+        self.loss_fn = get_loss_fn(
+            loss_name=self.test_config.loss_name, 
+            kwargs=kwargs
+        )
         
         # Create runner
         self.runner = VideoContrastiveLearningRunner(

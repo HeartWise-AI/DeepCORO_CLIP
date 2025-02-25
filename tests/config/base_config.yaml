@@ -1,0 +1,68 @@
+pipeline_project: !!str "DeepCORO_test"
+
+# Training parameters
+epochs: !!int 2
+num_workers: !!int 0
+debug: !!bool true
+use_amp: !!bool true
+period: !!int 1
+device: !!str cpu
+run_mode: !!str train
+# Dataset parameters
+data_filename: !!str test_data.csv
+root: !!str data
+target_label: !!str test_label
+datapoint_loc_label: !!str video_path
+frames: !!int 16
+stride: !!int 2
+multi_video: !!bool true
+num_videos: !!int 2
+groupby_column: !!str group_id
+shuffle_videos: !!bool true
+batch_size: !!int 2
+# Seed
+seed: !!int 42
+# Model parameters
+model_name: !!str mvit
+pretrained: !!bool false
+# Optimizer parameters
+optimizer: !!str AdamW
+scheduler_name: !!str cosine
+lr: !!float 0.00002087457921275152
+lr_step_period: !!int 1
+factor: !!float 0.1
+loss_name: !!str InfoNCE
+video_weight_decay: !!float 0.01
+text_weight_decay: !!float 0.01
+gradient_accumulation_steps: !!int 1
+num_warmup_percent: !!float 0.1
+num_hard_restarts_cycles: !!float 1.0
+warm_restart_tmult: !!int 1
+# Model architecture parameters
+num_heads: !!int 8
+aggregator_depth: !!int 2
+temperature: !!float 0.07
+dropout: !!float 0.1
+video_freeze_ratio: !!float 0.0
+text_freeze_ratio: !!float 0.0
+# Checkpointing
+resume_training: !!bool false
+checkpoint: !!str null
+output_dir: !!str tmp # update in test with tempfile library
+save_best: !!str loss
+# Metrics
+# Recall @k
+recall_k: [1, 5]
+# NDCG @k
+ndcg_k: [5]
+# Data augmentation
+rand_augment: !!bool false
+resize: !!int 224
+view_count: !!null null
+apply_mask: !!bool false
+# wandb parameters
+tag: !!str dummy_tag
+name: !!str dummy_name
+project: !!str dummy_project
+entity: !!str dummy_entity
+use_wandb: !!bool false

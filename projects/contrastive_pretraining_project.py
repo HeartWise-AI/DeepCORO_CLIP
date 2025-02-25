@@ -12,7 +12,7 @@ from typing import Any
 from models.text_encoder import TextEncoder
 from models.video_encoder import VideoEncoder
 
-from runners.video_constrative_learning import VideoContrastiveLearningRunner
+from runners.video_constrative_learning_runner import VideoContrastiveLearningRunner
 
 from utils.ddp import DDP
 from utils.enums import RunMode
@@ -272,7 +272,7 @@ def load_train_objs(
 
 
 @ProjectRegistry.register('DeepCORO_clip')
-class ContrastivePretraining:
+class ContrastivePretrainingProject:
     def __init__(
         self, 
         config: HeartWiseConfig,
@@ -352,14 +352,14 @@ class ContrastivePretraining:
             loss_fn=get_loss_fn(self.config.loss_name),
             output_dir=training_setup["full_output_path"],
         )
-        if self.config.mode == RunMode.TRAIN:
+        if self.config.run_mode == RunMode.TRAIN:
             end_epoch = start_epoch + self.config.epochs
             runner.train(
                 start_epoch=start_epoch, 
                 end_epoch=end_epoch
             ) 
-        elif self.config.mode == RunMode.INFERENCE:
+        elif self.config.run_mode == RunMode.INFERENCE:
             runner.inference()
         else:
-            raise ValueError(f"Invalid mode: {self.config.mode}, must be one of {RunMode.TRAIN} or {RunMode.INFERENCE}")
+            raise ValueError(f"Invalid run mode: {self.config.run_mode}, must be one of {RunMode.TRAIN} or {RunMode.INFERENCE}")
 

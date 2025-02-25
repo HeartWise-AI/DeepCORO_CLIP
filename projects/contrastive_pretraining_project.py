@@ -11,7 +11,7 @@ from torch.optim.lr_scheduler import LRScheduler
 from typing import Any
 from models.text_encoder import TextEncoder
 from models.video_encoder import VideoEncoder
-
+from projects.base_project import BaseProject
 from runners.typing import Runner
 
 from utils.ddp import DistributedUtils
@@ -39,13 +39,13 @@ def stats_collate_fn(batch):
 
 
 @ProjectRegistry.register('DeepCORO_clip')
-class ContrastivePretrainingProject:
+class ContrastivePretrainingProject(BaseProject):
     def __init__(
         self, 
         config: ClipConfig,
     ):
         self.config: ClipConfig = config
-    
+        
     def _setup_training_objects(
         self,
     )->dict:
@@ -277,6 +277,11 @@ class ContrastivePretrainingProject:
             "log_temp": log_temperature,
             "full_output_path": full_output_path,
         }    
+
+    def _setup_inference_objects(
+        self,
+    )->dict:
+        raise NotImplementedError("Inference is not implemented for this project")
     
     def _save_texts_csv(
         self, 

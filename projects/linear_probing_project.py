@@ -15,8 +15,17 @@ class LinearProbingProject(BaseProject):
     ):
         self.config: LinearProbingConfig = config
 
-    def _setup_training_objects(self)->dict[str, Any]:
+    def _setup_training_objects(
+        self
+    )->dict[str, Any]:
         print(f"Model checkpoint path: {self.config.model_checkpoint_path}")
+        checkpoint = self._load_checkpoint(self.config.model_checkpoint_path)
+        print(f"Checkpoint loaded: {checkpoint.keys()}")
+
+    def _setup_inference_objects(
+        self
+    )->dict[str, Any]:
+        raise NotImplementedError("Inference is not implemented for this project")
 
     def run(self):
         training_setup: dict[str, Any] = self._setup_training_objects()

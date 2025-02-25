@@ -3,7 +3,8 @@ from typing import Union
 from dataclasses import dataclass
 from projects import (
     LinearProbingProject,
-    ContrastivePretrainingProject
+    ContrastivePretrainingProject,
+    BaseProject
 )
 
 
@@ -11,7 +12,8 @@ from projects import (
 class Project:
     project_type: Union[
         ContrastivePretrainingProject, 
-        LinearProbingProject
+        LinearProbingProject,
+        BaseProject
     ]
     
     def run(self):

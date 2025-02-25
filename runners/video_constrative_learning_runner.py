@@ -12,6 +12,7 @@ from torch.optim.lr_scheduler import LRScheduler
 from tqdm import tqdm
 
 from utils.enums import RunMode
+from utils.ddp import DistributedUtils
 from utils.config.heartwise_config import HeartWiseConfig
 from utils.registry import RunnerRegistry
 from utils.metrics import (
@@ -130,9 +131,11 @@ class VideoContrastiveLearningRunner:
           - LR scheduling
         """
         for epoch in range(start_epoch, end_epoch):
-            # Synchronize before epoch starts (DDP barrier)
-            if self.world_size > 1:
-                torch.distributed.barrier(device_ids=[self.device])
+            # Synchronize before epoch starts
+            DistributedUtils.sync_process_group(
+                world_size=self.world_size,
+                device_ids=self.device
+            )
 
             # Training phase
             train_metrics = self._run_epoch(mode=RunMode.TRAIN, epoch=epoch)
@@ -142,8 +145,10 @@ class VideoContrastiveLearningRunner:
                 print(f"[DEBUG] rank={self.device} => Logged train metrics to W&B")
 
             # Sync before validation
-            if self.world_size > 1:
-                torch.distributed.barrier(device_ids=[self.device])
+            DistributedUtils.sync_process_group(
+                world_size=self.world_size,
+                device_ids=self.device
+            )
 
             # Validation phase
             val_metrics = self._run_epoch(
@@ -151,16 +156,20 @@ class VideoContrastiveLearningRunner:
                 epoch=epoch
             )
             
-            if self.world_size > 1:
-                torch.distributed.barrier(device_ids=[self.device])
+            DistributedUtils.sync_process_group(
+                world_size=self.world_size,
+                device_ids=self.device
+            )
             
             if self.config.is_ref_device:
                 wandb.log(val_metrics)
                 print(f"[DEBUG] rank={self.device} => Logged val metrics to W&B")
 
             # Sync after validation
-            if self.world_size > 1:
-                torch.distributed.barrier(device_ids=[self.device])
+            DistributedUtils.sync_process_group(
+                world_size=self.world_size,
+                device_ids=self.device
+            )
             
             # If it's an epoch-based scheduler (like StepLR, CosineAnnealingLR, etc.),
             # call lr_scheduler.step() after each epoch
@@ -193,8 +202,10 @@ class VideoContrastiveLearningRunner:
                     metrics={**train_metrics, **val_metrics},
                     is_best=False,
                 )
-            if self.world_size > 1:
-                torch.distributed.barrier(device_ids=[self.device])
+            DistributedUtils.sync_process_group(
+                world_size=self.world_size,
+                device_ids=self.device
+            )
                 
             print(f"gpu_id after saving checkpoint: {self.device}")
   
@@ -213,7 +224,7 @@ class VideoContrastiveLearningRunner:
         device = local_tensor.device
         local_size = torch.tensor([local_tensor.shape[0]], device=device, dtype=torch.long)
         sizes_list = [torch.zeros_like(local_size) for _ in range(world_size)]
-        torch.distributed.all_gather(sizes_list, local_size)
+        DistributedUtils.dist.all_gather(sizes_list, local_size)
         sizes_list = [s.item() for s in sizes_list]
         max_size = max(sizes_list)
 
@@ -229,7 +240,7 @@ class VideoContrastiveLearningRunner:
                 padded = local_tensor
 
         gathered = [torch.zeros_like(padded) for _ in range(world_size)]
-        torch.distributed.all_gather(gathered, padded)
+        DistributedUtils.dist.all_gather(gathered, padded)
 
         cat = torch.stack(gathered, dim=0)
         out_list = []
@@ -261,7 +272,7 @@ class VideoContrastiveLearningRunner:
         local_size = torch.tensor([len(local_data_bytes)], dtype=torch.long, device=device)
 
         sizes_list = [torch.zeros_like(local_size) for _ in range(world_size)]
-        torch.distributed.all_gather(sizes_list, local_size)
+        DistributedUtils.dist.all_gather(sizes_list, local_size)
         sizes_list = [s.item() for s in sizes_list]
         max_size = max(sizes_list)
 
@@ -271,7 +282,7 @@ class VideoContrastiveLearningRunner:
         )
 
         all_buffers = [torch.zeros(max_size, dtype=torch.uint8, device=device) for _ in range(world_size)]
-        torch.distributed.all_gather(all_buffers, local_buffer)
+        DistributedUtils.dist.all_gather(all_buffers, local_buffer)
 
         out_list = []
         for rank_idx, buf in enumerate(all_buffers):
@@ -498,7 +509,7 @@ class VideoContrastiveLearningRunner:
         """
         if self.config.world_size > 1:
             t = torch.tensor([val], dtype=torch.float, device=self.device)
-            torch.distributed.all_reduce(t, op=torch.distributed.ReduceOp.AVG)
+            DistributedUtils.dist.all_reduce(t, op=DistributedUtils.dist.ReduceOp.AVG)
             return t.item()
         else:
             return val
@@ -644,16 +655,20 @@ class VideoContrastiveLearningRunner:
             self.scaler.scale(loss).backward()
             self.scaler.unscale_(self.optimizer)
 
-            if self.world_size > 1:
-                torch.distributed.barrier(device_ids=[self.device])
+            DistributedUtils.sync_process_group(
+                world_size=self.world_size,
+                device_ids=self.device
+            )
 
             # Log gradient norms
             if self.config.is_ref_device:
                 log_gradient_norms(self.video_encoder, prefix="train/video_encoder/")
                 log_gradient_norms(self.text_encoder, prefix="train/text_encoder/")
 
-            if self.world_size > 1:
-                torch.distributed.barrier(device_ids=[self.device])
+            DistributedUtils.sync_process_group(
+                world_size=self.world_size,
+                device_ids=self.device
+            )
 
             # Clip gradients
             torch.nn.utils.clip_grad_norm_(self.video_encoder.parameters(), max_norm=5.0)
@@ -671,15 +686,19 @@ class VideoContrastiveLearningRunner:
 
             loss.backward()
 
-            if self.world_size > 1:
-                torch.distributed.barrier(device_ids=[self.device])
+            DistributedUtils.sync_process_group(
+                world_size=self.world_size,
+                device_ids=self.device
+            )
 
             if self.config.is_ref_device:
                 log_gradient_norms(self.video_encoder, prefix="train/video_encoder/")
                 log_gradient_norms(self.text_encoder, prefix="train/text_encoder/")
 
-            if self.world_size > 1:
-                torch.distributed.barrier(device_ids=[self.device])
+            DistributedUtils.sync_process_group(
+                world_size=self.world_size,
+                device_ids=self.device
+            )
 
             # Clip gradients
             torch.nn.utils.clip_grad_norm_(self.video_encoder.parameters(), max_norm=5.0)

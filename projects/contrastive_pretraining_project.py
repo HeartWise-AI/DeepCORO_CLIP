@@ -14,7 +14,7 @@ from models.video_encoder import VideoEncoder
 
 from runners.typing import Runner
 
-from utils.ddp import DDP
+from utils.ddp import DistributedUtils
 from utils.enums import RunMode
 from utils.losses import get_loss_fn
 from utils.config.clip_config import ClipConfig
@@ -176,12 +176,12 @@ class ContrastivePretrainingProject:
         )
         text_encoder = text_encoder.to(self.config.device).float()
 
-        video_encoder = DDP(
+        video_encoder = DistributedUtils.DDP(
             video_encoder, 
             device_ids=[self.config.device], 
             find_unused_parameters=True
         )
-        text_encoder = DDP(
+        text_encoder = DistributedUtils.DDP(
             text_encoder, 
             device_ids=[self.config.device], 
             find_unused_parameters=True

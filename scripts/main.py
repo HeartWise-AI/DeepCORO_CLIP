@@ -12,7 +12,7 @@ from utils.seed import set_seed
 from utils.parser import HeartWiseParser
 from utils.config.heartwise_config import HeartWiseConfig
 from utils.registry import register_submodules, ProjectRegistry
-from utils.ddp import ddp_setup, ddp_cleanup
+from utils.ddp import DistributedUtils
 from projects.typing import Project
 
 register_submodules("runners")
@@ -35,7 +35,7 @@ def main(config: HeartWiseConfig):
     set_seed(config.seed)
     
     # Initialize process group with explicit device ID and world size
-    ddp_setup(
+    DistributedUtils.ddp_setup(
         gpu_id=config.device, 
         world_size=config.world_size
     )
@@ -65,8 +65,10 @@ def main(config: HeartWiseConfig):
             wandb.init(mode='disabled')
             
         # Synchronize the updated config across all GPUs
-        if config.world_size > 1:
-            torch.distributed.barrier(device_ids=[config.device])
+        DistributedUtils.sync_process_group(
+            world_size=config.world_size,
+            device_ids=config.device
+        )
             
         # Create and run the project
         project: Project = Project(
@@ -80,13 +82,13 @@ def main(config: HeartWiseConfig):
         print(f"Error: {e}")
         if config.is_ref_device:
             wandb.finish()
-        ddp_cleanup()
+        DistributedUtils.ddp_cleanup()
         raise e
         
     finally:
         if config.is_ref_device:
             wandb.finish()
-        ddp_cleanup()
+        DistributedUtils.ddp_cleanup()
     
 if __name__ == "__main__":
     # Get HeartWiseConfig with GPU info already set

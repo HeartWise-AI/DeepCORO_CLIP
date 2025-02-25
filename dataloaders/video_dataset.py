@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 
 from utils.ddp import DS
 from utils.seed import seed_worker
-from utils.config import HeartWiseConfig
+from utils.config.heartwise_config import HeartWiseConfig
 from models.text_encoder import get_tokenizer
 from utils.video import load_video, format_mean_std
 

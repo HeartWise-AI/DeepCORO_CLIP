@@ -12,7 +12,7 @@ from torch.optim.lr_scheduler import LRScheduler
 from tqdm import tqdm
 
 from utils.enums import RunMode
-from utils.config import HeartWiseConfig
+from utils.config.heartwise_config import HeartWiseConfig
 from utils.registry import RunnerRegistry
 from utils.metrics import (
     compute_mrr,

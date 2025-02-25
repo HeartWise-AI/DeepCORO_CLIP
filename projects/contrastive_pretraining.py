@@ -17,7 +17,7 @@ from runners.video_constrative_learning import VideoContrastiveLearningRunner
 from utils.ddp import DDP
 from utils.enums import RunMode
 from utils.losses import get_loss_fn
-from utils.config import HeartWiseConfig
+from utils.config.heartwise_config import HeartWiseConfig
 from utils.schedulers import get_scheduler
 from utils.registry import (
     ModelRegistry, 

@@ -1,6 +1,5 @@
-import os
 import argparse
-from utils.config import HeartWiseConfig
+from utils.config.heartwise_config import HeartWiseConfig
 from utils.parser_typing import (
     str2bool, 
     parse_list, 
@@ -9,13 +8,6 @@ from utils.parser_typing import (
 )
 
 class HeartWiseParser:
-    @staticmethod
-    def set_gpu_info(config: HeartWiseConfig) -> None:
-        """Set GPU information from environment variables."""
-        config.gpu = int(os.environ["LOCAL_RANK"])
-        config.world_size = int(os.environ["WORLD_SIZE"])
-        config.is_ref_device = (int(os.environ["LOCAL_RANK"]) == 0)
-
     @staticmethod
     def parse_config() -> HeartWiseConfig:
         """Parse command line arguments and load config file."""
@@ -114,6 +106,6 @@ class HeartWiseParser:
         config: HeartWiseConfig = HeartWiseConfig.update_config_with_args(config, args)
         
         # Set GPU info
-        HeartWiseParser.set_gpu_info(config)
+        HeartWiseConfig.set_gpu_info_in_place(config)
         
         return config

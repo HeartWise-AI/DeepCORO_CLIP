@@ -26,7 +26,7 @@ print_usage() {
 
 # Default values
 SELECTED_GPUS="1,3" # Comma-separated list of GPU IDs to use
-SWEEP_CONFIG_PATH="config/sweep_config_single_video.yaml"
+SWEEP_CONFIG_PATH="config/clip/sweep_config_single_video.yaml"
 COUNT="5" # Number of runs to execute
 
 # Parse command line arguments

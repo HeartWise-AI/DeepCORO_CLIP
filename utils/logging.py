@@ -10,7 +10,7 @@ import torch.nn as nn
 from datetime import datetime
 from typing import Any, Dict, Optional, List
 
-from utils.config import HeartWiseConfig
+from utils.config.heartwise_config import HeartWiseConfig
 from utils.video import convert_video_for_wandb, cleanup_temp_video
 
 class WandbLogger:

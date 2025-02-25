@@ -12,7 +12,7 @@ from torch.utils.data import Dataset, DataLoader
 from utils.ddp import DS
 from utils.seed import seed_worker
 from utils.video import load_video
-from utils.config import HeartWiseConfig
+from utils.config.heartwise_config import HeartWiseConfig
 from models.text_encoder import get_tokenizer
 
 

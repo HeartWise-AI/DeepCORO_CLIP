@@ -10,10 +10,15 @@ from pprint import pprint
 
 from utils.seed import set_seed
 from utils.parser import HeartWiseParser
-from utils.config import HeartWiseConfig
-from utils.registry import ProjectRegistry
+from utils.config.heartwise_config import HeartWiseConfig
+from utils.registry import register_submodules, ProjectRegistry
 from utils.ddp import ddp_setup, ddp_cleanup
 from projects import ContrastivePretraining
+
+register_submodules("runners")
+register_submodules("models")
+register_submodules("projects")
+register_submodules("utils.config")
 
 # Add project root to path
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

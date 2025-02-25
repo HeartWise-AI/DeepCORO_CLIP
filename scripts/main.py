@@ -13,7 +13,7 @@ from utils.parser import HeartWiseParser
 from utils.config.heartwise_config import HeartWiseConfig
 from utils.registry import register_submodules, ProjectRegistry
 from utils.ddp import ddp_setup, ddp_cleanup
-from utils.typing import Project
+from projects.typing import Project
 
 register_submodules("runners")
 register_submodules("models")

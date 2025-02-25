@@ -1,0 +1,38 @@
+# Pipeline parameters
+pipeline_project: !!str DeepCORO_video_linear_probing
+output_dir: !!str outputs
+run_mode: !!str train
+epochs: !!int 10
+seed: !!int 42
+# wandb parameters
+tag: !!str mvit_pretrained
+name: !!str dev_deep_coro_clip_single_video
+project: !!str dev_deep_coro_clip_single_video
+entity: !!str mhi_ai
+use_wandb: !!bool false
+# Training parameters
+lr: !!float 0.0003
+scheduler_type: !!str step
+lr_step_period: !!int 5
+factor: !!float 0.3
+optimizer: !!str AdamW
+weight_decay: !!float 0.00001
+#Dataset parameters
+data_filename: !!str data/video_data.csv
+num_workers: !!int 4
+batch_size: !!int 128
+# Model parameters
+task: !!str classification
+head_structure:
+  contrast_agent: !!int 1
+  main_structure: !!int 5
+  ejection_fraction: !!int 1
+loss_structure:
+  contrast_agent: !!str bce_logit
+  main_structure: !!str ce
+  ejection_fraction: !!str bce_logit
+head_weights:
+  contrast_agent: !!float 1.0
+  main_structure: !!float 1.0
+  ejection_fraction: !!float 1.0
+model_checkpoint_path: !!str outputs/checkpoints/best_classifier_head.pt

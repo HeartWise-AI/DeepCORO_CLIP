@@ -13,7 +13,7 @@ from utils.parser import HeartWiseParser
 from utils.config.heartwise_config import HeartWiseConfig
 from utils.registry import register_submodules, ProjectRegistry
 from utils.ddp import ddp_setup, ddp_cleanup
-from projects import ContrastivePretraining
+from utils.typing import Project
 
 register_submodules("runners")
 register_submodules("models")
@@ -29,14 +29,14 @@ def load_yaml_config(file_path):
     with open(file_path) as file:
         return yaml.safe_load(file)
 
-def run_contrastive_pretraining(config: HeartWiseConfig):
+def main(config: HeartWiseConfig):
     
     # Set seed for reproducibility
     set_seed(config.seed)
     
     # Initialize process group with explicit device ID and world size
     ddp_setup(
-        gpu_id=config.gpu, 
+        gpu_id=config.device, 
         world_size=config.world_size
     )
     
@@ -66,12 +66,14 @@ def run_contrastive_pretraining(config: HeartWiseConfig):
             
         # Synchronize the updated config across all GPUs
         if config.world_size > 1:
-            torch.distributed.barrier(device_ids=[config.gpu])
+            torch.distributed.barrier(device_ids=[config.device])
             
         # Create and run the project
-        project: ContrastivePretraining = ProjectRegistry.get(
-            "contrastive_pretraining"
-        )(config=config)
+        project: Project = Project(
+            project_type=ProjectRegistry.get(
+                name=config.pipeline_project
+            )(config=config)
+        )
         project.run()
         
     except Exception as e:
@@ -85,14 +87,7 @@ def run_contrastive_pretraining(config: HeartWiseConfig):
         if config.is_ref_device:
             wandb.finish()
         ddp_cleanup()
-
-def main(config: HeartWiseConfig):
-    """Main function to either run training or hyperparameter sweep."""
-    print(f"running main with gpu {config.gpu}")
     
-    # Always run training directly - sweep is managed by shell script
-    run_contrastive_pretraining(config)
-
 if __name__ == "__main__":
     # Get HeartWiseConfig with GPU info already set
     config: HeartWiseConfig = HeartWiseParser.parse_config()

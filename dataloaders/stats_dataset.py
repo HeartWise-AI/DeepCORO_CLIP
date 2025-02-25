@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader
 
 from utils.seed import seed_worker
 from utils.video import load_video
-from utils.config import HeartWiseConfig
+from utils.config.heartwise_config import HeartWiseConfig
 
 
 class StatsDataset(torch.utils.data.Dataset):

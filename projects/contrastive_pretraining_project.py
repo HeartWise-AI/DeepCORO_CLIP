@@ -12,7 +12,7 @@ from typing import Any
 from models.text_encoder import TextEncoder
 from models.video_encoder import VideoEncoder
 
-from runners.video_constrative_learning_runner import VideoContrastiveLearningRunner
+from runners.typing import Runner
 
 from utils.ddp import DDP
 from utils.enums import RunMode
@@ -335,22 +335,24 @@ class ContrastivePretrainingProject:
             start_epoch = checkpoint["epoch"]
             print(f"Resuming from epoch: {start_epoch}")
 
-        runner: VideoContrastiveLearningRunner = RunnerRegistry.get(
-            name="video_contrastive_learning"
-        )(
-            config=self.config,
-            device=self.config.device,
-            world_size=self.config.world_size,
-            train_loader=training_setup["train_loader"],
-            val_loader=training_setup["val_loader"],
-            video_encoder=training_setup["video_encoder"],
-            text_encoder=training_setup["text_encoder"],
-            optimizer=training_setup["optimizer"],
-            scaler=training_setup["scaler"],
-            log_temp=training_setup["log_temp"],
-            lr_scheduler=training_setup["scheduler"],
-            loss_fn=get_loss_fn(self.config.loss_name),
-            output_dir=training_setup["full_output_path"],
+        runner: Runner = Runner(
+            runner_type=RunnerRegistry.get(
+                name=self.config.pipeline_project
+            )(
+                config=self.config,
+                device=self.config.device,
+                world_size=self.config.world_size,
+                train_loader=training_setup["train_loader"],
+                val_loader=training_setup["val_loader"],
+                video_encoder=training_setup["video_encoder"],
+                text_encoder=training_setup["text_encoder"],
+                optimizer=training_setup["optimizer"],
+                scaler=training_setup["scaler"],
+                log_temp=training_setup["log_temp"],
+                lr_scheduler=training_setup["scheduler"],
+                loss_fn=get_loss_fn(self.config.loss_name),
+                output_dir=training_setup["full_output_path"],
+            )
         )
         if self.config.run_mode == RunMode.TRAIN:
             end_epoch = start_epoch + self.config.epochs

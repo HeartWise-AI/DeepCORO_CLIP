@@ -32,7 +32,7 @@ from models.video_encoder import VideoEncoder
 from models.text_encoder import TextEncoder
 
 
-@RunnerRegistry.register("video_contrastive_learning")
+@RunnerRegistry.register("DeepCORO_clip")
 class VideoContrastiveLearningRunner:
     """
     This class runs a video contrastive learning pipeline using a VideoEncoder and TextEncoder.

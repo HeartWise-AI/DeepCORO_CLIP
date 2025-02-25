@@ -13,7 +13,7 @@ from torch.utils.data import Dataset, DataLoader
 
 from models.video_encoder import VideoEncoder
 from models.text_encoder import TextEncoder
-from runners.video_constrative_learning import VideoContrastiveLearningRunner
+from runners.video_constrative_learning_runner import VideoContrastiveLearningRunner
 from utils.parser import HeartWiseParser
 from utils.enums import RunMode
 from utils.losses import get_loss_fn
@@ -123,7 +123,7 @@ class TestVideoContrastiveLearning(unittest.TestCase):
         
         # Create test config by simulating CLI arguments
         original_argv = sys.argv.copy()
-        sys.argv = [sys.argv[0], "--base_config", "tests/config/base_config.yaml", "--output_dir", self.temp_dir]
+        sys.argv = [sys.argv[0], "--base_config", "tests/config/clip_base_config.yaml", "--output_dir", self.temp_dir]
         self.test_config = HeartWiseParser.parse_config()
         sys.argv = original_argv
         

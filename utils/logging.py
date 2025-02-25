@@ -506,7 +506,7 @@ def create_logger(config: HeartWiseConfig):
         "learning_rate": config.lr,
         "epochs": config.epochs,
         "num_workers": config.num_workers,
-        "gpu": config.gpu,
+        "device": config.device,
         "model_name": config.model_name,
         "optimizer": config.optimizer,
         "weight_decay": config.weight_decay,

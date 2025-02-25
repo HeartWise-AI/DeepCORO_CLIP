@@ -98,7 +98,7 @@ def load_train_objs(
         mean = mean_tensor.cpu()
         std = std_tensor.cpu()    
     
-    print(f"Rank: {config.gpu} - mean: {mean} - std: {std}")
+    print(f"Rank: {config.device} - mean: {mean} - std: {std}")
 
 
     if config.multi_video:
@@ -109,7 +109,7 @@ def load_train_objs(
             std=(std.tolist() if std is not None else [0.229, 0.224, 0.225]),
             shuffle=True,
             num_replicas=config.world_size,
-            rank=config.gpu,
+            rank=config.device,
             drop_last=True,
         )
         val_loader: DataLoader = get_distributed_multi_video_dataloader(
@@ -119,7 +119,7 @@ def load_train_objs(
             std=(std.tolist() if std is not None else [0.229, 0.224, 0.225]),
             shuffle=False,
             num_replicas=config.world_size,
-            rank=config.gpu,
+            rank=config.device,
             drop_last=False,
         )
     else:
@@ -130,7 +130,7 @@ def load_train_objs(
             std=(std.tolist() if std is not None else [0.229, 0.224, 0.225]),
             shuffle=True,
             num_replicas=config.world_size,
-            rank=config.gpu,
+            rank=config.device,
             drop_last=True,
         )
         val_loader: DataLoader = get_distributed_video_dataloader(
@@ -140,7 +140,7 @@ def load_train_objs(
             std=(std.tolist() if std is not None else [0.229, 0.224, 0.225]),
             shuffle=False,
             num_replicas=config.world_size,
-            rank=config.gpu,
+            rank=config.device,
             drop_last=False,
         )
 
@@ -158,7 +158,7 @@ def load_train_objs(
         num_heads=config.num_heads,
         aggregator_depth=config.aggregator_depth,
     )
-    video_encoder = video_encoder.to(config.gpu).float()
+    video_encoder = video_encoder.to(config.device).float()
 
     text_encoder: TextEncoder = ModelRegistry.get(
         name="text_encoder"
@@ -166,22 +166,28 @@ def load_train_objs(
         freeze_ratio=config.text_freeze_ratio,
         dropout=config.dropout,
     )
-    text_encoder = text_encoder.to(config.gpu).float()
+    text_encoder = text_encoder.to(config.device).float()
 
     video_encoder = DDP(
         video_encoder, 
-        device_ids=[config.gpu], 
+        device_ids=[config.device], 
         find_unused_parameters=True
     )
     text_encoder = DDP(
         text_encoder, 
-        device_ids=[config.gpu], 
+        device_ids=[config.device], 
         find_unused_parameters=True
     )
 
     # Make temperature a trainable parameter directly on the device
     log_temperature: nn.Parameter = nn.Parameter(
-        torch.log(torch.tensor([config.temperature], dtype=torch.float32, device=config.gpu))
+        torch.log(
+            torch.tensor(
+                [config.temperature], 
+                dtype=torch.float32, 
+                device=config.device
+            )
+        )
     )
 
     # Different learning rates for different components
@@ -258,14 +264,14 @@ def load_train_objs(
         "scheduler": scheduler,
         "train_loader": train_loader,
         "val_loader": val_loader,
-        "device": config.gpu,
+        "device": config.device,
         "scaler": scaler,
         "log_temp": log_temperature,
         "full_output_path": full_output_path,
     }
 
 
-@ProjectRegistry.register('contrastive_pretraining')
+@ProjectRegistry.register('DeepCORO_clip')
 class ContrastivePretraining:
     def __init__(
         self, 
@@ -333,7 +339,7 @@ class ContrastivePretraining:
             name="video_contrastive_learning"
         )(
             config=self.config,
-            device=self.config.gpu,
+            device=self.config.device,
             world_size=self.config.world_size,
             train_loader=training_setup["train_loader"],
             val_loader=training_setup["val_loader"],

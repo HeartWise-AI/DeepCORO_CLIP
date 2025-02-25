@@ -9,11 +9,9 @@ class BaseProject(ABC):
     def __init__(self, config: HeartWiseConfig):
         self.config = config
 
-    # def run(self):
-    #     pass
-    
-    # def inference(self):
-    #     raise NotImplementedError("Inference is not implemented for this project")
+    @abstractmethod
+    def run(self):
+        pass
     
     @abstractmethod
     def _setup_inference_objects(self)->dict[str, Any]:

@@ -1,4 +1,5 @@
+from projects.base_project import BaseProject
 from projects.linear_probing_project import LinearProbingProject
 from projects.contrastive_pretraining_project import ContrastivePretrainingProject
 
-__all__ = ["ContrastivePretrainingProject", "LinearProbingProject"]
+__all__ = ["ContrastivePretrainingProject", "LinearProbingProject", "BaseProject"]

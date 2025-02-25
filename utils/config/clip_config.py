@@ -12,11 +12,9 @@ class ClipConfig(HeartWiseConfig):
     # Training parameters
     lr: float
     batch_size: int
-    epochs: int
     num_workers: int
     debug: bool
     temperature: float
-    run_mode: str
 
     # Data parameters
     data_filename: str
@@ -52,7 +50,6 @@ class ClipConfig(HeartWiseConfig):
     warm_restart_tmult: int
 
     # System parameters
-    output_dir: str
     seed: int
     use_amp: bool
     device: str

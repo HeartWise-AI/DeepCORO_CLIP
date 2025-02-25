@@ -11,11 +11,13 @@ class HeartWiseConfig:
     """
     Base configuration class for all HeartWise projects.
     """
-
-    # Pipeline project
+    # Pipeline parameters
     pipeline_project: str
+    output_dir: str    
+    run_mode: str
+    epochs: int   
 
-    # Logging parameters
+    # wandb parameters
     tag: str
     name: str
     project: str

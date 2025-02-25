@@ -16,7 +16,8 @@ class HeartWiseConfig:
     output_dir: str    
     run_mode: str
     epochs: int   
-
+    seed: int
+    
     # wandb parameters
     tag: str
     name: str

@@ -50,7 +50,6 @@ class ClipConfig(HeartWiseConfig):
     warm_restart_tmult: int
 
     # System parameters
-    seed: int
     use_amp: bool
     device: str
     period: int

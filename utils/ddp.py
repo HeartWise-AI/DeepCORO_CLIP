@@ -40,6 +40,17 @@ class DistributedUtils:
         Cleanup the DistributedDataParallel.
         """
         destroy_process_group()
+
+    @staticmethod
+    def sync_process_group(
+        world_size: int, 
+        device_ids: int
+    ):
+        """
+        Synchronize the process group across all devices.
+        """
+        if world_size > 1:
+            torch.distributed.barrier(device_ids=[device_ids])
     
     @staticmethod
     def gather_loss(

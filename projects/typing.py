@@ -11,3 +11,6 @@ class Project:
         ContrastivePretraining, 
         LinearProbingProject
     ]
+    
+    def run(self):
+        self.project_type.run()

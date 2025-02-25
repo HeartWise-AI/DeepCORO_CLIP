@@ -2,8 +2,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
+from typing import Any, Dict, Optional
 
-def get_loss_fn(loss_name: str) -> nn.Module:
+def get_loss_fn(
+    loss_name: str, 
+    kwargs: Optional[Dict[str, Any]] = None
+) -> nn.Module:
     """
     Returns the appropriate loss function by name.
     If running on a single GPU, use contrastive_loss;
@@ -13,6 +17,8 @@ def get_loss_fn(loss_name: str) -> nn.Module:
         return contrastive_loss
     elif loss_name == "contrastive_ddp":
         return contrastive_loss_ddp
+    elif loss_name == "InfoNCE":
+        return InfoNCELoss(**kwargs)
     else:
         raise ValueError(f"Loss function {loss_name} not found")
 

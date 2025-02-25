@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from utils.enums import RunMode
 from utils.ddp import DistributedUtils
-from utils.config.heartwise_config import HeartWiseConfig
+from utils.config.clip_config import ClipConfig
 from utils.registry import RunnerRegistry
 from utils.metrics import (
     compute_mrr,
@@ -42,7 +42,7 @@ class VideoContrastiveLearningRunner:
 
     def __init__(
         self,
-        config: HeartWiseConfig,
+        config: ClipConfig,
         device: int,
         world_size: int,
         train_loader: DataLoader,
@@ -59,7 +59,7 @@ class VideoContrastiveLearningRunner:
         """
         Initialize the runner with provided configurations, data loaders, and modules.
 
-        :param config: HeartWiseConfig object with run/training configuration.
+        :param config: ClipConfig object with run/training configuration.
         :param device: Integer specifying the GPU index.
         :param world_size: Number of GPUs used in DDP.
         :param train_loader: DataLoader for training dataset.
@@ -83,7 +83,7 @@ class VideoContrastiveLearningRunner:
                 f"config.ndcg_k must be a list of ints, got {type(config.ndcg_k)}"
             )
 
-        self.config: HeartWiseConfig = config
+        self.config: ClipConfig = config
         self.device: int = device
         self.world_size: int = world_size
         self.train_loader: DataLoader = train_loader

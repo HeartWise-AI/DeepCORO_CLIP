@@ -38,239 +38,6 @@ def stats_collate_fn(batch):
     return videos
 
 
-def load_train_objs(
-    config: HeartWiseConfig,
-)->dict:
-    """
-    Load training objects.
-
-    Args:
-        config (HeartWiseConfig): Configuration object
-
-    Returns:
-        dict: Dictionary containing training objects
-    """
-    full_output_path = None
-    if config.is_ref_device:
-        # Generate output directory using wandb run ID that was already created
-        run_id = wandb.run.id if wandb.run is not None else ""
-        output_subdir = generate_output_dir_name(config, run_id)
-        full_output_path = os.path.join(config.output_dir, output_subdir)        
-        os.makedirs(full_output_path, exist_ok=True)
-                    
-    # Calculate dataset statistics (only on rank 0)
-    mean, std = None, None
-    if config.is_ref_device:
-        print("\n=== Calculating Dataset Statistics ===")
-
-        stats_loader: DataLoader = get_stats_dataloader(config)
-
-        print(f"Frame count per video: {config.frames}")
-
-        mean_sum, squared_sum, pixel_count = 0.0, 0.0, 0
-        for batch in tqdm(stats_loader, desc="Calculating statistics"):
-            batch = batch.float()
-            batch = batch.reshape(-1, batch.shape[-1])
-            mean_sum += batch.sum(dim=0)
-            squared_sum += (batch**2).sum(dim=0)
-            pixel_count += batch.shape[0]
-
-        mean: torch.Tensor = mean_sum / pixel_count
-        std: torch.Tensor = torch.sqrt((squared_sum / pixel_count) - (mean**2))
-
-        print("\nDataset Statistics:")
-        print(f"Mean: {mean.tolist()}")
-        print(f"Std:  {std.tolist()}")
-        print("===========================\n")                    
-    
-    # Broadcast stats if distributed
-    if torch.distributed.is_initialized():
-        if mean is not None:
-            mean = mean.cuda()
-            std = std.cuda()
-        mean_tensor = torch.zeros(3, device="cuda")
-        std_tensor = torch.zeros(3, device="cuda")
-        if config.is_ref_device:
-            mean_tensor.copy_(mean)
-            std_tensor.copy_(std)
-        torch.distributed.broadcast(mean_tensor, 0)
-        torch.distributed.broadcast(std_tensor, 0)
-        mean = mean_tensor.cpu()
-        std = std_tensor.cpu()    
-    
-    print(f"Rank: {config.device} - mean: {mean} - std: {std}")
-
-
-    if config.multi_video:
-        train_loader: DataLoader = get_distributed_multi_video_dataloader(
-            config, 
-            split="train",
-            mean=(mean.tolist() if mean is not None else [0.485, 0.456, 0.406]),
-            std=(std.tolist() if std is not None else [0.229, 0.224, 0.225]),
-            shuffle=True,
-            num_replicas=config.world_size,
-            rank=config.device,
-            drop_last=True,
-        )
-        val_loader: DataLoader = get_distributed_multi_video_dataloader(
-            config, 
-            split="val", 
-            mean=(mean.tolist() if mean is not None else [0.485, 0.456, 0.406]),
-            std=(std.tolist() if std is not None else [0.229, 0.224, 0.225]),
-            shuffle=False,
-            num_replicas=config.world_size,
-            rank=config.device,
-            drop_last=False,
-        )
-    else:
-        train_loader: DataLoader = get_distributed_video_dataloader(
-            config, 
-            split="train", 
-            mean=(mean.tolist() if mean is not None else [0.485, 0.456, 0.406]),
-            std=(std.tolist() if std is not None else [0.229, 0.224, 0.225]),
-            shuffle=True,
-            num_replicas=config.world_size,
-            rank=config.device,
-            drop_last=True,
-        )
-        val_loader: DataLoader = get_distributed_video_dataloader(
-            config, 
-            split="val", 
-            mean=(mean.tolist() if mean is not None else [0.485, 0.456, 0.406]),
-            std=(std.tolist() if std is not None else [0.229, 0.224, 0.225]),
-            shuffle=False,
-            num_replicas=config.world_size,
-            rank=config.device,
-            drop_last=False,
-        )
-
-    # Create models
-    video_encoder: VideoEncoder = ModelRegistry.get(
-        name="video_encoder"
-    )(
-        backbone=config.model_name,
-        input_channels=3,
-        num_frames=config.frames,
-        pretrained=config.pretrained,
-        output_dim=512,
-        freeze_ratio=config.video_freeze_ratio,
-        dropout=config.dropout,
-        num_heads=config.num_heads,
-        aggregator_depth=config.aggregator_depth,
-    )
-    video_encoder = video_encoder.to(config.device).float()
-
-    text_encoder: TextEncoder = ModelRegistry.get(
-        name="text_encoder"
-    )(
-        freeze_ratio=config.text_freeze_ratio,
-        dropout=config.dropout,
-    )
-    text_encoder = text_encoder.to(config.device).float()
-
-    video_encoder = DDP(
-        video_encoder, 
-        device_ids=[config.device], 
-        find_unused_parameters=True
-    )
-    text_encoder = DDP(
-        text_encoder, 
-        device_ids=[config.device], 
-        find_unused_parameters=True
-    )
-
-    # Make temperature a trainable parameter directly on the device
-    log_temperature: nn.Parameter = nn.Parameter(
-        torch.log(
-            torch.tensor(
-                [config.temperature], 
-                dtype=torch.float32, 
-                device=config.device
-            )
-        )
-    )
-
-    # Different learning rates for different components
-    param_groups = [
-        {
-            'params': video_encoder.module.model.parameters(),  # Main video backbone
-            'lr': config.lr,
-            'name': 'video_backbone',
-            'weight_decay': config.video_weight_decay
-        },
-        {
-            'params': video_encoder.module.aggregator.parameters(),  # Multihead attention aggregator
-            'lr': config.lr * 2.0,  # Higher learning rate for aggregator
-            'name': 'video_aggregator',
-            'weight_decay': config.video_weight_decay
-        },
-        {
-            'params': text_encoder.parameters(),  # Entire text encoder
-            'lr': 0.00001,  # Lower learning rate for text encoder
-            'name': 'text_encoder',
-            'weight_decay': config.text_weight_decay
-        },
-        {
-            'params': [log_temperature],  # Temperature parameter
-            'lr': config.lr,
-            'name': 'temperature'
-        }
-    ]
-
-    # Include the temperature parameter in the optimizer
-    optimizer_class: torch.optim.Optimizer = getattr(torch.optim, config.optimizer)
-    optimizer: torch.optim.Optimizer = optimizer_class(
-        param_groups,
-        lr=config.lr
-    )
-
-    scheduler: LRScheduler = get_scheduler(
-        scheduler_name=config.scheduler_name,
-        optimizer=optimizer,
-        num_epochs=config.epochs,
-        train_dataloader=train_loader,
-        factor=config.factor,
-        step_size=config.lr_step_period,
-        gradient_accumulation_steps=config.gradient_accumulation_steps,
-        num_warmup_percent=config.num_warmup_percent,
-        num_hard_restarts_cycles=config.num_hard_restarts_cycles,
-        warm_restart_tmult=config.warm_restart_tmult,
-    )
-
-    scaler: GradScaler = GradScaler() if config.use_amp else None
-
-    if config.is_ref_device:
-        wandb.config.update(
-            {
-                "train_dataset_size": len(train_loader),
-                "val_dataset_size": len(val_loader),
-            },
-            allow_val_change=True,
-        )        
-        print("\n=== Dataset Information ===")
-        print(f"Training:   {len(train_loader):,} batches per GPU")
-        print(f"Validation: {len(val_loader):,} batches per GPU")
-        print(f"Total:      {(len(train_loader) + len(val_loader)):,} batches per GPU")
-        print(f"\nBatch Size: {config.batch_size}")
-        print(f"Training: {len(train_loader) * config.batch_size:,} videos per GPU")
-        print(f"Validation: {len(val_loader) * config.batch_size:,} videos per GPU")
-        print(f"Total: {(len(train_loader) + len(val_loader)) * config.batch_size:,} videos per GPU")
-        print("===========================\n")
-
-    return {
-        "video_encoder": video_encoder,
-        "text_encoder": text_encoder,
-        "optimizer": optimizer,
-        "scheduler": scheduler,
-        "train_loader": train_loader,
-        "val_loader": val_loader,
-        "device": config.device,
-        "scaler": scaler,
-        "log_temp": log_temperature,
-        "full_output_path": full_output_path,
-    }
-
-
 @ProjectRegistry.register('DeepCORO_clip')
 class ContrastivePretrainingProject:
     def __init__(
@@ -278,6 +45,238 @@ class ContrastivePretrainingProject:
         config: HeartWiseConfig,
     ):
         self.config: HeartWiseConfig = config
+    
+    def _setup_training_objects(
+        config: HeartWiseConfig,
+    )->dict:
+        """
+        Load training objects.
+
+        Args:
+            config (HeartWiseConfig): Configuration object
+
+        Returns:
+            dict: Dictionary containing training objects
+        """
+        full_output_path = None
+        if config.is_ref_device:
+            # Generate output directory using wandb run ID that was already created
+            run_id = wandb.run.id if wandb.run is not None else ""
+            output_subdir = generate_output_dir_name(config, run_id)
+            full_output_path = os.path.join(config.output_dir, output_subdir)        
+            os.makedirs(full_output_path, exist_ok=True)
+                        
+        # Calculate dataset statistics (only on rank 0)
+        mean, std = None, None
+        if config.is_ref_device:
+            print("\n=== Calculating Dataset Statistics ===")
+
+            stats_loader: DataLoader = get_stats_dataloader(config)
+
+            print(f"Frame count per video: {config.frames}")
+
+            mean_sum, squared_sum, pixel_count = 0.0, 0.0, 0
+            for batch in tqdm(stats_loader, desc="Calculating statistics"):
+                batch = batch.float()
+                batch = batch.reshape(-1, batch.shape[-1])
+                mean_sum += batch.sum(dim=0)
+                squared_sum += (batch**2).sum(dim=0)
+                pixel_count += batch.shape[0]
+
+            mean: torch.Tensor = mean_sum / pixel_count
+            std: torch.Tensor = torch.sqrt((squared_sum / pixel_count) - (mean**2))
+
+            print("\nDataset Statistics:")
+            print(f"Mean: {mean.tolist()}")
+            print(f"Std:  {std.tolist()}")
+            print("===========================\n")                    
+        
+        # Broadcast stats if distributed
+        if torch.distributed.is_initialized():
+            if mean is not None:
+                mean = mean.cuda()
+                std = std.cuda()
+            mean_tensor = torch.zeros(3, device="cuda")
+            std_tensor = torch.zeros(3, device="cuda")
+            if config.is_ref_device:
+                mean_tensor.copy_(mean)
+                std_tensor.copy_(std)
+            torch.distributed.broadcast(mean_tensor, 0)
+            torch.distributed.broadcast(std_tensor, 0)
+            mean = mean_tensor.cpu()
+            std = std_tensor.cpu()    
+        
+        print(f"Rank: {config.device} - mean: {mean} - std: {std}")
+
+
+        if config.multi_video:
+            train_loader: DataLoader = get_distributed_multi_video_dataloader(
+                config, 
+                split="train",
+                mean=(mean.tolist() if mean is not None else [0.485, 0.456, 0.406]),
+                std=(std.tolist() if std is not None else [0.229, 0.224, 0.225]),
+                shuffle=True,
+                num_replicas=config.world_size,
+                rank=config.device,
+                drop_last=True,
+            )
+            val_loader: DataLoader = get_distributed_multi_video_dataloader(
+                config, 
+                split="val", 
+                mean=(mean.tolist() if mean is not None else [0.485, 0.456, 0.406]),
+                std=(std.tolist() if std is not None else [0.229, 0.224, 0.225]),
+                shuffle=False,
+                num_replicas=config.world_size,
+                rank=config.device,
+                drop_last=False,
+            )
+        else:
+            train_loader: DataLoader = get_distributed_video_dataloader(
+                config, 
+                split="train", 
+                mean=(mean.tolist() if mean is not None else [0.485, 0.456, 0.406]),
+                std=(std.tolist() if std is not None else [0.229, 0.224, 0.225]),
+                shuffle=True,
+                num_replicas=config.world_size,
+                rank=config.device,
+                drop_last=True,
+            )
+            val_loader: DataLoader = get_distributed_video_dataloader(
+                config, 
+                split="val", 
+                mean=(mean.tolist() if mean is not None else [0.485, 0.456, 0.406]),
+                std=(std.tolist() if std is not None else [0.229, 0.224, 0.225]),
+                shuffle=False,
+                num_replicas=config.world_size,
+                rank=config.device,
+                drop_last=False,
+            )
+
+        # Create models
+        video_encoder: VideoEncoder = ModelRegistry.get(
+            name="video_encoder"
+        )(
+            backbone=config.model_name,
+            input_channels=3,
+            num_frames=config.frames,
+            pretrained=config.pretrained,
+            output_dim=512,
+            freeze_ratio=config.video_freeze_ratio,
+            dropout=config.dropout,
+            num_heads=config.num_heads,
+            aggregator_depth=config.aggregator_depth,
+        )
+        video_encoder = video_encoder.to(config.device).float()
+
+        text_encoder: TextEncoder = ModelRegistry.get(
+            name="text_encoder"
+        )(
+            freeze_ratio=config.text_freeze_ratio,
+            dropout=config.dropout,
+        )
+        text_encoder = text_encoder.to(config.device).float()
+
+        video_encoder = DDP(
+            video_encoder, 
+            device_ids=[config.device], 
+            find_unused_parameters=True
+        )
+        text_encoder = DDP(
+            text_encoder, 
+            device_ids=[config.device], 
+            find_unused_parameters=True
+        )
+
+        # Make temperature a trainable parameter directly on the device
+        log_temperature: nn.Parameter = nn.Parameter(
+            torch.log(
+                torch.tensor(
+                    [config.temperature], 
+                    dtype=torch.float32, 
+                    device=config.device
+                )
+            )
+        )
+
+        # Different learning rates for different components
+        param_groups = [
+            {
+                'params': video_encoder.module.model.parameters(),  # Main video backbone
+                'lr': config.lr,
+                'name': 'video_backbone',
+                'weight_decay': config.video_weight_decay
+            },
+            {
+                'params': video_encoder.module.aggregator.parameters(),  # Multihead attention aggregator
+                'lr': config.lr * 2.0,  # Higher learning rate for aggregator
+                'name': 'video_aggregator',
+                'weight_decay': config.video_weight_decay
+            },
+            {
+                'params': text_encoder.parameters(),  # Entire text encoder
+                'lr': 0.00001,  # Lower learning rate for text encoder
+                'name': 'text_encoder',
+                'weight_decay': config.text_weight_decay
+            },
+            {
+                'params': [log_temperature],  # Temperature parameter
+                'lr': config.lr,
+                'name': 'temperature'
+            }
+        ]
+
+        # Include the temperature parameter in the optimizer
+        optimizer_class: torch.optim.Optimizer = getattr(torch.optim, config.optimizer)
+        optimizer: torch.optim.Optimizer = optimizer_class(
+            param_groups,
+            lr=config.lr
+        )
+
+        scheduler: LRScheduler = get_scheduler(
+            scheduler_name=config.scheduler_name,
+            optimizer=optimizer,
+            num_epochs=config.epochs,
+            train_dataloader=train_loader,
+            factor=config.factor,
+            step_size=config.lr_step_period,
+            gradient_accumulation_steps=config.gradient_accumulation_steps,
+            num_warmup_percent=config.num_warmup_percent,
+            num_hard_restarts_cycles=config.num_hard_restarts_cycles,
+            warm_restart_tmult=config.warm_restart_tmult,
+        )
+
+        scaler: GradScaler = GradScaler() if config.use_amp else None
+
+        if config.is_ref_device:
+            wandb.config.update(
+                {
+                    "train_dataset_size": len(train_loader),
+                    "val_dataset_size": len(val_loader),
+                },
+                allow_val_change=True,
+            )        
+            print("\n=== Dataset Information ===")
+            print(f"Training:   {len(train_loader):,} batches per GPU")
+            print(f"Validation: {len(val_loader):,} batches per GPU")
+            print(f"Total:      {(len(train_loader) + len(val_loader)):,} batches per GPU")
+            print(f"\nBatch Size: {config.batch_size}")
+            print(f"Training: {len(train_loader) * config.batch_size:,} videos per GPU")
+            print(f"Validation: {len(val_loader) * config.batch_size:,} videos per GPU")
+            print(f"Total: {(len(train_loader) + len(val_loader)) * config.batch_size:,} videos per GPU")
+            print("===========================\n")
+
+        return {
+            "video_encoder": video_encoder,
+            "text_encoder": text_encoder,
+            "optimizer": optimizer,
+            "scheduler": scheduler,
+            "train_loader": train_loader,
+            "val_loader": val_loader,
+            "device": config.device,
+            "scaler": scaler,
+            "log_temp": log_temperature,
+            "full_output_path": full_output_path,
+        }    
     
     def _save_texts_csv(
         self, 
@@ -324,7 +323,7 @@ class ContrastivePretrainingProject:
         return training_setup
     
     def run(self):
-        training_setup: dict[str, Any] = load_train_objs(
+        training_setup: dict[str, Any] = self._setup_training_objects(
             config=self.config
         )
 

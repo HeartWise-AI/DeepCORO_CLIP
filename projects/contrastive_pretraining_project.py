@@ -26,7 +26,7 @@ from utils.registry import (
 )
 from utils.files_handler import generate_output_dir_name
 from dataloaders.stats_dataset import get_stats_dataloader
-from dataloaders.video_dataset import get_distributed_video_dataloader
+from dataloaders.video_clip_dataset import get_distributed_video_dataloader
 from dataloaders.multi_video_dataset import get_distributed_multi_video_dataloader
 
 def stats_collate_fn(batch):
@@ -213,7 +213,7 @@ class ContrastivePretrainingProject(BaseProject):
                 'weight_decay': self.config.video_weight_decay
             },
             {
-                'params': text_encoder.parameters(),  # Entire text encoder
+                'params': text_encoder.module.parameters(),  # Entire text encoder
                 'lr': 0.00001,  # Lower learning rate for text encoder
                 'name': 'text_encoder',
                 'weight_decay': self.config.text_weight_decay
@@ -229,7 +229,7 @@ class ContrastivePretrainingProject(BaseProject):
         optimizer_class: torch.optim.Optimizer = getattr(torch.optim, self.config.optimizer)
         optimizer: torch.optim.Optimizer = optimizer_class(
             param_groups,
-            lr=self.config.lr
+            lr=self.config.lr # act as a default learning rate for unset learning rates in param_groups
         )
 
         scheduler: LRScheduler = get_scheduler(

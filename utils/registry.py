@@ -68,6 +68,11 @@ class ConfigRegistry(BaseRegistry):
     """Registry for configs."""
     _registry: Dict[str, Type[Any]] = {}
     _registry_type: str = "config"
+    
+class LossRegistry(BaseRegistry):
+    """Registry for losses."""
+    _registry: Dict[str, Type[Any]] = {}
+    _registry_type: str = "loss"
 
 
 def register_submodules(package_name: str, recursive: bool = True) -> None:

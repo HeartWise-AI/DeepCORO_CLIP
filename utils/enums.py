@@ -8,3 +8,14 @@ class RunMode(str, Enum):
     
     def __str__(self):
         return self.value
+    
+class SubmoduleType(str, Enum):
+    """Enum for different submodule types."""
+    RUNNER = "runner"
+    MODEL = "model"
+    PROJECT = "project"
+    CONFIG = "config"
+    LOSS = "loss"
+    
+    def __str__(self):
+        return self.value

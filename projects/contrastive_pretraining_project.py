@@ -247,6 +247,11 @@ class ContrastivePretrainingProject(BaseProject):
 
         scaler: GradScaler = GradScaler() if self.config.use_amp else None
 
+        # Create loss function
+        loss_fn: Loss = Loss(
+            loss_type=LossRegistry.get(self.config.loss_name)()
+        )
+
         if self.config.is_ref_device:
             wandb.config.update(
                 {
@@ -276,6 +281,7 @@ class ContrastivePretrainingProject(BaseProject):
             "scaler": scaler,
             "log_temp": log_temperature,
             "full_output_path": full_output_path,
+            "loss_fn": loss_fn,
         }    
 
     def _setup_inference_objects(
@@ -321,10 +327,6 @@ class ContrastivePretrainingProject(BaseProject):
             start_epoch = checkpoint["epoch"]
             print(f"Resuming from epoch: {start_epoch}")
 
-        loss_fn: Loss = Loss(
-            loss_type=LossRegistry.get(self.config.loss_name)()
-        )
-
         runner: Runner = Runner(
             runner_type=RunnerRegistry.get(
                 name=self.config.pipeline_project
@@ -340,7 +342,7 @@ class ContrastivePretrainingProject(BaseProject):
                 scaler=training_setup["scaler"],
                 log_temp=training_setup["log_temp"],
                 lr_scheduler=training_setup["scheduler"],
-                loss_fn=loss_fn,
+                loss_fn=training_setup["loss_fn"],
                 output_dir=training_setup["full_output_path"],
             )
         )

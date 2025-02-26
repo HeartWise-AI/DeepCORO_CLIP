@@ -4,7 +4,16 @@ from dataclasses import dataclass
 from utils.loss.losses import (
     ContrastiveLoss,
     ContrastiveLossDDP,
-    InfoNCELoss
+    InfoNCELoss,
+    MultiHeadLoss,
+    MSELoss,
+    HuberLoss,
+    L1Loss,
+    RMSELoss,
+    BCEWithLogitsLoss,
+    CrossEntropyLoss,
+    MultiClassFocalLoss,
+    BinaryFocalLoss
 )
 
 
@@ -13,7 +22,16 @@ class Loss:
     loss_type: Union[
         ContrastiveLoss, 
         ContrastiveLossDDP,
-        InfoNCELoss
+        InfoNCELoss,
+        MultiHeadLoss,
+        MSELoss,
+        HuberLoss,
+        L1Loss,
+        RMSELoss,
+        BCEWithLogitsLoss,
+        CrossEntropyLoss,
+        MultiClassFocalLoss,
+        BinaryFocalLoss
     ]
     
     def run(self, **kwargs):

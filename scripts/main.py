@@ -9,25 +9,26 @@ import torch
 from pprint import pprint
 
 from utils.seed import set_seed
+from utils.enums import SubmoduleType
 from utils.parser import HeartWiseParser
 from utils.config.heartwise_config import HeartWiseConfig
 from utils.registry import register_submodules, ProjectRegistry
 from utils.ddp import DistributedUtils
 from projects.typing import Project
 
-register_submodules("runners")
-register_submodules("models")
-register_submodules("projects")
-register_submodules("utils.config")
+# Register all submodules
+register_submodules(SubmoduleType.RUNNER)
+register_submodules(SubmoduleType.MODEL)
+register_submodules(SubmoduleType.PROJECT)
+register_submodules(SubmoduleType.CONFIG)
+register_submodules(SubmoduleType.LOSS)
+
 
 # Add project root to path
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.append(project_root)
 
-def load_yaml_config(file_path):
-    with open(file_path) as file:
-        return yaml.safe_load(file)
 
 def main(config: HeartWiseConfig):
     

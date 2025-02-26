@@ -32,6 +32,7 @@ pretrained: !!bool true
 video_encoder_checkpoint_path: !!str outputs/dev_deep_coro_clip_single_video/current_best/best_epoch.pt
 # Linear Probing parameters
 task: !!str classification
+linear_probing_head: !!str simple_linear_probing
 head_structure:
   contrast_agent: !!int 1
   main_structure: !!int 5
@@ -44,3 +45,7 @@ head_weights:
   contrast_agent: !!float 1.0
   main_structure: !!float 1.0
   ejection_fraction: !!float 1.0
+head_dropout:
+  contrast_agent: !!float 0.1
+  main_structure: !!float 0.1
+  ejection_fraction: !!float 0.1

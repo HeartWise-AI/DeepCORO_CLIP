@@ -2,6 +2,7 @@ from typing import Any
 
 from runners.typing import Runner
 from models.video_encoder import VideoEncoder
+from models.linear_probing import LinearProbing
 from projects.base_project import BaseProject
 from utils.registry import (
     ProjectRegistry, 
@@ -25,7 +26,7 @@ class LinearProbingProject(BaseProject):
         self
     )->dict[str, Any]:
         
-        # Create models
+        # Initialize video encoder backbone for linear probing
         video_encoder: VideoEncoder = ModelRegistry.get(
             name="video_encoder"
         )(
@@ -37,24 +38,29 @@ class LinearProbingProject(BaseProject):
             num_heads=self.config.num_heads,
             aggregator_depth=self.config.aggregator_depth,
         )        
-        
-        video_encoder = video_encoder.to(self.config.device).float()
-        print(video_encoder)
-        video_encoder = DistributedUtils.DDP(
-            video_encoder, 
-            device_ids=[self.config.device],
-            find_unused_parameters=True
+
+        # Load video encoder checkpoint
+        video_encoder = video_encoder.to(self.config.device).float()        
+        checkpoint: dict[str, Any] = self._load_checkpoint(self.config.video_encoder_checkpoint_path)       
+        video_encoder.load_state_dict(checkpoint["video_encoder"])
+
+        # Initialize linear probing model
+        linear_probing: LinearProbing = ModelRegistry.get(
+            name=self.config.pipeline_project
+        )(
+            backbone=video_encoder,
+            linear_probing_head=self.config.linear_probing_head,
+            head_structure=self.config.head_structure,
+            dropout=self.config.dropout,
+            freeze_backbone_ratio=self.config.video_freeze_ratio,
         )
-        
-        print(f"Video encoder checkpoint path: {self.config.video_encoder_checkpoint_path}")
-        checkpoint: dict[str, Any] = self._load_checkpoint(self.config.video_encoder_checkpoint_path)
-        print(f"Checkpoint loaded: {checkpoint.keys()}")
-        
-        video_encoder.module.load_state_dict(checkpoint["video_encoder"])
-        print("model loaded!!!!")
-        # return {
-        #     "video_encoder": video_encoder
-        # }
+        linear_probing = linear_probing.to(self.config.device).float()
+
+        # Distribute linear probing model
+        linear_probing = DistributedUtils.DDP(
+            linear_probing, 
+            device_ids=[self.config.device]
+        )
 
     def _setup_inference_objects(
         self
@@ -64,7 +70,7 @@ class LinearProbingProject(BaseProject):
     def run(self):
         training_setup: dict[str, Any] = self._setup_training_objects()
         
-        start_epoch = 0
+        start_epoch: int = 0
         
         runner: Runner = Runner(
             runner_type=RunnerRegistry.get(

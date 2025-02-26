@@ -33,6 +33,8 @@ class LinearProbingConfig(HeartWiseConfig):
     
     # Linear Probing parameters
     task: str
+    linear_probing_head: str
     head_structure: Dict[str, int]
     loss_structure: Dict[str, str]
     head_weights: Dict[str, float]
+    head_dropout: Dict[str, float]

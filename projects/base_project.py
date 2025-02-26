@@ -31,6 +31,5 @@ class BaseProject(ABC):
         print(
             f"[BaseProject] Loading checkpoint: {checkpoint_path}"
         )
-        checkpoint = torch.load(checkpoint_path, map_location='cpu')
-        return checkpoint
-
+        
+        return torch.load(checkpoint_path, map_location='cpu', weights_only=True)

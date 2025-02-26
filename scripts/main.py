@@ -3,9 +3,7 @@
 
 import os
 import sys
-import yaml
 import wandb
-import torch
 from pprint import pprint
 
 from utils.seed import set_seed
@@ -15,6 +13,7 @@ from utils.config.heartwise_config import HeartWiseConfig
 from utils.registry import register_submodules, ProjectRegistry
 from utils.ddp import DistributedUtils
 from projects.typing import Project
+
 
 # Register all submodules
 register_submodules(SubmoduleType.RUNNER)

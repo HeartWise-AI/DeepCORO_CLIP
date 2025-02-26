@@ -16,7 +16,7 @@ from models.text_encoder import TextEncoder
 from runners.video_constrative_learning_runner import VideoContrastiveLearningRunner
 from utils.parser import HeartWiseParser
 from utils.enums import RunMode
-from utils.losses import get_loss_fn
+from utils.loss.losses import get_loss_fn
 
 class DummyDataset(Dataset):
     """Dummy dataset that generates random video and text data."""

@@ -11,11 +11,11 @@ class RunMode(str, Enum):
     
 class SubmoduleType(str, Enum):
     """Enum for different submodule types."""
-    RUNNER = "runner"
-    MODEL = "model"
-    PROJECT = "project"
-    CONFIG = "config"
-    LOSS = "loss"
+    RUNNER = "runners"
+    MODEL = "models"
+    PROJECT = "projects"
+    CONFIG = "utils.config"
+    LOSS = "utils.loss"
     
     def __str__(self):
         return self.value

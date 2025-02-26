@@ -16,7 +16,7 @@ from runners.typing import Runner
 
 from utils.ddp import DistributedUtils
 from utils.enums import RunMode
-from utils.losses import get_loss_fn
+from utils.loss.losses import get_loss_fn
 from utils.config.clip_config import ClipConfig
 from utils.schedulers import get_scheduler
 from utils.registry import (

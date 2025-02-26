@@ -1,4 +1,5 @@
 from typing import Any
+from torch.amp import GradScaler
 
 from runners.typing import Runner
 from models.video_encoder import VideoEncoder
@@ -65,6 +66,10 @@ class LinearProbingProject(BaseProject):
             device_ids=[self.config.device]
         )
         
+        # Initialize scaler
+        print(f"Using AMP: {self.config.use_amp}")
+        scaler: GradScaler = GradScaler() if self.config.use_amp else None
+        
         # Create loss function
         loss_fn: Loss = Loss(
             loss_type=LossRegistry.get(LossType.MULTI_HEAD)(
@@ -81,7 +86,7 @@ class LinearProbingProject(BaseProject):
             # "train_loader": train_loader,
             # "val_loader": val_loader,
             "device": self.config.device,
-            # "scaler": scaler,
+            "scaler": scaler,
             # "full_output_path": full_output_path,
             "loss_fn": loss_fn,
         }            

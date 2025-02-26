@@ -15,7 +15,7 @@ class LinearProbingConfig(HeartWiseConfig):
     factor: float    
     optimizer: str
     weight_decay: float
-    
+    use_amp: bool
     # Dataset parameters
     data_filename: str
     num_workers: int

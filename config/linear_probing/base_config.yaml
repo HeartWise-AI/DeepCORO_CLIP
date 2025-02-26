@@ -17,6 +17,7 @@ lr_step_period: !!int 5
 factor: !!float 0.3
 optimizer: !!str AdamW
 weight_decay: !!float 0.00001
+use_amp: !!bool true
 #Dataset parameters
 data_filename: !!str data/video_data.csv
 num_workers: !!int 4
@@ -37,6 +38,10 @@ head_structure:
   contrast_agent: !!int 1
   main_structure: !!int 5
   ejection_fraction: !!int 1
+head_dropout:
+  contrast_agent: !!float 0.1
+  main_structure: !!float 0.1
+  ejection_fraction: !!float 0.1
 loss_structure:
   contrast_agent: !!str bce_logit
   main_structure: !!str ce
@@ -45,7 +50,3 @@ head_weights:
   contrast_agent: !!float 1.0
   main_structure: !!float 1.0
   ejection_fraction: !!float 1.0
-head_dropout:
-  contrast_agent: !!float 0.1
-  main_structure: !!float 0.1
-  ejection_fraction: !!float 0.1

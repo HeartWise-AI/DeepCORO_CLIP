@@ -16,7 +16,9 @@ from models.text_encoder import TextEncoder
 from runners.video_constrative_learning_runner import VideoContrastiveLearningRunner
 from utils.parser import HeartWiseParser
 from utils.enums import RunMode
-from utils.loss.losses import get_loss_fn
+from utils.loss.typing import Loss
+from utils.registry import LossRegistry
+
 
 class DummyDataset(Dataset):
     """Dummy dataset that generates random video and text data."""
@@ -156,9 +158,8 @@ class TestVideoContrastiveLearning(unittest.TestCase):
             "temperature": 0.07,
             "use_ddp": False
         }
-        self.loss_fn = get_loss_fn(
-            loss_name=self.test_config.loss_name, 
-            kwargs=kwargs
+        self.loss_fn: Loss = Loss(
+            loss_type=LossRegistry.get(self.test_config.loss_name)(**kwargs)
         )
         
         # Create runner

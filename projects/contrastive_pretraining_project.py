@@ -13,16 +13,16 @@ from models.text_encoder import TextEncoder
 from models.video_encoder import VideoEncoder
 from projects.base_project import BaseProject
 from runners.typing import Runner
-
+from utils.loss.typing import Loss
 from utils.ddp import DistributedUtils
 from utils.enums import RunMode
-from utils.loss.losses import get_loss_fn
 from utils.config.clip_config import ClipConfig
 from utils.schedulers import get_scheduler
 from utils.registry import (
     ModelRegistry, 
     RunnerRegistry, 
     ProjectRegistry, 
+    LossRegistry
 )
 from utils.files_handler import generate_output_dir_name
 from dataloaders.stats_dataset import get_stats_dataloader
@@ -321,6 +321,10 @@ class ContrastivePretrainingProject(BaseProject):
             start_epoch = checkpoint["epoch"]
             print(f"Resuming from epoch: {start_epoch}")
 
+        loss_fn: Loss = Loss(
+            loss_type=LossRegistry.get(self.config.loss_name)()
+        )
+
         runner: Runner = Runner(
             runner_type=RunnerRegistry.get(
                 name=self.config.pipeline_project
@@ -336,7 +340,7 @@ class ContrastivePretrainingProject(BaseProject):
                 scaler=training_setup["scaler"],
                 log_temp=training_setup["log_temp"],
                 lr_scheduler=training_setup["scheduler"],
-                loss_fn=get_loss_fn(self.config.loss_name),
+                loss_fn=loss_fn,
                 output_dir=training_setup["full_output_path"],
             )
         )

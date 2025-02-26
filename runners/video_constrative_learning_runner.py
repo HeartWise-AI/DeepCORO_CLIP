@@ -29,6 +29,7 @@ from utils.logging import (
     log_gradient_norms,
     save_retrieval_results,
 )
+from utils.loss.typing import Loss
 from models.video_encoder import VideoEncoder
 from models.text_encoder import TextEncoder
 
@@ -53,7 +54,7 @@ class VideoContrastiveLearningRunner:
         scaler: GradScaler,
         log_temp: torch.Tensor,
         lr_scheduler: LRScheduler,
-        loss_fn: callable,
+        loss_fn: Loss,
         output_dir: str,
     ):
         """
@@ -93,7 +94,7 @@ class VideoContrastiveLearningRunner:
         self.optimizer: AdamW = optimizer
         self.scaler: GradScaler = scaler
         self.lr_scheduler: LRScheduler = lr_scheduler
-        self.loss_fn: callable = loss_fn
+        self.loss_fn: Loss = loss_fn
         self.output_dir: str = output_dir
         self.best_val_loss = float("inf")
         self.best_epoch = -1
@@ -650,7 +651,11 @@ class VideoContrastiveLearningRunner:
             with torch.amp.autocast("cuda"):
                 video_embeddings = self.video_encoder(videos)
                 text_embeddings = self.text_encoder(input_ids, attention_mask)
-                loss = self.loss_fn(video_embeddings, text_embeddings, self.log_temp)
+                loss = self.loss_fn.run(
+                    video_features=video_embeddings, 
+                    text_features=text_embeddings, 
+                    log_temp=self.log_temp
+                )
 
             self.scaler.scale(loss).backward()
             self.scaler.unscale_(self.optimizer)
@@ -682,7 +687,11 @@ class VideoContrastiveLearningRunner:
         else:
             video_embeddings = self.video_encoder(videos)
             text_embeddings = self.text_encoder(input_ids, attention_mask)
-            loss = self.loss_fn(video_embeddings, text_embeddings, self.log_temp)
+            loss = self.loss_fn.run(
+                video_features=video_embeddings, 
+                text_features=text_embeddings, 
+                log_temp=self.log_temp
+            )
 
             loss.backward()
 
@@ -751,7 +760,11 @@ class VideoContrastiveLearningRunner:
             with torch.amp.autocast("cuda"):
                 video_features = self.video_encoder(videos)
                 text_features = self.text_encoder(input_ids, attention_mask)
-                loss = self.loss_fn(video_features, text_features, self.log_temp)
+                loss = self.loss_fn.run(
+                    video_features=video_features, 
+                    text_features=text_features, 
+                    log_temp=self.log_temp
+                )
 
             embedding_norms = compute_embedding_norms(video_features, text_features)
             alignment_score = compute_alignment_score(video_features, text_features)

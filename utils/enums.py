@@ -19,3 +19,28 @@ class SubmoduleType(str, Enum):
     
     def __str__(self):
         return self.value
+    
+class LossType(str, Enum):
+    """Enum for different loss types."""
+    # Clip losses
+    INFO_NCE = "InfoNCE"    
+    CONTRASTIVE = "contrastive"
+    CONTRASTIVE_DDP = "contrastive_ddp"
+        
+    # Torch losses
+    MSE = "mse"
+    L1 = "l1"
+    RMSE = "rmse"
+    BCE_LOGIT = "bce_logit"
+    CE = "ce"
+    HUBER = "huber"
+    
+    # Multi-head loss
+    MULTI_HEAD = "multi_head"
+    
+    # Custom losses
+    MULTICLASS_FOCAL = "multiclass_focal"
+    BINARY_FOCAL = "binary_focal"
+    
+    def __str__(self):
+        return self.value

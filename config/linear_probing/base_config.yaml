@@ -21,7 +21,16 @@ weight_decay: !!float 0.00001
 data_filename: !!str data/video_data.csv
 num_workers: !!int 4
 batch_size: !!int 128
-# Model parameters
+# Video Encoder parameters
+backbone: !!str mvit
+aggregator_depth: !!int 2
+num_heads: !!int 4
+num_frames: !!int 16
+video_freeze_ratio: !!float 0.8
+dropout: !!float 0.2
+pretrained: !!bool true
+video_encoder_checkpoint_path: !!str outputs/dev_deep_coro_clip_single_video/current_best/best_epoch.pt
+# Linear Probing parameters
 task: !!str classification
 head_structure:
   contrast_agent: !!int 1
@@ -35,4 +44,3 @@ head_weights:
   contrast_agent: !!float 1.0
   main_structure: !!float 1.0
   ejection_fraction: !!float 1.0
-model_checkpoint_path: !!str outputs/checkpoints/best_classifier_head.pt

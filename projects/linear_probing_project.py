@@ -1,9 +1,15 @@
 from typing import Any
 
-from utils.enums import RunMode
 from runners.typing import Runner
+from models.video_encoder import VideoEncoder
 from projects.base_project import BaseProject
-from utils.registry import ProjectRegistry, RunnerRegistry
+from utils.registry import (
+    ProjectRegistry, 
+    RunnerRegistry, 
+    ModelRegistry
+)
+from utils.enums import RunMode
+from utils.ddp import DistributedUtils
 from utils.config.linear_probing_config import LinearProbingConfig
 
 
@@ -18,9 +24,37 @@ class LinearProbingProject(BaseProject):
     def _setup_training_objects(
         self
     )->dict[str, Any]:
-        print(f"Model checkpoint path: {self.config.model_checkpoint_path}")
-        checkpoint = self._load_checkpoint(self.config.model_checkpoint_path)
+        
+        # Create models
+        video_encoder: VideoEncoder = ModelRegistry.get(
+            name="video_encoder"
+        )(
+            backbone=self.config.backbone,
+            num_frames=self.config.num_frames,
+            pretrained=self.config.pretrained,
+            freeze_ratio=self.config.video_freeze_ratio,
+            dropout=self.config.dropout,
+            num_heads=self.config.num_heads,
+            aggregator_depth=self.config.aggregator_depth,
+        )        
+        
+        video_encoder = video_encoder.to(self.config.device).float()
+        print(video_encoder)
+        video_encoder = DistributedUtils.DDP(
+            video_encoder, 
+            device_ids=[self.config.device],
+            find_unused_parameters=True
+        )
+        
+        print(f"Video encoder checkpoint path: {self.config.video_encoder_checkpoint_path}")
+        checkpoint: dict[str, Any] = self._load_checkpoint(self.config.video_encoder_checkpoint_path)
         print(f"Checkpoint loaded: {checkpoint.keys()}")
+        
+        video_encoder.module.load_state_dict(checkpoint["video_encoder"])
+        print("model loaded!!!!")
+        # return {
+        #     "video_encoder": video_encoder
+        # }
 
     def _setup_inference_objects(
         self

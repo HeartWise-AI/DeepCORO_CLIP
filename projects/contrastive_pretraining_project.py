@@ -296,6 +296,20 @@ class ContrastivePretrainingProject(BaseProject):
             for idx, txt in enumerate(texts):
                 writer.writerow([idx, txt])
         print(f"Saved {len(texts)} val texts to {csv_path}")    
+
+    def _update_training_setup_with_checkpoint(
+        self, 
+        training_setup: dict[str, Any], 
+        checkpoint: dict[str, Any]
+    )->dict[str, Any]:
+        print(f"Resuming from checkpoint: {checkpoint.keys()}")
+        training_setup["video_encoder"].module.load_state_dict(checkpoint["video_encoder"])
+        training_setup["text_encoder"].module.load_state_dict(checkpoint["text_encoder"])
+        training_setup["optimizer"].load_state_dict(checkpoint["optimizer"])
+        training_setup["scheduler"].load_state_dict(checkpoint["scheduler"])
+        training_setup["scaler"].load_state_dict(checkpoint["scaler"])
+        training_setup["log_temp"].data.copy_(checkpoint["train/temperature"])
+        return training_setup
         
     def run(self):
         training_setup: dict[str, Any] = self._setup_training_objects()

@@ -15,16 +15,24 @@ class LinearProbingConfig(HeartWiseConfig):
     factor: float    
     optimizer: str
     weight_decay: float
-    scheduler_type: str
     
     # Dataset parameters
     data_filename: str
     num_workers: int
     batch_size: int
     
-    # Model parameters
+    # Video Encoder parameters
+    backbone: str
+    aggregator_depth: int
+    num_heads: int
+    num_frames: int
+    video_freeze_ratio: float
+    dropout: float
+    pretrained: bool
+    video_encoder_checkpoint_path: str
+    
+    # Linear Probing parameters
     task: str
     head_structure: Dict[str, int]
     loss_structure: Dict[str, str]
     head_weights: Dict[str, float]
-    model_checkpoint_path: str

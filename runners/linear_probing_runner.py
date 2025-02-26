@@ -12,8 +12,17 @@ class LinearProbingRunner:
 
     def __init__(
         self,
-        config: HeartWiseConfig,
-        device: int,
-        world_size: int,
+        config: HeartWiseConfig
     ):
+        self.config: HeartWiseConfig = config
         print("LinearProbingRunner initialized")
+        
+    def train(
+        self, 
+        start_epoch: int, 
+        end_epoch: int
+    ):
+        print(f"Training from epoch {start_epoch} to {end_epoch}")
+        
+    def inference(self):
+        raise NotImplementedError("Linear probing inference not implemented")

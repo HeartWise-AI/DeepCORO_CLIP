@@ -196,6 +196,9 @@ class InfoNCELoss(nn.Module):
 
 @LossRegistry.register(LossType.MSE)
 class MSELoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+
     def forward(
         self, 
         outputs: torch.Tensor, 
@@ -207,6 +210,7 @@ class MSELoss(nn.Module):
 @LossRegistry.register(LossType.HUBER)
 class HuberLoss(nn.Module):
     def __init__(self, delta: float = 0.1):
+        super().__init__()
         self.delta = delta
 
     def forward(
@@ -219,6 +223,9 @@ class HuberLoss(nn.Module):
 
 @LossRegistry.register(LossType.L1)
 class L1Loss(nn.Module):
+    def __init__(self):
+        super().__init__()
+
     def forward(
         self, 
         outputs: torch.Tensor, 
@@ -229,6 +236,9 @@ class L1Loss(nn.Module):
 
 @LossRegistry.register(LossType.RMSE)
 class RMSELoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+
     def forward(
         self, 
         outputs: torch.Tensor, 
@@ -240,6 +250,7 @@ class RMSELoss(nn.Module):
 @LossRegistry.register(LossType.BCE_LOGIT)
 class BCEWithLogitsLoss(nn.Module):
     def __init__(self, weight=None):
+        super().__init__()
         if weight is not None and isinstance(weight, torch.Tensor):
             weight = weight.to(weight.device)
         self.criterion: nn.BCEWithLogitsLoss = nn.BCEWithLogitsLoss(weight=weight)
@@ -263,7 +274,8 @@ class BCEWithLogitsLoss(nn.Module):
 @LossRegistry.register(LossType.CE)
 class CrossEntropyLoss(nn.Module):
     def __init__(self, weight=None):
-        self.criterion = nn.CrossEntropyLoss(weight=weight)
+        super().__init__()
+        self.criterion: nn.CrossEntropyLoss = nn.CrossEntropyLoss(weight=weight)
 
     def forward(
         self, 
@@ -278,6 +290,7 @@ class CrossEntropyLoss(nn.Module):
 @LossRegistry.register(LossType.MULTICLASS_FOCAL)
 class MultiClassFocalLoss(nn.Module):
     def __init__(self, gamma: float = 2.0):
+        super().__init__()
         self.gamma: float = gamma
         self.ce_loss: nn.CrossEntropyLoss = nn.CrossEntropyLoss(reduction="none")
 
@@ -300,6 +313,7 @@ class BinaryFocalLoss(nn.Module):
         alpha: float = 0.25, 
         gamma: float = 2.0
     ):
+        super().__init__()
         self.alpha: float = alpha
         self.gamma: float = gamma
 
@@ -376,7 +390,9 @@ class MultiHeadLoss(nn.Module):
                 self.loss_fns[head] = LossRegistry.get(loss_name)(**kwargs)
 
     def forward(
-        self, outputs: dict[str, torch.Tensor], targets: dict[str, torch.Tensor]
+        self, 
+        outputs: dict[str, torch.Tensor], 
+        targets: dict[str, torch.Tensor]
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """
         Calculate the combined loss for all heads.

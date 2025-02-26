@@ -7,10 +7,13 @@ from projects.base_project import BaseProject
 from utils.registry import (
     ProjectRegistry, 
     RunnerRegistry, 
-    ModelRegistry
+    ModelRegistry,
+    LossRegistry
 )
-from utils.enums import RunMode
+
+from utils.loss.typing import Loss
 from utils.ddp import DistributedUtils
+from utils.enums import RunMode, LossType
 from utils.config.linear_probing_config import LinearProbingConfig
 
 
@@ -61,6 +64,28 @@ class LinearProbingProject(BaseProject):
             linear_probing, 
             device_ids=[self.config.device]
         )
+        
+        # Create loss function
+        loss_fn: Loss = Loss(
+            loss_type=LossRegistry.get(LossType.MULTI_HEAD)(
+                head_structure=self.config.head_structure,
+                loss_structure=self.config.loss_structure,
+                head_weights=self.config.head_weights,
+            )
+        )
+
+        return {
+            "linear_probing": linear_probing,
+            # "optimizer": optimizer,
+            # "scheduler": scheduler,
+            # "train_loader": train_loader,
+            # "val_loader": val_loader,
+            "device": self.config.device,
+            # "scaler": scaler,
+            # "full_output_path": full_output_path,
+            "loss_fn": loss_fn,
+        }            
+        
 
     def _setup_inference_objects(
         self

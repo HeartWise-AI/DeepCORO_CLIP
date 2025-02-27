@@ -76,11 +76,9 @@ class StatsDataset(torch.utils.data.Dataset):
         try:
             video = load_video(
                 video_fname,
-                split=self.split,
                 n_frames=self.num_frames,
                 normalize=False,
                 backbone=self.backbone,
-                stride=self.stride,
             )
             return video, None, video_fname
         except Exception as e:

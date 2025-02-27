@@ -54,16 +54,11 @@ def convert_video_for_wandb(video_path):
 
 def load_video(
     video_path,
-    split="train",
     n_frames=32,
-    stride=1,
     resize=224,
-    apply_mask=False,
     normalize=True,
     mean=0.0,
     std=1.0,
-    noise=None,
-    pad=None,
     video_transforms=None,
     rand_augment=False,
     backbone="default",
@@ -134,8 +129,6 @@ def load_video(
             video = video[indices]
         expected_frames = n_frames
 
-
-    # Optional transforms
    # Optional transforms (assumes float input)
     if video_transforms is not None:
         transforms = v2.RandomApply(torch.nn.ModuleList(video_transforms), p=0.5)
@@ -144,9 +137,6 @@ def load_video(
             video = scripted_transforms(video)
         except RuntimeError as e:
             print(f"Warning: Error applying transforms to video {video_path}: {str(e)}")
-    # Print mean per channel after transforms    # Print mean per channel after normalization
-    channel_means = torch.mean(video, dim=(0, 2, 3))
-    #print(f"Video mean per channel after transforms: {channel_means.tolist()}")
 
     if rand_augment:
         # Convert video to uint8 for RandAugment
@@ -156,9 +146,6 @@ def load_video(
         raug_composed = v2.Compose(raug)
         video = raug_composed(video)
         video = video.to(torch.float32) 
-    # Print mean per channel after normalization
-    channel_means = torch.mean(video, dim=(0, 2, 3))
-    #print(f"Video mean per channel after RandAugment: {channel_means.tolist()}")
 
 
     if normalize:
@@ -173,10 +160,6 @@ def load_video(
         mean = mean[:c]
         std = std[:c]
         video = v2.Normalize(mean=mean, std=std)(video)
-    # Print mean per channel after normalization
-    channel_means = torch.mean(video, dim=(0, 2, 3))
-    #print(f"Video mean per channel after normalization: {channel_means.tolist()}")
-
 
     # Final checks
     t, c, h, w = video.shape
@@ -187,19 +170,6 @@ def load_video(
         raise ValueError(f"Expected spatial dimensions {resize}x{resize}, got {h}x{w}")
 
     # Return video in shape [F, H, W, C]
-    video = video.permute(0, 2, 3, 1).contiguous()
-    return video.numpy()
-
-
-    # Final checks
-    t, c, h, w = video.shape
-    expected_frames = 16 if backbone.lower() == "mvit" else n_frames
-    if t != expected_frames:
-        raise ValueError(f"Expected {expected_frames} frames, got {t}")
-    if h != resize or w != resize:
-        raise ValueError(f"Expected spatial dimensions {resize}x{resize}, got {h}x{w}")
-
-    # Return [F,H,W,C]
     video = video.permute(0, 2, 3, 1).contiguous()
     return video.numpy()
 

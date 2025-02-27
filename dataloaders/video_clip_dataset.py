@@ -53,15 +53,10 @@ class VideoClipDataset(torch.utils.data.Dataset):
             if "length" in kwargs:
                 kwargs["length"] = 16
 
-        self.apply_mask = kwargs.pop("apply_mask", False)
         self.video_transforms = kwargs.pop("video_transforms", None)
         self.rand_augment = kwargs.pop("rand_augment", False)
         self.resize = kwargs.pop("resize", 224)
-        self.pad = kwargs.pop("pad", None)
-        self.noise = kwargs.pop("noise", None)
-        self.weighted_sampling = kwargs.pop("weighted_sampling", False)
         self.max_length = kwargs.pop("max_length", 250)
-        self.clips = kwargs.pop("clips", 1)
 
         target_label = (
             [target_label]
@@ -175,16 +170,11 @@ class VideoClipDataset(torch.utils.data.Dataset):
         try:
             video = load_video(
                 video_fname,
-                split=self.split,
                 n_frames=16 if self.backbone.lower() == "mvit" else self.num_frames,
-                stride=self.stride,
                 resize=self.resize,
-                apply_mask=self.apply_mask,
                 normalize=self.normalize,
                 mean=self.mean,
                 std=self.std,
-                noise=self.noise,
-                pad=self.pad,
                 video_transforms=self.video_transforms,
                 rand_augment=self.rand_augment,
                 backbone=self.backbone,

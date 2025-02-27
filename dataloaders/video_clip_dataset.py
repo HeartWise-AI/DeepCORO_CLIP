@@ -64,7 +64,6 @@ class VideoClipDataset(torch.utils.data.Dataset):
             else target_label
         )
         self.target_label = target_label
-        self.target_transform = kwargs.pop("target_transform", None)
         self.external_test_location = kwargs.pop("external_test_location", None)
 
         self.fnames, self.outcome, self.target_index = self.load_data(

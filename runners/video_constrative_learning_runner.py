@@ -791,10 +791,10 @@ class VideoContrastiveLearningRunner:
         Optional method for a dedicated validation-only routine.
         Currently unimplemented.
         """
-        pass
+        raise NotImplementedError("Validation is not implemented for this runner")
 
     def inference(self):
         """
         Method for a dedicated inference.
         """
-        pass
+        raise NotImplementedError("Inference is not implemented for this runner")

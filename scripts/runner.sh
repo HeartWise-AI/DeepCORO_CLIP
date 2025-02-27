@@ -1,5 +1,12 @@
 #!/bin/bash
 
+# Define color codes
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
 # Function to print usage
 print_usage() {
     echo "Usage: $0 --selected_gpus GPU_IDS --base_config CONFIG_PATH"
@@ -53,46 +60,50 @@ done
 
 # Check if required arguments are provided
 if [ -z "$SELECTED_GPUS" ] || [ -z "$CONFIG_PATH" ]; then
-    echo "Error: Missing required arguments"
+    echo -e "${RED}Error: Missing required arguments${NC}"
     print_usage
 fi
 
 # Check if config file exists
 if [ ! -f "$CONFIG_PATH" ]; then
-    echo "Error: Config file not found at $CONFIG_PATH"
+    echo -e "${RED}Error: Config file not found at $CONFIG_PATH${NC}"
     exit 1
 fi
 
 # Check if run_mode is supported
 if [ "$RUN_MODE" != "train" ] && [ "$RUN_MODE" != "inference" ]; then
-    echo "Error: Unsupported run mode: $RUN_MODE"
+    echo -e "${RED}Error: Unsupported run mode: $RUN_MODE${NC}"
     print_usage
 fi
 
 # Check if use_wandb is supported
 if [ "$USE_WANDB" != "true" ] && [ "$USE_WANDB" != "false" ]; then
-    echo "Error: Unsupported use_wandb: $USE_WANDB"
+    echo -e "${RED}Error: Unsupported use_wandb: $USE_WANDB${NC}"
     print_usage
 fi
 
 # Check if yq is installed
 if ! command -v yq &> /dev/null
 then
-    echo "Error: yq is not installed. Please install yq to proceed."
-    echo "Installation instructions: https://github.com/mikefarah/yq/#install"
+    echo -e "${RED}Error: yq is not installed. Please install yq to proceed.${NC}"
+    echo -e "${YELLOW}Installation instructions: https://github.com/mikefarah/yq/#install${NC}"
     exit 1
 fi
 
+echo -e "${BLUE}========================================${NC}"
+
 # Setup run_mode in base config
-echo "Setting run_mode in $CONFIG_PATH to $RUN_MODE"
+echo -e "${GREEN}Setting run_mode in $CONFIG_PATH to $RUN_MODE${NC}"
 yq eval -i ".run_mode = \"$RUN_MODE\"" "$CONFIG_PATH"
 
 # Setup use_wandb in base config
-echo "Setting use_wandb in $CONFIG_PATH to $USE_WANDB"
+echo -e "${GREEN}Setting use_wandb in $CONFIG_PATH to $USE_WANDB${NC}"
 yq eval -i ".use_wandb = $USE_WANDB" "$CONFIG_PATH"
 
+echo -e "${BLUE}========================================\n${NC}"
+
 # Print training configuration
-echo "Starting training with:"
+echo -e "${BLUE}Starting training with:${NC}"
 echo "Selected GPUs: $SELECTED_GPUS (Total: $NUM_GPUS GPUs)"
 echo "Config path: $CONFIG_PATH"
 

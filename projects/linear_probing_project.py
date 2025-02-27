@@ -21,6 +21,7 @@ from utils.loss.typing import Loss
 from utils.ddp import DistributedUtils
 from utils.enums import RunMode, LossType
 from utils.schedulers import get_scheduler
+from utils.wandb_wrapper import WandbWrapper
 from utils.files_handler import generate_output_dir_name
 from utils.video_project import calculate_dataset_statistics_ddp
 from utils.config.linear_probing_config import LinearProbingConfig
@@ -31,8 +32,10 @@ class LinearProbingProject(BaseProject):
     def __init__(
         self, 
         config: LinearProbingConfig,
+        wandb_wrapper: WandbWrapper
     ):
         self.config: LinearProbingConfig = config
+        self.wandb_wrapper: WandbWrapper = wandb_wrapper
 
     def _setup_training_objects(
         self
@@ -150,12 +153,11 @@ class LinearProbingProject(BaseProject):
         return {
             "linear_probing": linear_probing,
             "optimizer": optimizer,
-            "scheduler": scheduler,
+            "lr_scheduler": scheduler,
             "train_loader": train_loader,
             "val_loader": val_loader,
-            "device": self.config.device,
             "scaler": scaler,
-            "full_output_path": full_output_path,
+            "output_dir": full_output_path,
             "loss_fn": loss_fn,
         }            
         
@@ -175,6 +177,7 @@ class LinearProbingProject(BaseProject):
                 name=self.config.pipeline_project
             )(
                 config=self.config,
+                wandb_wrapper=self.wandb_wrapper,
                 **training_setup
             )
         )

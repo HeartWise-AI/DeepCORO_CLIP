@@ -2,7 +2,7 @@
 pipeline_project: !!str DeepCORO_video_linear_probing
 output_dir: !!str outputs
 run_mode: !!str train
-epochs: !!int 10
+epochs: !!int 1
 seed: !!int 42
 # wandb parameters
 tag: !!str mvit_pretrained
@@ -25,9 +25,9 @@ warm_restart_tmult: !!int 2
 # Dataset parameters
 data_filename: !!str data/stenting/stenting_annotations.csv
 num_workers: !!int 4
-batch_size: !!int 128
+batch_size: !!int 4
 datapoint_loc_label: !!str FileName
-target_label: [contrast_agent, main_structure, ejection_fraction]
+target_label: [contrast_agent, main_structure, stent_presence]
 rand_augment: !!bool true
 resize: !!int 224
 frames: !!int 16

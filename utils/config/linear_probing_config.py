@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, List
 from dataclasses import dataclass
 
 from utils.registry import ConfigRegistry
@@ -10,22 +10,32 @@ from utils.config.heartwise_config import HeartWiseConfig
 class LinearProbingConfig(HeartWiseConfig):    
     # Training parameters
     lr: float
-    scheduler_type: str
+    scheduler_name: str
     lr_step_period: int
     factor: float    
     optimizer: str
     weight_decay: float
     use_amp: bool
+    gradient_accumulation_steps: int
+    num_warmup_percent: float
+    num_hard_restarts_cycles: float
+    warm_restart_tmult: int
+    
     # Dataset parameters
     data_filename: str
     num_workers: int
     batch_size: int
+    datapoint_loc_label: str
+    target_label: List[str]
+    rand_augment: bool
+    resize: int
+    frames: int
+    stride: int
     
     # Video Encoder parameters
-    backbone: str
+    model_name: str
     aggregator_depth: int
     num_heads: int
-    num_frames: int
     video_freeze_ratio: float
     dropout: float
     pretrained: bool

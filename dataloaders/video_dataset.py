@@ -61,7 +61,7 @@ class VideoDataset(torch.utils.data.Dataset):
         self.target_label: Optional[List[str]] = target_label
         self.external_test_location: Optional[str] = kwargs.pop("external_test_location", None)
 
-        self.fnames, self.outcome, self.target_index = self.load_data(
+        self.fnames, self.outcomes, self.target_indexes = self.load_data(
             self.split, self.target_label
         )
 
@@ -73,63 +73,54 @@ class VideoDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.valid_indices)
 
-    def load_data(
-        self, 
-        split: str, 
-        target_label: Optional[List[str]] = None
-    ) -> Tuple[List[str], List[str], Optional[int]]:
-        file_path: str = os.path.join(self.filename)
-        data: pd.DataFrame = pd.read_csv(file_path, sep="α", engine="python")
+    def load_data(self, split, target_labels):
+        """
+        Load data from the CSV file and extract filenames and outcomes.
 
-        print(f"\nAvailable splits in dataset:")
-        print(data["Split"].value_counts())
+        Args:
+            split (str): Dataset split ('train', 'val', 'test', 'all')
+            target_labels (list): List of target label column names
 
-        filename_index: int = data.columns.get_loc(self.datapoint_loc_label)
-        split_index: int = data.columns.get_loc("Split")
+        Returns:
+            tuple: (filenames, outcomes, target_indices)
+        """
+        # Read the "α" separated file using pandas
+        file_path = os.path.join(self.filename)
+        data = pd.read_csv(file_path, sep="α", engine="python")
 
-        target_index = None
-        if target_label is not None:
-            target_index = data.columns.get_loc(target_label[0])
+        filename_index = data.columns.get_loc(self.datapoint_loc_label)
+        split_index = data.columns.get_loc("Split")
 
-        fnames: List[str] = []
-        outcome: List[str] = []
+        # Handle target indices for multi-head case
+        if target_labels is None:
+            target_indices = None
+        else:
+            target_indices = {}
+            for label in target_labels:
+                try:
+                    target_indices[label] = data.columns.get_loc(label)
+                except KeyError:
+                    raise ValueError(f"Target label '{label}' not found in data columns")
 
-        total_rows: int = 0
-        valid_files: int = 0
-        split_matches: int = 0
+        fnames = []
+        outcomes = []
 
+        # Iterate through rows using iterrows
         for _, row in data.iterrows():
-            total_rows += 1
-            file_name: str = str(row.iloc[filename_index])
-            file_mode: str = str(row.iloc[split_index]).lower().strip()
+            file_name = row.iloc[filename_index]
+            file_mode = row.iloc[split_index].lower()
 
-            if self.external_test_location and self.split == "external_test":
-                full_path: str = os.path.join(self.external_test_location, file_name)
-            else:
-                full_path: str = file_name
+            if split in ["all", file_mode] and os.path.exists(file_name):
+                fnames.append(file_name)
+                if target_indices is not None:
+                    # For multi-head, create a dictionary of outcomes
+                    row_outcomes = {}
+                    for label, idx in target_indices.items():
+                        print(f"label: {label}, idx: {idx}")
+                        row_outcomes[label] = row.iloc[idx]
+                    outcomes.append(row_outcomes)
 
-            if os.path.exists(full_path):
-                valid_files += 1
-                if split in ["all", file_mode]:
-                    split_matches += 1
-                    fnames.append(full_path)
-                    if target_index is not None:
-                        outcome.append(row.iloc[target_index])
-
-        print(f"\nDataset loading statistics for split '{split}':")
-        print(f"Total rows in CSV: {total_rows}")
-        print(f"Valid files found: {valid_files}")
-        print(f"Matching split '{split}': {split_matches}")
-        print(f"Final dataset size: {len(fnames)}")
-
-        if len(fnames) == 0:
-            raise ValueError(
-                f"No samples found for split '{split}'. "
-                f"Available splits: {data['Split'].unique()}. "
-                "Check your data split assignments."
-            )
-
-        return fnames, outcome, target_index
+        return fnames, outcomes, target_indices
 
     def _validate_all_videos(self):
         print("Validating all videos in dataset...")
@@ -173,37 +164,31 @@ class VideoDataset(torch.utils.data.Dataset):
             if self.backbone.lower() == "mvit" and video.shape[0] != 16:
                 raise ValueError(f"Expected 16 frames for MViT, got {video.shape[0]}")
 
-            targets: Dict[str, Any] = {}
-            if self.target_label is not None:
-                for label in self.target_label:
-                    targets[label] = self.outcome[actual_idx]
-
-            return video, targets, video_fname
-
         except Exception as e:
             raise RuntimeError(f"Failed to load video {video_fname}: {str(e)}") from e   
+        
+        return video, self.outcomes[actual_idx], video_fname
     
-# def custom_collate_fn(batch: List[Tuple[np.ndarray, Dict[str, Any], str]]) -> Dict[str, Any]:
-#     """Custom collate function to handle video and text data.
+def custom_collate_fn(batch: List[Tuple[np.ndarray, Dict[str, float], str]]) -> Dict[str, Any]:
+    """Custom collate function to handle video, targets, and video_fname data.
 
-#     Args:
-#         batch: List of tuples (video, encoded_text, path)
-#         Each video has shape [F, H, W, C]
-#     Returns:
-#         videos: Tensor of shape (batch_size, C, F, H, W) for MViT compatibility
-#         encoded_texts: Dictionary with input_ids and attention_mask tensors
-#         paths: List of file paths
-#     """
-#     videos, targets, paths = zip(*batch)
+    Args:
+        batch: List of tuples (video, targets, video_fname)
+        Each video has shape [F, H, W, C]
+    Returns:
+        videos: Tensor of shape (batch_size, C, F, H, W) for MViT compatibility
+        targets: Dictionary with labels as keys and values as targets
+        video_fname: List of file paths
+    """
+    videos, targets, paths = zip(*batch)
+    # Stack videos - handle both tensor and numpy inputs
+    videos = torch.stack([torch.from_numpy(v) for v in videos])  # Shape: [B, F, H, W, C]
 
-#     # Stack videos - handle both tensor and numpy inputs
-#     videos = torch.stack([torch.from_numpy(v) for v in videos])  # Shape: [B, F, H, W, C]
-
-#     return {
-#         "videos": videos,
-#         "targets": targets,
-#         "paths": paths
-#     }
+    return {
+        "videos": videos,
+        "targets": targets,
+        "video_fname": paths
+    }
 
 def get_distributed_video_dataloader(
     config: HeartWiseConfig,
@@ -244,6 +229,6 @@ def get_distributed_video_dataloader(
         num_workers=config.num_workers,
         pin_memory=True,
         drop_last=drop_last,
-        # collate_fn=custom_collate_fn,
+        collate_fn=custom_collate_fn,
         worker_init_fn=seed_worker,
     )

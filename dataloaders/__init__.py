@@ -1,11 +1,14 @@
 from dataloaders.simple_text_dataset import SimpleTextDataset
-from dataloaders.video_clip_dataset import VideoDataset, custom_collate_fn
+from dataloaders.video_clip_dataset import VideoClipDataset, custom_collate_fn
 from dataloaders.stats_dataset import StatsDataset, stats_collate_fn
+from dataloaders.multi_video_dataset import MultiVideoDataset, multi_video_collate_fn
 
 __all__ = [
     "SimpleTextDataset",
-    "VideoDataset",
+    "VideoClipDataset",
     "StatsDataset",
+    "MultiVideoDataset",
     "custom_collate_fn",
     "stats_collate_fn",
+    "multi_video_collate_fn",
 ]

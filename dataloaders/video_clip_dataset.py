@@ -3,20 +3,19 @@ import pathlib
 from typing import Any, List, Optional
 
 import cv2
-import numpy as np
 import pandas as pd
 
 import torch
 from torch.utils.data import DataLoader
 
-from utils.ddp import DS
 from utils.seed import seed_worker
-from utils.config.heartwise_config import HeartWiseConfig
+from utils.ddp import DistributedUtils
 from models.text_encoder import get_tokenizer
 from utils.video import load_video, format_mean_std
+from utils.config.heartwise_config import HeartWiseConfig
 
 
-class VideoDataset(torch.utils.data.Dataset):
+class VideoClipDataset(torch.utils.data.Dataset):
     """
     Single-video dataset class for video-text pairs.
     """
@@ -269,7 +268,7 @@ def custom_collate_fn(batch):
         "paths": paths
     }
 
-def get_distributed_video_dataloader(
+def get_distributed_video_clip_dataloader(
     config: HeartWiseConfig,
     split: str,
     mean: List[float],
@@ -280,7 +279,7 @@ def get_distributed_video_dataloader(
     drop_last: bool = True,
 ) -> DataLoader:
     # Create the video dataset
-    video_dataset = VideoDataset(
+    video_dataset = VideoClipDataset(
         root=config.root,
         data_filename=config.data_filename,
         split=split,
@@ -294,7 +293,7 @@ def get_distributed_video_dataloader(
     )
 
     # Create a sampler for distributed training
-    sampler = DS.DistributedSampler(
+    sampler = DistributedUtils.DS.DistributedSampler(
         video_dataset, 
         shuffle=shuffle, 
         num_replicas=num_replicas, 

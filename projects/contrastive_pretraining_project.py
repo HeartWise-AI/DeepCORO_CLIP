@@ -8,7 +8,7 @@ from torch.amp import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
 
-from typing import Any
+from typing import Any, Tuple, Optional
 from models.text_encoder import TextEncoder
 from models.video_encoder import VideoEncoder
 from projects.base_project import BaseProject
@@ -25,8 +25,8 @@ from utils.registry import (
     LossRegistry
 )
 from utils.files_handler import generate_output_dir_name
-from dataloaders.stats_dataset import get_stats_dataloader
-from dataloaders.video_clip_dataset import get_distributed_video_dataloader
+from utils.video_project import calculate_dataset_statistics_ddp
+from dataloaders.video_clip_dataset import get_distributed_video_clip_dataloader
 from dataloaders.multi_video_dataset import get_distributed_multi_video_dataloader
 
 def stats_collate_fn(batch):
@@ -36,7 +36,6 @@ def stats_collate_fn(batch):
         raise RuntimeError("No valid samples in batch")
     videos = torch.stack([torch.from_numpy(sample[0]) for sample in valid_samples])
     return videos
-
 
 @ProjectRegistry.register('DeepCORO_clip')
 class ContrastivePretrainingProject(BaseProject):
@@ -66,55 +65,15 @@ class ContrastivePretrainingProject(BaseProject):
             full_output_path = os.path.join(self.config.output_dir, output_subdir)        
             os.makedirs(full_output_path, exist_ok=True)
                         
-        # Calculate dataset statistics (only on rank 0)
-        mean, std = None, None
-        if self.config.is_ref_device:
-            print("\n=== Calculating Dataset Statistics ===")
-
-            stats_loader: DataLoader = get_stats_dataloader(self.config)
-
-            print(f"Frame count per video: {self.config.frames}")
-
-            mean_sum, squared_sum, pixel_count = 0.0, 0.0, 0
-            for batch in tqdm(stats_loader, desc="Calculating statistics"):
-                batch = batch.float()
-                batch = batch.reshape(-1, batch.shape[-1])
-                mean_sum += batch.sum(dim=0)
-                squared_sum += (batch**2).sum(dim=0)
-                pixel_count += batch.shape[0]
-
-            mean: torch.Tensor = mean_sum / pixel_count
-            std: torch.Tensor = torch.sqrt((squared_sum / pixel_count) - (mean**2))
-
-            print("\nDataset Statistics:")
-            print(f"Mean: {mean.tolist()}")
-            print(f"Std:  {std.tolist()}")
-            print("===========================\n")                    
-        
-        # Broadcast stats if distributed
-        if torch.distributed.is_initialized():
-            if mean is not None:
-                mean = mean.cuda()
-                std = std.cuda()
-            mean_tensor = torch.zeros(3, device="cuda")
-            std_tensor = torch.zeros(3, device="cuda")
-            if self.config.is_ref_device:
-                mean_tensor.copy_(mean)
-                std_tensor.copy_(std)
-            torch.distributed.broadcast(mean_tensor, 0)
-            torch.distributed.broadcast(std_tensor, 0)
-            mean = mean_tensor.cpu()
-            std = std_tensor.cpu()    
-        
-        print(f"Rank: {self.config.device} - mean: {mean} - std: {std}")
-
+        # Calculate dataset statistics
+        mean, std = calculate_dataset_statistics_ddp(self.config)
 
         if self.config.multi_video:
             train_loader: DataLoader = get_distributed_multi_video_dataloader(
                 self.config, 
                 split="train",
-                mean=(mean.tolist() if mean is not None else [0.485, 0.456, 0.406]),
-                std=(std.tolist() if std is not None else [0.229, 0.224, 0.225]),
+                mean=mean.tolist(),
+                std=std.tolist(),
                 shuffle=True,
                 num_replicas=self.config.world_size,
                 rank=self.config.device,
@@ -123,29 +82,29 @@ class ContrastivePretrainingProject(BaseProject):
             val_loader: DataLoader = get_distributed_multi_video_dataloader(
                 self.config, 
                 split="val", 
-                mean=(mean.tolist() if mean is not None else [0.485, 0.456, 0.406]),
-                std=(std.tolist() if std is not None else [0.229, 0.224, 0.225]),
+                mean=mean.tolist(),
+                std=std.tolist(),
                 shuffle=False,
                 num_replicas=self.config.world_size,
                 rank=self.config.device,
                 drop_last=False,
             )
         else:
-            train_loader: DataLoader = get_distributed_video_dataloader(
+            train_loader: DataLoader = get_distributed_video_clip_dataloader(
                 self.config, 
                 split="train", 
-                mean=(mean.tolist() if mean is not None else [0.485, 0.456, 0.406]),
-                std=(std.tolist() if std is not None else [0.229, 0.224, 0.225]),
+                mean=mean.tolist(),
+                std=std.tolist(),
                 shuffle=True,
                 num_replicas=self.config.world_size,
                 rank=self.config.device,
                 drop_last=True,
             )
-            val_loader: DataLoader = get_distributed_video_dataloader(
+            val_loader: DataLoader = get_distributed_video_clip_dataloader(
                 self.config, 
                 split="val", 
-                mean=(mean.tolist() if mean is not None else [0.485, 0.456, 0.406]),
-                std=(std.tolist() if std is not None else [0.229, 0.224, 0.225]),
+                mean=mean.tolist(),
+                std=std.tolist(),
                 shuffle=False,
                 num_replicas=self.config.world_size,
                 rank=self.config.device,

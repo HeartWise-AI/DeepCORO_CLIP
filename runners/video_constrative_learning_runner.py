@@ -1,10 +1,9 @@
 import os
-import wandb
 import pandas as pd
 
 import torch
 import torch.nn as nn
-from torch.optim import AdamW
+from torch.optim import Optimizer
 from torch.cuda.amp import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
@@ -30,6 +29,7 @@ from utils.logging import (
     save_retrieval_results,
 )
 from utils.loss.typing import Loss
+from utils.wandb_wrapper import WandbWrapper
 from models.video_encoder import VideoEncoder
 from models.text_encoder import TextEncoder
 
@@ -44,13 +44,12 @@ class VideoContrastiveLearningRunner:
     def __init__(
         self,
         config: ClipConfig,
-        device: int,
-        world_size: int,
+        wandb_wrapper: WandbWrapper,
         train_loader: DataLoader,
         val_loader: DataLoader,
         video_encoder: VideoEncoder,
         text_encoder: TextEncoder,
-        optimizer: AdamW,
+        optimizer: Optimizer,
         scaler: GradScaler,
         log_temp: torch.Tensor,
         lr_scheduler: LRScheduler,
@@ -61,13 +60,13 @@ class VideoContrastiveLearningRunner:
         Initialize the runner with provided configurations, data loaders, and modules.
 
         :param config: ClipConfig object with run/training configuration.
-        :param device: Integer specifying the GPU index.
-        :param world_size: Number of GPUs used in DDP.
+        :param wandb_wrapper: WandbWrapper instance.
         :param train_loader: DataLoader for training dataset.
         :param val_loader: DataLoader for validation dataset.
         :param video_encoder: VideoEncoder model.
         :param text_encoder: TextEncoder model.
-        :param optimizer: AdamW optimizer instance.
+        :param optimizer: optimizer instance.
+        :param scheduler: Learning rate scheduler.
         :param scaler: GradScaler for automatic mixed precision.
         :param log_temp: Logarithm of temperature used in contrastive loss.
         :param lr_scheduler: Learning rate scheduler.
@@ -85,13 +84,14 @@ class VideoContrastiveLearningRunner:
             )
 
         self.config: ClipConfig = config
-        self.device: int = device
-        self.world_size: int = world_size
+        self.wandb_wrapper: WandbWrapper = wandb_wrapper
+        self.device: int = config.device
+        self.world_size: int = config.world_size
         self.train_loader: DataLoader = train_loader
         self.val_loader: DataLoader = val_loader
         self.video_encoder: VideoEncoder = video_encoder
         self.text_encoder: TextEncoder = text_encoder
-        self.optimizer: AdamW = optimizer
+        self.optimizer: Optimizer = optimizer
         self.scaler: GradScaler = scaler
         self.lr_scheduler: LRScheduler = lr_scheduler
         self.loss_fn: Loss = loss_fn
@@ -140,9 +140,9 @@ class VideoContrastiveLearningRunner:
 
             # Training phase
             train_metrics = self._run_epoch(mode=RunMode.TRAIN, epoch=epoch)
-            if self.config.is_ref_device or (self.device == 0):
+            if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
                 # Let wandb auto-increment steps
-                wandb.log(train_metrics)
+                self.wandb_wrapper.log(train_metrics)
                 print(f"[DEBUG] rank={self.device} => Logged train metrics to W&B")
 
             # Sync before validation
@@ -162,8 +162,8 @@ class VideoContrastiveLearningRunner:
                 device_ids=self.device
             )
             
-            if self.config.is_ref_device:
-                wandb.log(val_metrics)
+            if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
+                self.wandb_wrapper.log(val_metrics)
                 print(f"[DEBUG] rank={self.device} => Logged val metrics to W&B")
 
             # Sync after validation
@@ -182,7 +182,7 @@ class VideoContrastiveLearningRunner:
                 prev_best = self.best_val_loss
                 self.best_val_loss = val_metrics["val/loss"]
                 self.best_epoch = epoch
-                if self.config.is_ref_device or (self.device == 0):
+                if self.config.is_ref_device:
                     print(
                         f"\nNew best model! Val Loss: {val_metrics['val/loss']:.4f} "
                         f"(previous: {prev_best:.4f})"
@@ -197,7 +197,7 @@ class VideoContrastiveLearningRunner:
                     )
 
             # Always save "latest" checkpoint
-            if self.config.is_ref_device or (self.device == 0):
+            if self.config.is_ref_device:
                 self._save_checkpoint(
                     epoch=epoch,
                     metrics={**train_metrics, **val_metrics},
@@ -207,9 +207,6 @@ class VideoContrastiveLearningRunner:
                 world_size=self.world_size,
                 device_ids=self.device
             )
-                
-            print(f"gpu_id after saving checkpoint: {self.device}")
-  
 
     def _gather_tensor_along_batch(self, local_tensor: torch.Tensor, world_size: int) -> torch.Tensor:
         """
@@ -309,14 +306,14 @@ class VideoContrastiveLearningRunner:
         """
         assert mode in [RunMode.TRAIN, RunMode.VALIDATION]
 
-        self.video_encoder.train(mode == "train")
-        self.text_encoder.train(mode == "train")
+        self.video_encoder.train(mode == RunMode.TRAIN)
+        self.text_encoder.train(mode == RunMode.TRAIN)
 
         total_loss = 0.0
         epoch_metrics = {}
 
-        dataloader = self.train_loader if mode == "train" else self.val_loader
-        step_fn = self._train_step if mode == "train" else self._val_step
+        dataloader = self.train_loader if mode == RunMode.TRAIN else self.val_loader
+        step_fn = self._train_step if mode == RunMode.TRAIN else self._val_step
 
         # Store local embeddings & text for retrieval computations
         all_video_embeddings_local = []
@@ -666,9 +663,17 @@ class VideoContrastiveLearningRunner:
             )
 
             # Log gradient norms
-            if self.config.is_ref_device:
-                log_gradient_norms(self.video_encoder, prefix="train/video_encoder/")
-                log_gradient_norms(self.text_encoder, prefix="train/text_encoder/")
+            if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
+                log_gradient_norms(
+                    model=self.video_encoder, 
+                    wandb_wrapper=self.wandb_wrapper,
+                    prefix="train/video_encoder/"
+                )
+                log_gradient_norms(
+                    model=self.text_encoder, 
+                    wandb_wrapper=self.wandb_wrapper, 
+                    prefix="train/text_encoder/"
+                )
 
             DistributedUtils.sync_process_group(
                 world_size=self.world_size,
@@ -700,9 +705,17 @@ class VideoContrastiveLearningRunner:
                 device_ids=self.device
             )
 
-            if self.config.is_ref_device:
-                log_gradient_norms(self.video_encoder, prefix="train/video_encoder/")
-                log_gradient_norms(self.text_encoder, prefix="train/text_encoder/")
+            if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
+                log_gradient_norms(
+                    model=self.video_encoder, 
+                    wandb_wrapper=self.wandb_wrapper,
+                    prefix="train/video_encoder/"
+                )
+                log_gradient_norms(
+                    model=self.text_encoder, 
+                    wandb_wrapper=self.wandb_wrapper, 
+                    prefix="train/text_encoder/"
+                )
 
             DistributedUtils.sync_process_group(
                 world_size=self.world_size,

@@ -1,5 +1,4 @@
 import os
-import wandb
 
 import torch
 import torch.nn as nn
@@ -23,6 +22,7 @@ from utils.registry import (
     ProjectRegistry, 
     LossRegistry
 )
+from utils.wandb_wrapper import WandbWrapper
 from utils.files_handler import generate_output_dir_name
 from utils.video_project import calculate_dataset_statistics_ddp
 from dataloaders.video_clip_dataset import get_distributed_video_clip_dataloader
@@ -41,8 +41,10 @@ class ContrastivePretrainingProject(BaseProject):
     def __init__(
         self, 
         config: ClipConfig,
+        wandb_wrapper: WandbWrapper
     ):
         self.config: ClipConfig = config
+        self.wandb_wrapper: WandbWrapper = wandb_wrapper
         
     def _setup_training_objects(
         self,
@@ -59,9 +61,9 @@ class ContrastivePretrainingProject(BaseProject):
         full_output_path = None
         if self.config.is_ref_device:
             # Generate output directory using wandb run ID that was already created
-            run_id = wandb.run.id if wandb.run is not None else ""
-            output_subdir = generate_output_dir_name(self.config, run_id)
-            full_output_path = os.path.join(self.config.output_dir, output_subdir)        
+            run_id: str = self.wandb_wrapper.run_id if self.wandb_wrapper.is_initialized() else ""
+            output_subdir: str = generate_output_dir_name(self.config, run_id)
+            full_output_path: str = os.path.join(self.config.output_dir, output_subdir)        
             os.makedirs(full_output_path, exist_ok=True)
                         
         # Calculate dataset statistics
@@ -211,13 +213,13 @@ class ContrastivePretrainingProject(BaseProject):
         )
 
         if self.config.is_ref_device:
-            wandb.config.update(
-                {
-                    "train_dataset_size": len(train_loader),
-                    "val_dataset_size": len(val_loader),
-                },
-                allow_val_change=True,
-            )        
+            if self.wandb_wrapper.is_initialized():
+                self.wandb_wrapper.config_update(
+                    {
+                        "train_dataset_size": len(train_loader),
+                        "val_dataset_size": len(val_loader),
+                    },
+                )        
             print("\n=== Dataset Information ===")
             print(f"Training:   {len(train_loader):,} batches per GPU")
             print(f"Validation: {len(val_loader):,} batches per GPU")
@@ -232,13 +234,12 @@ class ContrastivePretrainingProject(BaseProject):
             "video_encoder": video_encoder,
             "text_encoder": text_encoder,
             "optimizer": optimizer,
-            "scheduler": scheduler,
+            "lr_scheduler": scheduler,
             "train_loader": train_loader,
             "val_loader": val_loader,
-            "device": self.config.device,
             "scaler": scaler,
             "log_temp": log_temperature,
-            "full_output_path": full_output_path,
+            "output_dir": full_output_path,
             "loss_fn": loss_fn,
         }    
 
@@ -270,7 +271,7 @@ class ContrastivePretrainingProject(BaseProject):
         training_setup["video_encoder"].module.load_state_dict(checkpoint["video_encoder"])
         training_setup["text_encoder"].module.load_state_dict(checkpoint["text_encoder"])
         training_setup["optimizer"].load_state_dict(checkpoint["optimizer"])
-        training_setup["scheduler"].load_state_dict(checkpoint["scheduler"])
+        training_setup["lr_scheduler"].load_state_dict(checkpoint["scheduler"])
         training_setup["scaler"].load_state_dict(checkpoint["scaler"])
         training_setup["log_temp"].data.copy_(checkpoint["train/temperature"])
         return training_setup
@@ -290,18 +291,8 @@ class ContrastivePretrainingProject(BaseProject):
                 name=self.config.pipeline_project
             )(
                 config=self.config,
-                device=self.config.device,
-                world_size=self.config.world_size,
-                train_loader=training_setup["train_loader"],
-                val_loader=training_setup["val_loader"],
-                video_encoder=training_setup["video_encoder"],
-                text_encoder=training_setup["text_encoder"],
-                optimizer=training_setup["optimizer"],
-                scaler=training_setup["scaler"],
-                log_temp=training_setup["log_temp"],
-                lr_scheduler=training_setup["scheduler"],
-                loss_fn=training_setup["loss_fn"],
-                output_dir=training_setup["full_output_path"],
+                wandb_wrapper=self.wandb_wrapper,
+                **training_setup,
             )
         )
         if self.config.run_mode == RunMode.TRAIN:

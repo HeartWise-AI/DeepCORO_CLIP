@@ -8,7 +8,7 @@ from torch.amp import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
 
-from typing import Any, Tuple, Optional
+from typing import Any
 from models.text_encoder import TextEncoder
 from models.video_encoder import VideoEncoder
 from projects.base_project import BaseProject

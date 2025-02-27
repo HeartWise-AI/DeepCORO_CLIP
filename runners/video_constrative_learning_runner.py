@@ -427,14 +427,16 @@ class VideoContrastiveLearningRunner:
             ground_truth_indices = torch.arange(global_text_feats.size(0), device=self.device)
 
             # log best/worst retrievals
-            log_best_worst_retrievals(
-                similarity_matrix=similarity_matrix,
-                all_paths=global_paths,
-                # It's still okay to pass these as "unique_texts"; each row is just a text now.
-                unique_texts=global_reports,
-                ground_truth_indices=ground_truth_indices,
-                epoch=epoch,
-            )
+            if self.wandb_wrapper.is_initialized():
+                log_best_worst_retrievals(
+                    similarity_matrix=similarity_matrix,
+                    all_paths=global_paths,
+                    # It's still okay to pass these as "unique_texts"; each row is just a text now.
+                    unique_texts=global_reports,
+                    ground_truth_indices=ground_truth_indices,
+                    epoch=epoch,
+                    wandb_wrapper=self.wandb_wrapper,
+                )
 
             # For saving retrieval results, we no longer pass a report_to_global_index
             save_retrieval_results(

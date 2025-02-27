@@ -5,7 +5,12 @@ import numpy as np
 import torchvision.transforms as v2
 
 from pathlib import Path
-from typing import Union, List
+from typing import (
+    Any,
+    List,
+    Optional,
+    Union
+)
 
 
 def cleanup_temp_video(video_path):
@@ -53,16 +58,16 @@ def convert_video_for_wandb(video_path):
 
 
 def load_video(
-    video_path,
-    n_frames=32,
-    resize=224,
-    normalize=True,
-    mean=0.0,
-    std=1.0,
-    video_transforms=None,
-    rand_augment=False,
-    backbone="default",
-):
+    video_path: str,
+    n_frames: int = 32,
+    resize: int = 224,
+    normalize: bool = True,
+    mean: float = 0.0,
+    std: float = 1.0,
+    video_transforms: Optional[Any] = None,
+    rand_augment: bool = False,
+    backbone: str = "default",
+)-> np.ndarray:
     """
     Load and process a video with optional resizing, normalization, and augmentations.
     Returns tensor in format [F, H, W, C].

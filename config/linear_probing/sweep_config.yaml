@@ -1,0 +1,74 @@
+command:
+  - torchrun
+  - "--nproc_per_node=2"
+  - "--master_port=29500"
+  - "scripts/main.py"
+  - "--base_config"
+  - "config/linear_probing/base_config.yaml"
+  - ${args}
+
+name: "dev_deep_coro_linear_probing"
+project: "dev_deep_coro_linear_probing"
+entity: "jacques-delfrate"
+
+method: bayes
+
+metric:
+  name: val/main_loss
+  goal: minimize
+
+parameters:
+  lr:
+    distribution: uniform
+    min: 0.00001
+    max: 0.00005
+
+  optimizer:
+    values: [RAdam, AdamW]
+
+  scheduler_name:
+    values: [cosine, step]
+
+  lr_step_period:
+    values: [1, 2, 3]
+
+  factor:
+    distribution: uniform
+    min: 0.2
+    max: 0.5
+    
+  stride:
+    values: [1, 2]
+
+  dropout:
+    distribution: uniform
+    min: 0.1
+    max: 0.5
+
+  video_freeze_ratio:
+    distribution: uniform
+    min: 0.7
+    max: 1.0
+
+  weight_decay:
+    distribution: uniform
+    min: 1e-7
+    max: 1e-6
+
+  batch_size:
+    values: [1, 4, 8]
+
+  tag:
+    values: ["mvit_pretrained"]
+  name:
+    values: ["dev_deep_coro_linear_probing"]
+  project:
+    values: ["dev_deep_coro_linear_probing"]
+  entity:
+    values: ["jacques-delfrate"]
+
+early_terminate:
+  type: hyperband
+  min_iter: 3
+  eta: 2
+  s: 2

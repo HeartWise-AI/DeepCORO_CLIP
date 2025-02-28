@@ -35,6 +35,7 @@ class HeartWiseParser:
         optim_group.add_argument('--factor', type=float)
         optim_group.add_argument('--video_weight_decay', type=float)
         optim_group.add_argument('--text_weight_decay', type=float)
+        optim_group.add_argument('--weight_decay', type=float)
 
         # Data parameters
         data_group = parser.add_argument_group('Data')

@@ -41,8 +41,8 @@ class WandbWrapper:
                 }
                     
                 wandb.init(
-                    project=config.wandb_project,
-                    entity=config.wandb_entity,
+                    project=config.project,
+                    entity=config.entity,
                     config=config_dict,
                     allow_val_change=True
                 )

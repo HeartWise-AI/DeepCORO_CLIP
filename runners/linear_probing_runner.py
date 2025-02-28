@@ -1,4 +1,4 @@
-
+import os
 import torch
 from tqdm import tqdm
 from torch.optim import Optimizer
@@ -78,7 +78,7 @@ class LinearProbingRunner:
             )            
             
             # Training phase
-            train_metrics = self._run_epoch(mode=RunMode.TRAIN, epoch=epoch)            
+            train_metrics = self._run_epoch(mode=RunMode.TRAIN, epoch=epoch)   
             if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
                 # Let wandb auto-increment steps
                 self.wandb_wrapper.log(train_metrics)
@@ -95,7 +95,6 @@ class LinearProbingRunner:
                 mode=RunMode.VALIDATION, 
                 epoch=epoch
             )
-            
             DistributedUtils.sync_process_group(
                 world_size=self.world_size,
                 device_ids=self.device
@@ -106,13 +105,13 @@ class LinearProbingRunner:
                 print(f"[DEBUG] rank={self.device} => Logged val metrics to W&B")
 
             # Update best model
-            if val_metrics["val/loss"] < self.best_val_loss:
+            if val_metrics["val/main_loss"] < self.best_val_loss:
                 prev_best = self.best_val_loss
-                self.best_val_loss = val_metrics["val/loss"]
+                self.best_val_loss = val_metrics["val/main_loss"]
                 self.best_epoch = epoch
                 if self.config.is_ref_device:
                     print(
-                        f"\nNew best model! Val Loss: {val_metrics['val/loss']:.4f} "
+                        f"\nNew best model! Val Loss: {val_metrics['val/main_loss']:.4f} "
                         f"(previous: {prev_best:.4f})"
                     )
                     self._save_checkpoint(
@@ -147,23 +146,147 @@ class LinearProbingRunner:
         
         self.linear_probing.train(mode == RunMode.TRAIN)
 
-        total_loss = 0.0
-        epoch_metrics = {}
+        epoch_metrics: dict[str, float] = {}
 
         dataloader = self.train_loader if mode == RunMode.TRAIN else self.val_loader
-        # step_fn = self._train_step if mode == RunMode.TRAIN else self._val_step
+        step_fn = self._train_step if mode == RunMode.TRAIN else self._val_step
 
         tqdm_desc = f"[GPU {self.device}] Running {mode} Epoch {epoch + 1}"
         if self.config.is_ref_device:
             data_iter = tqdm(dataloader, desc=tqdm_desc)
         else:
             data_iter = dataloader
-            
-        batch_count = 0
+        
+        gathered_metrics: dict[str, float] = {}
         for batch_idx, batch in enumerate(data_iter, start=1):
-            print(batch['targets'][0], batch['video_fname'][0])
-            if batch_idx > 10:
-                break
+            batch_video = batch['videos'].to(self.device)
+            batch_targets = batch['targets']
+            for k, v in batch_targets.items():
+                batch_targets[k] = v.to(self.device)
+            # [B, 1, T, H, W, C] -> 1 is the aggregator dimension
+            batch_video = batch_video.unsqueeze(1)
+            try:
+                outputs = step_fn(batch_video, batch_targets)
+            except Exception as e:
+                print(f"[DEBUG] rank={self.device} => Error in step_fn: {e} for batch {batch['video_fname']} - {batch_targets}")
+                continue
+            for k, v in outputs['losses'].items():
+                gathered_metrics[f"{k}"] = DistributedUtils.gather_loss(
+                    [v], 
+                    self.config.device
+                )
+                # Update total loss
+                gathered_metrics[f'mean_{k}'] = gathered_metrics.get(f"mean_{k}", 0.0) + gathered_metrics[f"{k}"]
+                
+            # Update progress bar with gathered losses
+            if self.config.is_ref_device:
+                data_iter.set_postfix({
+                    f"{k}": f'{(v / batch_idx):.4f}' if 'mean' in k else f'{v:.4f}' 
+                    for k, v in gathered_metrics.items()
+                })
+        
+        # Get mean epoch losses
+        for k, v in gathered_metrics.items():
+            if 'mean' in k:
+                epoch_metrics[f"{mode}/{k.replace('mean_', '')}_loss"] = v / batch_idx
+        
+        return epoch_metrics
+        
+    def _train_step(
+        self, 
+        batch_video: torch.Tensor,
+        batch_targets: list[dict[str, torch.Tensor]]
+    ) -> dict[str, float]:
+        # Clear gradients
+        self.optimizer.zero_grad()
+                
+        # Forward pass with autocast for mixed precision
+        with torch.amp.autocast(
+            device_type='cuda',
+            dtype=torch.bfloat16
+        ):
+            outputs_dict: dict[str, torch.Tensor] = self.linear_probing(batch_video)
+
+        losses: dict[str, torch.Tensor] = self.loss_fn.run(
+            outputs=outputs_dict, 
+            targets=batch_targets
+        )
+        
+        # Backward pass with gradient scaling
+        self.scaler.scale(losses['main']).backward()
+        
+        # Sync gradients across processes before optimizer step
+        DistributedUtils.sync_process_group(
+            world_size=self.config.world_size,
+            device_ids=self.config.device
+        )
+        
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
+        
+        return {
+            "losses": losses
+        }
+        
+    def _val_step(
+        self, 
+        batch_video: torch.Tensor,
+        batch_targets: torch.Tensor
+    ) -> dict[str, float]:                
+        # Forward pass with autocast for mixed precision
+        with torch.no_grad():
+            outputs_dict: dict[str, torch.Tensor] = self.linear_probing(batch_video)
+
+        losses: dict[str, torch.Tensor] = self.loss_fn.run(
+            outputs=outputs_dict, 
+            targets=batch_targets
+        )
+                
+        # Sync gradients across processes before optimizer step
+        DistributedUtils.sync_process_group(
+            world_size=self.config.world_size,
+            device_ids=self.config.device
+        )
+                
+        return {
+            "losses": losses
+        }
 
     def inference(self):
         raise NotImplementedError("Linear probing inference not implemented")
+    
+    def _save_checkpoint(self, epoch: int, metrics: dict, is_best: bool = False):
+        """
+        Saves model checkpoint (including model weights, optimizer, scheduler, and metrics).
+
+        :param epoch: Current epoch index.
+        :param metrics: Dictionary of metrics to be saved.
+        :param is_best: If True, saves as 'best_epoch.pt'. Otherwise, saves as 'checkpoint.pt'.
+        """
+        checkpoint_dir = os.path.join(self.output_dir, "checkpoints")
+        os.makedirs(checkpoint_dir, exist_ok=True)
+
+        model_dict = {
+            "linear_probing": self.linear_probing.module.state_dict()
+            if hasattr(self.linear_probing, "module")
+            else self.linear_probing.state_dict(),
+            "optimizer": self.optimizer.state_dict(),
+            "scheduler": self.lr_scheduler.state_dict() if self.lr_scheduler else None,
+            "epoch": epoch,
+            "scaler": self.scaler.state_dict() if self.scaler else None,
+        }
+
+        checkpoint = {
+            **model_dict,
+            **metrics,
+            "best_val_loss": self.best_val_loss,
+            "best_epoch": self.best_epoch,
+        }
+
+        save_path = os.path.join(
+            checkpoint_dir, "best_epoch.pt" if is_best else "checkpoint.pt"
+        )
+        torch.save(checkpoint, save_path)
+        print(
+            f"\nSaved {'best' if is_best else 'latest'} checkpoint at epoch {epoch + 1} to {save_path}"
+        )    

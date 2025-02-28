@@ -406,15 +406,13 @@ class MultiHeadLoss(nn.Module):
             losses (dict): Individual losses per head for logging
         """
         losses: dict[str, torch.Tensor] = {}
-        total_loss: float = 0.0
 
         for head_name in self.head_structure.keys():
             # Compute loss using the appropriate loss function
             head_loss: torch.Tensor = self.loss_fns[head_name](outputs[head_name], targets[head_name])
 
             # Apply head-specific weight
-            head_weight: float = self.head_weights[head_name]
             losses[head_name] = head_loss
-            total_loss += head_weight * head_loss
+            losses['main'] = losses.get('main', 0.0) + self.head_weights[head_name] * head_loss
 
-        return total_loss, losses
+        return losses

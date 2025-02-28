@@ -337,7 +337,6 @@ class VideoContrastiveLearningRunner:
             if not self.config.multi_video:
                 # shape => [B, 1, T, H, W, C]
                 step_inputs["videos"] = step_inputs["videos"].unsqueeze(1)
-
             batch_metrics, embeddings = step_fn(**step_inputs)
 
             if self.lr_scheduler and self.scheduler_per_iteration and (mode == RunMode.TRAIN):

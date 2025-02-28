@@ -139,12 +139,10 @@ class ContrastivePretrainingProject(BaseProject):
         video_encoder = DistributedUtils.DDP(
             video_encoder, 
             device_ids=[self.config.device], 
-            find_unused_parameters=True
         )
         text_encoder = DistributedUtils.DDP(
             text_encoder, 
             device_ids=[self.config.device], 
-            find_unused_parameters=True
         )
 
         # Make temperature a trainable parameter directly on the device

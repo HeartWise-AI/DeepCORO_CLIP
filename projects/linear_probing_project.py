@@ -72,7 +72,7 @@ class LinearProbingProject(BaseProject):
             shuffle=False,
             num_replicas=self.config.world_size,
             rank=self.config.device,
-            drop_last=False,
+            drop_last=True,
         )        
         
         # Initialize video encoder backbone for linear probing
@@ -143,7 +143,9 @@ class LinearProbingProject(BaseProject):
         
         # Create loss function
         loss_fn: Loss = Loss(
-            loss_type=LossRegistry.get(LossType.MULTI_HEAD)(
+            loss_type=LossRegistry.get(
+                name=LossType.MULTI_HEAD
+            )(
                 head_structure=self.config.head_structure,
                 loss_structure=self.config.loss_structure,
                 head_weights=self.config.head_weights,

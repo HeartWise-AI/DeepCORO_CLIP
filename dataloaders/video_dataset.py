@@ -4,6 +4,7 @@ import torch
 import numpy as np
 import pandas as pd
 from torch.utils.data import DataLoader
+from collections import defaultdict
 from typing import (
     Any, 
     Dict,
@@ -110,15 +111,34 @@ class VideoDataset(torch.utils.data.Dataset):
             file_name = row.iloc[filename_index]
             file_mode = row.iloc[split_index].lower()
 
-            if split in ["all", file_mode] and os.path.exists(file_name):
-                fnames.append(file_name)
-                if target_indices is not None:
-                    # For multi-head, create a dictionary of outcomes
-                    row_outcomes = {}
-                    for label, idx in target_indices.items():
-                        print(f"label: {label}, idx: {idx}")
-                        row_outcomes[label] = row.iloc[idx]
-                    outcomes.append(row_outcomes)
+            # Only process rows matching the split
+            if split not in ["all", file_mode]:
+                continue
+
+            # Check if the video file exists
+            if not os.path.exists(file_name):
+                print(f"Skipping video {file_name} because file does not exist.")
+                continue
+
+            # If target labels are provided, ensure they are valid
+            if target_indices is not None:
+                skip_row = False
+                row_outcomes = {}
+                for label, idx in target_indices.items():
+                    value = row.iloc[idx]
+                    if pd.isna(value):
+                        print(f"Skipping video {file_name} because target '{label}' is missing.")
+                        skip_row = True
+                        break
+                    else:
+                        row_outcomes[label] = value
+                if skip_row:
+                    continue
+                outcomes.append(row_outcomes)
+            else:
+                outcomes.append(None)
+
+            fnames.append(file_name)
 
         return fnames, outcomes, target_indices
 
@@ -169,7 +189,7 @@ class VideoDataset(torch.utils.data.Dataset):
         
         return video, self.outcomes[actual_idx], video_fname
     
-def custom_collate_fn(batch: List[Tuple[np.ndarray, Dict[str, float], str]]) -> Dict[str, Any]:
+def custom_collate_fn(batch: List[Tuple[np.ndarray, Dict[str, torch.Tensor], str]]) -> Dict[str, Any]:
     """Custom collate function to handle video, targets, and video_fname data.
 
     Args:
@@ -177,16 +197,24 @@ def custom_collate_fn(batch: List[Tuple[np.ndarray, Dict[str, float], str]]) -> 
         Each video has shape [F, H, W, C]
     Returns:
         videos: Tensor of shape (batch_size, C, F, H, W) for MViT compatibility
-        targets: Dictionary with labels as keys and values as targets
+        targets: Dictionaries with labels as keys and values as tensors of targets
         video_fname: List of file paths
     """
     videos, targets, paths = zip(*batch)
     # Stack videos - handle both tensor and numpy inputs
     videos = torch.stack([torch.from_numpy(v) for v in videos])  # Shape: [B, F, H, W, C]
+    
+    # Convert targets to tensor - handle tuple of dictionaries
+    targets_dict: dict[str, torch.Tensor] = defaultdict(list)
+    for target in targets:
+        for k, v in target.items():
+            targets_dict[k].append(v)
 
+    targets_dict = {k: torch.tensor(v) for k, v in targets_dict.items()}
+    
     return {
         "videos": videos,
-        "targets": targets,
+        "targets": targets_dict,
         "video_fname": paths
     }
 

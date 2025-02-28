@@ -21,13 +21,16 @@ class SimpleLinearProbingHead(nn.Module):
             dropout (float): The dropout rate
         """        
         super().__init__()
-        self.fc1 = nn.Conv3d(input_dim, 256, bias=True, kernel_size=1, stride=1)
+        # Replace Conv3d with Linear layer since input is now [batch_size, input_dim]
+        self.fc1 = nn.Linear(input_dim, 256)
         self.linear_probe = nn.Linear(256, output_dim)
         self.dropout = nn.Dropout(dropout)
+        self.activation = nn.GELU()
         
     def forward(self, x):
+        # Handle 2D input [batch_size, input_dim]
         x = self.fc1(x)
-        x = x.mean([2, 3, 4])
+        x = self.activation(x)
         x = self.dropout(x)
         x = self.linear_probe(x)
         return x

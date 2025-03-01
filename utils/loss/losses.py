@@ -263,7 +263,7 @@ class BCEWithLogitsLoss(nn.Module):
         if outputs.dim() > 1 and outputs.size(1) == 2:
             outputs: torch.Tensor = outputs[:, 1]  # Select the second item for binary classification
         elif outputs.dim() > 1 and outputs.size(1) == 1:
-            outputs: torch.Tensor = outputs.squeeze()  # Squeeze the dimension
+            outputs: torch.Tensor = outputs.squeeze(1)  # Squeeze the dimension
 
         # Convert targets to float type
         targets: torch.Tensor = targets.float()

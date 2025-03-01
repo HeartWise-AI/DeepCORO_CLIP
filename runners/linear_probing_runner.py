@@ -159,17 +159,12 @@ class LinearProbingRunner:
         
         gathered_metrics: dict[str, float] = {}
         for batch_idx, batch in enumerate(data_iter, start=1):
-            batch_video = batch['videos'].to(self.device)
-            batch_targets = batch['targets']
-            for k, v in batch_targets.items():
-                batch_targets[k] = v.to(self.device)
-            # [B, 1, T, H, W, C] -> 1 is the aggregator dimension
-            batch_video = batch_video.unsqueeze(1)
             try:
-                outputs = step_fn(batch_video, batch_targets)
+                processed_batch: dict[str, torch.Tensor] = self._preprocess_inputs(batch)
+                outputs: dict[str, torch.Tensor] = step_fn(**processed_batch)
             except Exception as e:
-                print(f"[DEBUG] rank={self.device} => Error in step_fn: {e} for batch {batch['video_fname']} - {batch_targets}")
-                continue
+                raise Exception(f"[DEBUG] rank={self.device} => Error in step_fn: {e} for batch {batch['video_fname']} - {processed_batch['batch_targets']}")
+            
             for k, v in outputs['losses'].items():
                 gathered_metrics[f"{k}"] = DistributedUtils.gather_loss(
                     [v], 
@@ -191,11 +186,26 @@ class LinearProbingRunner:
                 epoch_metrics[f"{mode}/{k.replace('mean_', '')}_loss"] = v / batch_idx
         
         return epoch_metrics
+
+    def _preprocess_inputs(
+        self, 
+        batch: dict[str, torch.Tensor]
+    ) -> dict[str, torch.Tensor]:
+        batch_video = batch['videos'].to(self.device)
+        batch_targets = batch['targets']
+        for k, v in batch_targets.items():
+            batch_targets[k] = v.to(self.device)
+        # [B, 1, T, H, W, C] -> 1 is the aggregator dimension
+        batch_video = batch_video.unsqueeze(1)
+        return {
+            "batch_video": batch_video,
+            "batch_targets": batch_targets
+        }
         
     def _train_step(
         self, 
         batch_video: torch.Tensor,
-        batch_targets: list[dict[str, torch.Tensor]]
+        batch_targets: dict[str, torch.Tensor]
     ) -> dict[str, float]:
         # Clear gradients
         self.optimizer.zero_grad()
@@ -205,12 +215,19 @@ class LinearProbingRunner:
             device_type='cuda',
             dtype=torch.bfloat16
         ):
-            outputs_dict: dict[str, torch.Tensor] = self.linear_probing(batch_video)
+            try:
+                outputs_dict: dict[str, torch.Tensor] = self.linear_probing(batch_video)
+            except Exception as e:
+                raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")
 
-        losses: dict[str, torch.Tensor] = self.loss_fn.run(
-            outputs=outputs_dict, 
-            targets=batch_targets
-        )
+        try:
+            losses: dict[str, torch.Tensor] = self.loss_fn.run(
+                outputs=outputs_dict, 
+                targets=batch_targets
+            )
+        except Exception as e:
+            raise Exception(f"[DEBUG] rank={self.device} => Error in loss_fn: {e} for batch with outputs_dict {outputs_dict} and batch_targets {batch_targets}")
+
         
         # Backward pass with gradient scaling
         self.scaler.scale(losses['main']).backward()
@@ -231,16 +248,22 @@ class LinearProbingRunner:
     def _val_step(
         self, 
         batch_video: torch.Tensor,
-        batch_targets: torch.Tensor
+        batch_targets: dict[str, torch.Tensor]
     ) -> dict[str, float]:                
         # Forward pass with autocast for mixed precision
         with torch.no_grad():
-            outputs_dict: dict[str, torch.Tensor] = self.linear_probing(batch_video)
+            try:
+                outputs_dict: dict[str, torch.Tensor] = self.linear_probing(batch_video)
+            except Exception as e:
+                raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")
 
-        losses: dict[str, torch.Tensor] = self.loss_fn.run(
-            outputs=outputs_dict, 
-            targets=batch_targets
-        )
+        try:
+            losses: dict[str, torch.Tensor] = self.loss_fn.run(
+                outputs=outputs_dict, 
+                targets=batch_targets
+            )
+        except Exception as e:
+            raise Exception(f"[DEBUG] rank={self.device} => Error in loss_fn: {e} for batch with outputs shape {outputs_dict} and targets shape {batch_targets}")
                 
         # Sync gradients across processes before optimizer step
         DistributedUtils.sync_process_group(

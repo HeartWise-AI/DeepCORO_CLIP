@@ -630,7 +630,10 @@ class VideoContrastiveLearningRunner:
         }, batch["paths"]
 
     def _train_step(
-        self, videos: torch.Tensor, input_ids: torch.Tensor, attention_mask: torch.Tensor
+        self, 
+        videos: torch.Tensor, 
+        input_ids: torch.Tensor, 
+        attention_mask: torch.Tensor
     ) -> tuple[dict, dict]:
         """
         Performs a single training step, including forward, backward, gradient update,

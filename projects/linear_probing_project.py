@@ -62,7 +62,7 @@ class LinearProbingProject(BaseProject):
             shuffle=True,
             num_replicas=self.config.world_size,
             rank=self.config.device,
-            drop_last=True,
+            drop_last=False,
         )
         val_loader: DataLoader = get_distributed_video_dataloader(
             self.config, 
@@ -72,7 +72,7 @@ class LinearProbingProject(BaseProject):
             shuffle=False,
             num_replicas=self.config.world_size,
             rank=self.config.device,
-            drop_last=True,
+            drop_last=False,
         )        
         
         # Initialize video encoder backbone for linear probing

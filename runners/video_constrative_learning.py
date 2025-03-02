@@ -30,8 +30,7 @@ from utils.logging import (
 )
 from models.video_encoder import VideoEncoder
 from models.text_encoder import TextEncoder
-import os
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 
 @RunnerRegistry.register("video_contrastive_learning")
 class VideoContrastiveLearningRunner:
@@ -429,13 +428,8 @@ class VideoContrastiveLearningRunner:
                     end_idx = min(start_idx + batch_size, len(unique_texts))
                     text_batch = unique_texts[start_idx:end_idx]
                     
-                    # Tokenize batch - handle DDP wrapped model
-                    tokenizer = (
-                        self.text_encoder.module.tokenizer 
-                        if hasattr(self.text_encoder, "module") 
-                        else self.text_encoder.tokenizer
-                    )
-                    encoded = tokenizer(
+                    # Tokenize batch
+                    encoded = self.text_encoder.tokenizer(
                         text_batch,
                         padding=True,
                         truncation=True,
@@ -813,6 +807,11 @@ class VideoContrastiveLearningRunner:
         """
         pass
 
+    def inference(self):
+        """
+        Method for a dedicated inference.
+        """
+        pass
     def inference(self):
         """
         Method for a dedicated inference.

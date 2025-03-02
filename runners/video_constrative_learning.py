@@ -30,7 +30,8 @@ from utils.logging import (
 )
 from models.video_encoder import VideoEncoder
 from models.text_encoder import TextEncoder
-
+import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 @RunnerRegistry.register("video_contrastive_learning")
 class VideoContrastiveLearningRunner:

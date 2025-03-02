@@ -429,13 +429,12 @@ class VideoContrastiveLearningRunner:
                     text_batch = unique_texts[start_idx:end_idx]
                     
                     # Tokenize batch
-                    encoded = self.text_encoder.tokenizer(
+                    encoded = self.text_encoder.module.tokenizer(
                         text_batch,
                         padding=True,
                         truncation=True,
                         return_tensors="pt"
                     ).to(self.device)
-                    
                     # Get embeddings
                     text_embs = self.text_encoder(
                         encoded["input_ids"],

@@ -39,6 +39,8 @@ dependencies = [
     "zarr>=2.18.3",
     "pytest",
     "pytest-cov",
+    "opencv-python-headless>=4.11.0.86",
+    "scikit-learn>=1.6.1",
 ]
 
 [project.optional-dependencies]

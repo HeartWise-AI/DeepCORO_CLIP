@@ -332,7 +332,6 @@ class VideoContrastiveLearningRunner:
             batch_metrics, embeddings = step_fn(**step_inputs)
 
             if self.lr_scheduler and self.scheduler_per_iteration and (mode == RunMode.TRAIN):
-                print(f"[DEBUG] step_fn: {step_fn}")
                 self.lr_scheduler.step()
 
             # Store embeddings on CPU

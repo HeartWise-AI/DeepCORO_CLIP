@@ -8,7 +8,7 @@ device: !!str cuda
 mode: !!str train
 
 # Dataset parameters
-data_filename: !!str data/reports/report_sampled_200.csv
+data_filename: !!str data/reports/reports_with_alpha_separator_with_Calcifc_Stenosis_IFR_20250108_RCA_LCA.csv
 root: !!str "."
 target_label: !!str Report
 datapoint_loc_label: !!str FileName

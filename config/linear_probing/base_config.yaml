@@ -8,7 +8,7 @@ seed: !!int 42
 tag: !!str mvit_pretrained
 name: !!str dev_deep_coro_linear_probing
 project: !!str dev_deep_coro_linear_probing
-entity: !!str mhi_ai
+entity: !!str jacques-delfrate
 use_wandb: !!bool true
 # Training parameters
 lr: !!float 0.0003
@@ -23,11 +23,11 @@ num_warmup_percent: !!float 0.1
 num_hard_restarts_cycles: !!float 1.0
 warm_restart_tmult: !!int 2
 # Dataset parameters
-data_filename: !!str data/stenting/stenting_annotations.csv
+data_filename: !!str data/stenting/stenting_contrast_dominance.csv
 num_workers: !!int 4
 batch_size: !!int 4
 datapoint_loc_label: !!str FileName
-target_label: [contrast_agent, main_structure, stent_presence]
+target_label: [contrast_agent, coronary_dominance, stent_presence]
 rand_augment: !!bool true
 resize: !!int 224
 frames: !!int 16
@@ -45,17 +45,17 @@ task: !!str classification
 linear_probing_head: !!str simple_linear_probing
 head_structure:
   contrast_agent: !!int 1
-  main_structure: !!int 5
+  coronary_dominance: !!int 1
   stent_presence: !!int 1
 head_dropout:
   contrast_agent: !!float 0.1
-  main_structure: !!float 0.1
+  coronary_dominance: !!float 0.1
   stent_presence: !!float 0.1
 loss_structure:
   contrast_agent: !!str bce_logit
-  main_structure: !!str ce
+  coronary_dominance: !!str bce_logit
   stent_presence: !!str bce_logit
 head_weights:
   contrast_agent: !!float 1.0
-  main_structure: !!float 1.0
+  coronary_dominance: !!float 1.0
   stent_presence: !!float 1.0

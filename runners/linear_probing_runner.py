@@ -5,8 +5,10 @@ from torch.optim import Optimizer
 from torch.cuda.amp import GradScaler
 from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader
+from sklearn.metrics import roc_auc_score, average_precision_score
+from collections import defaultdict
 
-from utils.enums import RunMode
+from utils.enums import RunMode, MetricTask
 from utils.loss.typing import Loss
 from utils.ddp import DistributedUtils
 from utils.registry import RunnerRegistry
@@ -158,12 +160,26 @@ class LinearProbingRunner:
             data_iter = dataloader
         
         gathered_metrics: dict[str, float] = {}
+        accumulated_preds = defaultdict(list)
+        accumulated_targets = defaultdict(list)
+
         for batch_idx, batch in enumerate(data_iter, start=1):
             try:
                 processed_batch: dict[str, torch.Tensor] = self._preprocess_inputs(batch)
                 outputs: dict[str, torch.Tensor] = step_fn(**processed_batch)
+                if self.config.task == MetricTask.CLASSIFICATION:
+                    for k, v in outputs['logits'].items():
+                        preds = torch.sigmoid(v.float())
+                        targets = processed_batch['batch_targets'][k].long()
+                        if preds.ndim > 1 and preds.shape[1] > 1:
+                            one_hot_targets = torch.zeros_like(preds)
+                            one_hot_targets.scatter_(1, targets.unsqueeze(1), 1)
+                            targets = one_hot_targets
+                        accumulated_preds[k].append(preds)
+                        accumulated_targets[k].append(targets)
+                
             except Exception as e:
-                raise Exception(f"[DEBUG] rank={self.device} => Error in step_fn: {e} for batch {batch['video_fname']} - {processed_batch['batch_targets']}")
+                raise Exception(f"[DEBUG] rank={self.device} => Error in step_fn: {e}")
             
             for k, v in outputs['losses'].items():
                 gathered_metrics[f"{k}"] = DistributedUtils.gather_loss(
@@ -180,6 +196,47 @@ class LinearProbingRunner:
                     for k, v in gathered_metrics.items()
                 })
         
+        # Gather and compute AUC and AUPRC metrics only if task is classification
+        if self.config.task == MetricTask.CLASSIFICATION:
+            # Convert lists into concatenated tensors per head and gather from all GPUs
+            for head in list(accumulated_preds.keys()):
+                local_preds = torch.cat(accumulated_preds[head], dim=0)
+                local_targets = torch.cat(accumulated_targets[head], dim=0)
+
+                # If distributed is initialized and more than one process exists, gather values
+                if torch.distributed.is_available() and torch.distributed.is_initialized() and self.config.world_size > 1:
+                    preds_list = [torch.zeros_like(local_preds) for _ in range(self.config.world_size)]
+                    targets_list = [torch.zeros_like(local_targets) for _ in range(self.config.world_size)]
+                    torch.distributed.all_gather(preds_list, local_preds)
+                    torch.distributed.all_gather(targets_list, local_targets)
+                    global_preds = torch.cat(preds_list, dim=0)
+                    global_targets = torch.cat(targets_list, dim=0)
+                else:
+                    global_preds = local_preds
+                    global_targets = local_targets
+
+                accumulated_preds[head] = global_preds
+                accumulated_targets[head] = global_targets
+
+            # Compute metrics for each head
+            for head in accumulated_preds.keys():
+                all_preds = accumulated_preds[head].detach().cpu().numpy()
+                all_targets = accumulated_targets[head].detach().cpu().numpy()
+                try:
+                    auc = roc_auc_score(all_targets, all_preds, average="macro")
+                    print(f"[DEBUG] rank={self.device} => head={head} AUC: {auc}")
+                except Exception as e:
+                    raise Exception(f"[DEBUG] rank={self.device} => Error in AUC: {e}")
+                    
+                try:
+                    auprc = average_precision_score(all_targets, all_preds, average="macro")
+                    print(f"[DEBUG] rank={self.device} => {mode} head={head} AUPRC: {auprc}")
+                except Exception as e:
+                    raise Exception(f"[DEBUG] rank={self.device} => Error in AUPRC: {e}")
+                    
+                epoch_metrics[f"{mode}/{head}_auc"] = auc
+                epoch_metrics[f"{mode}/{head}_auprc"] = auprc
+        print(f"[DEBUG] rank={self.device} => {mode} Epoch metrics: {epoch_metrics}")
         # Get mean epoch losses
         for k, v in gathered_metrics.items():
             if 'mean' in k:
@@ -240,9 +297,10 @@ class LinearProbingRunner:
         
         self.scaler.step(self.optimizer)
         self.scaler.update()
-        
+
         return {
-            "losses": losses
+            "losses": losses,
+            "logits": outputs_dict
         }
         
     def _val_step(
@@ -272,7 +330,8 @@ class LinearProbingRunner:
         )
                 
         return {
-            "losses": losses
+            "losses": losses,
+            "logits": outputs_dict
         }
 
     def inference(self):

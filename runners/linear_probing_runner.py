@@ -5,8 +5,14 @@ from torch.optim import Optimizer
 from torch.cuda.amp import GradScaler
 from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader
-from sklearn.metrics import roc_auc_score, average_precision_score
+import seaborn as sns
+import matplotlib.pyplot as plt
 from collections import defaultdict
+from sklearn.metrics import (
+    roc_auc_score, 
+    average_precision_score, 
+    confusion_matrix
+)
 
 from utils.enums import RunMode, MetricTask
 from utils.loss.typing import Loss
@@ -195,6 +201,12 @@ class LinearProbingRunner:
                     f"{k}": f'{(v / batch_idx):.4f}' if 'mean' in k else f'{v:.4f}' 
                     for k, v in gathered_metrics.items()
                 })
+            
+            # Sync after each batch
+            DistributedUtils.sync_process_group(
+                world_size=self.world_size,
+                device_ids=self.device
+            )
         
         # Gather and compute AUC and AUPRC metrics only if task is classification
         if self.config.task == MetricTask.CLASSIFICATION:
@@ -218,6 +230,12 @@ class LinearProbingRunner:
                 accumulated_preds[head] = global_preds
                 accumulated_targets[head] = global_targets
 
+            # Sync after gathering predictions and targets
+            DistributedUtils.sync_process_group(
+                world_size=self.world_size,
+                device_ids=self.device
+            )
+
             # Compute metrics for each head
             for head in accumulated_preds.keys():
                 all_preds = accumulated_preds[head].detach().cpu().numpy()
@@ -236,6 +254,50 @@ class LinearProbingRunner:
                     
                 epoch_metrics[f"{mode}/{head}_auc"] = auc
                 epoch_metrics[f"{mode}/{head}_auprc"] = auprc
+
+                # Compute and log confusion matrix
+                if self.config.is_ref_device and self.wandb_wrapper.is_initialized():
+                    try:
+                        # For binary classification
+                        if all_preds.ndim == 1:
+                            pred_labels = (all_preds > 0.5).astype(int)
+                            # Ensure targets are also 1D
+                            if all_targets.ndim > 1:
+                                all_targets = all_targets.squeeze()
+                            cm = confusion_matrix(all_targets, pred_labels)
+                        # For multi-class classification
+                        else:
+                            pred_labels = all_preds.argmax(axis=1)
+                            # If targets are one-hot encoded, convert to class indices
+                            if all_targets.ndim > 1:
+                                true_labels = all_targets.argmax(axis=1)
+                            else:
+                                true_labels = all_targets
+                            cm = confusion_matrix(true_labels, pred_labels)
+
+                        # Create confusion matrix plot
+                        plt.figure(figsize=(10, 8))
+                        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+                        plt.title(f'{mode.capitalize()} Confusion Matrix - {head}')
+                        plt.ylabel('True Label')
+                        plt.xlabel('Predicted Label')
+                        
+                        # Log to wandb
+                        self.wandb_wrapper.log_plot({
+                            f"confusion_matrix/{mode}/{head}": plt
+                        })
+                        plt.close()
+                        
+                    except Exception as e:
+                        print(f"[DEBUG] rank={self.device} => Error in confusion matrix: {e}")
+                        print(f"[DEBUG] rank={self.device} => all_preds shape: {all_preds.shape}, all_targets shape: {all_targets.shape}")
+
+            # Sync after logging metrics and confusion matrix
+            DistributedUtils.sync_process_group(
+                world_size=self.world_size,
+                device_ids=self.device
+            )
+                
         print(f"[DEBUG] rank={self.device} => {mode} Epoch metrics: {epoch_metrics}")
         # Get mean epoch losses
         for k, v in gathered_metrics.items():

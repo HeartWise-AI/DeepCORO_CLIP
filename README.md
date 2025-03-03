@@ -2,7 +2,7 @@
 
 DeepCORO_CLIP is a deep learning model for echocardiography video interpretation using contrastive learning. It leverages a Multiscale Vision Transformer (mVIT) for video encoding and BioMedBERT for text encoding, trained on millions of video-report pairs.
 
-## Features
+## 🚀 Features
 
 - **Contrastive Learning**: Train on video-report pairs using CLIP-style contrastive learning
   - Single video mode: Process one video per study
@@ -13,7 +13,7 @@ DeepCORO_CLIP is a deep learning model for echocardiography video interpretation
 - **Automatic Mixed Precision**: Optimized training with AMP
 - **Distributed Data Parallel**: Efficient multi-GPU training
 
-## Environment Setup
+## 🛠️ Environment Setup
 
 ### Prerequisites
 
@@ -22,7 +22,7 @@ DeepCORO_CLIP is a deep learning model for echocardiography video interpretation
 
 ### Steps
 
-1. **Clone the Repository**:
+1. 📥 **Clone the Repository**:
 
    ```bash
    https://github.com/HeartWise-AI/DeepCORO_CLIP.git
@@ -49,7 +49,7 @@ DeepCORO_CLIP is a deep learning model for echocardiography video interpretation
    wandb login
    ```
 
-## Configuration Files
+## 📄 Configuration Files
 
 The project uses configuration files located in the `config/` directory:
 
@@ -79,7 +79,7 @@ The project uses configuration files located in the `config/` directory:
    - Hyperparameter optimization for linear probing tasks
    - Task-specific parameter ranges
 
-## Training Modes
+## 💻 Training Modes
 
 ### 1. Contrastive Learning (CLIP)
 
@@ -232,7 +232,6 @@ Contributions to DeepECG_Docker repository are welcome! Please follow these step
 3. Make your changes and commit them with clear, descriptive messages
 4. Push your changes to your fork
 5. Submit a pull request to the main repository
-
 
 ## 📚 Citation
 

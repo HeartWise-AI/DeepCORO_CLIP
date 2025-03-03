@@ -2,13 +2,23 @@
 
 DeepCORO_CLIP is a deep learning model for echocardiography video interpretation using contrastive learning. It leverages a Multiscale Vision Transformer (mVIT) for video encoding and BioMedBERT for text encoding, trained on millions of video-report pairs.
 
+## Features
+
+- **Contrastive Learning**: Train on video-report pairs using CLIP-style contrastive learning
+  - Single video mode: Process one video per study
+  - Multi-video mode: Process multiple videos per study with aggregation
+- **Linear Probing**: Fine-tune the model for specific tasks using linear probing
+- **Multi-GPU Training**: Support for distributed training across multiple GPUs
+- **Hyperparameter Optimization**: Built-in support for Weights & Biases sweeps
+- **Automatic Mixed Precision**: Optimized training with AMP
+- **Distributed Data Parallel**: Efficient multi-GPU training
+
 ## Environment Setup
 
 ### Prerequisites
 
 - **CUDA-capable GPU**
 - **Python 3.11+**
-- **[uv](https://github.com/ashttps://github.com/astral-sh/uvtral-sh/uv)** (optional) or `pip` for installing dependencies
 
 ### Steps
 
@@ -22,17 +32,7 @@ DeepCORO_CLIP is a deep learning model for echocardiography video interpretation
 2. **Set up Virtual Environment**:
 
    ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate  # On Linux/Mac
-   pip install --upgrade pip
    pip install uv
-   ```
-
-2. **Install Dependencies**:
-   Install dependencies:
-
-   ```bash
-   # Using uv
    uv sync
    ```
 
@@ -43,267 +43,107 @@ DeepCORO_CLIP is a deep learning model for echocardiography video interpretation
    chmod +x /usr/bin/yq
    ```
 
-4. **Log into Weights & Biases (optional)**:
+4. **Log into Weights & Biases required for sweep**:
 
    ```bash
    wandb login
    ```
 
-5. If CV2 error:
-
-```CV2 error:  libGL.so.1: cannot open shared object file
-
-```
-
-```bash
-sudo apt update
-sudo apt install libgl1-mesa-glx
-sudo apt-get update
-sudo apt-get install libglib2.0-0
-sudo ldconfig
-```
-
-6. Make sure you have h264 installed: `ffmpeg -encoders | grep -w libx264` should return a list of encoders like this ``` V....D libx264              libx264 H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10 (codec h264)
- V....D libx264rgb           libx264 H.264 / AVC / MPEG-4 AVC / MPEG-4 part 10 RGB (codec h264)```
-
- If not you must install C compiler and then get FFMPEG v.60 with H264 and then compile it yourself.
- a. Get c compiler:
- ```apt-get update
-apt-get install -y gcc g++ make git pkg-config autoconf automake libtool \
-                   bzip2 cmake libfreetype6-dev zlib1g-dev yasm nasm```
-	1.	Download the x264 source:
-                   ```cd /usr/local/src
-# Download a release (e.g., FFmpeg 6.0) or the latest snapshot:
-wget https://ffmpeg.org/releases/ffmpeg-6.0.tar.bz2
-tar xjf ffmpeg-6.0.tar.bz2
-cd ffmpeg-6.0```
-
-	2.	Configure x264:
-  ``./configure --prefix=/usr/local --enable-gpl --enable-libx264```
-
-3. 	Compile and install FFmpeg:
-```make -j$(nproc)
-make install```
-4. 	Update the dynamic linker run-time bindings:
-```export PATH="/usr/local/bin:$PATH"```
-  ```ldconfig```
-
-7. 	Verify the installation:
-```ffmpeg -encoders | grep -w libx264```
-
-
-
-
 ## Configuration Files
 
-The project uses two main types of configuration files located in the `config/` directory:
+The project uses configuration files located in the `config/` directory:
 
-### Base Configuration (`base_config.yaml`)
+### Base Configurations
 
-Contains the default settings for training and model parameters:
+1. **CLIP Training** (`config/clip/base_config.yaml`):
+   - Training parameters (epochs, batch size, learning rate)
+   - Model architecture settings
+   - Data loading parameters
+   - Optimization settings
+   - Video mode settings (single/multi)
+   - Video aggregation parameters
 
-```yaml
-# Training parameters
-epochs: 10
-num_workers: 12
-debug: false
-use_amp: true
-mode: train  
+2. **Linear Probing** (`config/linear_probing/base_config.yaml`):
+   - Task-specific parameters
+   - Head structure configuration
+   - Loss function settings
+   - Backbone freezing options
 
-# Dataset parameters
-data_filename: data/reports/reports_with_splits_subset.csv
-frames: 16
-stride: 2
-multi_video: true
-num_videos: 5
+### Sweep Configurations
 
-# Model parameters
-model_name: mvit
-pretrained: true
+1. **CLIP Training** (`config/clip/sweep_config_*.yaml`):
+   - Hyperparameter search space for CLIP training
+   - Supports both single and multi-video training
 
-# Data augmentation
-rand_augment: false
-resize: 224
-apply_mask: false
+2. **Linear Probing** (`config/linear_probing/sweep_config.yaml`):
+   - Hyperparameter optimization for linear probing tasks
+   - Task-specific parameter ranges
+
+## Training Modes
+
+### 1. Contrastive Learning (CLIP)
+
+Train the model on video-report pairs using contrastive learning:
+
+Process multiple videos per study with aggregation:
+```bash
+# Single GPU training without logging results to wandb (see scripts/runner.sh)
+bash scripts/runner.sh --base_config config/clip/base_config.yaml --selected_gpus 0 --use_wandb false --run_mode train
+
+# Multi-GPU training with results logging on wandb (see scripts/runner.sh)
+bash scripts/runner.sh --base_config config/clip/base_config.yaml --selected_gpus 0,1 --use_wandb true --run_mode train
+
+# Multi-GPU hyperparameters fine-tuning - RunMode and UseWandb are forced to train and true respectively (see scripts/run_sweep.sh)
+bash script/run_sweep.sh --base_config config/clip/base_config.yaml --sweep_config config/clip/sweep_config.yaml --selected_gpus 0,1 --count 5
 ```
 
-### Sweep Configuration (`sweep_config.yaml`)
+### 2. Linear Probing
 
-Used for hyperparameter optimization with Weights & Biases:
-
-```yaml
-method: bayes
-metric:
-  name: val/loss
-  goal: minimize
-
-parameters:
-  lr:
-    distribution: log_uniform_values
-    min: 1e-5
-    max: 1e-4
-  optimizer:
-    values: ["AdamW", "RAdam"]
-  scheduler_name:
-    values: ["cosine", "step"]
-  batch_size:
-    values: [10, 12]
-  temperature:
-    min: 0.05
-    max: 0.15
-    distribution: uniform
-  dropout:
-    distribution: uniform
-    min: 0.0
-    max: 0.5
-  video_freeze_ratio:
-    values: [0.0, 0.5, 0.8, 1.0]
-  text_freeze_ratio:
-    values: [0.0, 0.5, 1.0]
-```
-
-### Running Hyperparameter Sweeps
-
-The project provides a convenient script `scripts/run_sweep.sh` for running hyperparameter sweeps:
+Fine-tune the model for specific tasks using linear probing - couple of combination examples:
 
 ```bash
-# Basic usage
-./scripts/run_sweep.sh --selected_gpus 0,1 --sweep_config config/sweep_config.yaml --count 5
+# Single GPU training without logging results to wandb (see script/runner.sh)
+bash scripts/runner.sh --base_config config/linear_probing/base_config.yaml --selected_gpus 0 --use_wandb false --run_mode train
 
-# Arguments:
-#   --selected_gpus    Comma-separated list of GPU IDs to use (default: 1,3)
-#   --sweep_config     Path to the sweep configuration file (default: config/sweep_config.yaml)
-#   --count           Number of runs to execute (default: 5)
+# Multi-GPU training with results logging on wandb (see script/runner.sh)
+bash scripts/runner.sh --base_config config/linear_probing/base_config.yaml --selected_gpus 0,1 --use_wandb true --run_mode train
+
+# Multi-GPU hyperparameters fine-tuning - RunMode and UseWandb are forced to train and true respectively (see scripts/run_sweep.sh)
+bash script/run_sweep.sh --base_config config/linear_probing/base_config.yaml --sweep_config config/linear_probing/sweep_config.yaml --selected_gpus 0,1 --count 5
 ```
 
-The script will:
-1. Automatically update the sweep config with the correct number of GPUs
-2. Initialize a W&B sweep and generate a sweep ID
-3. Start the sweep agent with the specified number of runs
-4. Log all outputs to `logs/sweep_<SWEEP_ID>_<timestamp>.log`
+## Model Architecture
 
-You can monitor your sweep progress at: `https://wandb.ai/<entity>/<project>/sweeps/<SWEEP_ID>`
+### Video Encoder
+- Multiscale Vision Transformer (mVIT) backbone
+- Configurable number of heads and layers
+- Support for pretrained weights
+- Optional backbone freezing
 
-#### Manual Sweep Setup
+### Text Encoder
+- BioMedBERT for medical text encoding
+- Configurable freezing ratio
+- Contrastive learning with video features
 
-Alternatively, you can run sweeps manually:
+### Linear Probing Heads
+- Task-specific classification heads
+- Configurable dropout and architecture
+- Support for multiple output classes per head
 
-```bash
-# Initialize the sweep
-wandb sweep config/sweep_config.yaml
+## Development Setup
 
-# Start an agent (replace SWEEP_ID with the ID from the previous command)
-wandb agent your_entity/your_project/SWEEP_ID
-```
-
-The sweep uses Bayesian optimization to find the best hyperparameters, with early termination using the Hyperband algorithm to stop underperforming runs.
-
-## Training
-
-### Use Config Files
-
-- **Run with default config**:
-    ```bash
-    python scripts/train_model.py --config config/default_config.yaml
-    ```
-
-- **Override config values with CLI arguments**:
-    ```bash
-    python scripts/train_model.py --config config/default_config.yaml --batch-size 16 --lr 0.0001 --n_video 4 --scorn StudyInstanceUID --aggregate_function mean
-    ```
-
-### Single GPU Training
-
-Ideal for development and debugging:
-```bash
-python scripts/train_model.py --config config/default_config.yaml --gpu 0
-```
-
-### Multi-GPU Training
+We use pre-commit hooks to ensure code quality and consistency:
 
 ```bash
-torchrun --nproc_per_node=1 scripts/main.py --base_config config/base_config.yaml
-```
-
-
-### Development Setup
-
-We use pre-commit hooks to ensure code quality and consistency. The hooks include:
-
-- Black (code formatting)
-- Ruff (linting)
-- MyPy (type checking)
-- Various file checks (YAML, TOML, trailing whitespace, etc.)
-- Jupyter notebook formatting and cleaning
-
-1. Install pre-commit hooks:
-
-```bash
-# Install pre-commit if you haven't already
+# Install pre-commit
 uv pip install pre-commit
-
-# Install the git hooks
 pre-commit install
-```
 
-2. (Optional) Run hooks manually:
-
-```bash
-# Run on all files
+# Run hooks manually
 pre-commit run --all-files
-
-# Run on staged files
-pre-commit run
 ```
 
-The hooks will automatically run on `git commit`. You can temporarily skip them with `git commit --no-verify`.
-
-### Performance Comparison
-
-- Single GPU:
-
-  - Batch size: 32
-  - Training time: ~2 days
-  - Memory usage: ~10GB VRAM
-
-- Multi-GPU (2 GPUs):
-
-  - Batch size: 32 per GPU (64 total)
-  - Training time: ~1 day
-  - Memory usage: ~8GB VRAM per GPU
-
-### Common Issues
-
-1. Out of Memory (OOM):
-
-   - Reduce batch size
-   - Use gradient accumulation
-   - Force single GPU mode
-
-1. GPU Selection:
-
-   - Use `CUDA_VISIBLE_DEVICES` to select specific GPUs
-   - Monitor GPU usage with `nvidia-smi`
-
-1. Training Speed:
-
-   - Multi-GPU isn't always faster due to overhead
-   - Start with single GPU and scale up if needed
-
-### Command-Line Arguments
-
-The training script supports various command-line arguments to customize the training process:
-
-```bash
-python scripts/train_model.py [OPTIONS]
-
-Options:
-  --gpu INTEGER        GPU index to use (forces single GPU training)
-  --batch-size INTEGER Default: 32. Batch size per GPU
-  --num-workers INTEGER Default: 4. Number of data loading workers
-  --epochs INTEGER     Default: 50. Number of epochs to train
-  --lr FLOAT          Default: 1e-4. Learning rate
-```
+### Performance Guidelines
 
 #### Recommended Batch Sizes by GPU Memory
 
@@ -314,116 +154,95 @@ Options:
 | 16GB       | 16-24                  | `--batch-size 24` |
 | 24GB+      | 24-32                  | `--batch-size 32` |
 
-#### Tips for Training Configuration
+#### Training Tips
 
 1. **Batch Size Selection**:
+   - Start with smaller batch sizes and increase if memory allows
+   - Larger batch sizes generally allow faster training
+   - Reduce if you get OOM errors
 
-   - Start with a smaller batch size and increase if memory allows
-   - Larger batch sizes generally allow faster training but require more memory
-   - If you get OOM (Out of Memory) errors, reduce the batch size
-
-1. **Number of Workers**:
-
-   - Rule of thumb: use `num_workers = 4 * num_gpus`
+2. **Number of Workers**:
+   - Rule of thumb: `num_workers = 4 * num_gpus`
    - Reduce if you get memory or file handle errors
    - Example: `--num-workers 2` for slower storage systems
 
-1. **Learning Rate**:
-
+3. **Learning Rate**:
    - Default (1e-4) works well for most cases
-   - For larger batch sizes, consider scaling up: `lr = 1e-4 * (batch_size/32)`
+   - For larger batch sizes: `lr = 1e-4 * (batch_size/32)`
    - Example: `--lr 2e-4` for batch size 64
 
-1. **Number of Epochs**:
-
+4. **Number of Epochs**:
    - Default (50) is good for most cases
    - Increase for better performance: `--epochs 100`
    - Decrease for quick experiments: `--epochs 10`
 
-#### Monitoring Training
+### Common Issues
+
+1. **Out of Memory (OOM)**:
+   - Reduce batch size
+   - Use gradient accumulation
+   - Force single GPU mode
+
+2. **GPU Selection**:
+   - Use `CUDA_VISIBLE_DEVICES` to select specific GPUs
+   - Monitor GPU usage with `nvidia-smi`
+
+3. **Training Speed**:
+   - Multi-GPU isn't always faster due to overhead
+   - Start with single GPU and scale up if needed
+
+## Monitoring Training
 
 1. **GPU Memory Usage**:
-
 ```bash
 nvidia-smi -l 1  # Monitor GPU usage every second
 ```
 
 2. **Training Progress**:
-
 - Progress bar shows current epoch and batch
 - Loss values are printed every 10 batches
 - Checkpoints are saved every 5 epochs
 
 3. **WandB Logging**:
-
 - Training metrics are logged to Weights & Biases
 - Includes loss, learning rate, batch size
 - Access via WandB dashboard
-## Parameters
 
-### Training Parameters
-- `epochs`: Number of training epochs (default: 50)
-- `batch_size`: Samples per batch (default: 12) 
-- `num_workers`: Subprocesses for data loading (default: 16)
-- `learning_rate`: Optimizer learning rate (default: 0.0001)
-- `temperature`: Contrastive loss temperature (default: 0.07)
+## Project Structure
 
-### Data Parameters
-- `data_filename`: CSV file containing data (default: `data/reports/reports_sampled_no_conclusion.csv`)
-- `root`: Root data directory (default: ".")
-- `target_label`: Target text column name (default: `Report`)
-- `datapoint_loc_label`: File paths column name (default: `FileName`)
-- `frames`: Frames to sample per video (default: 16)
-- `stride`: Frame sampling stride (default: 2)
+```
+heartwise-ai-deepcoro_clip/
+├── config/                        # Configuration files
+│   ├── clip/                     # CLIP training configs
+│   └── linear_probing/           # Linear probing configs
+├── dataloaders/                  # Data loading modules
+├── models/                       # Neural network models
+├── projects/                     # Project implementations
+├── runners/                      # Training runners
+├── scripts/                      # Training scripts
+└── utils/                        # Utility functions
+```
 
-### Model Parameters
-- `model_name`: Video backbone model (default: `mvit`)
-- `pretrained`: Use pretrained model (default: `true`)
+## 🤝 Contributing
 
-### Checkpointing
-- `resume`: Resume from checkpoint (default: `false`)
-- `resume_checkpoint`: Path to checkpoint file for resuming training
-- `save_best`: Best model save criterion (default: `loss`)
+Contributions to DeepECG_Docker repository are welcome! Please follow these steps to contribute:
 
-### Optimization Parameters
-- `optimizer`: Optimizer type (default: `RAdam`)
-- `weight_decay`: Optimizer weight decay (default: 0.000001)
-- `scheduler_name`: Learning rate scheduler (default: `step`)
-- `lr_step_period`: Learning rate step period (default: 15)
-- `factor`: Scheduler factor (default: 0.3)
-
-### Distributed Training
-- `gpu`: GPU index (default: 1)
-- `local_rank`: Local rank for distributed training (default: -1)
-
-### Logging Parameters
-- `project`: W&B project name (default: `deepCORO_CLIP`)
-- `entity`: W&B entity name (default: `mhi_ai`)
-- `tag`: W&B run tag (default: `DeepCORO_Clip_Sweep_Learnable_Temp_Full`)
-
-### Multi-Video Parameters
-- `multi_video`: Enable multiple videos per study (default: `true`)
-- `max_num_videos`: Maximum videos per study (default: 5)
-- `groupby_column`: Column for grouping videos by study (default: `StudyInstanceUID`)
-- `shuffle_videos`: Randomly sample videos within groups (default: `true`)
-- `seed`: Random seed for reproducibility (default: 42)
-
-### Additional Parameters
-- `output_dir`: Output directory (default: `outputs`)
-- `use_amp`: Use automatic mixed precision (default: `true`)
-- `device`: Training device (default: `cuda`)
+1. Fork the repository
+2. Create a new branch for your feature or bug fix
+3. Make your changes and commit them with clear, descriptive messages
+4. Push your changes to your fork
+5. Submit a pull request to the main repository
 
 
-### Data Augmentation
-- `random_augment`: Enable random augmentations (default: `true`)
-- `resize`: Image resize dimension (default: 224)
-- `apply_mask`: Apply image masking (default: `false`)
-- `period`: Num of frames of sampling stride (default: 1)
+## 📚 Citation
 
+If you find this repository useful, please cite our work:
 
-### Use Config Files
-
-- **Run with default config**:
-    ```bash
-    python scripts/train_model.py --config config/default_config.yaml
-    ```
+```
+@article{,
+  title={},
+  author={},
+  journal={},
+  year={},
+  publisher={}
+}

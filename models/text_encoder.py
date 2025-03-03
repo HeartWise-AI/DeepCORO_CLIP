@@ -45,10 +45,13 @@ class TextEncoder(nn.Module):
         self.output_dim = output_dim
         self.freeze_ratio = freeze_ratio
         self.dropout = dropout
+
+        self.tokenizer = get_tokenizer(model_name)
         
         # 1) BERT (or other) backbone
         self.bert = AutoModel.from_pretrained(model_name)
         hidden_size = self.bert.config.hidden_size
+        
 
         if hasattr(self.bert, "pooler"):
             self.bert.pooler = None

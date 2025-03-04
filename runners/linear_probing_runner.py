@@ -1,5 +1,6 @@
 import os
 import torch
+import numpy as np
 from tqdm import tqdm
 from torch.optim import Optimizer
 from torch.cuda.amp import GradScaler
@@ -14,11 +15,12 @@ from sklearn.metrics import (
     confusion_matrix
 )
 
-from utils.enums import RunMode, MetricTask
 from utils.loss.typing import Loss
 from utils.ddp import DistributedUtils
 from utils.registry import RunnerRegistry
+from utils.enums import RunMode, MetricTask
 from utils.wandb_wrapper import WandbWrapper
+from utils.metrics import compute_best_threshold
 from utils.config.linear_probing_config import LinearProbingConfig
 
 from models.linear_probing import LinearProbing
@@ -238,16 +240,17 @@ class LinearProbingRunner:
 
             # Compute metrics for each head
             for head in accumulated_preds.keys():
-                all_preds = accumulated_preds[head].detach().cpu().numpy()
-                all_targets = accumulated_targets[head].detach().cpu().numpy()
+                all_preds: np.ndarray = accumulated_preds[head].squeeze().detach().cpu().numpy()
+                all_targets: np.ndarray = accumulated_targets[head].squeeze().detach().cpu().numpy()
+                print(f"[DEBUG] rank={self.device} => head={head} all_preds shape: {all_preds.shape}, all_targets shape: {all_targets.shape}")
                 try:
-                    auc = roc_auc_score(all_targets, all_preds, average="macro")
+                    auc: float = roc_auc_score(all_targets.tolist(), all_preds.tolist(), average="micro")
                     print(f"[DEBUG] rank={self.device} => head={head} AUC: {auc}")
                 except Exception as e:
                     raise Exception(f"[DEBUG] rank={self.device} => Error in AUC: {e}")
                     
                 try:
-                    auprc = average_precision_score(all_targets, all_preds, average="macro")
+                    auprc: float = average_precision_score(all_targets.tolist(), all_preds.tolist(), average="micro")
                     print(f"[DEBUG] rank={self.device} => {mode} head={head} AUPRC: {auprc}")
                 except Exception as e:
                     raise Exception(f"[DEBUG] rank={self.device} => Error in AUPRC: {e}")
@@ -259,25 +262,47 @@ class LinearProbingRunner:
                 if self.config.is_ref_device and self.wandb_wrapper.is_initialized():
                     try:
                         # For binary classification
-                        if all_preds.ndim == 1:
-                            pred_labels = (all_preds > 0.5).astype(int)
-                            # Ensure targets are also 1D
-                            if all_targets.ndim > 1:
-                                all_targets = all_targets.squeeze()
-                            cm = confusion_matrix(all_targets, pred_labels)
+                        if self.config.head_structure[head] == 1:
+                            try:
+                                # Compute best threshold using Youden's J statistic
+                                best_threshold: float = compute_best_threshold(
+                                    all_targets.tolist(), 
+                                    all_preds.tolist()
+                                )
+                                print(f"[DEBUG] rank={self.device} => head={head} best_threshold: {best_threshold}")
+                            except Exception as e:
+                                # If error, use default threshold 0.5
+                                print(f"[DEBUG] rank={self.device} => Error computing threshold: {e} using default threshold 0.5")
+                                best_threshold = 0.5
+                                
+                            # Binarize predictions
+                            pred_labels: np.ndarray = (all_preds > best_threshold).astype(int)
+                            
+                            # Log best threshold
+                            epoch_metrics[f"{mode}/{head}_best_threshold"] = best_threshold
+                            
                         # For multi-class classification
                         else:
-                            pred_labels = all_preds.argmax(axis=1)
-                            # If targets are one-hot encoded, convert to class indices
-                            if all_targets.ndim > 1:
-                                true_labels = all_targets.argmax(axis=1)
-                            else:
-                                true_labels = all_targets
-                            cm = confusion_matrix(true_labels, pred_labels)
+                            pred_labels: np.ndarray = all_preds.argmax(axis=1)
+                            all_targets: np.ndarray = all_targets.argmax(axis=1)
+                        
+                        # Create confusion matrix using preprocessed targets and predictions
+                        labels: list[str] = [''] * len(self.config.labels_map[head])
+                        for k, v in self.config.labels_map[head].items():
+                            labels[v] = k
+                        
+                        cm: np.ndarray = confusion_matrix(y_true=all_targets, y_pred=pred_labels)
 
                         # Create confusion matrix plot
                         plt.figure(figsize=(10, 8))
-                        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+                        sns.heatmap(
+                            cm, 
+                            annot=True, 
+                            fmt='d', 
+                            cmap='Blues', 
+                            xticklabels=labels, 
+                            yticklabels=labels
+                        )
                         plt.title(f'{mode.capitalize()} Confusion Matrix - {head}')
                         plt.ylabel('True Label')
                         plt.xlabel('Predicted Label')

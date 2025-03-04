@@ -48,3 +48,6 @@ class LinearProbingConfig(HeartWiseConfig):
     loss_structure: Dict[str, str]
     head_weights: Dict[str, float]
     head_dropout: Dict[str, float]
+    
+    # Label mappings - Used for confusion matrix
+    labels_map: Dict[str, Dict[str, int]]

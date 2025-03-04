@@ -23,11 +23,11 @@ num_warmup_percent: !!float 0.1
 num_hard_restarts_cycles: !!float 1.0
 warm_restart_tmult: !!int 2
 # Dataset parameters
-data_filename: !!str data/stenting/stenting_contrast_dominance.csv
+data_filename: !!str data/stenting/stenting_annotations.csv
 num_workers: !!int 4
 batch_size: !!int 4
 datapoint_loc_label: !!str FileName
-target_label: [contrast_agent, coronary_dominance, stent_presence]
+target_label: [contrast_agent, main_structure, stent_presence]
 rand_augment: !!bool true
 resize: !!int 224
 frames: !!int 16
@@ -45,17 +45,31 @@ task: !!str classification
 linear_probing_head: !!str simple_linear_probing
 head_structure:
   contrast_agent: !!int 1
-  coronary_dominance: !!int 1
+  main_structure: !!int 5
   stent_presence: !!int 1
 head_dropout:
   contrast_agent: !!float 0.1
-  coronary_dominance: !!float 0.1
+  main_structure: !!float 0.1
   stent_presence: !!float 0.1
 loss_structure:
   contrast_agent: !!str bce_logit
-  coronary_dominance: !!str bce_logit
+  main_structure: !!str ce
   stent_presence: !!str bce_logit
 head_weights:
   contrast_agent: !!float 1.0
-  coronary_dominance: !!float 1.0
+  main_structure: !!float 1.0
   stent_presence: !!float 1.0
+# Label mappings - Used for confusion matrix
+labels_map:
+  contrast_agent:
+    present: !!int 1
+    absent: !!int 0
+  main_structure:
+    Left Coronary: !!int 0
+    Right Coronary: !!int 1
+    Graft: !!int 2
+    Catheter: !!int 3
+    Femoral: !!int 4
+  stent_presence:
+    present: !!int 1
+    absent: !!int 0

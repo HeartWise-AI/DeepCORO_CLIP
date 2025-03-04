@@ -1,6 +1,5 @@
 import os
 import torch
-import wandb
 from typing import Any
 from torch.amp import GradScaler
 from torch.utils.data import DataLoader
@@ -44,7 +43,7 @@ class LinearProbingProject(BaseProject):
         full_output_path = None
         if self.config.is_ref_device:
             # Generate output directory using wandb run ID that was already created
-            run_id = wandb.run.id if wandb.run is not None else ""
+            run_id = self.wandb_wrapper.get_run_id() if self.wandb_wrapper.is_initialized() else ""
             output_subdir = generate_output_dir_name(self.config, run_id)
             full_output_path = os.path.join(self.config.output_dir, output_subdir)        
             os.makedirs(full_output_path, exist_ok=True)

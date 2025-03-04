@@ -309,17 +309,17 @@ class VideoContrastiveLearningRunner:
         self.video_encoder.train(mode == RunMode.TRAIN)
         self.text_encoder.train(mode == RunMode.TRAIN)
 
-        total_loss = 0.0
-        epoch_metrics = {}
+        total_loss: float = 0.0
+        epoch_metrics: dict[str, float] = {}
 
-        dataloader = self.train_loader if mode == RunMode.TRAIN else self.val_loader
-        step_fn = self._train_step if mode == RunMode.TRAIN else self._val_step
+        dataloader: DataLoader = self.train_loader if mode == RunMode.TRAIN else self.val_loader
+        step_fn: callable = self._train_step if mode == RunMode.TRAIN else self._val_step
 
         # Store local embeddings & text for retrieval computations
-        all_video_embeddings_local = []
-        all_text_embeddings_local = []
-        all_paths_local = []
-        all_ground_truth_reports_local = []
+        all_video_embeddings_local: list[torch.Tensor] = []
+        all_text_embeddings_local: list[torch.Tensor] = []
+        all_paths_local: list[str] = []
+        all_ground_truth_reports_local: list[str] = []
 
         tqdm_desc = f"[GPU {self.device}] Running {mode} Epoch {epoch + 1}"
         if (self.config.is_ref_device or (self.device == 0)):
@@ -327,7 +327,7 @@ class VideoContrastiveLearningRunner:
         else:
             data_iter = dataloader
 
-        batch_count = 0
+        batch_count: int = 0
         for _, batch in enumerate(data_iter, start=1):
             if batch["videos"] is None or batch["encoded_texts"] is None:
                 continue
@@ -383,11 +383,11 @@ class VideoContrastiveLearningRunner:
 
         # 1) Concat local feats
         if len(all_video_embeddings_local) > 0:
-            local_video_feats = torch.cat(all_video_embeddings_local, dim=0).to(self.device)
-            local_text_feats = torch.cat(all_text_embeddings_local, dim=0).to(self.device)
+            local_video_feats: torch.Tensor = torch.cat(all_video_embeddings_local, dim=0).to(self.device)
+            local_text_feats: torch.Tensor = torch.cat(all_text_embeddings_local, dim=0).to(self.device)
         else:
-            local_video_feats = torch.empty((0, 512), device=self.device)
-            local_text_feats = torch.empty((0, 512), device=self.device)
+            local_video_feats: torch.Tensor = torch.empty((0, 512), device=self.device)
+            local_text_feats: torch.Tensor = torch.empty((0, 512), device=self.device)
 
         if (self.config.is_ref_device or (self.device == 0)):
             print(
@@ -396,30 +396,29 @@ class VideoContrastiveLearningRunner:
             )
 
         # 2) gather across GPUs
-        global_video_feats = self._gather_tensor_along_batch(local_video_feats, self.world_size)
-        global_text_feats = self._gather_tensor_along_batch(local_text_feats, self.world_size)
+        global_video_feats: torch.Tensor = self._gather_tensor_along_batch(local_video_feats, self.world_size)
 
         # 3) gather paths & reports
-        global_paths = self._gather_strings_across_gpus(
+        global_paths: list[str] = self._gather_strings_across_gpus(
             all_paths_local, self.world_size, device=local_video_feats.device
         )
-        global_reports = self._gather_strings_across_gpus(
+        global_reports: list[str] = self._gather_strings_across_gpus(
             all_ground_truth_reports_local, self.world_size, device=local_video_feats.device
         )
 
         # Optionally compute NxM retrieval metrics on rank 0
-        retrieval_metrics = {}
+        retrieval_metrics: dict[str, float] = {}
         if mode == "val" and self.config.is_ref_device:
             print(
                 f"[DEBUG rank={self.device}] Starting retrieval computation with {global_video_feats.shape[0]} videos."
             )
             
             # Step 1: Deduplicate texts and create mapping
-            unique_texts = sorted(set(global_reports))
-            text_to_index = {text: idx for idx, text in enumerate(unique_texts)}
+            unique_texts: list[str] = sorted(set(global_reports))
+            text_to_index: dict[str, int] = {text: idx for idx, text in enumerate(unique_texts)}
             
             # Step 2: Get ground truth indices for each video
-            ground_truth_indices = torch.tensor(
+            ground_truth_indices: torch.Tensor = torch.tensor(
                 [text_to_index[text] for text in global_reports],
                 device=self.device
             )
@@ -427,8 +426,8 @@ class VideoContrastiveLearningRunner:
             print(f"[DEBUG rank={self.device}] Found {len(unique_texts)} unique texts out of {len(global_reports)} total.")
             
             # Step 3: Encode unique texts
-            unique_text_embeddings = []
-            batch_size = 64  # Process in batches to avoid OOM
+            unique_text_embeddings: list[torch.Tensor] = []
+            batch_size: int = 64  # Process in batches to avoid OOM
             
             self.text_encoder.eval()
             with torch.no_grad():
@@ -451,20 +450,17 @@ class VideoContrastiveLearningRunner:
                     unique_text_embeddings.append(text_embs)
             
             # Concatenate all batches
-            unique_text_embeddings = torch.cat(unique_text_embeddings, dim=0)
+            unique_text_embeddings: torch.Tensor = torch.cat(unique_text_embeddings, dim=0)
             
             # Step 4: Normalize embeddings
-            global_video_feats = nn.functional.normalize(global_video_feats, dim=1)
-            unique_text_embeddings = nn.functional.normalize(unique_text_embeddings, dim=1)
+            global_video_feats: torch.Tensor = nn.functional.normalize(global_video_feats, dim=1)
+            unique_text_embeddings: torch.Tensor = nn.functional.normalize(unique_text_embeddings, dim=1)
             
             # Step 5: Compute NxM similarity matrix
-            similarity_matrix = torch.matmul(global_video_feats, unique_text_embeddings.t())
+            similarity_matrix: torch.Tensor = torch.matmul(global_video_feats, unique_text_embeddings.t())
             print(
                 f"[DEBUG rank={self.device}] Computed NxM sim matrix with shape={similarity_matrix.shape}"
             )
-
-            # Instead of mapping text -> index, just use each row = its own correct index
-            ground_truth_indices = torch.arange(global_text_feats.size(0), device=self.device)
             
             # Log best/worst retrievals using unique texts
             if self.wandb_wrapper.is_initialized():
@@ -486,15 +482,15 @@ class VideoContrastiveLearningRunner:
                 epoch=epoch,
                 output_dir=self.output_dir,
             )
-
+            print(f"ground_truth_indices={ground_truth_indices}")
             # Compute retrieval metrics using ground truth indices
             recall_metrics = compute_recall_at_k(
                 similarity_matrix, ground_truth_indices, k_values=self.config.recall_k
             )
-            mrr_score = compute_mrr(similarity_matrix, ground_truth_indices)
-            map_score = compute_map(similarity_matrix, ground_truth_indices)
-            median_rank_score = compute_median_rank(similarity_matrix, ground_truth_indices)
-            ndcg_score = compute_ndcg_at_k(
+            mrr_score: float = compute_mrr(similarity_matrix, ground_truth_indices)
+            map_score: float = compute_map(similarity_matrix, ground_truth_indices)
+            median_rank_score: float = compute_median_rank(similarity_matrix, ground_truth_indices)
+            ndcg_score: list[float] = compute_ndcg_at_k(
                 similarity_matrix, ground_truth_indices, k_values=self.config.ndcg_k
             )
 
@@ -505,16 +501,16 @@ class VideoContrastiveLearningRunner:
             retrieval_metrics["MedianRank_V2T"] = median_rank_score
             
             # Save unique texts and their indices
-            df_texts = pd.DataFrame({
+            df_texts: pd.DataFrame = pd.DataFrame({
                 "Index": range(len(unique_texts)),
                 "Text": unique_texts
             })
-            texts_csv_path = os.path.join(self.output_dir, f"val_unique_texts.csv")
+            texts_csv_path: str = os.path.join(self.output_dir, f"val_unique_texts.csv")
             df_texts.to_csv(texts_csv_path, index=False)
             print(f"[DEBUG rank={self.device}] Saved {len(unique_texts)} unique texts to {texts_csv_path}")
             
             # Also save text embeddings for future use
-            embeddings_path = os.path.join(self.output_dir, f"val_text_embeddings_epoch_{epoch}.pt")
+            embeddings_path: str = os.path.join(self.output_dir, f"val_text_embeddings_epoch_{epoch}.pt")
             torch.save({
                 'text_embeddings': unique_text_embeddings.cpu(),
                 'text_to_index': text_to_index,
@@ -540,7 +536,7 @@ class VideoContrastiveLearningRunner:
         epoch_metrics.update(retrieval_metrics)
 
         # 4) reduce final epoch metrics across ranks
-        gathered_metrics = {}
+        gathered_metrics: dict[str, float] = {}
         for k, v in epoch_metrics.items():
             gathered_metrics[f"{mode}/{k}"] = self._maybe_reduce_metric(k, v)
 
@@ -732,9 +728,9 @@ class VideoContrastiveLearningRunner:
                 device_ids=self.device
             )
 
-            # Clip gradients
-            torch.nn.utils.clip_grad_norm_(self.video_encoder.parameters(), max_norm=5.0)
-            torch.nn.utils.clip_grad_norm_(self.text_encoder.parameters(), max_norm=5.0)
+            # # Clip gradients
+            # torch.nn.utils.clip_grad_norm_(self.video_encoder.parameters(), max_norm=5.0)
+            # torch.nn.utils.clip_grad_norm_(self.text_encoder.parameters(), max_norm=5.0)
 
             self.scaler.step(self.optimizer)
             self.scaler.update()

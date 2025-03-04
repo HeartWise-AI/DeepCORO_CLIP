@@ -61,7 +61,7 @@ class ContrastivePretrainingProject(BaseProject):
         full_output_path = None
         if self.config.is_ref_device:
             # Generate output directory using wandb run ID that was already created
-            run_id: str = self.wandb_wrapper.run_id if self.wandb_wrapper.is_initialized() else ""
+            run_id: str = self.wandb_wrapper.get_run_id() if self.wandb_wrapper.is_initialized() else ""
             output_subdir: str = generate_output_dir_name(self.config, run_id)
             full_output_path: str = os.path.join(self.config.output_dir, output_subdir)        
             os.makedirs(full_output_path, exist_ok=True)

@@ -59,6 +59,9 @@ class WandbWrapper:
     def log_plot(self, kwargs: dict[str, Any]):
         wandb.log({k: wandb.Image(v) for k, v in kwargs.items()})
 
+    def get_run_id(self)->str:
+        return wandb.run.id
+
     def config_update(self, kwargs: dict[str, Any]):
         wandb.config.update(kwargs, allow_val_change=True)
 

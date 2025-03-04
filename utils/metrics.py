@@ -162,14 +162,14 @@ def compute_ndcg_at_k(
 def compute_median_rank(
     similarity_matrix: torch.Tensor, 
     global_gt_indices: torch.Tensor
-) -> float:
+) -> int:
     """
     Compute the median rank of the correct item over all queries.
     Lower is better.
     """
     num_queries = similarity_matrix.size(0)
     if num_queries == 0:
-        return 0.0
+        return 0
 
     sorted_indices = torch.argsort(similarity_matrix, dim=1, descending=True)
     ranks = []
@@ -184,7 +184,7 @@ def compute_median_rank(
             ranks.append(rank)
 
     ranks = torch.tensor(ranks, dtype=torch.float)
-    median_rank = ranks.median().item()
+    median_rank = int(ranks.median().item())  # Convert to int before returning
     return median_rank
 
 

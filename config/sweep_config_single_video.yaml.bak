@@ -1,6 +1,6 @@
 command:
   - torchrun
-  - "--nproc_per_node=4"
+  - "--nproc_per_node=1"
   - "--master_port=29500"
   - "scripts/train_model_multi_gpu.py"
   - "--base_config"
@@ -19,13 +19,15 @@ metric:
 
 parameters:
   lr:
-    values: [0.000061605]
+    distribution: log_uniform_values
+    min: 0.00001
+    max: 0.0001
 
   optimizer:
     values: ["RAdam", "AdamW"]
 
   scheduler_name:
-    values: ["linear_warmup"]
+    values: ["linear_warmup", "cosine_with_warmup", "cosine_with_hard_restarts_with_warmup"]
 
   lr_step_period:
     values: [15, 20, 30]
@@ -34,15 +36,15 @@ parameters:
     values: [1]
 
   num_warmup_percent:
-    values: [0.1]
+    values: [0.05, 0.1, 0.15]
 
   factor:
     distribution: uniform
-    min: 0.2
-    max: 0.5
+    min: 0.10
+    max: 0.30
     
   stride:
-    values: [1, 2, 3]
+    values: [1, 2]
 
   dropout:
     distribution: uniform
@@ -80,7 +82,7 @@ parameters:
     max: 1e-6
 
   batch_size:
-    values: [96]
+    values: [84]
   loss_name:
     values: ["contrastive"]
   tag:

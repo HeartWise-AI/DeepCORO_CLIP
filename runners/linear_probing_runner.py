@@ -14,6 +14,7 @@ from sklearn.metrics import (
     average_precision_score, 
     confusion_matrix
 )
+import pandas as pd
 
 from utils.loss.typing import Loss
 from utils.ddp import DistributedUtils
@@ -168,9 +169,9 @@ class LinearProbingRunner:
             data_iter = dataloader
         
         gathered_metrics: dict[str, float] = {}
-        accumulated_preds = defaultdict(list)
-        accumulated_targets = defaultdict(list)
-
+        accumulated_preds: dict[str, list[torch.Tensor]] = defaultdict(list)
+        accumulated_targets: dict[str, list[torch.Tensor]] = defaultdict(list)
+        accumulated_names: list[str] = []
         for batch_idx, batch in enumerate(data_iter, start=1):
             try:
                 processed_batch: dict[str, torch.Tensor] = self._preprocess_inputs(batch)
@@ -185,6 +186,7 @@ class LinearProbingRunner:
                             targets = one_hot_targets
                         accumulated_preds[k].append(preds)
                         accumulated_targets[k].append(targets)
+                accumulated_names.extend(batch['video_fname'])
                 
             except Exception as e:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in step_fn: {e}")
@@ -237,6 +239,54 @@ class LinearProbingRunner:
                 world_size=self.world_size,
                 device_ids=self.device
             )
+
+            # Save predictions to CSV if on reference device
+            if self.config.is_ref_device:
+                try:
+                    # Create predictions dictionary
+                    predictions_dict = {
+                        'video_name': accumulated_names
+                    }
+                    
+                    # Add predictions and ground truth for each head
+                    for head in accumulated_preds.keys():
+                        preds = accumulated_preds[head].squeeze().detach().cpu().numpy()
+                        targets = accumulated_targets[head].squeeze().detach().cpu().numpy()
+                        
+                        # Handle binary vs multi-class classification
+                        if self.config.head_structure[head] == 1:
+                            predictions_dict[f'{head}_pred'] = preds
+                            predictions_dict[f'{head}_true'] = targets
+                        else:
+                            # For multi-class, get both raw probabilities and predicted class
+                            pred_labels = preds.argmax(axis=1)
+                            target_labels = targets.argmax(axis=1)
+                            
+                            # Map numeric labels to actual class names
+                            label_map = self.config.labels_map[head]
+                            rev_label_map = {v: k for k, v in label_map.items()}
+                            
+                            pred_classes = [rev_label_map[i] for i in pred_labels]
+                            true_classes = [rev_label_map[i] for i in target_labels]
+                            
+                            predictions_dict[f'{head}_pred_class'] = pred_classes
+                            predictions_dict[f'{head}_true_class'] = true_classes
+                            
+                            # Add probabilities for each class
+                            for class_name, class_idx in label_map.items():
+                                predictions_dict[f'{head}_prob_{class_name}'] = preds[:, class_idx]
+                    
+                    # Create and save DataFrame
+                    df = pd.DataFrame(predictions_dict)
+                    output_file = os.path.join(
+                        self.output_dir, 
+                        f'{mode}_predictions.csv'
+                    )
+                    df.to_csv(output_file, index=False)
+                    print(f"[DEBUG] rank={self.device} => Saved predictions to {output_file}")
+                    
+                except Exception as e:
+                    print(f"[DEBUG] rank={self.device} => Error saving predictions to CSV: {e}")
 
             # Compute metrics for each head
             for head in accumulated_preds.keys():

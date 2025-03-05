@@ -1,6 +1,7 @@
 import os
 import torch
 import numpy as np
+import pandas as pd
 from tqdm import tqdm
 from torch.optim import Optimizer
 from torch.cuda.amp import GradScaler
@@ -14,7 +15,6 @@ from sklearn.metrics import (
     average_precision_score, 
     confusion_matrix
 )
-import pandas as pd
 
 from utils.loss.typing import Loss
 from utils.ddp import DistributedUtils
@@ -80,7 +80,7 @@ class LinearProbingRunner:
         self, 
         start_epoch: int, 
         end_epoch: int
-    ):
+    ) -> None:
         for epoch in range(start_epoch, end_epoch):
             # Synchronize before epoch starts
             DistributedUtils.sync_process_group(
@@ -159,14 +159,14 @@ class LinearProbingRunner:
 
         epoch_metrics: dict[str, float] = {}
 
-        dataloader = self.train_loader if mode == RunMode.TRAIN else self.val_loader
-        step_fn = self._train_step if mode == RunMode.TRAIN else self._val_step
+        dataloader: DataLoader = self.train_loader if mode == RunMode.TRAIN else self.val_loader
+        step_fn: callable = self._train_step if mode == RunMode.TRAIN else self._val_step
 
-        tqdm_desc = f"[GPU {self.device}] Running {mode} Epoch {epoch + 1}"
+        tqdm_desc: str = f"[GPU {self.device}] Running {mode} Epoch {epoch + 1}"
         if self.config.is_ref_device:
-            data_iter = tqdm(dataloader, desc=tqdm_desc)
+            data_iter: tqdm = tqdm(dataloader, desc=tqdm_desc)
         else:
-            data_iter = dataloader
+            data_iter: DataLoader = dataloader
         
         gathered_metrics: dict[str, float] = {}
         accumulated_preds: dict[str, list[torch.Tensor]] = defaultdict(list)
@@ -175,13 +175,13 @@ class LinearProbingRunner:
         for batch_idx, batch in enumerate(data_iter, start=1):
             try:
                 processed_batch: dict[str, torch.Tensor] = self._preprocess_inputs(batch)
-                outputs: dict[str, torch.Tensor] = step_fn(**processed_batch)
+                outputs: dict[str, dict[str, torch.Tensor]] = step_fn(**processed_batch)
                 if self.config.task == MetricTask.CLASSIFICATION:
                     for k, v in outputs['logits'].items():
-                        preds = torch.sigmoid(v.float())
-                        targets = processed_batch['batch_targets'][k].long()
+                        preds: torch.Tensor = torch.sigmoid(v.float())
+                        targets: torch.Tensor = processed_batch['batch_targets'][k].long()
                         if preds.ndim > 1 and preds.shape[1] > 1:
-                            one_hot_targets = torch.zeros_like(preds)
+                            one_hot_targets: torch.Tensor = torch.zeros_like(preds)
                             one_hot_targets.scatter_(1, targets.unsqueeze(1), 1)
                             targets = one_hot_targets
                         accumulated_preds[k].append(preds)
@@ -242,51 +242,13 @@ class LinearProbingRunner:
 
             # Save predictions to CSV if on reference device
             if self.config.is_ref_device:
-                try:
-                    # Create predictions dictionary
-                    predictions_dict = {
-                        'video_name': accumulated_names
-                    }
-                    
-                    # Add predictions and ground truth for each head
-                    for head in accumulated_preds.keys():
-                        preds = accumulated_preds[head].squeeze().detach().cpu().numpy()
-                        targets = accumulated_targets[head].squeeze().detach().cpu().numpy()
-                        
-                        # Handle binary vs multi-class classification
-                        if self.config.head_structure[head] == 1:
-                            predictions_dict[f'{head}_pred'] = preds
-                            predictions_dict[f'{head}_true'] = targets
-                        else:
-                            # For multi-class, get both raw probabilities and predicted class
-                            pred_labels = preds.argmax(axis=1)
-                            target_labels = targets.argmax(axis=1)
-                            
-                            # Map numeric labels to actual class names
-                            label_map = self.config.labels_map[head]
-                            rev_label_map = {v: k for k, v in label_map.items()}
-                            
-                            pred_classes = [rev_label_map[i] for i in pred_labels]
-                            true_classes = [rev_label_map[i] for i in target_labels]
-                            
-                            predictions_dict[f'{head}_pred_class'] = pred_classes
-                            predictions_dict[f'{head}_true_class'] = true_classes
-                            
-                            # Add probabilities for each class
-                            for class_name, class_idx in label_map.items():
-                                predictions_dict[f'{head}_prob_{class_name}'] = preds[:, class_idx]
-                    
-                    # Create and save DataFrame
-                    df = pd.DataFrame(predictions_dict)
-                    output_file = os.path.join(
-                        self.output_dir, 
-                        f'{mode}_predictions.csv'
-                    )
-                    df.to_csv(output_file, index=False)
-                    print(f"[DEBUG] rank={self.device} => Saved predictions to {output_file}")
-                    
-                except Exception as e:
-                    print(f"[DEBUG] rank={self.device} => Error saving predictions to CSV: {e}")
+                self._save_predictions(
+                    mode=mode,
+                    accumulated_names=accumulated_names,
+                    accumulated_preds=accumulated_preds,
+                    accumulated_targets=accumulated_targets,
+                    epoch=epoch
+                )
 
             # Compute metrics for each head
             for head in accumulated_preds.keys():
@@ -400,7 +362,7 @@ class LinearProbingRunner:
         self, 
         batch_video: torch.Tensor,
         batch_targets: dict[str, torch.Tensor]
-    ) -> dict[str, float]:
+    ) -> dict[str, dict[str, torch.Tensor]]:
         # Clear gradients
         self.optimizer.zero_grad()
                 
@@ -444,7 +406,7 @@ class LinearProbingRunner:
         self, 
         batch_video: torch.Tensor,
         batch_targets: dict[str, torch.Tensor]
-    ) -> dict[str, float]:                
+    ) -> dict[str, dict[str, torch.Tensor]]:                
         # Forward pass with autocast for mixed precision
         with torch.no_grad():
             try:
@@ -471,10 +433,15 @@ class LinearProbingRunner:
             "logits": outputs_dict
         }
 
-    def inference(self):
+    def inference(self) -> None:
         raise NotImplementedError("Linear probing inference not implemented")
     
-    def _save_checkpoint(self, epoch: int, metrics: dict, is_best: bool = False):
+    def _save_checkpoint(
+        self, 
+        epoch: int, 
+        metrics: dict[str, float], 
+        is_best: bool = False
+    ) -> None:
         """
         Saves model checkpoint (including model weights, optimizer, scheduler, and metrics).
 
@@ -482,10 +449,10 @@ class LinearProbingRunner:
         :param metrics: Dictionary of metrics to be saved.
         :param is_best: If True, saves as 'best_epoch.pt'. Otherwise, saves as 'checkpoint.pt'.
         """
-        checkpoint_dir = os.path.join(self.output_dir, "checkpoints")
+        checkpoint_dir = os.path.join(self.output_dir, "models")
         os.makedirs(checkpoint_dir, exist_ok=True)
 
-        model_dict = {
+        checkpoint = {
             "linear_probing": self.linear_probing.module.state_dict()
             if hasattr(self.linear_probing, "module")
             else self.linear_probing.state_dict(),
@@ -494,18 +461,101 @@ class LinearProbingRunner:
             "epoch": epoch,
             "scaler": self.scaler.state_dict() if self.scaler else None,
         }
+        
+        # Save regular checkpoint for current epoch
+        checkpoint_path: str = os.path.join(checkpoint_dir, f'checkpoint_epoch_{epoch}.pt')
+        torch.save(checkpoint, checkpoint_path)
 
-        checkpoint = {
-            **model_dict,
-            **metrics,
-            "best_val_loss": self.best_val_loss,
-            "best_epoch": self.best_epoch,
-        }
+        # Delete the checkpoint from the previous epoch if it exists
+        if epoch > 0:
+            prev_checkpoint_path: str = os.path.join(checkpoint_dir, f'checkpoint_epoch_{epoch - 1}.pt')
+            if os.path.exists(prev_checkpoint_path):
+                os.remove(prev_checkpoint_path)
+                print(f"Deleted old checkpoint: {prev_checkpoint_path}")
+        
 
-        save_path = os.path.join(
-            checkpoint_dir, "best_epoch.pt" if is_best else "checkpoint.pt"
-        )
-        torch.save(checkpoint, save_path)
-        print(
-            f"\nSaved {'best' if is_best else 'latest'} checkpoint at epoch {epoch + 1} to {save_path}"
-        )    
+        # If this is the best model, save it separately
+        if is_best:
+            # Delete previous best model if it exists
+            for file in os.listdir(checkpoint_dir):
+                if file.startswith('best_model_epoch_') and file.endswith('.pt'):
+                    old_best_path = os.path.join(checkpoint_dir, file)
+                    if os.path.exists(old_best_path):
+                        os.remove(old_best_path)
+                        print(f"Deleted previous best model: {old_best_path}")
+            
+            best_model_path: str = os.path.join(checkpoint_dir, f'best_model_epoch_{epoch}.pt')
+            torch.save(checkpoint, best_model_path)
+            
+        if self.wandb_wrapper.is_initialized():
+            self.wandb_wrapper.log({
+                "checkpoint/epoch": epoch,
+                "checkpoint/loss": metrics["val/main_loss"],
+            })
+
+    def _save_predictions(
+        self,
+        mode: str,
+        accumulated_names: list[str],
+        accumulated_preds: dict[str, torch.Tensor],
+        accumulated_targets: dict[str, torch.Tensor],
+        epoch: int
+    ) -> None:
+        """
+        Save model predictions and ground truth values to a CSV file.
+        
+        Args:
+            mode: The current run mode (train/validation)
+            accumulated_names: List of video filenames
+            accumulated_preds: Dictionary of predictions for each head
+            accumulated_targets: Dictionary of ground truth values for each head
+            epoch: Current epoch number
+        """
+        try:
+            # Create predictions dictionary with epoch column
+            predictions_dict: dict[str, list] = {
+                'epoch': [epoch] * len(accumulated_names),
+                'video_name': accumulated_names
+            }
+            
+            # Add predictions and ground truth for each head
+            for head in accumulated_preds.keys():
+                preds: np.ndarray = accumulated_preds[head].squeeze().detach().cpu().numpy()
+                targets: np.ndarray = accumulated_targets[head].squeeze().detach().cpu().numpy()
+                
+                # Handle binary vs multi-class classification
+                if self.config.head_structure[head] == 1:
+                    predictions_dict[f'{head}_pred'] = preds
+                    predictions_dict[f'{head}_true'] = targets
+                else:
+                    # For multi-class, get both raw probabilities and predicted class
+                    pred_labels: np.ndarray = preds.argmax(axis=1)
+                    target_labels: np.ndarray = targets.argmax(axis=1)
+                    
+                    # Map numeric labels to actual class names
+                    label_map: dict[str, int] = self.config.labels_map[head]
+                    rev_label_map: dict[int, str] = {v: k for k, v in label_map.items()}
+                    
+                    pred_classes: list[str] = [rev_label_map[i] for i in pred_labels]
+                    true_classes: list[str] = [rev_label_map[i] for i in target_labels]
+                    
+                    predictions_dict[f'{head}_pred_class'] = pred_classes
+                    predictions_dict[f'{head}_true_class'] = true_classes
+                    
+                    # Add probabilities for each class
+                    for class_name, class_idx in label_map.items():
+                        predictions_dict[f'{head}_prob_{class_name}'] = preds[:, class_idx]
+            
+            # Create and save DataFrame
+            df: pd.DataFrame = pd.DataFrame(predictions_dict)
+            predictions_dir: str = os.path.join(self.output_dir, "predictions") 
+            os.makedirs(predictions_dir, exist_ok=True)
+            output_file: str = os.path.join(
+                predictions_dir, 
+                f'{mode}_predictions_epoch_{epoch}.csv'
+            )
+            df.to_csv(output_file, index=False)
+            print(f"[DEBUG] rank={self.device} => Saved predictions to {output_file}")
+            
+        except Exception as e:
+            print(f"[DEBUG] rank={self.device} => Error saving predictions to CSV: {e}")

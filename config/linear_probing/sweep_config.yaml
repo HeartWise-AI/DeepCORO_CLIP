@@ -58,4 +58,3 @@ early_terminate:
   eta: 2
   s: 2
 run_mode: train
-use_wandb: false

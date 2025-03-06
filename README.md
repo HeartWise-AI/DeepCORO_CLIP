@@ -36,14 +36,20 @@ DeepCORO_CLIP is a deep learning model for echocardiography video interpretation
    uv sync
    ```
 
-3. **Install yq required for sweep**:
+3. **Activate Virtual Environment**:
+
+   ```bash
+   source .venv/bin/activate
+   ```
+   
+4. **Install yq required to run scripts/run_sweep.sh**:
 
    ```bash
    wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq && \
    chmod +x /usr/bin/yq
    ```
 
-4. **Log into Weights & Biases required for sweep**:
+5. **Log into Weights & Biases required for sweep**:
 
    ```bash
    wandb login
@@ -94,7 +100,7 @@ bash scripts/runner.sh --base_config config/clip/base_config.yaml --selected_gpu
 bash scripts/runner.sh --base_config config/clip/base_config.yaml --selected_gpus 0,1 --use_wandb true --run_mode train
 
 # Multi-GPU hyperparameters fine-tuning - RunMode and UseWandb are forced to train and true respectively (see scripts/run_sweep.sh)
-bash script/run_sweep.sh --base_config config/clip/base_config.yaml --sweep_config config/clip/sweep_config.yaml --selected_gpus 0,1 --count 5
+bash scripts/run_sweep.sh --base_config config/clip/base_config.yaml --sweep_config config/clip/sweep_config.yaml --selected_gpus 0,1 --count 5
 ```
 
 ### 2. Linear Probing
@@ -109,7 +115,7 @@ bash scripts/runner.sh --base_config config/linear_probing/base_config.yaml --se
 bash scripts/runner.sh --base_config config/linear_probing/base_config.yaml --selected_gpus 0,1 --use_wandb true --run_mode train
 
 # Multi-GPU hyperparameters fine-tuning - RunMode and UseWandb are forced to train and true respectively (see scripts/run_sweep.sh)
-bash script/run_sweep.sh --base_config config/linear_probing/base_config.yaml --sweep_config config/linear_probing/sweep_config.yaml --selected_gpus 0,1 --count 5
+bash scripts/run_sweep.sh --base_config config/linear_probing/base_config.yaml --sweep_config config/linear_probing/sweep_config.yaml --selected_gpus 0,1 --count 5
 ```
 
 ## Model Architecture

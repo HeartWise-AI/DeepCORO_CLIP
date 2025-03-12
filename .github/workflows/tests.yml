@@ -37,7 +37,6 @@ jobs:
       env:
         PYTHONPATH: ${{ github.workspace }}
         WANDB_MODE: disabled  # Disable wandb logging during tests
-        LOCAL_RANK: 0  # Set DDP rank
         WORLD_SIZE: 1  # Set world size for DDP
       run: |
         . .venv/bin/activate

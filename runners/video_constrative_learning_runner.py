@@ -435,8 +435,13 @@ class VideoContrastiveLearningRunner:
                     end_idx = min(start_idx + batch_size, len(unique_texts))
                     text_batch = unique_texts[start_idx:end_idx]
                     
-                    # Tokenize batch
-                    encoded = self.text_encoder.module.tokenizer(
+                    # Tokenize batch, Handle both DDP and non-DDP cases for text encoder
+                    tokenizer = (
+                        self.text_encoder.module.tokenizer 
+                        if hasattr(self.text_encoder, "module") 
+                        else self.text_encoder.tokenizer
+                    )
+                    encoded = tokenizer(
                         text_batch,
                         padding=True,
                         truncation=True,

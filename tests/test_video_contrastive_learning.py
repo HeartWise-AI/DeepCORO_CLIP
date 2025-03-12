@@ -8,7 +8,6 @@ from unittest.mock import patch
 import numpy as np
 import torch
 from torch.optim import AdamW
-from torch.cuda.amp import GradScaler
 from torch.utils.data import Dataset, DataLoader
 
 from models.video_encoder import VideoEncoder
@@ -18,7 +17,7 @@ from utils.parser import HeartWiseParser
 from utils.enums import RunMode
 from utils.loss.typing import Loss
 from utils.registry import LossRegistry
-
+from utils.wandb_wrapper import WandbWrapper
 
 class DummyDataset(Dataset):
     """Dummy dataset that generates random video and text data."""
@@ -163,10 +162,15 @@ class TestVideoContrastiveLearning(unittest.TestCase):
         )
         
         # Create runner
+        wandb_wrapper = WandbWrapper(
+            config=self.test_config,
+            initialized=False,
+            is_ref_device=True,
+            sweep_params=()
+        )
         self.runner = VideoContrastiveLearningRunner(
             config=self.test_config,
-            device=torch.device("cpu"),
-            world_size=1,
+            wandb_wrapper=wandb_wrapper,
             train_loader=self.train_loader,
             val_loader=self.val_loader,
             video_encoder=self.video_encoder,

@@ -57,10 +57,12 @@ class HeartWiseConfig:
     def set_gpu_info_in_place(cls, config: 'HeartWiseConfig') -> None:
         """Set GPU information from environment variables."""
         if "LOCAL_RANK" in os.environ:
+            print(f"Setting GPU info from environment variables: {os.environ}")
             config.device = int(os.environ["LOCAL_RANK"])
             config.world_size = int(os.environ["WORLD_SIZE"])
             config.is_ref_device = (int(os.environ["LOCAL_RANK"]) == 0)
         else:
+            print("No GPU info found in environment variables")
             config.device = "cpu"
             config.world_size = 1
             config.is_ref_device = True

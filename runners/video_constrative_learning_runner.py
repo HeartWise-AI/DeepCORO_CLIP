@@ -97,9 +97,9 @@ class VideoContrastiveLearningRunner:
         self.lr_scheduler: LRScheduler = lr_scheduler
         self.loss_fn: Loss = loss_fn
         self.output_dir: str = output_dir
-        self.best_val_loss = float("inf")
-        self.best_epoch = -1
-        self.log_temp = log_temp
+        self.best_val_loss: float = float("inf")
+        self.best_epoch: int = -1
+        self.log_temp: torch.Tensor = log_temp
 
         # For simplicity: check the config for a known scheduler_name
         # If it includes "_warmup" or is from HF, we treat it as per-iteration
@@ -139,7 +139,7 @@ class VideoContrastiveLearningRunner:
             )
 
             # Training phase
-            train_metrics = self._run_epoch(mode=RunMode.TRAIN, epoch=epoch)
+            train_metrics: dict[str, float] = self._run_epoch(mode=RunMode.TRAIN, epoch=epoch)
             if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
                 # Let wandb auto-increment steps
                 self.wandb_wrapper.log(train_metrics)
@@ -152,7 +152,7 @@ class VideoContrastiveLearningRunner:
             )
 
             # Validation phase
-            val_metrics = self._run_epoch(
+            val_metrics: dict[str, float] = self._run_epoch(
                 mode=RunMode.VALIDATION, 
                 epoch=epoch
             )
@@ -179,7 +179,7 @@ class VideoContrastiveLearningRunner:
 
             # Update best model
             if val_metrics["val/loss"] < self.best_val_loss:
-                prev_best = self.best_val_loss
+                prev_best: float = self.best_val_loss
                 self.best_val_loss = val_metrics["val/loss"]
                 self.best_epoch = epoch
                 if self.config.is_ref_device:
@@ -219,31 +219,31 @@ class VideoContrastiveLearningRunner:
         if self.config.world_size < 2:
             return local_tensor
 
-        device = local_tensor.device
-        local_size = torch.tensor([local_tensor.shape[0]], device=device, dtype=torch.long)
-        sizes_list = [torch.zeros_like(local_size) for _ in range(world_size)]
+        device: int = local_tensor.device
+        local_size: torch.Tensor = torch.tensor([local_tensor.shape[0]], device=device, dtype=torch.long)
+        sizes_list: list[torch.Tensor] = [torch.zeros_like(local_size) for _ in range(world_size)]
         DistributedUtils.dist.all_gather(sizes_list, local_size)
-        sizes_list = [s.item() for s in sizes_list]
-        max_size = max(sizes_list)
+        sizes_list: list[int] = [s.item() for s in sizes_list]
+        max_size: int = max(sizes_list)
 
         # Pad to max_size along dim=0
         if local_tensor.dim() == 1:
-            pad = (0, max_size - local_tensor.shape[0])
-            padded = torch.nn.functional.pad(local_tensor, pad, "constant", 0)
+            pad: tuple[int, int] = (0, max_size - local_tensor.shape[0])
+            padded: torch.Tensor = torch.nn.functional.pad(local_tensor, pad, "constant", 0)
         else:
-            pad_rows = max_size - local_tensor.shape[0]
+            pad_rows: int = max_size - local_tensor.shape[0]
             if pad_rows > 0:
-                padded = torch.nn.functional.pad(local_tensor, (0, 0, 0, pad_rows))
+                padded: torch.Tensor = torch.nn.functional.pad(local_tensor, (0, 0, 0, pad_rows))
             else:
-                padded = local_tensor
+                padded: torch.Tensor = local_tensor
 
         gathered = [torch.zeros_like(padded) for _ in range(world_size)]
         DistributedUtils.dist.all_gather(gathered, padded)
 
-        cat = torch.stack(gathered, dim=0)
-        out_list = []
+        cat: torch.Tensor = torch.stack(gathered, dim=0)
+        out_list: list[torch.Tensor] = []
         for rank_idx in range(world_size):
-            actual_size = sizes_list[rank_idx]
+            actual_size: int = sizes_list[rank_idx]
             if local_tensor.dim() == 1:
                 out_list.append(cat[rank_idx, :actual_size])
             else:
@@ -266,27 +266,27 @@ class VideoContrastiveLearningRunner:
 
         import pickle
 
-        local_data_bytes = pickle.dumps(local_strings)
-        local_size = torch.tensor([len(local_data_bytes)], dtype=torch.long, device=device)
+        local_data_bytes: bytes = pickle.dumps(local_strings)
+        local_size: torch.Tensor = torch.tensor([len(local_data_bytes)], dtype=torch.long, device=device)
 
-        sizes_list = [torch.zeros_like(local_size) for _ in range(world_size)]
+        sizes_list: list[torch.Tensor] = [torch.zeros_like(local_size) for _ in range(world_size)]
         DistributedUtils.dist.all_gather(sizes_list, local_size)
-        sizes_list = [s.item() for s in sizes_list]
-        max_size = max(sizes_list)
+        sizes_list: list[int] = [s.item() for s in sizes_list]
+        max_size: int = max(sizes_list)
 
-        local_buffer = torch.zeros(max_size, dtype=torch.uint8, device=device)
+        local_buffer: torch.Tensor = torch.zeros(max_size, dtype=torch.uint8, device=device)
         local_buffer[: local_size.item()] = torch.as_tensor(
             list(local_data_bytes), dtype=torch.uint8, device=device
         )
 
-        all_buffers = [torch.zeros(max_size, dtype=torch.uint8, device=device) for _ in range(world_size)]
+        all_buffers: list[torch.Tensor] = [torch.zeros(max_size, dtype=torch.uint8, device=device) for _ in range(world_size)]
         DistributedUtils.dist.all_gather(all_buffers, local_buffer)
 
         out_list = []
         for rank_idx, buf in enumerate(all_buffers):
-            size = sizes_list[rank_idx]
-            valid_bytes = buf[:size].cpu().numpy().tobytes()
-            str_list = pickle.loads(valid_bytes)
+            size: int = sizes_list[rank_idx]
+            valid_bytes: bytes = buf[:size].cpu().numpy().tobytes()
+            str_list: list[str] = pickle.loads(valid_bytes)
             out_list.extend(str_list)
 
         return out_list

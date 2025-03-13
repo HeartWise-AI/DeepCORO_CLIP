@@ -7,6 +7,7 @@ from utils.config.heartwise_config import HeartWiseConfig
 
 @dataclass
 @ConfigRegistry.register("DeepCORO_video_linear_probing")
+@ConfigRegistry.register("DeepCORO_video_linear_probing_test")
 class LinearProbingConfig(HeartWiseConfig):    
     # Training parameters
     lr: float

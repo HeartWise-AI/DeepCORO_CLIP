@@ -28,6 +28,7 @@ from models.linear_probing import LinearProbing
 
 
 @RunnerRegistry.register("DeepCORO_video_linear_probing")
+@RunnerRegistry.register("DeepCORO_video_linear_probing_test")
 class LinearProbingRunner:
     """
     This class runs a linear probing pipeline using a VideoEncoder and TextEncoder.
@@ -192,13 +193,16 @@ class LinearProbingRunner:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in step_fn: {e}")
             
             for k, v in outputs['losses'].items():
-                gathered_metrics[f"{k}"] = DistributedUtils.gather_loss(
-                    [v], 
-                    self.config.device
-                )
+                if DistributedUtils.is_initialized():
+                    gathered_metrics[f"{k}"] = DistributedUtils.gather_loss(
+                        [v], 
+                        self.config.device
+                    )
+                else:
+                    gathered_metrics[f"{k}"] = v
                 # Update total loss
                 gathered_metrics[f'mean_{k}'] = gathered_metrics.get(f"mean_{k}", 0.0) + gathered_metrics[f"{k}"]
-                
+
             # Update progress bar with gathered losses
             if self.config.is_ref_device:
                 data_iter.set_postfix({
@@ -386,7 +390,10 @@ class LinearProbingRunner:
 
         
         # Backward pass with gradient scaling
-        self.scaler.scale(losses['main']).backward()
+        if self.scaler:
+            self.scaler.scale(losses['main']).backward()
+        else:
+            losses['main'].backward()
         
         # Sync gradients across processes before optimizer step
         DistributedUtils.sync_process_group(
@@ -394,8 +401,11 @@ class LinearProbingRunner:
             device_ids=self.config.device
         )
         
-        self.scaler.step(self.optimizer)
-        self.scaler.update()
+        if self.scaler:
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            self.optimizer.step()
 
         return {
             "losses": losses,

@@ -49,6 +49,7 @@ class BaseLinearProbing(nn.Module):
 
 
 @ModelRegistry.register("DeepCORO_video_linear_probing")
+@ModelRegistry.register("DeepCORO_video_linear_probing_test")
 class LinearProbing(BaseLinearProbing):
     def __init__(
         self, 

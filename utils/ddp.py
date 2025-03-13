@@ -15,6 +15,10 @@ class DistributedUtils:
     dist = dist
 
     @staticmethod
+    def is_initialized():
+        return dist.is_initialized()
+
+    @staticmethod
     def ddp_setup(gpu_id: int, world_size: int):
         """
         Setup DistributedDataParallel with explicit device ID

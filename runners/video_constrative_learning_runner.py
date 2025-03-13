@@ -1,10 +1,9 @@
 import os
-import wandb
 import pandas as pd
 
 import torch
 import torch.nn as nn
-from torch.optim import AdamW
+from torch.optim import Optimizer
 from torch.cuda.amp import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
@@ -12,7 +11,8 @@ from torch.optim.lr_scheduler import LRScheduler
 from tqdm import tqdm
 
 from utils.enums import RunMode
-from utils.config import HeartWiseConfig
+from utils.ddp import DistributedUtils
+from utils.config.clip_config import ClipConfig
 from utils.registry import RunnerRegistry
 from utils.metrics import (
     compute_mrr,
@@ -28,12 +28,15 @@ from utils.logging import (
     log_gradient_norms,
     save_retrieval_results,
 )
+from utils.loss.typing import Loss
+from utils.wandb_wrapper import WandbWrapper
 from models.video_encoder import VideoEncoder
 from models.text_encoder import TextEncoder
-import os
+
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-@RunnerRegistry.register("video_contrastive_learning")
+@RunnerRegistry.register("DeepCORO_clip")
+@RunnerRegistry.register("DeepCORO_clip_test")
 class VideoContrastiveLearningRunner:
     """
     This class runs a video contrastive learning pipeline using a VideoEncoder and TextEncoder.
@@ -42,31 +45,30 @@ class VideoContrastiveLearningRunner:
 
     def __init__(
         self,
-        config: HeartWiseConfig,
-        device: int,
-        world_size: int,
+        config: ClipConfig,
+        wandb_wrapper: WandbWrapper,
         train_loader: DataLoader,
         val_loader: DataLoader,
         video_encoder: VideoEncoder,
         text_encoder: TextEncoder,
-        optimizer: AdamW,
+        optimizer: Optimizer,
         scaler: GradScaler,
         log_temp: torch.Tensor,
         lr_scheduler: LRScheduler,
-        loss_fn: callable,
+        loss_fn: Loss,
         output_dir: str,
     ):
         """
         Initialize the runner with provided configurations, data loaders, and modules.
 
-        :param config: HeartWiseConfig object with run/training configuration.
-        :param device: Integer specifying the GPU index.
-        :param world_size: Number of GPUs used in DDP.
+        :param config: ClipConfig object with run/training configuration.
+        :param wandb_wrapper: WandbWrapper instance.
         :param train_loader: DataLoader for training dataset.
         :param val_loader: DataLoader for validation dataset.
         :param video_encoder: VideoEncoder model.
         :param text_encoder: TextEncoder model.
-        :param optimizer: AdamW optimizer instance.
+        :param optimizer: optimizer instance.
+        :param scheduler: Learning rate scheduler.
         :param scaler: GradScaler for automatic mixed precision.
         :param log_temp: Logarithm of temperature used in contrastive loss.
         :param lr_scheduler: Learning rate scheduler.
@@ -83,21 +85,22 @@ class VideoContrastiveLearningRunner:
                 f"config.ndcg_k must be a list of ints, got {type(config.ndcg_k)}"
             )
 
-        self.config: HeartWiseConfig = config
-        self.device: int = device
-        self.world_size: int = world_size
+        self.config: ClipConfig = config
+        self.wandb_wrapper: WandbWrapper = wandb_wrapper
+        self.device: int = config.device
+        self.world_size: int = config.world_size
         self.train_loader: DataLoader = train_loader
         self.val_loader: DataLoader = val_loader
         self.video_encoder: VideoEncoder = video_encoder
         self.text_encoder: TextEncoder = text_encoder
-        self.optimizer: AdamW = optimizer
+        self.optimizer: Optimizer = optimizer
         self.scaler: GradScaler = scaler
         self.lr_scheduler: LRScheduler = lr_scheduler
-        self.loss_fn: callable = loss_fn
+        self.loss_fn: Loss = loss_fn
         self.output_dir: str = output_dir
-        self.best_val_loss = float("inf")
-        self.best_epoch = -1
-        self.log_temp = log_temp
+        self.best_val_loss: float = float("inf")
+        self.best_epoch: int = -1
+        self.log_temp: torch.Tensor = log_temp
 
         # For simplicity: check the config for a known scheduler_name
         # If it includes "_warmup" or is from HF, we treat it as per-iteration
@@ -130,37 +133,36 @@ class VideoContrastiveLearningRunner:
           - LR scheduling
         """
         for epoch in range(start_epoch, end_epoch):
-            # Synchronize before epoch starts (DDP barrier)
-            if self.world_size > 1:
-                torch.distributed.barrier(device_ids=[self.device])
+            # Synchronize before epoch starts
+            DistributedUtils.sync_process_group(
+                world_size=self.world_size,
+                device_ids=self.device
+            )
 
             # Training phase
-            train_metrics = self._run_epoch(mode=RunMode.TRAIN, epoch=epoch)
-            if self.config.is_ref_device or (self.device == 0):
+            train_metrics: dict[str, float] = self._run_epoch(mode=RunMode.TRAIN, epoch=epoch)
+            if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
                 # Let wandb auto-increment steps
-                wandb.log(train_metrics)
+                self.wandb_wrapper.log(train_metrics)
                 print(f"[DEBUG] rank={self.device} => Logged train metrics to W&B")
 
             # Sync before validation
-            if self.world_size > 1:
-                torch.distributed.barrier(device_ids=[self.device])
+            DistributedUtils.sync_process_group(
+                world_size=self.world_size,
+                device_ids=self.device
+            )
 
             # Validation phase
-            val_metrics = self._run_epoch(
+            val_metrics: dict[str, float] = self._run_epoch(
                 mode=RunMode.VALIDATION, 
                 epoch=epoch
             )
             
-            if self.world_size > 1:
-                torch.distributed.barrier(device_ids=[self.device])
-            
-            if self.config.is_ref_device:
-                wandb.log(val_metrics)
-                print(f"[DEBUG] rank={self.device} => Logged val metrics to W&B")
-
             # Sync after validation
-            if self.world_size > 1:
-                torch.distributed.barrier(device_ids=[self.device])
+            DistributedUtils.sync_process_group(
+                world_size=self.world_size,
+                device_ids=self.device
+            )
             
             # If it's an epoch-based scheduler (like StepLR, CosineAnnealingLR, etc.),
             # call lr_scheduler.step() after each epoch
@@ -169,10 +171,10 @@ class VideoContrastiveLearningRunner:
 
             # Update best model
             if val_metrics["val/loss"] < self.best_val_loss:
-                prev_best = self.best_val_loss
+                prev_best: float = self.best_val_loss
                 self.best_val_loss = val_metrics["val/loss"]
                 self.best_epoch = epoch
-                if self.config.is_ref_device or (self.device == 0):
+                if self.config.is_ref_device:
                     print(
                         f"\nNew best model! Val Loss: {val_metrics['val/loss']:.4f} "
                         f"(previous: {prev_best:.4f})"
@@ -187,17 +189,29 @@ class VideoContrastiveLearningRunner:
                     )
 
             # Always save "latest" checkpoint
-            if self.config.is_ref_device or (self.device == 0):
+            if self.config.is_ref_device:
                 self._save_checkpoint(
                     epoch=epoch,
                     metrics={**train_metrics, **val_metrics},
                     is_best=False,
                 )
-            if self.world_size > 1:
-                torch.distributed.barrier(device_ids=[self.device])
-                
-            print(f"gpu_id after saving checkpoint: {self.device}")
-  
+            
+            # Sync after saving checkpoint
+            DistributedUtils.sync_process_group(
+                world_size=self.world_size,
+                device_ids=self.device
+            )
+                        
+            if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
+                val_metrics['best_val_loss'] = self.best_val_loss
+                self.wandb_wrapper.log(val_metrics)
+                print(f"[DEBUG] rank={self.device} => Logged val metrics to W&B")
+            
+            # Sync after logging
+            DistributedUtils.sync_process_group(
+                world_size=self.world_size,
+                device_ids=self.device
+            )
 
     def _gather_tensor_along_batch(self, local_tensor: torch.Tensor, world_size: int) -> torch.Tensor:
         """
@@ -210,31 +224,31 @@ class VideoContrastiveLearningRunner:
         if self.config.world_size < 2:
             return local_tensor
 
-        device = local_tensor.device
-        local_size = torch.tensor([local_tensor.shape[0]], device=device, dtype=torch.long)
-        sizes_list = [torch.zeros_like(local_size) for _ in range(world_size)]
-        torch.distributed.all_gather(sizes_list, local_size)
-        sizes_list = [s.item() for s in sizes_list]
-        max_size = max(sizes_list)
+        device: int = local_tensor.device
+        local_size: torch.Tensor = torch.tensor([local_tensor.shape[0]], device=device, dtype=torch.long)
+        sizes_list: list[torch.Tensor] = [torch.zeros_like(local_size) for _ in range(world_size)]
+        DistributedUtils.dist.all_gather(sizes_list, local_size)
+        sizes_list: list[int] = [s.item() for s in sizes_list]
+        max_size: int = max(sizes_list)
 
         # Pad to max_size along dim=0
         if local_tensor.dim() == 1:
-            pad = (0, max_size - local_tensor.shape[0])
-            padded = torch.nn.functional.pad(local_tensor, pad, "constant", 0)
+            pad: tuple[int, int] = (0, max_size - local_tensor.shape[0])
+            padded: torch.Tensor = torch.nn.functional.pad(local_tensor, pad, "constant", 0)
         else:
-            pad_rows = max_size - local_tensor.shape[0]
+            pad_rows: int = max_size - local_tensor.shape[0]
             if pad_rows > 0:
-                padded = torch.nn.functional.pad(local_tensor, (0, 0, 0, pad_rows))
+                padded: torch.Tensor = torch.nn.functional.pad(local_tensor, (0, 0, 0, pad_rows))
             else:
-                padded = local_tensor
+                padded: torch.Tensor = local_tensor
 
         gathered = [torch.zeros_like(padded) for _ in range(world_size)]
-        torch.distributed.all_gather(gathered, padded)
+        DistributedUtils.dist.all_gather(gathered, padded)
 
-        cat = torch.stack(gathered, dim=0)
-        out_list = []
+        cat: torch.Tensor = torch.stack(gathered, dim=0)
+        out_list: list[torch.Tensor] = []
         for rank_idx in range(world_size):
-            actual_size = sizes_list[rank_idx]
+            actual_size: int = sizes_list[rank_idx]
             if local_tensor.dim() == 1:
                 out_list.append(cat[rank_idx, :actual_size])
             else:
@@ -257,27 +271,27 @@ class VideoContrastiveLearningRunner:
 
         import pickle
 
-        local_data_bytes = pickle.dumps(local_strings)
-        local_size = torch.tensor([len(local_data_bytes)], dtype=torch.long, device=device)
+        local_data_bytes: bytes = pickle.dumps(local_strings)
+        local_size: torch.Tensor = torch.tensor([len(local_data_bytes)], dtype=torch.long, device=device)
 
-        sizes_list = [torch.zeros_like(local_size) for _ in range(world_size)]
-        torch.distributed.all_gather(sizes_list, local_size)
-        sizes_list = [s.item() for s in sizes_list]
-        max_size = max(sizes_list)
+        sizes_list: list[torch.Tensor] = [torch.zeros_like(local_size) for _ in range(world_size)]
+        DistributedUtils.dist.all_gather(sizes_list, local_size)
+        sizes_list: list[int] = [s.item() for s in sizes_list]
+        max_size: int = max(sizes_list)
 
-        local_buffer = torch.zeros(max_size, dtype=torch.uint8, device=device)
+        local_buffer: torch.Tensor = torch.zeros(max_size, dtype=torch.uint8, device=device)
         local_buffer[: local_size.item()] = torch.as_tensor(
             list(local_data_bytes), dtype=torch.uint8, device=device
         )
 
-        all_buffers = [torch.zeros(max_size, dtype=torch.uint8, device=device) for _ in range(world_size)]
-        torch.distributed.all_gather(all_buffers, local_buffer)
+        all_buffers: list[torch.Tensor] = [torch.zeros(max_size, dtype=torch.uint8, device=device) for _ in range(world_size)]
+        DistributedUtils.dist.all_gather(all_buffers, local_buffer)
 
         out_list = []
         for rank_idx, buf in enumerate(all_buffers):
-            size = sizes_list[rank_idx]
-            valid_bytes = buf[:size].cpu().numpy().tobytes()
-            str_list = pickle.loads(valid_bytes)
+            size: int = sizes_list[rank_idx]
+            valid_bytes: bytes = buf[:size].cpu().numpy().tobytes()
+            str_list: list[str] = pickle.loads(valid_bytes)
             out_list.extend(str_list)
 
         return out_list
@@ -297,20 +311,20 @@ class VideoContrastiveLearningRunner:
         """
         assert mode in [RunMode.TRAIN, RunMode.VALIDATION]
 
-        self.video_encoder.train(mode == "train")
-        self.text_encoder.train(mode == "train")
+        self.video_encoder.train(mode == RunMode.TRAIN)
+        self.text_encoder.train(mode == RunMode.TRAIN)
 
-        total_loss = 0.0
-        epoch_metrics = {}
+        total_loss: float = 0.0
+        epoch_metrics: dict[str, float] = {}
 
-        dataloader = self.train_loader if mode == "train" else self.val_loader
-        step_fn = self._train_step if mode == "train" else self._val_step
+        dataloader: DataLoader = self.train_loader if mode == RunMode.TRAIN else self.val_loader
+        step_fn: callable = self._train_step if mode == RunMode.TRAIN else self._val_step
 
         # Store local embeddings & text for retrieval computations
-        all_video_embeddings_local = []
-        all_text_embeddings_local = []
-        all_paths_local = []
-        all_ground_truth_reports_local = []
+        all_video_embeddings_local: list[torch.Tensor] = []
+        all_text_embeddings_local: list[torch.Tensor] = []
+        all_paths_local: list[str] = []
+        all_ground_truth_reports_local: list[str] = []
 
         tqdm_desc = f"[GPU {self.device}] Running {mode} Epoch {epoch + 1}"
         if (self.config.is_ref_device or (self.device == 0)):
@@ -318,7 +332,7 @@ class VideoContrastiveLearningRunner:
         else:
             data_iter = dataloader
 
-        batch_count = 0
+        batch_count: int = 0
         for _, batch in enumerate(data_iter, start=1):
             if batch["videos"] is None or batch["encoded_texts"] is None:
                 continue
@@ -328,7 +342,6 @@ class VideoContrastiveLearningRunner:
             if not self.config.multi_video:
                 # shape => [B, 1, T, H, W, C]
                 step_inputs["videos"] = step_inputs["videos"].unsqueeze(1)
-
             batch_metrics, embeddings = step_fn(**step_inputs)
 
             if self.lr_scheduler and self.scheduler_per_iteration and (mode == RunMode.TRAIN):
@@ -375,11 +388,11 @@ class VideoContrastiveLearningRunner:
 
         # 1) Concat local feats
         if len(all_video_embeddings_local) > 0:
-            local_video_feats = torch.cat(all_video_embeddings_local, dim=0).to(self.device)
-            local_text_feats = torch.cat(all_text_embeddings_local, dim=0).to(self.device)
+            local_video_feats: torch.Tensor = torch.cat(all_video_embeddings_local, dim=0).to(self.device)
+            local_text_feats: torch.Tensor = torch.cat(all_text_embeddings_local, dim=0).to(self.device)
         else:
-            local_video_feats = torch.empty((0, 512), device=self.device)
-            local_text_feats = torch.empty((0, 512), device=self.device)
+            local_video_feats: torch.Tensor = torch.empty((0, 512), device=self.device)
+            local_text_feats: torch.Tensor = torch.empty((0, 512), device=self.device)
 
         if (self.config.is_ref_device or (self.device == 0)):
             print(
@@ -388,30 +401,29 @@ class VideoContrastiveLearningRunner:
             )
 
         # 2) gather across GPUs
-        global_video_feats = self._gather_tensor_along_batch(local_video_feats, self.world_size)
-        global_text_feats = self._gather_tensor_along_batch(local_text_feats, self.world_size)
+        global_video_feats: torch.Tensor = self._gather_tensor_along_batch(local_video_feats, self.world_size)
 
         # 3) gather paths & reports
-        global_paths = self._gather_strings_across_gpus(
+        global_paths: list[str] = self._gather_strings_across_gpus(
             all_paths_local, self.world_size, device=local_video_feats.device
         )
-        global_reports = self._gather_strings_across_gpus(
+        global_reports: list[str] = self._gather_strings_across_gpus(
             all_ground_truth_reports_local, self.world_size, device=local_video_feats.device
         )
 
         # Optionally compute NxM retrieval metrics on rank 0
-        retrieval_metrics = {}
+        retrieval_metrics: dict[str, float] = {}
         if mode == "val" and self.config.is_ref_device:
             print(
                 f"[DEBUG rank={self.device}] Starting retrieval computation with {global_video_feats.shape[0]} videos."
             )
             
             # Step 1: Deduplicate texts and create mapping
-            unique_texts = sorted(set(global_reports))
-            text_to_index = {text: idx for idx, text in enumerate(unique_texts)}
+            unique_texts: list[str] = sorted(set(global_reports))
+            text_to_index: dict[str, int] = {text: idx for idx, text in enumerate(unique_texts)}
             
             # Step 2: Get ground truth indices for each video
-            ground_truth_indices = torch.tensor(
+            ground_truth_indices: torch.Tensor = torch.tensor(
                 [text_to_index[text] for text in global_reports],
                 device=self.device
             )
@@ -419,8 +431,8 @@ class VideoContrastiveLearningRunner:
             print(f"[DEBUG rank={self.device}] Found {len(unique_texts)} unique texts out of {len(global_reports)} total.")
             
             # Step 3: Encode unique texts
-            unique_text_embeddings = []
-            batch_size = 64  # Process in batches to avoid OOM
+            unique_text_embeddings: list[torch.Tensor] = []
+            batch_size: int = 64  # Process in batches to avoid OOM
             
             self.text_encoder.eval()
             with torch.no_grad():
@@ -428,8 +440,13 @@ class VideoContrastiveLearningRunner:
                     end_idx = min(start_idx + batch_size, len(unique_texts))
                     text_batch = unique_texts[start_idx:end_idx]
                     
-                    # Tokenize batch
-                    encoded = self.text_encoder.module.tokenizer(
+                    # Tokenize batch, Handle both DDP and non-DDP cases for text encoder
+                    tokenizer = (
+                        self.text_encoder.module.tokenizer 
+                        if hasattr(self.text_encoder, "module") 
+                        else self.text_encoder.tokenizer
+                    )
+                    encoded = tokenizer(
                         text_batch,
                         padding=True,
                         truncation=True,
@@ -443,26 +460,28 @@ class VideoContrastiveLearningRunner:
                     unique_text_embeddings.append(text_embs)
             
             # Concatenate all batches
-            unique_text_embeddings = torch.cat(unique_text_embeddings, dim=0)
+            unique_text_embeddings: torch.Tensor = torch.cat(unique_text_embeddings, dim=0)
             
             # Step 4: Normalize embeddings
-            global_video_feats = nn.functional.normalize(global_video_feats, dim=1)
-            unique_text_embeddings = nn.functional.normalize(unique_text_embeddings, dim=1)
+            global_video_feats: torch.Tensor = nn.functional.normalize(global_video_feats, dim=1)
+            unique_text_embeddings: torch.Tensor = nn.functional.normalize(unique_text_embeddings, dim=1)
             
             # Step 5: Compute NxM similarity matrix
-            similarity_matrix = torch.matmul(global_video_feats, unique_text_embeddings.t())
+            similarity_matrix: torch.Tensor = torch.matmul(global_video_feats, unique_text_embeddings.t())
             print(
                 f"[DEBUG rank={self.device}] Computed NxM sim matrix with shape={similarity_matrix.shape}"
             )
-
+            
             # Log best/worst retrievals using unique texts
-            log_best_worst_retrievals(
-                similarity_matrix=similarity_matrix,
-                all_paths=global_paths,
-                unique_texts=unique_texts,  # Now using actual unique texts
-                ground_truth_indices=ground_truth_indices,
-                epoch=epoch,
-            )
+            if self.wandb_wrapper.is_initialized():
+                log_best_worst_retrievals(
+                    similarity_matrix=similarity_matrix,
+                    all_paths=global_paths,
+                    unique_texts=unique_texts,  # Now using actual unique texts
+                    ground_truth_indices=ground_truth_indices,
+                    epoch=epoch,
+                    wandb_wrapper=self.wandb_wrapper,
+                )
 
             # Save retrieval results with mapping
             save_retrieval_results(
@@ -473,15 +492,15 @@ class VideoContrastiveLearningRunner:
                 epoch=epoch,
                 output_dir=self.output_dir,
             )
-
+            print(f"ground_truth_indices={ground_truth_indices}")
             # Compute retrieval metrics using ground truth indices
             recall_metrics = compute_recall_at_k(
                 similarity_matrix, ground_truth_indices, k_values=self.config.recall_k
             )
-            mrr_score = compute_mrr(similarity_matrix, ground_truth_indices)
-            map_score = compute_map(similarity_matrix, ground_truth_indices)
-            median_rank_score = compute_median_rank(similarity_matrix, ground_truth_indices)
-            ndcg_score = compute_ndcg_at_k(
+            mrr_score: float = compute_mrr(similarity_matrix, ground_truth_indices)
+            map_score: float = compute_map(similarity_matrix, ground_truth_indices)
+            median_rank_score: float = compute_median_rank(similarity_matrix, ground_truth_indices)
+            ndcg_score: list[float] = compute_ndcg_at_k(
                 similarity_matrix, ground_truth_indices, k_values=self.config.ndcg_k
             )
 
@@ -492,16 +511,16 @@ class VideoContrastiveLearningRunner:
             retrieval_metrics["MedianRank_V2T"] = median_rank_score
             
             # Save unique texts and their indices
-            df_texts = pd.DataFrame({
+            df_texts: pd.DataFrame = pd.DataFrame({
                 "Index": range(len(unique_texts)),
                 "Text": unique_texts
             })
-            texts_csv_path = os.path.join(self.output_dir, f"val_unique_texts.csv")
+            texts_csv_path: str = os.path.join(self.output_dir, f"val_unique_texts.csv")
             df_texts.to_csv(texts_csv_path, index=False)
             print(f"[DEBUG rank={self.device}] Saved {len(unique_texts)} unique texts to {texts_csv_path}")
             
             # Also save text embeddings for future use
-            embeddings_path = os.path.join(self.output_dir, f"val_text_embeddings_epoch_{epoch}.pt")
+            embeddings_path: str = os.path.join(self.output_dir, f"val_text_embeddings_epoch_{epoch}.pt")
             torch.save({
                 'text_embeddings': unique_text_embeddings.cpu(),
                 'text_to_index': text_to_index,
@@ -527,7 +546,7 @@ class VideoContrastiveLearningRunner:
         epoch_metrics.update(retrieval_metrics)
 
         # 4) reduce final epoch metrics across ranks
-        gathered_metrics = {}
+        gathered_metrics: dict[str, float] = {}
         for k, v in epoch_metrics.items():
             gathered_metrics[f"{mode}/{k}"] = self._maybe_reduce_metric(k, v)
 
@@ -543,7 +562,7 @@ class VideoContrastiveLearningRunner:
         """
         if self.config.world_size > 1:
             t = torch.tensor([val], dtype=torch.float, device=self.device)
-            torch.distributed.all_reduce(t, op=torch.distributed.ReduceOp.AVG)
+            DistributedUtils.dist.all_reduce(t, op=DistributedUtils.dist.ReduceOp.AVG)
             return t.item()
         else:
             return val
@@ -665,7 +684,10 @@ class VideoContrastiveLearningRunner:
         }, batch["paths"]
 
     def _train_step(
-        self, videos: torch.Tensor, input_ids: torch.Tensor, attention_mask: torch.Tensor
+        self, 
+        videos: torch.Tensor, 
+        input_ids: torch.Tensor, 
+        attention_mask: torch.Tensor
     ) -> tuple[dict, dict]:
         """
         Performs a single training step, including forward, backward, gradient update,
@@ -684,25 +706,41 @@ class VideoContrastiveLearningRunner:
             with torch.amp.autocast("cuda"):
                 video_embeddings = self.video_encoder(videos)
                 text_embeddings = self.text_encoder(input_ids, attention_mask)
-                loss = self.loss_fn(video_embeddings, text_embeddings, self.log_temp)
+                loss = self.loss_fn.run(
+                    video_features=video_embeddings, 
+                    text_features=text_embeddings, 
+                    log_temp=self.log_temp
+                )
 
             self.scaler.scale(loss).backward()
             self.scaler.unscale_(self.optimizer)
 
-            if self.world_size > 1:
-                torch.distributed.barrier(device_ids=[self.device])
+            DistributedUtils.sync_process_group(
+                world_size=self.world_size,
+                device_ids=self.device
+            )
 
             # Log gradient norms
-            if self.config.is_ref_device:
-                log_gradient_norms(self.video_encoder, prefix="train/video_encoder/")
-                log_gradient_norms(self.text_encoder, prefix="train/text_encoder/")
+            if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
+                log_gradient_norms(
+                    model=self.video_encoder, 
+                    wandb_wrapper=self.wandb_wrapper,
+                    prefix="train/video_encoder/"
+                )
+                log_gradient_norms(
+                    model=self.text_encoder, 
+                    wandb_wrapper=self.wandb_wrapper, 
+                    prefix="train/text_encoder/"
+                )
 
-            if self.world_size > 1:
-                torch.distributed.barrier(device_ids=[self.device])
+            DistributedUtils.sync_process_group(
+                world_size=self.world_size,
+                device_ids=self.device
+            )
 
-            # Clip gradients
-            torch.nn.utils.clip_grad_norm_(self.video_encoder.parameters(), max_norm=5.0)
-            torch.nn.utils.clip_grad_norm_(self.text_encoder.parameters(), max_norm=5.0)
+            # # Clip gradients
+            # torch.nn.utils.clip_grad_norm_(self.video_encoder.parameters(), max_norm=5.0)
+            # torch.nn.utils.clip_grad_norm_(self.text_encoder.parameters(), max_norm=5.0)
 
             self.scaler.step(self.optimizer)
             self.scaler.update()
@@ -712,19 +750,35 @@ class VideoContrastiveLearningRunner:
         else:
             video_embeddings = self.video_encoder(videos)
             text_embeddings = self.text_encoder(input_ids, attention_mask)
-            loss = self.loss_fn(video_embeddings, text_embeddings, self.log_temp)
+            loss = self.loss_fn.run(
+                video_features=video_embeddings, 
+                text_features=text_embeddings, 
+                log_temp=self.log_temp
+            )
 
             loss.backward()
 
-            if self.world_size > 1:
-                torch.distributed.barrier(device_ids=[self.device])
+            DistributedUtils.sync_process_group(
+                world_size=self.world_size,
+                device_ids=self.device
+            )
 
-            if self.config.is_ref_device:
-                log_gradient_norms(self.video_encoder, prefix="train/video_encoder/")
-                log_gradient_norms(self.text_encoder, prefix="train/text_encoder/")
+            if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
+                log_gradient_norms(
+                    model=self.video_encoder, 
+                    wandb_wrapper=self.wandb_wrapper,
+                    prefix="train/video_encoder/"
+                )
+                log_gradient_norms(
+                    model=self.text_encoder, 
+                    wandb_wrapper=self.wandb_wrapper, 
+                    prefix="train/text_encoder/"
+                )
 
-            if self.world_size > 1:
-                torch.distributed.barrier(device_ids=[self.device])
+            DistributedUtils.sync_process_group(
+                world_size=self.world_size,
+                device_ids=self.device
+            )
 
             # Clip gradients
             torch.nn.utils.clip_grad_norm_(self.video_encoder.parameters(), max_norm=5.0)
@@ -763,7 +817,10 @@ class VideoContrastiveLearningRunner:
         )
 
     def _val_step(
-        self, videos: torch.Tensor, input_ids: torch.Tensor, attention_mask: torch.Tensor
+        self, 
+        videos: torch.Tensor, 
+        input_ids: torch.Tensor, 
+        attention_mask: torch.Tensor
     ) -> tuple[dict, dict]:
         """
         Performs a single validation step (forward pass + metric computation).
@@ -777,7 +834,11 @@ class VideoContrastiveLearningRunner:
             with torch.amp.autocast("cuda"):
                 video_features = self.video_encoder(videos)
                 text_features = self.text_encoder(input_ids, attention_mask)
-                loss = self.loss_fn(video_features, text_features, self.log_temp)
+                loss = self.loss_fn.run(
+                    video_features=video_features, 
+                    text_features=text_features, 
+                    log_temp=self.log_temp
+                )
 
             embedding_norms = compute_embedding_norms(video_features, text_features)
             alignment_score = compute_alignment_score(video_features, text_features)
@@ -804,15 +865,10 @@ class VideoContrastiveLearningRunner:
         Optional method for a dedicated validation-only routine.
         Currently unimplemented.
         """
-        pass
+        raise NotImplementedError("Validation is not implemented for this runner")
 
     def inference(self):
         """
         Method for a dedicated inference.
         """
-        pass
-    def inference(self):
-        """
-        Method for a dedicated inference.
-        """
-        pass
+        raise NotImplementedError("Inference is not implemented for this runner")

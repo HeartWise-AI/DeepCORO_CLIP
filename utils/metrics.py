@@ -1,8 +1,9 @@
 import math
 import torch
+import numpy as np
 import torch.nn as nn
-
 from typing import List
+from sklearn.metrics import roc_curve
 
 
 def compute_recall_at_k(similarity_matrix, global_gt_indices, k_values=[1, 5]):
@@ -212,3 +213,26 @@ def compute_map(similarity_matrix: torch.Tensor, global_gt_indices: torch.Tensor
             aps.append(ap)
 
     return float(torch.tensor(aps).mean().item())
+
+
+def compute_best_threshold(
+    df_gt_col: list[float], 
+    df_pred_col: list[float]
+) -> float:
+    """
+    Compute the best threshold using the Youden Index.
+
+    Args:
+        df_gt_col (pd.Series): Ground truth values for a specific column.
+        df_pred_col (pd.Series): Predicted values for a specific column.
+
+    Returns:
+        float: The best threshold value.
+    """
+    fpr, tpr, roc_thresholds = roc_curve(df_gt_col, df_pred_col)
+    
+    # Compute Youden Index
+    youden_index = tpr - fpr
+    best_threshold = roc_thresholds[np.argmax(youden_index)]
+    
+    return float(best_threshold) # convert to float instead of numpy.float32

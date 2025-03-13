@@ -8,3 +8,47 @@ class RunMode(str, Enum):
     
     def __str__(self):
         return self.value
+    
+class SubmoduleType(str, Enum):
+    """Enum for different submodule types."""
+    RUNNER = "runners"
+    MODEL = "models"
+    PROJECT = "projects"
+    CONFIG = "utils.config"
+    LOSS = "utils.loss"
+    
+    def __str__(self):
+        return self.value
+    
+class LossType(str, Enum):
+    """Enum for different loss types."""
+    # Clip losses
+    INFO_NCE = "InfoNCE"    
+    CONTRASTIVE = "contrastive"
+    CONTRASTIVE_DDP = "contrastive_ddp"
+        
+    # Torch losses
+    MSE = "mse"
+    L1 = "l1"
+    RMSE = "rmse"
+    BCE_LOGIT = "bce_logit"
+    CE = "ce"
+    HUBER = "huber"
+    
+    # Multi-head loss
+    MULTI_HEAD = "multi_head"
+    
+    # Custom losses
+    MULTICLASS_FOCAL = "multiclass_focal"
+    BINARY_FOCAL = "binary_focal"
+    
+    def __str__(self):
+        return self.value
+    
+class MetricTask(str, Enum):
+    """Enum for different metric tasks."""
+    CLASSIFICATION = "classification"
+    REGRESSION = "regression"
+    
+    def __str__(self):
+        return self.value

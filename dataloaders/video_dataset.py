@@ -1,20 +1,22 @@
 import os
-import pathlib
-from typing import Any, List, Optional
-
 import cv2
+import torch
 import numpy as np
 import pandas as pd
-
-import torch
 from torch.utils.data import DataLoader
+from collections import defaultdict
+from typing import (
+    Any, 
+    Dict,
+    List, 
+    Optional, 
+    Tuple
+)
 
-from utils.ddp import DS
 from utils.seed import seed_worker
-from utils.config import HeartWiseConfig
-from models.text_encoder import get_tokenizer
+from utils.ddp import DistributedUtils
 from utils.video import load_video, format_mean_std
-
+from utils.config.heartwise_config import HeartWiseConfig
 
 class VideoDataset(torch.utils.data.Dataset):
     """
@@ -23,10 +25,9 @@ class VideoDataset(torch.utils.data.Dataset):
 
     def __init__(
         self,
-        root: str,
         data_filename: str,
         split: str,
-        target_label: Optional[str],
+        target_label: Optional[List[str]] = None,
         datapoint_loc_label: str = "target_video_path",
         num_frames: int = 32,
         backbone: str = "default",
@@ -34,56 +35,36 @@ class VideoDataset(torch.utils.data.Dataset):
         normalize: bool = True,
         mean: Optional[Any] = None,
         std: Optional[Any] = None,
+        rand_augment: bool = False,
         **kwargs,
     ):
-        self.folder = pathlib.Path(root)
-        self.filename = data_filename
-        self.split = split
-        self.datapoint_loc_label = datapoint_loc_label
-        self.debug_mode = debug_mode
-        self.backbone = backbone
-        self.num_frames = num_frames
-        self.mean = format_mean_std(mean)
-        self.std = format_mean_std(std)
-        self.normalize = normalize
-
-        self.stride = kwargs.pop("stride", 1)
+        self.filename: str = data_filename
+        self.split: str = split
+        self.datapoint_loc_label: str = datapoint_loc_label
+        self.debug_mode: bool = debug_mode
+        self.backbone: str = backbone
+        self.num_frames: int = num_frames
+        self.mean: List[float] = format_mean_std(mean)
+        self.std: List[float] = format_mean_std(std)
+        self.normalize: bool = normalize
+        self.rand_augment: bool = rand_augment
+        
+        self.stride: int = kwargs.pop("stride", 1)
         if self.backbone.lower() == "mvit":
             self.num_frames = 16
             print(f"Using MViT backbone - forcing exactly {self.num_frames} frames with stride {self.stride}")
             if "length" in kwargs:
                 kwargs["length"] = 16
 
-        self.apply_mask = kwargs.pop("apply_mask", False)
-        self.video_transforms = kwargs.pop("video_transforms", None)
-        self.rand_augment = kwargs.pop("rand_augment", False)
-        self.resize = kwargs.pop("resize", 224)
-        self.pad = kwargs.pop("pad", None)
-        self.noise = kwargs.pop("noise", None)
-        self.weighted_sampling = kwargs.pop("weighted_sampling", False)
-        self.max_length = kwargs.pop("max_length", 250)
-        self.clips = kwargs.pop("clips", 1)
+        self.video_transforms: Optional[Any] = kwargs.pop("video_transforms", None)
+        self.resize: int = kwargs.pop("resize", 224)
 
-        target_label = (
-            [target_label]
-            if target_label and not isinstance(target_label, list)
-            else target_label
-        )
-        self.target_label = target_label
-        self.target_transform = kwargs.pop("target_transform", None)
-        self.external_test_location = kwargs.pop("external_test_location", None)
+        self.target_label: Optional[List[str]] = target_label
+        self.external_test_location: Optional[str] = kwargs.pop("external_test_location", None)
 
-        self.fnames, self.outcome, self.target_index = self.load_data(
+        self.fnames, self.outcomes, self.target_indexes = self.load_data(
             self.split, self.target_label
         )
-
-        # Initialize tokenizer
-        try:
-            self.tokenizer = get_tokenizer()
-            print("Tokenizer initialized successfully")
-        except Exception as e:
-            print(f"Error initializing tokenizer: {str(e)}")
-            raise RuntimeError("Failed to initialize tokenizer") from e
 
         if self.debug_mode:
             self.valid_indices = self._validate_all_videos()
@@ -93,59 +74,73 @@ class VideoDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.valid_indices)
 
-    def load_data(self, split, target_label):
-        file_path = os.path.join(self.folder, self.filename)
-        data = pd.read_csv(file_path, sep="α", engine="python")
+    def load_data(self, split, target_labels):
+        """
+        Load data from the CSV file and extract filenames and outcomes.
 
-        print(f"\nAvailable splits in dataset:")
-        print(data["Split"].value_counts())
+        Args:
+            split (str): Dataset split ('train', 'val', 'test', 'all')
+            target_labels (list): List of target label column names
+
+        Returns:
+            tuple: (filenames, outcomes, target_indices)
+        """
+        # Read the "α" separated file using pandas
+        file_path = os.path.join(self.filename)
+        data = pd.read_csv(file_path, sep="α", engine="python")
 
         filename_index = data.columns.get_loc(self.datapoint_loc_label)
         split_index = data.columns.get_loc("Split")
 
-        target_index = None
-        if target_label is not None:
-            target_index = data.columns.get_loc(target_label[0])
+        # Handle target indices for multi-head case
+        if target_labels is None:
+            target_indices = None
+        else:
+            target_indices = {}
+            for label in target_labels:
+                try:
+                    target_indices[label] = data.columns.get_loc(label)
+                except KeyError:
+                    raise ValueError(f"Target label '{label}' not found in data columns")
 
         fnames = []
-        outcome = []
+        outcomes = []
 
-        total_rows = 0
-        valid_files = 0
-        split_matches = 0
-
+        # Iterate through rows using iterrows
         for _, row in data.iterrows():
-            total_rows += 1
             file_name = row.iloc[filename_index]
-            file_mode = str(row.iloc[split_index]).lower().strip()
+            file_mode = row.iloc[split_index].lower()
 
-            if self.external_test_location and self.split == "external_test":
-                full_path = os.path.join(self.external_test_location, file_name)
+            # Only process rows matching the split
+            if split not in ["all", file_mode]:
+                continue
+
+            # Check if the video file exists
+            if not os.path.exists(file_name):
+                print(f"Skipping video {file_name} because file does not exist.")
+                continue
+
+            # If target labels are provided, ensure they are valid
+            if target_indices is not None:
+                skip_row = False
+                row_outcomes = {}
+                for label, idx in target_indices.items():
+                    value = row.iloc[idx]
+                    if pd.isna(value):
+                        print(f"Skipping video {file_name} because target '{label}' is missing.")
+                        skip_row = True
+                        break
+                    else:
+                        row_outcomes[label] = value
+                if skip_row:
+                    continue
+                outcomes.append(row_outcomes)
             else:
-                full_path = file_name
+                outcomes.append(None)
 
-            if os.path.exists(full_path):
-                valid_files += 1
-                if split in ["all", file_mode]:
-                    split_matches += 1
-                    fnames.append(full_path)
-                    if target_index is not None:
-                        outcome.append(row.iloc[target_index])
+            fnames.append(file_name)
 
-        print(f"\nDataset loading statistics for split '{split}':")
-        print(f"Total rows in CSV: {total_rows}")
-        print(f"Valid files found: {valid_files}")
-        print(f"Matching split '{split}': {split_matches}")
-        print(f"Final dataset size: {len(fnames)}")
-
-        if len(fnames) == 0:
-            raise ValueError(
-                f"No samples found for split '{split}'. "
-                f"Available splits: {data['Split'].unique()}. "
-                "Check your data split assignments."
-            )
-
-        return fnames, outcome, target_index
+        return fnames, outcomes, target_indices
 
     def _validate_all_videos(self):
         print("Validating all videos in dataset...")
@@ -170,22 +165,17 @@ class VideoDataset(torch.utils.data.Dataset):
         return valid_indices
 
     def __getitem__(self, index: int) -> tuple:
-        actual_idx = self.valid_indices[index]
-        video_fname = self.fnames[actual_idx]
+        actual_idx: int = self.valid_indices[index]
+        video_fname: str = self.fnames[actual_idx]
 
         try:
-            video = load_video(
+            video: np.ndarray = load_video(
                 video_fname,
-                split=self.split,
                 n_frames=16 if self.backbone.lower() == "mvit" else self.num_frames,
-                stride=self.stride,
                 resize=self.resize,
-                apply_mask=self.apply_mask,
                 normalize=self.normalize,
                 mean=self.mean,
                 std=self.std,
-                noise=self.noise,
-                pad=self.pad,
                 video_transforms=self.video_transforms,
                 rand_augment=self.rand_augment,
                 backbone=self.backbone,
@@ -194,79 +184,38 @@ class VideoDataset(torch.utils.data.Dataset):
             if self.backbone.lower() == "mvit" and video.shape[0] != 16:
                 raise ValueError(f"Expected 16 frames for MViT, got {video.shape[0]}")
 
-            encoded = None
-            if self.target_label is not None and self.target_index is not None:
-                text = self.outcome[actual_idx]
-                if not isinstance(text, str):
-                    text = str(text)
-                encoded = self.tokenizer(
-                    text,
-                    padding="max_length",
-                    max_length=512,
-                    truncation=True,
-                    return_tensors="pt",
-                )
-                encoded = {k: v.squeeze(0) for k, v in encoded.items()}
-                # If you want them on GPU, do it in the training loop, not here
-            else:
-                print("No target label or target index")
-                encoded = None
-
-            return video, encoded, video_fname
-
         except Exception as e:
-            raise RuntimeError(f"Failed to load video {video_fname}: {str(e)}") from e
-
-    def get_reports(self, video_paths: List[str]) -> List[str]:
-        """
-        Given a list of video file paths, return a list of text reports (strings).
-        """
-        reports = []
-        for path in video_paths:
-            try:
-                idx = self.fnames.index(str(path))
-                reports.append(str(self.outcome[idx]))
-            except ValueError:
-                print(f"Warning: No report found for video {path}")
-                reports.append("")
-        return reports
-
-    def get_all_reports(self):
-        """
-        Return all text outcomes from the dataset.
-        """
-        return [str(o) for o in self.outcome]
+            raise RuntimeError(f"Failed to load video {video_fname}: {str(e)}") from e   
+        
+        return video, self.outcomes[actual_idx], video_fname
     
-    
-def custom_collate_fn(batch):
-    """Custom collate function to handle video and text data.
+def custom_collate_fn(batch: List[Tuple[np.ndarray, Dict[str, torch.Tensor], str]]) -> Dict[str, Any]:
+    """Custom collate function to handle video, targets, and video_fname data.
 
     Args:
-        batch: List of tuples (video, encoded_text, path)
+        batch: List of tuples (video, targets, video_fname)
         Each video has shape [F, H, W, C]
     Returns:
         videos: Tensor of shape (batch_size, C, F, H, W) for MViT compatibility
-        encoded_texts: Dictionary with input_ids and attention_mask tensors
-        paths: List of file paths
+        targets: Dictionaries with labels as keys and values as tensors of targets
+        video_fname: List of file paths
     """
-    videos, encoded_texts, paths = zip(*batch)
-
+    videos, targets, paths = zip(*batch)
     # Stack videos - handle both tensor and numpy inputs
     videos = torch.stack([torch.from_numpy(v) for v in videos])  # Shape: [B, F, H, W, C]
+    
+    # Convert targets to tensor - handle tuple of dictionaries
+    targets_dict: dict[str, torch.Tensor] = defaultdict(list)
+    for target in targets:
+        for k, v in target.items():
+            targets_dict[k].append(v)
 
-    # Combine encoded texts
-    if encoded_texts[0] is not None:
-        combined_texts = {
-            "input_ids": torch.stack([text["input_ids"] for text in encoded_texts]),
-            "attention_mask": torch.stack([text["attention_mask"] for text in encoded_texts]),
-        }
-    else:
-        combined_texts = None
-
+    targets_dict = {k: torch.tensor(v) for k, v in targets_dict.items()}
+    
     return {
         "videos": videos,
-        "encoded_texts": combined_texts,
-        "paths": paths
+        "targets": targets_dict,
+        "video_fname": paths
     }
 
 def get_distributed_video_dataloader(
@@ -281,7 +230,6 @@ def get_distributed_video_dataloader(
 ) -> DataLoader:
     # Create the video dataset
     video_dataset = VideoDataset(
-        root=config.root,
         data_filename=config.data_filename,
         split=split,
         target_label=config.target_label,
@@ -294,7 +242,7 @@ def get_distributed_video_dataloader(
     )
 
     # Create a sampler for distributed training
-    sampler = DS.DistributedSampler(
+    sampler = DistributedUtils.DS.DistributedSampler(
         video_dataset, 
         shuffle=shuffle, 
         num_replicas=num_replicas, 

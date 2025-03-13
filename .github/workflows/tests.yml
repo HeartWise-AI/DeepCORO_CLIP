@@ -37,11 +37,10 @@ jobs:
       env:
         PYTHONPATH: ${{ github.workspace }}
         WANDB_MODE: disabled  # Disable wandb logging during tests
-        LOCAL_RANK: 0  # Set DDP rank
         WORLD_SIZE: 1  # Set world size for DDP
       run: |
         . .venv/bin/activate
-        pytest tests/ -v --cov=./ --cov-report=xml
+        pytest -sv tests/ -v --cov=./ --cov-report=xml
         
     - name: Upload coverage reports to Codecov
       uses: codecov/codecov-action@v5

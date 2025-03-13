@@ -1,0 +1,75 @@
+# Pipeline parameters
+pipeline_project: !!str DeepCORO_video_linear_probing
+output_dir: !!str outputs
+run_mode: !!str train
+epochs: !!int 5
+seed: !!int 42
+# wandb parameters
+tag: !!str mvit_pretrained
+name: !!str dev_deep_coro_linear_probing
+project: !!str dev_deep_coro_linear_probing
+entity: !!str jacques-delfrate
+use_wandb: !!bool true
+# Training parameters
+lr: !!float 0.0003
+scheduler_name: !!str step
+lr_step_period: !!int 5
+factor: !!float 0.3
+optimizer: !!str AdamW
+weight_decay: !!float 0.00001
+use_amp: !!bool true
+gradient_accumulation_steps: !!int 1
+num_warmup_percent: !!float 0.1
+num_hard_restarts_cycles: !!float 1.0
+warm_restart_tmult: !!int 2
+# Dataset parameters
+data_filename: !!str data/stenting/stenting_annotations.csv
+num_workers: !!int 4
+batch_size: !!int 4
+datapoint_loc_label: !!str FileName
+target_label: [contrast_agent, main_structure, stent_presence]
+rand_augment: !!bool true
+resize: !!int 224
+frames: !!int 16
+stride: !!int 1
+# Video Encoder parameters
+model_name: !!str mvit
+aggregator_depth: !!int 2
+num_heads: !!int 4
+video_freeze_ratio: !!float 0.8
+dropout: !!float 0.2
+pretrained: !!bool true
+video_encoder_checkpoint_path: !!str outputs/dev_deep_coro_clip_single_video/current_best/best_epoch.pt
+# Linear Probing parameters
+task: !!str classification
+linear_probing_head: !!str simple_linear_probing
+head_structure:
+  contrast_agent: !!int 1
+  main_structure: !!int 5
+  stent_presence: !!int 1
+head_dropout:
+  contrast_agent: !!float 0.1
+  main_structure: !!float 0.1
+  stent_presence: !!float 0.1
+loss_structure:
+  contrast_agent: !!str bce_logit
+  main_structure: !!str ce
+  stent_presence: !!str bce_logit
+head_weights:
+  contrast_agent: !!float 1.0
+  main_structure: !!float 1.0
+  stent_presence: !!float 1.0
+# Label mappings - Used for confusion matrix
+labels_map:
+  contrast_agent:
+    present: !!int 1
+    absent: !!int 0
+  main_structure:
+    Left Coronary: !!int 0
+    Right Coronary: !!int 1
+    Graft: !!int 2
+    Catheter: !!int 3
+    Femoral: !!int 4
+  stent_presence:
+    present: !!int 1
+    absent: !!int 0

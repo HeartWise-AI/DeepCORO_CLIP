@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader
 
 from utils.seed import seed_worker
 from utils.video import load_video
-from utils.config import HeartWiseConfig
+from utils.config.heartwise_config import HeartWiseConfig
 
 
 class StatsDataset(torch.utils.data.Dataset):
@@ -15,7 +15,6 @@ class StatsDataset(torch.utils.data.Dataset):
 
     def __init__(
         self,
-        root,
         data_filename,
         split,
         target_label,
@@ -25,7 +24,6 @@ class StatsDataset(torch.utils.data.Dataset):
         backbone="default",
         max_samples=128,
     ):
-        self.folder = pathlib.Path(root)
         self.filename = data_filename
         self.datapoint_loc_label = datapoint_loc_label
         self.split = split
@@ -46,8 +44,7 @@ class StatsDataset(torch.utils.data.Dataset):
             print(f"Limited dataset to {self.max_samples} samples")
 
     def load_data(self, split, target_label):
-        file_path = os.path.join(self.folder, self.filename)
-        data = pd.read_csv(file_path, sep="α", engine="python")
+        data = pd.read_csv(self.filename, sep="α", engine="python")
 
         filename_index = data.columns.get_loc(self.datapoint_loc_label)
         split_index = data.columns.get_loc("Split")
@@ -76,11 +73,9 @@ class StatsDataset(torch.utils.data.Dataset):
         try:
             video = load_video(
                 video_fname,
-                split=self.split,
                 n_frames=self.num_frames,
                 normalize=False,
                 backbone=self.backbone,
-                stride=self.stride,
             )
             return video, None, video_fname
         except Exception as e:
@@ -102,7 +97,6 @@ def stats_collate_fn(batch):
 
 def get_stats_dataloader(config: HeartWiseConfig):
     stats_dataset = StatsDataset(
-        root=config.root,
         data_filename=config.data_filename,
         split="train",
         target_label=config.target_label,

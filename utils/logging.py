@@ -10,7 +10,8 @@ import torch.nn as nn
 from datetime import datetime
 from typing import Any, Dict, Optional, List
 
-from utils.config import HeartWiseConfig
+from utils.wandb_wrapper import WandbWrapper
+from utils.config.heartwise_config import HeartWiseConfig
 from utils.video import convert_video_for_wandb, cleanup_temp_video
 
 class WandbLogger:
@@ -473,7 +474,10 @@ def get_best_and_worst_retrievals(similarity_matrix, paths, reports, k=2):
         worst_text_indices,
     )
 
-def log_gradient_norms(model: nn.Module, prefix: str = ""):
+def log_gradient_norms(
+    model: nn.Module,
+    wandb_wrapper: WandbWrapper,
+    prefix: str = ""):
     """
     Logs the L2 norm of gradients across the model's parameters.
     You can adjust to log per-layer or per-parameter if needed.
@@ -487,7 +491,7 @@ def log_gradient_norms(model: nn.Module, prefix: str = ""):
             param_count += 1
 
     total_norm = total_norm**0.5
-    wandb.log({f"{prefix}grad_norm": total_norm})
+    wandb_wrapper.log({f"{prefix}grad_norm": total_norm})
 
 
 
@@ -506,7 +510,7 @@ def create_logger(config: HeartWiseConfig):
         "learning_rate": config.lr,
         "epochs": config.epochs,
         "num_workers": config.num_workers,
-        "gpu": config.gpu,
+        "device": config.device,
         "model_name": config.model_name,
         "optimizer": config.optimizer,
         "weight_decay": config.weight_decay,
@@ -535,7 +539,8 @@ def log_best_worst_retrievals(
     all_paths: List[str],
     unique_texts: List[str],
     ground_truth_indices: torch.Tensor,
-    epoch: int
+    epoch: int, 
+    wandb_wrapper: WandbWrapper
 ) -> None:
     """Log best and worst retrievals to wandb.
     
@@ -563,7 +568,8 @@ def log_best_worst_retrievals(
             unique_texts=unique_texts,
             ground_truth_indices=ground_truth_indices,
             epoch=epoch,
-            is_best=True
+            is_best=True,
+            wandb_wrapper=wandb_wrapper
         )
 
     # Process and log worst retrieval
@@ -576,7 +582,8 @@ def log_best_worst_retrievals(
             unique_texts=unique_texts,
             ground_truth_indices=ground_truth_indices,
             epoch=epoch,
-            is_best=False
+            is_best=False,
+            wandb_wrapper=wandb_wrapper
         )
 
 def _log_retrieval(
@@ -587,7 +594,8 @@ def _log_retrieval(
     unique_texts: List[str],
     ground_truth_indices: torch.Tensor,
     epoch: int,
-    is_best: bool
+    is_best: bool,
+    wandb_wrapper: WandbWrapper
 ) -> None:
     """Helper function to log a single retrieval example."""
     # Get top 5 predicted texts
@@ -598,7 +606,7 @@ def _log_retrieval(
     mp4_path, is_temp = convert_video_for_wandb(all_paths[idx])
     
     prefix = "good" if is_best else "bad"
-    wandb.log({
+    wandb_wrapper.log({
         f"qualitative/{prefix}_retrieval": wandb.Video(
             mp4_path,
             caption=f"Sim: {score:.3f}",

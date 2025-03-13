@@ -1,4 +1,4 @@
-pipeline_project: !!str "DeepCORO_test"
+pipeline_project: !!str "DeepCORO_clip_test"
 
 # Training parameters
 epochs: !!int 2

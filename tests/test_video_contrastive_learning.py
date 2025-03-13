@@ -12,12 +12,28 @@ from torch.utils.data import Dataset, DataLoader
 
 from models.video_encoder import VideoEncoder
 from models.text_encoder import TextEncoder
-from runners.video_constrative_learning_runner import VideoContrastiveLearningRunner
 from utils.parser import HeartWiseParser
-from utils.enums import RunMode
 from utils.loss.typing import Loss
-from utils.registry import LossRegistry
+from utils.registry import (
+    LossRegistry, 
+    ModelRegistry, 
+    RunnerRegistry
+)
 from utils.wandb_wrapper import WandbWrapper
+from runners.typing import Runner
+from utils.registry import register_submodules
+from utils.enums import (
+    SubmoduleType, 
+    RunMode
+)
+
+# Register all submodules
+register_submodules(SubmoduleType.RUNNER)
+register_submodules(SubmoduleType.MODEL)
+register_submodules(SubmoduleType.PROJECT)
+register_submodules(SubmoduleType.CONFIG)
+register_submodules(SubmoduleType.LOSS)
+
 
 class DummyDataset(Dataset):
     """Dummy dataset that generates random video and text data."""
@@ -129,13 +145,17 @@ class TestVideoContrastiveLearning(unittest.TestCase):
         sys.argv = original_argv
         print(f"test_config: {self.test_config}")
         # Create models with test settings
-        self.video_encoder = VideoEncoder(
+        self.video_encoder: VideoEncoder = ModelRegistry.get(
+            name="video_encoder"
+        )(
             backbone="mvit",
             num_frames=16,
             pretrained=False,
             output_dim=512
         )
-        self.text_encoder = TextEncoder(
+        self.text_encoder: TextEncoder = ModelRegistry.get(
+            name="text_encoder"
+        )(
             output_dim=512,
             freeze_ratio=0.8
         )
@@ -168,19 +188,23 @@ class TestVideoContrastiveLearning(unittest.TestCase):
             is_ref_device=True,
             sweep_params=()
         )
-        self.runner = VideoContrastiveLearningRunner(
-            config=self.test_config,
-            wandb_wrapper=wandb_wrapper,
-            train_loader=self.train_loader,
-            val_loader=self.val_loader,
-            video_encoder=self.video_encoder,
-            text_encoder=self.text_encoder,
-            optimizer=self.optimizer,
-            scaler=None,  # No mixed precision for testing
-            log_temp=torch.tensor(0.07).log().requires_grad_(),
-            lr_scheduler=None,  # No scheduler for testing
-            loss_fn=self.loss_fn,  # Add loss function
-            output_dir=self.temp_dir
+        self.runner: Runner = Runner(
+            runner_type = RunnerRegistry.get(
+                name=self.test_config.pipeline_project
+            )(
+                config=self.test_config,
+                wandb_wrapper=wandb_wrapper,
+                train_loader=self.train_loader,
+                val_loader=self.val_loader,
+                video_encoder=self.video_encoder,
+                text_encoder=self.text_encoder,
+                optimizer=self.optimizer,
+                scaler=None,  # No mixed precision for testing
+                log_temp=torch.tensor(0.07).log().requires_grad_(),
+                lr_scheduler=None,  # No scheduler for testing
+                loss_fn=self.loss_fn,  # Add loss function
+                output_dir=self.temp_dir
+            )
         )
         
     @patch('wandb.log')
@@ -190,7 +214,11 @@ class TestVideoContrastiveLearning(unittest.TestCase):
         videos = batch["videos"]
         input_ids = batch["encoded_texts"]["input_ids"]
         attention_mask = batch["encoded_texts"]["attention_mask"]
-        metrics, embeddings = self.runner._train_step(videos, input_ids, attention_mask)
+        metrics, embeddings = self.runner._train_step(
+            videos=videos, 
+            input_ids=input_ids, 
+            attention_mask=attention_mask
+        )
         self.assertIsInstance(metrics, dict)
         self.assertIsInstance(metrics["loss"], float)
         self.assertIsInstance(embeddings, dict)
@@ -203,7 +231,11 @@ class TestVideoContrastiveLearning(unittest.TestCase):
         videos = batch["videos"]
         input_ids = batch["encoded_texts"]["input_ids"]
         attention_mask = batch["encoded_texts"]["attention_mask"]
-        metrics, embeddings = self.runner._val_step(videos, input_ids, attention_mask)
+        metrics, embeddings = self.runner._val_step(
+            videos=videos, 
+            input_ids=input_ids, 
+            attention_mask=attention_mask
+        )
         self.assertIsInstance(metrics, dict)
         self.assertIsInstance(embeddings, dict)
         
@@ -234,13 +266,13 @@ class TestVideoContrastiveLearning(unittest.TestCase):
     def test_gather_tensor_along_batch(self):
         """Test tensor gathering across batch dimension."""
         local_tensor = torch.randn(2, 512)  # [local_batch_size, dim]
-        gathered = self.runner._gather_tensor_along_batch(local_tensor, world_size=1)
+        gathered = self.runner.runner_type._gather_tensor_along_batch(local_tensor, world_size=1)
         self.assertEqual(gathered.shape, (2, 512))  # Single GPU case
         
     def test_gather_strings_across_gpus(self):
         """Test string gathering across GPUs."""
         local_strings = ["text1", "text2"]
-        gathered = self.runner._gather_strings_across_gpus(local_strings, world_size=1, device=torch.device("cpu"))
+        gathered = self.runner.runner_type._gather_strings_across_gpus(local_strings, world_size=1, device=torch.device("cpu"))
         self.assertEqual(gathered, ["text1", "text2"])  # Single GPU case
         
     def tearDown(self):

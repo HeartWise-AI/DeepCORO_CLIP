@@ -7,7 +7,7 @@ from utils.config.heartwise_config import HeartWiseConfig
 
 @dataclass
 @ConfigRegistry.register("DeepCORO_clip")
-@ConfigRegistry.register("DeepCORO_test")
+@ConfigRegistry.register("DeepCORO_clip_test")
 class ClipConfig(HeartWiseConfig):
     # Training parameters
     lr: float

@@ -52,7 +52,7 @@ def main(config: HeartWiseConfig):
             'gradient_accumulation_steps', 'num_warmup_percent'
         )
         
-        wandb_wrapper = WandbWrapper(
+        wandb_wrapper: WandbWrapper = WandbWrapper(
             config=config,
             initialized=config.use_wandb,
             is_ref_device=config.is_ref_device, 

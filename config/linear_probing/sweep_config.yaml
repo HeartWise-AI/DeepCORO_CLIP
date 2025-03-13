@@ -11,7 +11,7 @@ project: "dev_deep_coro_linear_probing"
 entity: "mhi_ai"
 method: bayes
 metric:
-  name: val/main_loss
+  name: best_val_loss
   goal: minimize
 parameters:
   lr:

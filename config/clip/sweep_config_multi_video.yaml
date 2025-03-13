@@ -14,7 +14,7 @@ entity: "mhi_ai"
 method: bayes
 
 metric:
-  name: val/loss
+  name: best_val_loss
   goal: minimize
 
 parameters:
@@ -76,7 +76,7 @@ parameters:
     max: 1e-6
 
   batch_size:
-    values: [20]
+    values: [4]
   num_videos:
     values: [6, 7, 8]
   loss_name:

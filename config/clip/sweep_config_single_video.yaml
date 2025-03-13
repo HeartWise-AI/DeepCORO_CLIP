@@ -1,10 +1,10 @@
 command:
   - torchrun
-  - "--nproc_per_node=4"
+  - "--nproc_per_node=1"
   - "--master_port=29500"
   - "scripts/main.py"
   - "--base_config"
-  - "config/base_config.yaml"
+  - "config/clip/base_config.yaml"
   - ${args}
 
 name: "dev_deep_coro_clip_single_video"
@@ -14,7 +14,7 @@ entity: "mhi_ai"
 method: bayes
 
 metric:
-  name: val/loss
+  name: best_val_loss
   goal: minimize
 
 parameters:
@@ -82,7 +82,7 @@ parameters:
     max: 1e-6
 
   batch_size:
-    values: [84]
+    values: [4]
   loss_name:
     values: ["contrastive"]
   tag:

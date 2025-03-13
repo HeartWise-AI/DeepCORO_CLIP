@@ -158,15 +158,6 @@ class VideoContrastiveLearningRunner:
                 epoch=epoch
             )
             
-            DistributedUtils.sync_process_group(
-                world_size=self.world_size,
-                device_ids=self.device
-            )
-            
-            if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
-                self.wandb_wrapper.log(val_metrics)
-                print(f"[DEBUG] rank={self.device} => Logged val metrics to W&B")
-
             # Sync after validation
             DistributedUtils.sync_process_group(
                 world_size=self.world_size,
@@ -204,6 +195,19 @@ class VideoContrastiveLearningRunner:
                     metrics={**train_metrics, **val_metrics},
                     is_best=False,
                 )
+            
+            # Sync after saving checkpoint
+            DistributedUtils.sync_process_group(
+                world_size=self.world_size,
+                device_ids=self.device
+            )
+                        
+            if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
+                val_metrics['best_val_loss'] = self.best_val_loss
+                self.wandb_wrapper.log(val_metrics)
+                print(f"[DEBUG] rank={self.device} => Logged val metrics to W&B")
+            
+            # Sync after logging
             DistributedUtils.sync_process_group(
                 world_size=self.world_size,
                 device_ids=self.device

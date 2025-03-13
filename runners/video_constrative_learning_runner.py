@@ -36,6 +36,7 @@ from models.text_encoder import TextEncoder
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 @RunnerRegistry.register("DeepCORO_clip")
+@RunnerRegistry.register("DeepCORO_clip_test")
 class VideoContrastiveLearningRunner:
     """
     This class runs a video contrastive learning pipeline using a VideoEncoder and TextEncoder.
@@ -812,7 +813,10 @@ class VideoContrastiveLearningRunner:
         )
 
     def _val_step(
-        self, videos: torch.Tensor, input_ids: torch.Tensor, attention_mask: torch.Tensor
+        self, 
+        videos: torch.Tensor, 
+        input_ids: torch.Tensor, 
+        attention_mask: torch.Tensor
     ) -> tuple[dict, dict]:
         """
         Performs a single validation step (forward pass + metric computation).

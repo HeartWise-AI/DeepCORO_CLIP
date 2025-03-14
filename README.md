@@ -58,7 +58,7 @@ DeepCORO_CLIP is a deep learning model for echocardiography video interpretation
 6. **Make sure you have FFMPEG 4.4.x is installed - required for sweep**:
    ```bash
    which ffmpeg
-   conda remove ffmpeg # remove  necessary
+   conda remove ffmpeg # remove if /opt/conda/bin/ffmpeg exists
    sudo apt update
    sudo apt install ffmpeg
    sudo apt install libavcodec-extra

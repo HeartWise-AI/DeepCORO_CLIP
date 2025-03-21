@@ -26,6 +26,8 @@ class LossType(str, Enum):
     INFO_NCE = "InfoNCE"    
     CONTRASTIVE = "contrastive"
     CONTRASTIVE_DDP = "contrastive_ddp"
+    SIGLIP = "siglip"
+    SIGLIP_DDP = "siglip_ddp"
         
     # Torch losses
     MSE = "mse"

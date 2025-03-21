@@ -148,6 +148,116 @@ class ContrastiveLossDDP(nn.Module):
         loss = 0.5 * (loss_i2t + loss_t2i)
         return loss
 
+@LossRegistry.register(LossType.SIGLIP)
+class SiglipLoss(nn.Module):
+    """
+    SIGLIP (Simple Gated Language-Image Pre-training) loss implementation.
+    This loss applies a gating mechanism to the cosine similarity matrix 
+    before computing the contrastive loss.
+    """
+    def __init__(self):
+        """
+        Initialize SIGLIP loss.
+        """
+        super().__init__()
+    
+    def forward(
+        self,
+        video_features: torch.Tensor, 
+        text_features: torch.Tensor,
+        log_temp: torch.Tensor = torch.log(torch.tensor(0.1))
+    ) -> torch.Tensor:
+        """
+        Compute SIGLIP loss between video and text features.
+        
+        Args:
+            video_features (torch.Tensor): [B, D] video embeddings
+            text_features (torch.Tensor): [B, D] text embeddings
+            log_temp (torch.Tensor, optional): float torch tensor value
+            
+        Returns:
+            torch.Tensor: Scalar loss value
+        """        
+        # Normalize embeddings.
+        video_features = F.normalize(video_features, dim=1)
+        text_features = F.normalize(text_features, dim=1)
+        
+        # Compute similarity matrix of shape [B, B].
+        similarity_matrix = torch.matmul(video_features, text_features.t())
+        
+        # Apply SIGLIP gating function: g(x) = x * sigmoid(x)
+        gated_similarity = similarity_matrix * torch.sigmoid(similarity_matrix)
+        
+        # Apply temperature scaling.
+        temp = torch.exp(log_temp)
+        logits = gated_similarity / temp
+        
+        # Create targets: assume the i-th video corresponds to the i-th text.
+        targets = torch.arange(logits.size(0), device=logits.device)
+        
+        # Compute cross-entropy loss in both directions.
+        loss_v2t = F.cross_entropy(logits, targets)
+        loss_t2v = F.cross_entropy(logits.t(), targets)
+        loss = 0.5 * (loss_v2t + loss_t2v)
+        return loss
+
+@LossRegistry.register(LossType.SIGLIP_DDP)
+class SiglipLossDDP(nn.Module):
+    """
+    SIGLIP loss implementation with DDP support.
+    """
+    def __init__(self):
+        """
+        Initialize DDP SIGLIP loss.
+        """
+        super().__init__()
+    
+    def forward(
+        self,
+        video_features: torch.Tensor,
+        text_features: torch.Tensor,
+        log_temp: torch.Tensor = torch.log(torch.tensor(0.1))
+    ) -> torch.Tensor:
+        """
+        Compute SIGLIP loss between video and text features in DDP setting.
+        
+        Args:
+            video_features (torch.Tensor): [B, D] video embeddings (local batch)
+            text_features (torch.Tensor): [B, D] text embeddings (local batch)
+            log_temp (torch.Tensor, optional): Override internal temperature
+            
+        Returns:
+            torch.Tensor: Scalar loss value
+        """        
+        # 1) Gather features from all GPUs.
+        video_features_all = gather_all(video_features)
+        text_features_all  = gather_all(text_features)
+
+        # 2) Normalize the gathered features.
+        video_features_all = F.normalize(video_features_all, dim=1)
+        text_features_all  = F.normalize(text_features_all, dim=1)
+
+        # 3) Compute global similarity matrix of shape [N, N],
+        # where N is the total global batch size.
+        similarity_matrix = torch.matmul(video_features_all, text_features_all.t())
+
+        # 4) Apply SIGLIP gating function: g(x) = x * sigmoid(x)
+        gated_similarity = similarity_matrix * torch.sigmoid(similarity_matrix)
+        
+        # 5) Apply temperature scaling.
+        temp = torch.exp(log_temp)
+        logits = gated_similarity / temp
+
+        # 6) Create targets: assume that the matching pairs lie along the diagonal.
+        n = logits.size(0)  # global batch size
+        targets = torch.arange(n, device=logits.device)
+
+        # Compute cross-entropy losses in both directions.
+        loss_i2t = F.cross_entropy(logits, targets)
+        loss_t2i = F.cross_entropy(logits.t(), targets)
+        loss = 0.5 * (loss_i2t + loss_t2i)
+        return loss
+
 @LossRegistry.register(LossType.INFO_NCE)
 class InfoNCELoss(nn.Module):
     """
@@ -155,17 +265,19 @@ class InfoNCELoss(nn.Module):
     This is a wrapper around the contrastive loss functions that maintains state
     and provides a more object-oriented interface.
     """
-    def __init__(self, temperature: float = 0.07, use_ddp: bool = False):
+    def __init__(self, temperature: float = 0.07, use_ddp: bool = False, loss_type: str = 'contrastive'):
         """
         Initialize InfoNCE loss.
         
         Args:
             temperature (float): Temperature parameter for scaling logits
             use_ddp (bool): Whether to use DDP-aware version of the loss
+            loss_type (str): Type of loss to use ('contrastive' or 'siglip')
         """
         super().__init__()
         self.temperature = temperature
         self.use_ddp = use_ddp
+        self.loss_type = loss_type
         self.log_temp = nn.Parameter(torch.log(torch.tensor(temperature)))
         
     def forward(
@@ -188,10 +300,16 @@ class InfoNCELoss(nn.Module):
         # Use provided temperature if given, otherwise use internal one
         temp = log_temp if log_temp is not None else self.log_temp
         
-        if self.use_ddp and dist.is_initialized():
-            return ContrastiveLossDDP()(video_features, text_features, temp)
+        if self.loss_type == 'siglip':
+            if self.use_ddp and dist.is_initialized():
+                return SiglipLossDDP()(video_features, text_features, temp)
+            else:
+                return SiglipLoss()(video_features, text_features, temp)
         else:
-            return ContrastiveLoss()(video_features, text_features, temp)
+            if self.use_ddp and dist.is_initialized():
+                return ContrastiveLossDDP()(video_features, text_features, temp)
+            else:
+                return ContrastiveLoss()(video_features, text_features, temp)
         
 
 @LossRegistry.register(LossType.MSE)

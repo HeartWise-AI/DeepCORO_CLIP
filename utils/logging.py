@@ -519,6 +519,11 @@ def create_logger(config: HeartWiseConfig):
         "factor": config.factor,
         "frames": config.frames,
         "pretrained": config.pretrained,
+        "loss_name": config.loss_name,
+        "num_videos": config.num_videos,
+        "multi_video": config.multi_video,
+        "groupby_column": config.groupby_column,
+        "shuffle_videos": config.shuffle_videos,
     }
 
     print(f"Project: {config.project}, Entity: {config.entity}, Tag: {config.tag}")

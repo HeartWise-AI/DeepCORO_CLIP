@@ -4,7 +4,11 @@ import torch.nn.functional as F
 import torch.distributed as dist
 
 from utils.enums import LossType
-from utils.loss.losses import ContrastiveLoss, ContrastiveLossDDP, SiglipLoss, SiglipLossDDP, InfoNCELoss
+from utils.loss.losses import (
+    ContrastiveLoss, ContrastiveLossDDP, 
+    SiglipLoss, SiglipLossDDP, 
+    InfoNCELoss
+)
 
 
 class TestLosses:
@@ -263,8 +267,8 @@ def test_loss_registry_integration():
     from utils.registry import LossRegistry
     
     # Check if SIGLIP loss types are registered
-    assert LossType.SIGLIP in LossRegistry.registry
-    assert LossType.SIGLIP_DDP in LossRegistry.registry
+    assert LossType.SIGLIP in LossRegistry.list_registered()
+    assert LossType.SIGLIP_DDP in LossRegistry.list_registered()
     
     # Create losses from registry
     siglip_loss = LossRegistry.create(LossType.SIGLIP)

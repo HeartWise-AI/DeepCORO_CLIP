@@ -20,8 +20,8 @@ class TestLosses:
         # Create random embeddings for testing
         batch_size = 8
         embedding_dim = 512
-        video_features = torch.randn(batch_size, embedding_dim)
-        text_features = torch.randn(batch_size, embedding_dim)
+        video_features = torch.randn(batch_size, embedding_dim, requires_grad=True)
+        text_features = torch.randn(batch_size, embedding_dim, requires_grad=True)
         return video_features, text_features
 
     def test_contrastive_loss(self, sample_data):

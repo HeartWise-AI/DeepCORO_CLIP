@@ -39,6 +39,10 @@ class WandbWrapper:
                     k: v for k, v in config.to_dict().items() 
                     if k not in sweep_params
                 }
+                
+                # Ensure loss_name is included even if it's controlled by sweep
+                if hasattr(config, 'loss_name'):
+                    config_dict['loss_name'] = config.loss_name
                     
                 wandb.init(
                     project=config.project,

@@ -45,18 +45,18 @@ class VideoContrastiveLearningRunner:
 
     def __init__(
         self,
-        config: ClipConfig,
-        wandb_wrapper: WandbWrapper,
-        train_loader: DataLoader,
-        val_loader: DataLoader,
-        video_encoder: VideoEncoder,
-        text_encoder: TextEncoder,
-        optimizer: Optimizer,
-        scaler: GradScaler,
-        log_temp: torch.Tensor,
-        lr_scheduler: LRScheduler,
-        loss_fn: Loss,
-        output_dir: str,
+        config: ClipConfig = None,
+        wandb_wrapper: WandbWrapper = None,
+        train_loader: DataLoader = None,
+        val_loader: DataLoader = None,
+        video_encoder: VideoEncoder = None,
+        text_encoder: TextEncoder = None,
+        optimizer: Optimizer = None,
+        scaler: GradScaler = None,
+        log_temp: torch.Tensor = None,
+        lr_scheduler: LRScheduler = None,
+        loss_fn: Loss = None,
+        output_dir: str = None,
     ):
         """
         Initialize the runner with provided configurations, data loaders, and modules.
@@ -871,4 +871,5 @@ class VideoContrastiveLearningRunner:
         """
         Method for a dedicated inference.
         """
-        raise NotImplementedError("Inference is not implemented for this runner")
+        print("Inference is not implemented for this runner")
+        print(f"log_temp: {self.log_temp}")

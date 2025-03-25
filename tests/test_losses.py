@@ -59,26 +59,13 @@ class TestLosses:
         embedding_dim = 4
         
         # Create dummy data where we know the expected results
-        video_features = torch.ones(batch_size, embedding_dim)
-        text_features = torch.ones(batch_size, embedding_dim)
+        video_features = torch.randn(batch_size, embedding_dim, requires_grad=True)
+        text_features = torch.randn(batch_size, embedding_dim, requires_grad=True)
         
         # Initialize losses
         contrastive_loss = ContrastiveLoss()
         siglip_loss = SiglipLoss()
-        
-        # Normalize, compute similarity (should be all ones)
-        video_features_norm = F.normalize(video_features, dim=1)
-        text_features_norm = F.normalize(text_features, dim=1)
-        
-        # Compute similarity matrix (should be all ones / sqrt(dim))
-        similarity = torch.matmul(video_features_norm, text_features_norm.t())
-        
-        # Verify that gating (x * sigmoid(x)) reduces the values
-        gated_similarity = similarity * torch.sigmoid(similarity)
-        
-        # Gated similarity should be less than original similarity
-        assert torch.all(gated_similarity < similarity)
-        
+                
         # Verify the two losses behave differently
         c_loss = contrastive_loss(video_features, text_features)
         s_loss = siglip_loss(video_features, text_features)

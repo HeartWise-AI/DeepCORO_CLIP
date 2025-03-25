@@ -53,8 +53,7 @@ class ContrastiveLoss(nn.Module):
         # Compute cross-entropy loss in both directions.
         loss_v2t = F.cross_entropy(logits, targets)
         loss_t2v = F.cross_entropy(logits.t(), targets)
-        loss = 0.5 * (loss_v2t + loss_t2v)
-        return loss
+        return 0.5 * (loss_v2t + loss_t2v)
 
 ###############################################################################
 # DDP-aware version: uses a custom autograd gather to preserve gradients.
@@ -145,8 +144,7 @@ class ContrastiveLossDDP(nn.Module):
         # Compute cross-entropy losses in both directions.
         loss_i2t = F.cross_entropy(logits, targets)
         loss_t2i = F.cross_entropy(logits.t(), targets)
-        loss = 0.5 * (loss_i2t + loss_t2i)
-        return loss
+        return 0.5 * (loss_i2t + loss_t2i)
 
 @LossRegistry.register(LossType.SIGLIP)
 class SiglipLoss(nn.Module):
@@ -305,11 +303,13 @@ class InfoNCELoss(nn.Module):
                 return SiglipLossDDP()(video_features, text_features, temp)
             else:
                 return SiglipLoss()(video_features, text_features, temp)
-        else:
+        elif self.loss_type == 'contrastive':
             if self.use_ddp and dist.is_initialized():
                 return ContrastiveLossDDP()(video_features, text_features, temp)
             else:
                 return ContrastiveLoss()(video_features, text_features, temp)
+        else:
+            raise ValueError(f"Invalid loss type: {self.loss_type}")
         
 
 @LossRegistry.register(LossType.MSE)

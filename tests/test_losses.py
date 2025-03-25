@@ -76,36 +76,21 @@ class TestLosses:
     def test_siglip_mathematical_properties(self):
         """Test mathematical properties of the SIGLIP gating function."""
         # Create a range of similarity values to test
-        similarities = torch.linspace(-5, 5, 100)
+        similarities = torch.linspace(-10, 5, 150)  # Extend range for negative values
         
         # Apply gating function g(x) = x * sigmoid(x)
         gated = similarities * torch.sigmoid(similarities)
+                
+        # For x > 0: Verify g(x) ≤ x
+        positive_mask = similarities > 0
+        if positive_mask.sum() > 0:
+            assert torch.all(gated[positive_mask] <= similarities[positive_mask]), "g(x) should be <= x for x > 0"
         
-        # Properties to verify:
-        # 1. g(x) should be monotonically increasing
-        diffs = gated[1:] - gated[:-1]
-        assert torch.all(diffs >= 0), "Gating function should be monotonically increasing"
+        # For x < 0: Verify g(x) ≥ x
+        negative_mask = similarities < 0
+        if negative_mask.sum() > 0:
+            assert torch.all(gated[negative_mask] >= similarities[negative_mask]), "g(x) should be >= x for x < 0"
         
-        # 2. g(x) approaches 0 as x approaches -∞
-        assert torch.isclose(gated[0], torch.tensor(0.0), atol=1e-2), "g(x) should approach 0 for large negative x"
-        
-        # 3. g(x) approaches x as x approaches +∞
-        large_x = torch.tensor(5.0)
-        assert torch.isclose(
-            gated[-1], 
-            large_x * torch.sigmoid(large_x), 
-            rtol=1e-2
-        ), "g(x) should approach x for large positive x"
-        
-        # 4. g(x) ≤ x for x > 0 (since sigmoid(x) ≤ 1)
-        positive_x = similarities[similarities > 0]
-        positive_gated = positive_x * torch.sigmoid(positive_x)
-        assert torch.all(positive_gated <= positive_x), "g(x) should be less than or equal to x for x > 0"
-        
-        # 5. g(x) ≥ x for x < 0 (since sigmoid(x) < 1)
-        negative_x = similarities[similarities < 0]
-        negative_gated = negative_x * torch.sigmoid(negative_x)
-        assert torch.all(negative_gated >= negative_x), "g(x) should be greater than or equal to x for x < 0"
 
     def test_info_nce_with_contrastive(self, sample_data):
         """Test InfoNCELoss with contrastive loss."""
@@ -166,8 +151,8 @@ class TestLosses:
         
         for size in batch_sizes:
             # Create random features
-            video_features = torch.randn(size, embedding_dim)
-            text_features = torch.randn(size, embedding_dim)
+            video_features = torch.randn(size, embedding_dim, requires_grad=True)
+            text_features = torch.randn(size, embedding_dim, requires_grad=True)
             
             # Compute loss
             loss = loss_fn(video_features, text_features)

@@ -98,5 +98,5 @@ torch.save(embeddings_tensor, "utils/inference/reports_embeddings.pt")
 df_metadata = pd.DataFrame(metadata_list)
 df_metadata.to_parquet("utils/inference/reports_metadata.parquet")
 
-print(f"Text embeddings saved to utils/inference/reports_embeddings.pt")
-print(f"Metadata saved to utils/inference/reports_metadata.parquet")
+print("Text embeddings saved to utils/inference/reports_embeddings.pt")
+print("Metadata saved to utils/inference/reports_metadata.parquet")

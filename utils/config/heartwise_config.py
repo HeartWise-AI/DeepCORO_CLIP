@@ -15,7 +15,6 @@ class HeartWiseConfig:
     pipeline_project: str
     output_dir: str    
     run_mode: str
-    epochs: int   
     seed: int
     
     # wandb parameters
@@ -57,11 +56,10 @@ class HeartWiseConfig:
     def set_gpu_info_in_place(cls, config: 'HeartWiseConfig') -> None:
         """Set GPU information from environment variables."""
         if "LOCAL_RANK" in os.environ:
-            print(f"Setting GPU info from environment variables: {os.environ}")
             config.device = int(os.environ["LOCAL_RANK"])
             config.world_size = int(os.environ["WORLD_SIZE"])
             config.is_ref_device = (int(os.environ["LOCAL_RANK"]) == 0)
-        else:
+        else: # This is mostly use for unit testing with github actions
             print("No GPU info found in environment variables")
             config.device = "cpu"
             config.world_size = 1

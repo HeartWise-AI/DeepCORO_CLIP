@@ -1,11 +1,10 @@
 import torch
-import pickle
 import pandas as pd
 from tqdm import tqdm
 from utils.registry import ModelRegistry
 from models.text_encoder import TextEncoder, get_tokenizer
 
-device_idx = 1
+device_idx = 0
 device = torch.device(f"cuda:{device_idx}")  # Define the target device
 
 text_encoder: TextEncoder = ModelRegistry.get(
@@ -28,8 +27,38 @@ tokenizer = get_tokenizer()
 batch_size = 64  # Adjust based on your GPU memory and performance needs
 reports = df_dataset["Report"].tolist()
 
-# Initialize the dictionary to store embeddings: key is the report text, value is its embedding vector
-report_embeddings = {}
+vessel_labels=[
+    "leftmain",
+    "lad",
+    "mid_lad",
+    "dist_lad",
+    "diagonal",
+    "D2",
+    "D3",
+    "lcx",
+    "dist_lcx",
+    "lvp",
+    "marg_d",
+    "om1",
+    "om2",
+    "om3",
+    "prox_rca",
+    "mid_rca",
+    "dist_rca",
+    "RVG1",
+    "RVG2",
+    "pda",
+    "posterolateral",
+    "bx",
+    "lima_or_svg",
+]
+
+categories = ['stenosis', 'IFRHYPEREMIE', 'calcif']
+dominance = ['coronary_dominance']
+
+# Prepare a list to collect embeddings in the same order as the reports in df_dataset
+embeddings_list = []
+metadata_list = []   # Added metadata_list for corresponding f'{label}_{category}' values
 
 for i in tqdm(range(0, len(reports), batch_size), desc="Generating text embeddings"):
     batch_texts = reports[i:i+batch_size]
@@ -39,19 +68,35 @@ for i in tqdm(range(0, len(reports), batch_size), desc="Generating text embeddin
         truncation=True, 
         return_tensors="pt"
     )
-    # Convert all token tensors to the target device
+    # Move tokens to the target device
     tokens = {key: value.to(device) for key, value in tokens.items()}
-    with torch.no_grad():  # Disable gradients for inference
+    with torch.no_grad():
         text_features = text_encoder(tokens["input_ids"], tokens["attention_mask"])
 
-    # Convert the tensor to a CPU numpy array for storage
-    text_features_np = text_features.cpu().numpy()
-    # Map each report text to its corresponding embedding vector
-    for report, embedding in zip(batch_texts, text_features_np):
-        report_embeddings[report] = embedding
+    # Append the batch of embeddings as a tensor to embeddings_list
+    embeddings_list.append(text_features.cpu())
 
-# Save the embeddings to a pickle file
-with open("utils/inference/reports_embeddings.pkl", "wb") as f:
-    pickle.dump(report_embeddings, f)
+    # Process each embedding for metadata
+    for j in range(text_features.size(0)):
+        meta_dict = {}
+        for label in vessel_labels:
+            for c in categories:
+                col_name = f'{label}_{c}'
+                meta_dict[col_name] = df_dataset[col_name].iloc[i + j]
+        metadata_list.append(meta_dict)
+        for c in dominance:
+            col_name = f'{c}'
+            meta_dict[col_name] = df_dataset[col_name].iloc[i + j]
+        metadata_list.append(meta_dict)
 
-print(f"Text embeddings saved to utils/inference/reports_embeddings.pkl")
+# Save the embeddings to a pt file
+embeddings_tensor = torch.cat(embeddings_list, dim=0)
+print(embeddings_tensor.shape)
+torch.save(embeddings_tensor, "utils/inference/reports_embeddings.pt")
+
+# Save metadata to a parquet file
+df_metadata = pd.DataFrame(metadata_list)
+df_metadata.to_parquet("utils/inference/reports_metadata.parquet")
+
+print(f"Text embeddings saved to utils/inference/reports_embeddings.pt")
+print(f"Metadata saved to utils/inference/reports_metadata.parquet")

@@ -243,9 +243,53 @@ class ContrastivePretrainingProject(BaseProject):
 
     def _setup_inference_objects(
         self,
-    )->dict:
-        raise NotImplementedError("Inference is not implemented for this project")
-    
+    )->dict[str, Any]:
+        # Calculate dataset statistics
+        mean, std = calculate_dataset_statistics_ddp(self.config)
+        
+        val_loader: DataLoader = get_distributed_multi_video_dataloader(
+            self.config, 
+            split="inference", 
+            mean=mean.tolist(),
+            std=std.tolist(),
+            shuffle=False,
+            num_replicas=self.config.world_size,
+            rank=self.config.device,
+            drop_last=False,
+        )
+        
+        # Create models
+        video_encoder: VideoEncoder = ModelRegistry.get(
+            name="video_encoder"
+        )(
+            backbone=self.config.model_name,
+            input_channels=3,
+            num_frames=self.config.frames,
+            pretrained=self.config.pretrained,
+            output_dim=512,
+            freeze_ratio=self.config.video_freeze_ratio,
+            dropout=self.config.dropout,
+            num_heads=self.config.num_heads,
+            aggregator_depth=self.config.aggregator_depth,
+        )        
+        video_encoder = video_encoder.to(self.config.device).float()
+        
+        video_encoder = DistributedUtils.DDP(
+            video_encoder, 
+            device_ids=[self.config.device], 
+        )
+        
+        checkpoint: dict[str, Any] = self._load_checkpoint(self.config.checkpoint)
+        video_encoder.module.load_state_dict(checkpoint["video_encoder"])
+        log_temp: float = checkpoint["train/temperature"]
+
+        return {
+            "val_loader": val_loader,
+            "video_encoder": video_encoder,
+            "log_temp": log_temp,
+            "output_dir": self.config.inference_results_path,
+        }
+
     def _save_texts_csv(
         self, 
         output_dir: str, 
@@ -275,32 +319,39 @@ class ContrastivePretrainingProject(BaseProject):
         return training_setup
         
     def run(self):
-        training_setup: dict[str, Any] = self._setup_training_objects()
-
-        start_epoch = 0
-        if self.config.resume_training:
-            checkpoint = self._load_checkpoint(self.config.checkpoint)
-            training_setup = self._update_training_setup_with_checkpoint(training_setup, checkpoint)
-            start_epoch = checkpoint["epoch"]
-            print(f"Resuming from epoch: {start_epoch}")
-
-        runner: Runner = Runner(
-            runner_type=RunnerRegistry.get(
-                name=self.config.pipeline_project
-            )(
-                config=self.config,
-                wandb_wrapper=self.wandb_wrapper,
-                **training_setup,
-            )
-        )
         if self.config.run_mode == RunMode.TRAIN:
+            training_setup: dict[str, Any] = self._setup_training_objects()
+            start_epoch = 0
+            if self.config.resume_training:
+                checkpoint = self._load_checkpoint(self.config.checkpoint)
+                training_setup = self._update_training_setup_with_checkpoint(training_setup, checkpoint)
+                start_epoch = checkpoint["epoch"]
+                print(f"Resuming from epoch: {start_epoch}")
+            runner: Runner = Runner(
+                runner_type=RunnerRegistry.get(
+                    name=self.config.pipeline_project
+                )(
+                    config=self.config,
+                    wandb_wrapper=self.wandb_wrapper,
+                    **training_setup,
+                )
+            )
             end_epoch = start_epoch + self.config.epochs
-            runner.train(
-                start_epoch=start_epoch, 
-                end_epoch=end_epoch
-            ) 
+            runner.train(start_epoch=start_epoch, end_epoch=end_epoch)
         elif self.config.run_mode == RunMode.INFERENCE:
+            inference_setup: dict[str, Any] = self._setup_inference_objects()
+            runner: Runner = Runner(
+                runner_type=RunnerRegistry.get(
+                    name=self.config.pipeline_project
+                )(
+                    config=self.config,
+                    wandb_wrapper=self.wandb_wrapper,
+                    **inference_setup,
+                )
+            )
             runner.inference()
         else:
-            raise ValueError(f"Invalid run mode: {self.config.run_mode}, must be one of {RunMode.TRAIN} or {RunMode.INFERENCE}")
+            raise ValueError(
+                f"Invalid run mode: {self.config.run_mode}, must be one of {RunMode.TRAIN} or {RunMode.INFERENCE}"
+            )
 

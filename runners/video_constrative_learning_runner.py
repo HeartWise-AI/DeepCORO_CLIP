@@ -45,18 +45,18 @@ class VideoContrastiveLearningRunner:
 
     def __init__(
         self,
-        config: ClipConfig,
-        wandb_wrapper: WandbWrapper,
-        train_loader: DataLoader,
-        val_loader: DataLoader,
-        video_encoder: VideoEncoder,
-        text_encoder: TextEncoder,
-        optimizer: Optimizer,
-        scaler: GradScaler,
-        log_temp: torch.Tensor,
-        lr_scheduler: LRScheduler,
-        loss_fn: Loss,
-        output_dir: str,
+        config: ClipConfig = None,
+        wandb_wrapper: WandbWrapper = None,
+        train_loader: DataLoader = None,
+        val_loader: DataLoader = None,
+        video_encoder: VideoEncoder = None,
+        text_encoder: TextEncoder = None,
+        optimizer: Optimizer = None,
+        scaler: GradScaler = None,
+        log_temp: torch.Tensor = None,
+        lr_scheduler: LRScheduler = None,
+        loss_fn: Loss = None,
+        output_dir: str = None,
     ):
         """
         Initialize the runner with provided configurations, data loaders, and modules.
@@ -871,4 +871,65 @@ class VideoContrastiveLearningRunner:
         """
         Method for a dedicated inference.
         """
-        raise NotImplementedError("Inference is not implemented for this runner")
+        # Load text embeddings tensor
+        text_embeddings: torch.Tensor = torch.load(self.config.text_embeddings_path, weights_only=True, map_location=torch.device(self.device))
+        # Load metadata
+        metadata: pd.DataFrame = pd.read_parquet(self.config.metadata_path)
+        
+        # Create a list to store all averaged metadata
+        all_averaged_metadata = []
+        
+        for batch in tqdm(
+            self.val_loader, 
+            desc=f"[GPU {self.device}] Running inference", 
+            disable=not self.config.is_ref_device
+        ):
+            with torch.no_grad():
+                with torch.amp.autocast("cuda"):
+                    video_embeddings = self.video_encoder(batch["videos"]).float()
+                    
+            similarity_matrix = torch.matmul(video_embeddings, text_embeddings.t())
+            _, topk_indices = torch.topk(similarity_matrix, k=self.config.topk, dim=1)
+            
+            # Compute the average of the topk metadata rows for each video embedding
+            topk_indices_np = topk_indices.cpu().numpy()  # shape: [N, topk]
+
+            # Get video paths from batch
+            video_paths = batch["paths"]
+            
+            for idx, indices in enumerate(topk_indices_np):
+                # Get the top-k metadata rows
+                topk_metadata = metadata.iloc[indices]
+                
+                # Calculate column-wise averages based on data type
+                averaged_row = {
+                    'video_name': video_paths[idx],  # Add video name to the row
+                }
+                
+                for column in metadata.columns:
+                    if pd.api.types.is_numeric_dtype(metadata[column]):
+                        # For numeric columns, compute mean
+                        averaged_row[column] = topk_metadata[column].mean()
+                    elif pd.api.types.is_string_dtype(metadata[column]):
+                        # For string columns, get most frequent value
+                        averaged_row[column] = topk_metadata[column].mode().iloc[0]
+                    else:
+                        raise ValueError(f"Unsupported data type: {metadata[column].dtype}")
+                
+                all_averaged_metadata.append(averaged_row)
+        
+        # Convert list of averaged metadata to DataFrame
+        averaged_metadata_df = pd.DataFrame(all_averaged_metadata)
+        
+        # Reorder columns to have video_name first
+        cols = ['video_name'] + [col for col in averaged_metadata_df.columns if col != 'video_name']
+        averaged_metadata_df = averaged_metadata_df[cols]
+        
+        # Create output directory if it doesn't exist
+        os.makedirs(self.output_dir, exist_ok=True)
+        
+        # Save to CSV
+        output_path = os.path.join(self.output_dir, "averaged_metadata.csv")
+        averaged_metadata_df.to_csv(output_path, index=False)
+        print(f"Saved averaged metadata to: {output_path}")        
+        print("Inference completed")

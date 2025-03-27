@@ -15,7 +15,8 @@ class ClipConfig(HeartWiseConfig):
     num_workers: int
     debug: bool
     temperature: float
-
+    epochs: int
+    
     # Data parameters
     data_filename: str
     root: str
@@ -70,7 +71,9 @@ class ClipConfig(HeartWiseConfig):
     resume_training: bool
     checkpoint: Optional[str]
     
-    # Parameters with default values must come last used for testing
-    world_size: int = 1  # Number of GPUs/processes for DDP
-    is_ref_device: bool = True  # Whether this is the reference device for logging
+    # Inference parameters
+    topk: int
+    text_embeddings_path: str
+    metadata_path: str
+    inference_results_path: str
 

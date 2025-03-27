@@ -64,4 +64,9 @@ tag: !!str mvit_pretrained
 name: !!str dev_deep_coro_clip_single_video
 project: !!str dev_deep_coro_clip_single_video
 entity: !!str mhi_ai
-use_wandb: !!bool true
+use_wandb: !!bool false
+# Inference parameters
+topk: !!int 5
+text_embeddings_path: !!str /media/data1/datasets/ECG_Tokenizer/utils/inference/reports_embeddings.pt
+metadata_path: !!str /media/data1/datasets/ECG_Tokenizer/utils/inference/reports_metadata.parquet
+inference_results_path: !!str checkpoints/inference/

@@ -1,5 +1,6 @@
+# Pipeline parameters
 pipeline_project: !!str "DeepCORO_clip_test"
-
+run_mode: !!str train
 # Training parameters
 epochs: !!int 2
 num_workers: !!int 0
@@ -7,7 +8,6 @@ debug: !!bool true
 use_amp: !!bool true
 period: !!int 1
 device: !!str cpu
-run_mode: !!str train
 # Dataset parameters
 data_filename: !!str test_data.csv
 root: !!str data
@@ -66,3 +66,8 @@ name: !!str dummy_name
 project: !!str dummy_project
 entity: !!str dummy_entity
 use_wandb: !!bool false
+# Inference parameters
+topk: !!int 5
+text_embeddings_path: !!str utils/inference/reports_embeddings.pt
+metadata_path: !!str utils/inference/reports_metadata.parquet
+inference_results_path: !!str utils/inference/inference_results.csv

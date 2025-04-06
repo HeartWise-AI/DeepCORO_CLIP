@@ -9,7 +9,6 @@ from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader
 import seaborn as sns
 import matplotlib.pyplot as plt
-from collections import defaultdict
 from sklearn.metrics import (
     roc_auc_score, 
     average_precision_score, 
@@ -279,6 +278,35 @@ class LinearProbingRunner:
         for k, v in outputs.items():
             if k.startswith('lr/'):
                 epoch_metrics[f"{mode}/{k}"] = v
+
+        # Compute AUC metrics for each head
+        if mode == RunMode.TRAIN or mode == RunMode.VALIDATION:
+            for head in accumulated_preds.keys():
+                if len(accumulated_preds[head]) > 0:
+                    preds = torch.cat(accumulated_preds[head], dim=0)
+                    targets = torch.cat(accumulated_targets[head], dim=0)
+                    
+                    # Convert to numpy for sklearn metrics
+                    preds_np = preds.detach().cpu().numpy()
+                    targets_np = targets.detach().cpu().numpy()
+                    
+                    # Handle binary vs multi-class classification
+                    if self.config.head_structure[head] == 1:
+                        # Binary classification - compute AUC and AUPRC
+                        try:
+                            auc = roc_auc_score(targets_np, preds_np)
+                            auprc = average_precision_score(targets_np, preds_np)
+                            epoch_metrics[f"{mode}/{head}_auc"] = auc
+                            epoch_metrics[f"{mode}/{head}_auprc"] = auprc
+                        except ValueError as e:
+                            print(f"[DEBUG] rank={self.device} => Error computing metrics for {head}: {e}")
+                    else:
+                        # Multi-class classification - compute AUC for each class
+                        try:
+                            auc = roc_auc_score(targets_np, preds_np, multi_class='ovr')
+                            epoch_metrics[f"{mode}/{head}_auc"] = auc
+                        except ValueError as e:
+                            print(f"[DEBUG] rank={self.device} => Error computing metrics for {head}: {e}")
 
         # Save predictions for validation mode
         if mode == RunMode.VALIDATION and self.config.is_ref_device:

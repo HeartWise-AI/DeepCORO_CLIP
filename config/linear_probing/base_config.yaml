@@ -23,11 +23,11 @@ num_warmup_percent: !!float 0.1
 num_hard_restarts_cycles: !!float 1.0
 warm_restart_tmult: !!int 2
 # Dataset parameters
-data_filename: !!str data/CathEF_MHI_UCSF_2016-to-july-2022-and-2023-08-30-post-CathEF_alpha_sample.csv
+data_filename: !!str data/CathEF_MHI_UCSF_2016-to-july-2022-and-2023-08-30-post-CathEF_alpha.csv
 num_workers: !!int 16
 batch_size: !!int 16
 datapoint_loc_label: !!str FileName
-target_label: [y_true_cat, Outcome]
+target_label: [y_true_cat]
 rand_augment: !!bool true
 resize: !!int 224
 frames: !!int 16
@@ -45,21 +45,14 @@ task: !!str classification
 linear_probing_head: !!str simple_linear_probing
 head_structure:
   y_true_cat: !!int 1
-  Outcome: !!int 1
 head_dropout:
   y_true_cat: !!float 0.1
-  Outcome: !!float 0.1
 loss_structure:
   y_true_cat: !!str bce_logit
-  Outcome: !!str bce_logit
 head_weights:
   y_true_cat: !!float 1.0
-  Outcome: !!float 1.0
 # Label mappings - Used for confusion matrix
 labels_map:
   y_true_cat:
-    Reduced: !!int 1
-    NonReduced: !!int 0
-  Outcome:
     Reduced: !!int 1
     NonReduced: !!int 0

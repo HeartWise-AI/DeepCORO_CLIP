@@ -110,18 +110,23 @@ class LinearProbingProject(BaseProject):
             device_ids=[self.config.device]
         )
         
-        # Initialize optimizer
+        # Initialize optimizer with separate learning rates for backbone and heads
         param_groups = [
             {
-                'params': linear_probing.module.parameters(),  # Main video backbone
-                'lr': self.config.lr,
-                'name': 'linear_probing',
+                'params': linear_probing.module.backbone.parameters(),  # Backbone parameters
+                'lr': 1e-5,  # Lower learning rate for backbone
+                'name': 'backbone',
+                'weight_decay': self.config.weight_decay
+            },
+            {
+                'params': linear_probing.module.heads.parameters(),  # Linear probe head parameters
+                'lr': self.config.lr,  # Higher learning rate for probe heads
+                'name': 'heads',
                 'weight_decay': self.config.weight_decay
             }
         ]
         optimizer_class: torch.optim.Optimizer = getattr(torch.optim, self.config.optimizer)
         optimizer: torch.optim.Optimizer = optimizer_class(param_groups)
-        
         # Initialize scheduler
         scheduler: LRScheduler = get_scheduler(
             scheduler_name=self.config.scheduler_name,

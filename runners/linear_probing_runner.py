@@ -76,6 +76,22 @@ class LinearProbingRunner:
         self.output_dir: str = output_dir
         self.best_val_loss = float("inf")
         self.best_epoch = -1
+        # For simplicity: check the config for a known scheduler_name
+        # If it includes "_warmup" or is from HF, we treat it as per-iteration
+        self.scheduler_per_iteration = self._scheduler_is_per_iteration()
+
+    def _scheduler_is_per_iteration(self) -> bool:
+        """
+        Returns True if the chosen scheduler is a Hugging Face style that
+        expects a call to .step() per iteration (batch). Otherwise, False.
+        """
+        # We do a simpler check to change scheduler update to per epoch or per batch:
+        # Example keywords: "linear_warmup", "cosine_with_warmup", 
+        # "cosine_with_hard_restarts_with_warmup", etc.
+        sched_name = getattr(self.config, "scheduler_name", "").lower()
+        # If it matches typical HF warmup schedulers, return True
+        HF_KEYS = ["warmup", "with_warmup"]
+        return any(k in sched_name for k in HF_KEYS)
 
     def train(
         self, 
@@ -145,6 +161,9 @@ class LinearProbingRunner:
                 device_ids=self.device
             )
             
+            if self.lr_scheduler and (not self.scheduler_per_iteration):
+                self.lr_scheduler.step()
+                
             if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
                 val_metrics['best_val_loss'] = self.best_val_loss
                 self.wandb_wrapper.log(val_metrics)
@@ -200,6 +219,10 @@ class LinearProbingRunner:
             except Exception as e:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in step_fn: {e}")
             
+            if self.lr_scheduler and self.scheduler_per_iteration and (mode == RunMode.TRAIN):
+                self.lr_scheduler.step()
+
+
             for k, v in outputs['losses'].items():
                 if DistributedUtils.is_initialized():
                     gathered_metrics[f"{k}"] = DistributedUtils.gather_loss(

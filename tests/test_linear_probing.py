@@ -223,24 +223,31 @@ class TestLinearProbing(unittest.TestCase):
         self.assertIsInstance(val_metrics, dict)
         
         # Check for essential metrics in training
+        # Binary classification heads (contrast_agent and stent_presence)
         self.assertIn('train/contrast_agent_auc', train_metrics)
         self.assertIn('train/contrast_agent_auprc', train_metrics)
-        self.assertIn('train/main_structure_auc', train_metrics)
-        self.assertIn('train/main_structure_auprc', train_metrics)
         self.assertIn('train/stent_presence_auc', train_metrics)
         self.assertIn('train/stent_presence_auprc', train_metrics)
+        
+        # Multi-class head (main_structure)
+        self.assertIn('train/main_structure_auc', train_metrics)
+        
+        # Check for essential metrics in validation
+        # Binary classification heads
+        self.assertIn('val/contrast_agent_auc', val_metrics)
+        self.assertIn('val/contrast_agent_auprc', val_metrics)
+        self.assertIn('val/stent_presence_auc', val_metrics)
+        self.assertIn('val/stent_presence_auprc', val_metrics)
+        
+        # Multi-class head
+        self.assertIn('val/main_structure_auc', val_metrics)
+        
+        # Check for loss metrics
         self.assertIn('train/contrast_agent_loss', train_metrics)
         self.assertIn('train/main_structure_loss', train_metrics)
         self.assertIn('train/stent_presence_loss', train_metrics)
         self.assertIn('train/main_loss', train_metrics)
-
-        # Check for essential metrics in validation
-        self.assertIn('val/contrast_agent_auc', val_metrics)
-        self.assertIn('val/contrast_agent_auprc', val_metrics)
-        self.assertIn('val/main_structure_auc', val_metrics)
-        self.assertIn('val/main_structure_auprc', val_metrics)
-        self.assertIn('val/stent_presence_auc', val_metrics)
-        self.assertIn('val/stent_presence_auprc', val_metrics)
+        
         self.assertIn('val/contrast_agent_loss', val_metrics)
         self.assertIn('val/main_structure_loss', val_metrics)
         self.assertIn('val/stent_presence_loss', val_metrics)

@@ -92,6 +92,11 @@ class TestLinearProbing(unittest.TestCase):
         sys.argv = original_argv
         print(f"test_config: {self.test_config}")
         
+        # Set device based on availability
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.test_config.device = self.device
+        self.test_config.world_size = 1  # Set to 1 for testing
+        
         # Initialize video encoder backbone for linear probing
         video_encoder: VideoEncoder = ModelRegistry.get(
             name="video_encoder"
@@ -103,7 +108,7 @@ class TestLinearProbing(unittest.TestCase):
             dropout=self.test_config.dropout,
             num_heads=self.test_config.num_heads,
             aggregator_depth=self.test_config.aggregator_depth,
-        )   
+        ).to(self.device)  # Move to device
         
         # Create models with test settings
         self.linear_probing: LinearProbing = ModelRegistry.get(
@@ -182,8 +187,8 @@ class TestLinearProbing(unittest.TestCase):
     def test_train_step(self, mock_log):
         """Test if training step runs without errors."""
         batch = next(iter(self.train_loader))
-        batch_video = batch["videos"].unsqueeze(1)
-        batch_targets = batch["targets"]
+        batch_video = batch["videos"].unsqueeze(1).to(self.device)  # Move to device
+        batch_targets = {k: v.to(self.device) for k, v in batch["targets"].items()}  # Move targets to device
         outputs = self.runner._train_step(
             batch_video=batch_video, 
             batch_targets=batch_targets

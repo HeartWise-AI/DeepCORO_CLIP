@@ -285,28 +285,90 @@ class LinearProbingRunner:
                 if len(accumulated_preds[head]) > 0:
                     preds = torch.cat(accumulated_preds[head], dim=0)
                     targets = torch.cat(accumulated_targets[head], dim=0)
-                    
+
                     # Convert to numpy for sklearn metrics
-                    preds_np = preds.detach().cpu().numpy()
-                    targets_np = targets.detach().cpu().numpy()
-                    
-                    # Handle binary vs multi-class classification
-                    if self.config.head_structure[head] == 1:
-                        # Binary classification - compute AUC and AUPRC
+                    all_preds: np.ndarray = preds.detach().cpu().numpy()
+                    all_targets: np.ndarray = targets.detach().cpu().numpy()
+                    print(f"[DEBUG] rank={self.device} => head={head} all_preds shape: {all_preds.shape}, all_targets shape: {all_targets.shape}")
+                    try:
+                        auc: float = roc_auc_score(all_targets.tolist(), all_preds.tolist(), average="micro")
+                        print(f"[DEBUG] rank={self.device} => head={head} AUC: {auc}")
+                    except Exception as e:
+                        raise Exception(f"[DEBUG] rank={self.device} => Error in AUC: {e}")
+
+                    try:
+                        auprc: float = average_precision_score(all_targets.tolist(), all_preds.tolist(), average="micro")
+                        print(f"[DEBUG] rank={self.device} => {mode} head={head} AUPRC: {auprc}")
+                    except Exception as e:
+                        raise Exception(f"[DEBUG] rank={self.device} => Error in AUPRC: {e}")
+
+                    epoch_metrics[f"{mode}/{head}_auc"] = auc
+                    epoch_metrics[f"{mode}/{head}_auprc"] = auprc
+
+                    # Compute and log confusion matrix
+                    if self.config.is_ref_device and self.wandb_wrapper.is_initialized():
                         try:
-                            auc = roc_auc_score(targets_np, preds_np)
-                            auprc = average_precision_score(targets_np, preds_np)
-                            epoch_metrics[f"{mode}/{head}_auc"] = auc
-                            epoch_metrics[f"{mode}/{head}_auprc"] = auprc
-                        except ValueError as e:
-                            print(f"[DEBUG] rank={self.device} => Error computing metrics for {head}: {e}")
-                    else:
-                        # Multi-class classification - compute AUC for each class
-                        try:
-                            auc = roc_auc_score(targets_np, preds_np, multi_class='ovr')
-                            epoch_metrics[f"{mode}/{head}_auc"] = auc
-                        except ValueError as e:
-                            print(f"[DEBUG] rank={self.device} => Error computing metrics for {head}: {e}")
+                            # For binary classification
+                            if self.config.head_structure[head] == 1:
+                                try:
+                                    # Compute best threshold using Youden's J statistic
+                                    best_threshold: float = compute_best_threshold(
+                                        all_targets.tolist(), 
+                                        all_preds.tolist()
+                                    )
+                                    print(f"[DEBUG] rank={self.device} => head={head} best_threshold: {best_threshold}")
+                                except Exception as e:
+                                    # If error, use default threshold 0.5
+                                    print(f"[DEBUG] rank={self.device} => Error computing threshold: {e} using default threshold 0.5")
+                                    best_threshold = 0.5
+
+                                # Binarize predictions
+                                pred_labels: np.ndarray = (all_preds > best_threshold).astype(int)
+
+                                # Log best threshold
+                                epoch_metrics[f"{mode}/{head}_best_threshold"] = best_threshold
+
+                            # For multi-class classification
+                            else:
+                                pred_labels: np.ndarray = all_preds.argmax(axis=1)
+                                all_targets: np.ndarray = all_targets.argmax(axis=1)
+
+                            # Create confusion matrix using preprocessed targets and predictions
+                            labels: list[str] = [''] * len(self.config.labels_map[head])
+                            for k, v in self.config.labels_map[head].items():
+                                labels[v] = k
+
+                            cm: np.ndarray = confusion_matrix(y_true=all_targets, y_pred=pred_labels)
+
+                            # Create confusion matrix plot
+                            plt.figure(figsize=(10, 8))
+                            sns.heatmap(
+                                cm, 
+                                annot=True, 
+                                fmt='d', 
+                                cmap='Blues', 
+                                xticklabels=labels, 
+                                yticklabels=labels
+                            )
+                            plt.title(f'{mode.capitalize()} Confusion Matrix - {head}')
+                            plt.ylabel('True Label')
+                            plt.xlabel('Predicted Label')
+
+                            # Log to wandb
+                            self.wandb_wrapper.log_plot({
+                                f"confusion_matrix/{mode}/{head}": plt
+                            })
+                            plt.close()
+
+                        except Exception as e:
+                            print(f"[DEBUG] rank={self.device} => Error in confusion matrix: {e}")
+                            print(f"[DEBUG] rank={self.device} => all_preds shape: {all_preds.shape}, all_targets shape: {all_targets.shape}")
+
+            # Sync after logging metrics and confusion matrix
+            DistributedUtils.sync_process_group(
+                world_size=self.world_size,
+                device_ids=self.device
+            )
 
         # Save predictions for validation mode
         if mode == RunMode.VALIDATION and self.config.is_ref_device:
@@ -580,7 +642,7 @@ class LinearProbingRunner:
             # Save current epoch predictions
             current_epoch_file: str = os.path.join(
                 predictions_dir, 
-                f'val_predictions_epoch_{epoch}.csv'
+                f'{mode}_predictions_epoch_{epoch}.csv'
             )
             df.to_csv(current_epoch_file, index=False)
             print(f"[DEBUG] rank={self.device} => Saved epoch {epoch} predictions to {current_epoch_file}")
@@ -589,7 +651,7 @@ class LinearProbingRunner:
             if epoch == self.best_epoch:
                 best_file: str = os.path.join(
                     predictions_dir, 
-                    f'val_predictions_best.csv'
+                    f'{mode}_predictions_best_epoch_{epoch}.csv'
                 )
                 df.to_csv(best_file, index=False)
                 print(f"[DEBUG] rank={self.device} => Saved best epoch predictions to {best_file}")

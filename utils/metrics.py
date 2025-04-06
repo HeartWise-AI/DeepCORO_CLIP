@@ -220,19 +220,24 @@ def compute_best_threshold(
     df_pred_col: list[float]
 ) -> float:
     """
-    Compute the best threshold using the Youden Index.
+    Compute the best threshold that maximizes both sensitivity (true positive rate) 
+    and specificity (1 - false positive rate).
 
     Args:
-        df_gt_col (pd.Series): Ground truth values for a specific column.
-        df_pred_col (pd.Series): Predicted values for a specific column.
+        df_gt_col (list[float]): Ground truth values for a specific column.
+        df_pred_col (list[float]): Predicted values for a specific column.
 
     Returns:
-        float: The best threshold value.
+        float: The best threshold value that maximizes sensitivity and specificity.
     """
     fpr, tpr, roc_thresholds = roc_curve(df_gt_col, df_pred_col)
     
-    # Compute Youden Index
-    youden_index = tpr - fpr
-    best_threshold = roc_thresholds[np.argmax(youden_index)]
+    # Compute sensitivity (TPR) and specificity (1-FPR)
+    specificity = 1 - fpr
+    
+    # Find threshold that maximizes both sensitivity and specificity
+    # by maximizing their geometric mean
+    gmeans = np.sqrt(tpr * specificity)
+    best_threshold = roc_thresholds[np.argmax(gmeans)]
     
     return float(best_threshold) # convert to float instead of numpy.float32

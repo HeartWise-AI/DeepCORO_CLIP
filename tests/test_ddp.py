@@ -23,8 +23,7 @@ class TestDistributedUtils(TestCase):
         os.environ['RANK'] = '0'
         os.environ['WORLD_SIZE'] = '1'
         
-        # Use gloo backend for CPU
-        backend = 'gloo' if not torch.cuda.is_available() else 'nccl'
+        # Always use gloo backend for CPU testing
         DistributedUtils.ddp_setup(gpu_id=0, world_size=1)
         
         # Test if distributed is initialized
@@ -41,8 +40,7 @@ class TestDistributedUtils(TestCase):
         os.environ['RANK'] = '0'
         os.environ['WORLD_SIZE'] = '1'
         
-        # Use gloo backend for CPU
-        backend = 'gloo' if not torch.cuda.is_available() else 'nccl'
+        # Always use gloo backend for CPU testing
         DistributedUtils.ddp_setup(gpu_id=0, world_size=1)
         
         # Test gathering objects
@@ -61,8 +59,7 @@ class TestDistributedUtils(TestCase):
         os.environ['RANK'] = '0'
         os.environ['WORLD_SIZE'] = '1'
         
-        # Use gloo backend for CPU
-        backend = 'gloo' if not torch.cuda.is_available() else 'nccl'
+        # Always use gloo backend for CPU testing
         DistributedUtils.ddp_setup(gpu_id=0, world_size=1)
         
         # Test gathering tensors
@@ -81,8 +78,7 @@ class TestDistributedUtils(TestCase):
         os.environ['RANK'] = '0'
         os.environ['WORLD_SIZE'] = '1'
         
-        # Use gloo backend for CPU
-        backend = 'gloo' if not torch.cuda.is_available() else 'nccl'
+        # Always use gloo backend for CPU testing
         DistributedUtils.ddp_setup(gpu_id=0, world_size=1)
         
         # Test synchronization

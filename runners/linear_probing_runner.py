@@ -22,7 +22,7 @@ from utils.enums import RunMode, MetricTask
 from utils.wandb_wrapper import WandbWrapper
 from utils.metrics import compute_best_threshold
 from utils.config.linear_probing_config import LinearProbingConfig
-
+from collections import defaultdict
 from models.linear_probing import LinearProbing
 
 

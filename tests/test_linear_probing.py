@@ -253,6 +253,88 @@ class TestLinearProbing(unittest.TestCase):
         self.assertIn('val/stent_presence_loss', val_metrics)
         self.assertIn('val/main_loss', val_metrics)
                     
+    def test_scheduler_per_iteration(self):
+        """Test scheduler per iteration detection."""
+        # Test with warmup scheduler
+        self.runner.config.scheduler_name = "linear_warmup"
+        self.assertTrue(self.runner._scheduler_is_per_iteration())
+        
+        # Test with non-warmup scheduler
+        self.runner.config.scheduler_name = "step"
+        self.assertFalse(self.runner._scheduler_is_per_iteration())
+        
+    def test_save_predictions(self):
+        """Test saving predictions."""
+        # Create dummy data
+        accumulated_names = ["video1", "video2"]
+        accumulated_preds = {
+            "contrast_agent": [torch.tensor([[0.8], [0.2]])],
+            "main_structure": [torch.tensor([[0.1, 0.2, 0.3, 0.4, 0.0], [0.0, 0.1, 0.2, 0.3, 0.4]])],
+            "stent_presence": [torch.tensor([[0.9], [0.1]])]
+        }
+        accumulated_targets = {
+            "contrast_agent": [torch.tensor([[1], [0]])],
+            "main_structure": [torch.tensor([[0, 1, 0, 0, 0], [0, 0, 0, 0, 1]])],
+            "stent_presence": [torch.tensor([[1], [0]])]
+        }
+        
+        # Test saving predictions
+        self.runner._save_predictions(
+            mode=RunMode.VALIDATION,
+            accumulated_names=accumulated_names,
+            accumulated_preds=accumulated_preds,
+            accumulated_targets=accumulated_targets,
+            epoch=0
+        )
+        
+        # Verify files were created
+        predictions_dir = os.path.join(self.temp_dir, "predictions")
+        self.assertTrue(os.path.exists(predictions_dir))
+        self.assertTrue(os.path.exists(os.path.join(predictions_dir, "val_predictions_epoch_0.csv")))
+        
+    def test_inference(self):
+        """Test inference method."""
+        with self.assertRaises(NotImplementedError):
+            self.runner.inference()
+            
+    def test_preprocess_inputs(self):
+        """Test input preprocessing."""
+        batch = {
+            "videos": torch.randn(2, 16, 224, 224, 3),
+            "targets": {
+                "contrast_agent": torch.randint(0, 2, (2, 1)),
+                "main_structure": torch.randint(0, 5, (2, 1)),
+                "stent_presence": torch.randint(0, 2, (2, 1))
+            }
+        }
+        
+        processed = self.runner._preprocess_inputs(batch)
+        self.assertIn("batch_video", processed)
+        self.assertIn("batch_targets", processed)
+        self.assertEqual(processed["batch_video"].shape, (2, 1, 16, 224, 224, 3))
+        
+    def test_train_with_scheduler(self):
+        """Test training with scheduler."""
+        # Create a simple scheduler
+        from torch.optim.lr_scheduler import StepLR
+        scheduler = StepLR(self.runner.optimizer, step_size=1, gamma=0.1)
+        self.runner.lr_scheduler = scheduler
+        
+        # Run one epoch
+        train_metrics = self.runner._run_epoch(mode=RunMode.TRAIN, epoch=0)
+        self.assertIn("train/lr/linear_probing", train_metrics)
+        
+    def test_validation_with_scheduler(self):
+        """Test validation with scheduler."""
+        # Create a simple scheduler
+        from torch.optim.lr_scheduler import StepLR
+        scheduler = StepLR(self.runner.optimizer, step_size=1, gamma=0.1)
+        self.runner.lr_scheduler = scheduler
+        
+        # Run one epoch
+        val_metrics = self.runner._run_epoch(mode=RunMode.VALIDATION, epoch=0)
+        self.assertIn("val/lr/linear_probing", val_metrics)
+        
     def tearDown(self):
         """Clean up after tests."""
         # Clean up datasets

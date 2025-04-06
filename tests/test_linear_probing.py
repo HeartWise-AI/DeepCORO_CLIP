@@ -24,7 +24,8 @@ from utils.registry import register_submodules
 from utils.enums import SubmoduleType, LossType
 from runners.typing import Runner
 from runners.linear_probing_runner import LinearProbingRunner
-from utils.config import load_config
+from utils.config.linear_probing_config import LinearProbingConfig
+from utils.config import HeartWiseConfig
 
 # Register all submodules
 register_submodules(SubmoduleType.RUNNER)
@@ -46,12 +47,16 @@ class DummyDataset(Dataset):
         return {
             "videos": torch.randn(*self.video_shape),
             "targets": {
-                "contrast_agent": torch.randint(0, 2, (1,)),
-                "main_structure": torch.randint(0, 5, (1,)),
-                "stent_presence": torch.randint(0, 2, (1,))
+                "contrast_agent": torch.randint(0, 2, ()),
+                "main_structure": torch.randint(0, 5, ()),
+                "stent_presence": torch.randint(0, 2, ())
             },
             "video_fname": f"video_{idx}.mp4"
         }
+        
+    def cleanup(self):
+        """Cleanup method for test compatibility."""
+        pass
 
 
 class TestLinearProbing(unittest.TestCase):
@@ -66,19 +71,106 @@ class TestLinearProbing(unittest.TestCase):
         # Create temp directory for outputs
         self.temp_dir = tempfile.mkdtemp()
         
-        # Load config
-        config_path = os.path.join(os.path.dirname(__file__), "config/linear_probing_base_config.yaml")
-        self.config = load_config(config_path)
-        self.config.output_dir = self.temp_dir
-        self.config.world_size = 1
-        self.config.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # Create config with all required parameters
+        self.config = LinearProbingConfig(
+            # Base config parameters
+            pipeline_project="DeepCORO_video_linear_probing",
+            output_dir=self.temp_dir,
+            run_mode="train",
+            epochs=10,
+            seed=42,
+            tag="test",
+            name="test_run",
+            project="test_project",
+            entity="test_entity",
+            use_wandb=False,
+            
+            # Training parameters
+            lr=0.001,
+            scheduler_name="step",
+            lr_step_period=1,
+            factor=0.1,
+            optimizer="adam",
+            weight_decay=0.0,
+            use_amp=False,
+            gradient_accumulation_steps=1,
+            num_warmup_percent=0.1,
+            num_hard_restarts_cycles=1.0,
+            warm_restart_tmult=2,
+            
+            # Dataset parameters
+            data_filename="test_data.csv",
+            num_workers=0,
+            batch_size=2,
+            datapoint_loc_label="video_path",
+            target_label=["contrast_agent", "main_structure", "stent_presence"],
+            rand_augment=False,
+            resize=224,
+            frames=16,
+            stride=1,
+            
+            # Video Encoder parameters
+            model_name="resnet50",
+            aggregator_depth=1,
+            num_heads=1,
+            video_freeze_ratio=0.0,
+            dropout=0.1,
+            pretrained=True,
+            video_encoder_checkpoint_path="",
+            
+            # Linear Probing parameters
+            task="classification",
+            linear_probing_head="multi_head",
+            head_structure={
+                "contrast_agent": 1,
+                "main_structure": 5,
+                "stent_presence": 1
+            },
+            loss_structure={
+                "contrast_agent": "bce",
+                "main_structure": "ce",
+                "stent_presence": "bce"
+            },
+            head_weights={
+                "contrast_agent": 1.0,
+                "main_structure": 1.0,
+                "stent_presence": 1.0
+            },
+            head_dropout={
+                "contrast_agent": 0.1,
+                "main_structure": 0.1,
+                "stent_presence": 0.1
+            },
+            
+            # Label mappings
+            labels_map={
+                "contrast_agent": {"no": 0, "yes": 1},
+                "main_structure": {
+                    "none": 0,
+                    "lca": 1,
+                    "lad": 2,
+                    "lcx": 3,
+                    "rca": 4
+                },
+                "stent_presence": {"no": 0, "yes": 1}
+            }
+        )
+        
+        # Set GPU info after initialization
+        HeartWiseConfig.set_gpu_info_in_place(self.config)
         
         # Initialize model components
         self.video_encoder = VideoEncoder()
         self.linear_probing = LinearProbing(
-            video_encoder=self.video_encoder,
-            num_classes=5,
-            hidden_dim=512
+            backbone=self.video_encoder,
+            linear_probing_head="simple_linear_probing",
+            head_structure={
+                "contrast_agent": 1,
+                "main_structure": 5,
+                "stent_presence": 1
+            },
+            dropout=0.1,
+            freeze_backbone_ratio=0.0
         )
         
         # Create dummy datasets
@@ -98,7 +190,9 @@ class TestLinearProbing(unittest.TestCase):
         )
         
         # Initialize optimizer and scheduler
-        self.optimizer = torch.optim.Adam(self.linear_probing.parameters(), lr=0.001)
+        self.optimizer = torch.optim.Adam([
+            {'params': self.linear_probing.parameters(), 'name': 'linear_probing'}
+        ], lr=0.001)
         self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=1, gamma=0.1)
         
         # Initialize runner
@@ -111,7 +205,7 @@ class TestLinearProbing(unittest.TestCase):
             optimizer=self.optimizer,
             scaler=None,
             lr_scheduler=self.scheduler,
-            loss_fn=None,
+            loss_fn=Loss(loss_type=LossRegistry.get("multi_head")(head_structure=self.config.head_structure)),  # Wrap MultiHeadLoss in Loss class
             output_dir=self.temp_dir
         )
         

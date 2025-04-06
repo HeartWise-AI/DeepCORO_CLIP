@@ -8,7 +8,11 @@ class TestDistributedUtils(TestCase):
     def setUp(self):
         """Set up test environment."""
         self.world_size = 1
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.device = torch.device('cpu')  # Force CPU for testing
+        os.environ['MASTER_ADDR'] = 'localhost'
+        os.environ['MASTER_PORT'] = '12355'
+        os.environ['RANK'] = '0'
+        os.environ['WORLD_SIZE'] = '1'
 
     def tearDown(self):
         """Clean up after tests."""
@@ -18,12 +22,6 @@ class TestDistributedUtils(TestCase):
     def test_distributed_setup(self):
         """Test distributed setup."""
         # Initialize distributed environment
-        os.environ['MASTER_ADDR'] = 'localhost'
-        os.environ['MASTER_PORT'] = '12355'
-        os.environ['RANK'] = '0'
-        os.environ['WORLD_SIZE'] = '1'
-        
-        # Always use gloo backend for CPU testing
         DistributedUtils.ddp_setup(gpu_id=0, world_size=1)
         
         # Test if distributed is initialized
@@ -35,12 +33,6 @@ class TestDistributedUtils(TestCase):
     def test_gather_object(self):
         """Test gathering objects across processes."""
         # Initialize distributed environment
-        os.environ['MASTER_ADDR'] = 'localhost'
-        os.environ['MASTER_PORT'] = '12355'
-        os.environ['RANK'] = '0'
-        os.environ['WORLD_SIZE'] = '1'
-        
-        # Always use gloo backend for CPU testing
         DistributedUtils.ddp_setup(gpu_id=0, world_size=1)
         
         # Test gathering objects
@@ -54,12 +46,6 @@ class TestDistributedUtils(TestCase):
     def test_gather_tensor(self):
         """Test gathering tensors across processes."""
         # Initialize distributed environment
-        os.environ['MASTER_ADDR'] = 'localhost'
-        os.environ['MASTER_PORT'] = '12355'
-        os.environ['RANK'] = '0'
-        os.environ['WORLD_SIZE'] = '1'
-        
-        # Always use gloo backend for CPU testing
         DistributedUtils.ddp_setup(gpu_id=0, world_size=1)
         
         # Test gathering tensors
@@ -73,12 +59,6 @@ class TestDistributedUtils(TestCase):
     def test_sync_process_group(self):
         """Test synchronizing process group."""
         # Initialize distributed environment
-        os.environ['MASTER_ADDR'] = 'localhost'
-        os.environ['MASTER_PORT'] = '12355'
-        os.environ['RANK'] = '0'
-        os.environ['WORLD_SIZE'] = '1'
-        
-        # Always use gloo backend for CPU testing
         DistributedUtils.ddp_setup(gpu_id=0, world_size=1)
         
         # Test synchronization

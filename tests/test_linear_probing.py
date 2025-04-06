@@ -58,6 +58,10 @@ class DummyDataset(Dataset):
         """Cleanup method for test compatibility."""
         pass
 
+class MockWandbWrapper:
+    def __init__(self):
+        self.is_initialized = lambda: True
+        self.log = lambda x: None
 
 class TestLinearProbing(unittest.TestCase):
     @patch('wandb.init')
@@ -159,6 +163,9 @@ class TestLinearProbing(unittest.TestCase):
         # Set GPU info after initialization
         HeartWiseConfig.set_gpu_info_in_place(self.config)
         
+        # Create mock wandb wrapper
+        self.wandb_wrapper = MockWandbWrapper()
+        
         # Initialize model components
         self.video_encoder = VideoEncoder()
         self.linear_probing = LinearProbing(
@@ -198,7 +205,7 @@ class TestLinearProbing(unittest.TestCase):
         # Initialize runner
         self.runner = LinearProbingRunner(
             config=self.config,
-            wandb_wrapper=None,
+            wandb_wrapper=self.wandb_wrapper,
             train_loader=self.train_loader,
             val_loader=self.val_loader,
             linear_probing=self.linear_probing,

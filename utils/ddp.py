@@ -22,12 +22,6 @@ class DistributedUtils:
 
     @staticmethod
     def ddp_setup(gpu_id: int, world_size: int):
-        """Initialize distributed environment."""
-        os.environ['MASTER_ADDR'] = 'localhost'
-        os.environ['MASTER_PORT'] = '12355'
-        os.environ['RANK'] = str(gpu_id)
-        os.environ['WORLD_SIZE'] = str(world_size)
-        
         # Use gloo backend for CPU
         backend = 'gloo'
         
@@ -35,6 +29,7 @@ class DistributedUtils:
         if torch.cuda.is_available():
             torch.cuda.set_device(gpu_id)
             backend = 'nccl'
+            print(f"Using CUDA device {gpu_id}")
         
         # Initialize process group
         DistributedUtils.dist.init_process_group(
@@ -43,6 +38,7 @@ class DistributedUtils:
             world_size=world_size,
             rank=gpu_id
         )
+        
         
     @staticmethod
     def ddp_cleanup():

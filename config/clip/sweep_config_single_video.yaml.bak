@@ -1,6 +1,6 @@
 command:
   - torchrun
-  - "--nproc_per_node=2"
+  - "--nproc_per_node=1"
   - "--master_port=29500"
   - "scripts/main.py"
   - "--base_config"
@@ -21,7 +21,7 @@ parameters:
   lr:
     distribution: log_uniform_values
     min: 0.00001
-    max: 0.00003
+    max: 0.0001
 
   optimizer:
     values: ["RAdam", "AdamW"]
@@ -36,7 +36,7 @@ parameters:
     values: [1]
 
   num_warmup_percent:
-    values: [0.1, 0.15]
+    values: [0.05, 0.1, 0.15]
 
   factor:
     distribution: uniform
@@ -48,8 +48,8 @@ parameters:
 
   dropout:
     distribution: uniform
-    min: 0.05
-    max: 0.15
+    min: 0.1
+    max: 0.2
 
   video_freeze_ratio:
     distribution: uniform
@@ -74,17 +74,17 @@ parameters:
 
   video_weight_decay:
     distribution: log_uniform_values
-    min: 1e-5
+    min: 1e-7
     max: 1e-4
   text_weight_decay:
     distribution: log_uniform_values
-    min: 1e-5
-    max: 1e-4
+    min: 1e-7
+    max: 1e-6
 
   batch_size:
-    values: [24]
+    values: [4]
   loss_name:
-    values: ["siglip_ddp"]
+    values: ["contrastive"]
   tag:
     values: ["mvit_pretrained"]
   name:

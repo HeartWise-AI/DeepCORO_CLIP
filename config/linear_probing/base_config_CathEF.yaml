@@ -9,7 +9,7 @@ tag: !!str mvit_pretrained
 name: !!str DeepCORO_video_linear_probing_cathEF
 project: !!str DeepCORO_video_linear_probing_cathEF
 entity: !!str mhi_ai
-use_wandb: !!bool false
+use_wandb: !!bool true
 # Training parameters
 lr: !!float 0.001
 scheduler_name: !!str step

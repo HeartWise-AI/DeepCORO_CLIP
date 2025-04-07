@@ -41,6 +41,7 @@ class MultiVideoDataset(Dataset):
         random_augment: bool = False,
         shuffle_videos: bool = False,
         seed: Optional[int] = None,
+        stride: int = 1,
     ):
         super().__init__()
         self.root = pathlib.Path(root)
@@ -57,6 +58,7 @@ class MultiVideoDataset(Dataset):
         self.random_augment = random_augment
         self.shuffle_videos = shuffle_videos
         self.seed = seed
+        self.stride = stride
         print(f"[MultiVideoDataset] resize={self.resize}")
         print(f"[MultiVideoDataset] mean={self.mean}")
         print(f"[MultiVideoDataset] std={self.std}")
@@ -104,14 +106,11 @@ class MultiVideoDataset(Dataset):
         vid_paths = self.study_to_videos[sid]
         text_report = self.study_to_text[sid]
 
-        # If there are more than max_num_videos paths, either slice them in order OR randomly sample
+        if self.shuffle_videos:
+            vid_paths = random.sample(vid_paths, len(vid_paths))
+
         if len(vid_paths) > self.num_videos:
-            if self.shuffle_videos:
-                # random sample exactly max_num_videos
-                chose_paths = random.sample(vid_paths, self.num_videos)
-            else:
-                # keep original order
-                chose_paths = vid_paths[: self.num_videos]
+            chose_paths = vid_paths[:self.num_videos]
         else:
             chose_paths = vid_paths  # less or equal => use all
 
@@ -124,7 +123,9 @@ class MultiVideoDataset(Dataset):
                     resize=self.resize,
                     mean=self.mean,
                     std=self.std,
+                    rand_augment=self.random_augment,
                     backbone=self.backbone,
+                    stride=self.stride,
                 )  # shape => (16,224,224,3)
             except Exception as e:
                 print(f"Warning: {vp} load error: {e}")
@@ -211,7 +212,8 @@ def get_distributed_multi_video_dataloader(
         std=std,
         random_augment=config.rand_augment,
         shuffle_videos=config.shuffle_videos,
-        seed=config.seed
+        seed=config.seed,
+        stride=config.stride,
     )
 
     # Create a sampler for distributed training

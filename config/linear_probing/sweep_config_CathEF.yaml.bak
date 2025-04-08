@@ -38,9 +38,9 @@ parameters:
     max: 0.5
   video_freeze_ratio:
     distribution: uniform
-    min: 0.7
+    min: 1.0
     max: 1.0
-  weight_decay:
+  weight_decay: 
     distribution: uniform
     min: 1e-7
     max: 1e-6

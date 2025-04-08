@@ -36,6 +36,7 @@ class VideoDataset(torch.utils.data.Dataset):
         mean: Optional[Any] = None,
         std: Optional[Any] = None,
         rand_augment: bool = False,
+        stride: int = 1,
         **kwargs,
     ):
         self.filename: str = data_filename
@@ -49,7 +50,7 @@ class VideoDataset(torch.utils.data.Dataset):
         self.normalize: bool = normalize
         self.rand_augment: bool = rand_augment
         
-        self.stride: int = kwargs.pop("stride", 1)
+        self.stride: int = stride
         if self.backbone.lower() == "mvit":
             self.num_frames = 16
             print(f"Using MViT backbone - forcing exactly {self.num_frames} frames with stride {self.stride}")
@@ -179,6 +180,7 @@ class VideoDataset(torch.utils.data.Dataset):
                 video_transforms=self.video_transforms,
                 rand_augment=self.rand_augment,
                 backbone=self.backbone,
+                stride=self.stride,
             )
 
             if self.backbone.lower() == "mvit" and video.shape[0] != 16:
@@ -239,6 +241,7 @@ def get_distributed_video_dataloader(
         mean=mean,
         std=std,
         rand_augment=config.rand_augment,
+        stride=config.stride,
     )
 
     # Create a sampler for distributed training

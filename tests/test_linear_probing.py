@@ -121,6 +121,7 @@ class TestLinearProbing(unittest.TestCase):
             dropout=0.1,
             pretrained=True,
             video_encoder_checkpoint_path="",
+            video_encoder_lr=0.0005,
             
             # Linear Probing parameters
             task="classification",

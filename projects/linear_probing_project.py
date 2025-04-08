@@ -114,7 +114,7 @@ class LinearProbingProject(BaseProject):
         param_groups = [
             {
                 'params': linear_probing.module.backbone.parameters(),  # Backbone parameters
-                'lr': 1e-5,  # Lower learning rate for backbone
+                'lr': self.config.video_encoder_lr,  # Lower learning rate for backbone
                 'name': 'backbone',
                 'weight_decay': self.config.weight_decay
             },

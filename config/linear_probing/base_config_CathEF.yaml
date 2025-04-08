@@ -39,6 +39,7 @@ num_heads: !!int 4
 video_freeze_ratio: !!float 0.8
 dropout: !!float 0.2
 pretrained: !!bool true
+video_encoder_lr: !!float 1e-5
 video_encoder_checkpoint_path: !!str outputs/dev_deep_coro_clip_single_video/mvit_pretrained_mvit_b24_f16_AdamW_lr2.527361715636149e-05_20250325-001727_xvwwv5ar/checkpoints/best_epoch.pt
 # Linear Probing parameters
 task: !!str classification

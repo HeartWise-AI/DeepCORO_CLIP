@@ -1,6 +1,6 @@
 command:
   - torchrun
-  - "--nproc_per_node=2"
+  - "--nproc_per_node=4"
   - "--master_port=29500"
   - "scripts/main.py"
   - "--base_config"
@@ -38,14 +38,14 @@ parameters:
     max: 0.5
   video_freeze_ratio:
     distribution: uniform
-    min: 1.0
+    min: 0.7
     max: 1.0
   weight_decay: 
     distribution: uniform
     min: 1e-7
     max: 1e-6
   batch_size:
-    values: [24, 32, 64]
+    values: [8, 16, 24, 32, 64]
   tag:
     values: ["mvit_pretrained"]
   name:

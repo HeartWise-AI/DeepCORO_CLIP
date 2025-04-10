@@ -2,7 +2,7 @@
 pipeline_project: !!str DeepCORO_video_linear_probing
 output_dir: !!str outputs
 run_mode: !!str train
-epochs: !!int 30
+epochs: !!int 10
 seed: !!int 42
 # wandb parameters
 tag: !!str mvit_pretrained
@@ -23,11 +23,11 @@ num_warmup_percent: !!float 0.1
 num_hard_restarts_cycles: !!float 1.0
 warm_restart_tmult: !!int 2
 # Dataset parameters
-data_filename: !!str data/CathEF_MHI_UCSF_2016-to-july-2022-and-2023-08-30-post-CathEF_alpha.csv
-num_workers: !!int 16
+data_filename: !!str data/CathEF_MHI_UCSF_2016-to-july-2022-and-2023-08-30-post-CathEF_alpha_filtered.csv
+num_workers: !!int 32
 batch_size: !!int 16
 datapoint_loc_label: !!str FileName
-target_label: [y_true_cat]
+target_label: [Value]
 rand_augment: !!bool true
 resize: !!int 224
 frames: !!int 16
@@ -42,18 +42,18 @@ pretrained: !!bool true
 video_encoder_lr: !!float 1e-5
 video_encoder_checkpoint_path: !!str outputs/dev_deep_coro_clip_single_video/mvit_pretrained_mvit_b24_f16_AdamW_lr2.527361715636149e-05_20250325-001727_xvwwv5ar/checkpoints/best_epoch.pt
 # Linear Probing parameters
-task: !!str classification
 linear_probing_head: !!str simple_linear_probing
-head_structure:
-  y_true_cat: !!int 1
-head_dropout:
-  y_true_cat: !!float 0.1
-loss_structure:
-  y_true_cat: !!str bce_logit
-head_weights:
-  y_true_cat: !!float 1.0
+head_structure: # output dimension of each head
+  Value: !!int 1
+head_dropout: # dropout for each head
+  Value: !!float 0.1
+loss_structure: # loss function for each head
+  Value: !!str mse
+head_weights: # weight for each head
+  Value: !!float 1.0
+head_task: # task for each head
+  Value: !!str regression
 # Label mappings - Used for confusion matrix
-labels_map:
-  y_true_cat:
-    Reduced: !!int 1
-    NonReduced: !!int 0
+labels_map: # label mapping for each head
+  Value:
+    Value: !!str regression

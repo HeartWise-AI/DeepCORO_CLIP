@@ -116,10 +116,6 @@ if [ "${USE_WANDB}" != "true" ]; then
     fi
 fi
 
-
-# Backup the original sweep config
-cp "${SWEEP_CONFIG_PATH}" "${SWEEP_CONFIG_PATH}.bak"
-
 # Calculate number of GPUs
 NUM_GPUS=$(echo "${SELECTED_GPUS}" | tr ',' '\n' | wc -l)
 

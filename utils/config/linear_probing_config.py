@@ -11,6 +11,7 @@ from utils.config.heartwise_config import HeartWiseConfig
 class LinearProbingConfig(HeartWiseConfig):    
     # Training parameters
     lr: float
+    epochs: int
     scheduler_name: str
     lr_step_period: int
     factor: float    

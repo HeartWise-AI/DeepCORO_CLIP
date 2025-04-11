@@ -33,6 +33,7 @@ class VideoClipDataset(torch.utils.data.Dataset):
         normalize: bool = True,
         mean: Optional[Any] = None,
         std: Optional[Any] = None,
+        stride: int = 1,
         **kwargs,
     ):
         self.folder = pathlib.Path(root)
@@ -45,13 +46,7 @@ class VideoClipDataset(torch.utils.data.Dataset):
         self.mean = format_mean_std(mean)
         self.std = format_mean_std(std)
         self.normalize = normalize
-
-        self.stride = kwargs.pop("stride", 1)
-        if self.backbone.lower() == "mvit":
-            self.num_frames = 16
-            print(f"Using MViT backbone - forcing exactly {self.num_frames} frames with stride {self.stride}")
-            if "length" in kwargs:
-                kwargs["length"] = 16
+        self.stride = stride
 
         self.video_transforms = kwargs.pop("video_transforms", None)
         self.rand_augment = kwargs.pop("rand_augment", False)
@@ -177,6 +172,7 @@ class VideoClipDataset(torch.utils.data.Dataset):
                 video_transforms=self.video_transforms,
                 rand_augment=self.rand_augment,
                 backbone=self.backbone,
+                stride=self.stride,
             )
 
             if self.backbone.lower() == "mvit" and video.shape[0] != 16:
@@ -279,6 +275,7 @@ def get_distributed_video_clip_dataloader(
         mean=mean,
         std=std,
         rand_augment=config.rand_augment,
+        stride=config.stride,
     )
 
     # Create a sampler for distributed training

@@ -67,10 +67,23 @@ def load_video(
     video_transforms: Optional[Any] = None,
     rand_augment: bool = False,
     backbone: str = "default",
+    stride: int = 1,
 )-> np.ndarray:
     """
     Load and process a video with optional resizing, normalization, and augmentations.
     Returns tensor in format [F, H, W, C].
+    
+    Args:
+        video_path: Path to the video file
+        n_frames: Number of frames to sample
+        resize: Size to resize frames to
+        normalize: Whether to normalize the frames
+        mean: Mean for normalization
+        std: Standard deviation for normalization
+        video_transforms: Optional transforms to apply
+        rand_augment: Whether to apply random augmentation
+        backbone: Backbone type ('mvit' or 'default')
+        stride: Maximum stride for frame sampling (default: 1). Actual stride will be randomly chosen between 1 and stride.
     """
     # Force 16 frames for MViT backbone
     if backbone.lower() == "mvit":
@@ -80,14 +93,20 @@ def load_video(
     if not cap.isOpened():
         raise ValueError(f"Failed to open video file: {video_path}")
 
+    # Randomly choose stride between 1 and specified stride
+    actual_stride = np.random.randint(1, stride + 1) if stride > 1 else 1
+
     frames = []
+    frame_count = 0
     while True:
         ret, frame = cap.read()
         if not ret:
             break
-        if frame.ndim == 3:
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        frames.append(frame)
+        if frame_count % actual_stride == 0:  # Only keep frames based on random stride
+            if frame.ndim == 3:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frames.append(frame)
+        frame_count += 1
     cap.release()
 
     if not frames:

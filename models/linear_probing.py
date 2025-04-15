@@ -4,6 +4,47 @@ from utils.registry import ModelRegistry
 from models.video_encoder import VideoEncoder
 
 
+@ModelRegistry.register("simple_linear_probing_regression")
+class SimpleLinearProbingHead(nn.Module):
+    def __init__(
+        self, 
+        input_dim: int, 
+        output_dim: int, 
+        dropout: float = 0.1
+    ):
+        """
+        Initialize a simple linear probing head.
+
+        Args:
+            input_dim (int): The input dimension
+            output_dim (int): The output dimension
+            dropout (float): The dropout rate
+        """        
+        super().__init__()
+        self.fc1 = nn.Linear(input_dim, 256)
+        self.norm = nn.LayerNorm(256)  # Add normalization
+        self.linear_probe = nn.Linear(256, output_dim)
+        self.dropout = nn.Dropout(dropout)
+        self.activation = nn.GELU()
+        self.tanh = nn.Tanh()  # Define the tanh activation
+        
+        # Initialize weights with smaller values
+        nn.init.xavier_uniform_(self.fc1.weight, gain=0.01)
+        nn.init.xavier_uniform_(self.linear_probe.weight, gain=0.01)
+        nn.init.zeros_(self.fc1.bias)
+        nn.init.zeros_(self.linear_probe.bias)
+        
+    def forward(self, x):
+        # Handle 2D input [batch_size, input_dim]
+        x = self.fc1(x)
+        x = self.norm(x)  # Apply normalization
+        x = self.activation(x)
+        x = self.dropout(x)
+        x = self.linear_probe(x)
+        # Scale tanh from [-1,1] to [0,100]
+        x = 50 * (self.tanh(x) + 1)
+        return x
+
 @ModelRegistry.register("simple_linear_probing")
 class SimpleLinearProbingHead(nn.Module):
     def __init__(

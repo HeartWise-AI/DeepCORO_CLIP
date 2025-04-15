@@ -42,7 +42,7 @@ pretrained: !!bool true
 video_encoder_lr: !!float 1e-5
 video_encoder_checkpoint_path: !!str outputs/dev_deep_coro_clip_single_video/mvit_pretrained_mvit_b24_f16_AdamW_lr2.527361715636149e-05_20250325-001727_xvwwv5ar/checkpoints/best_epoch.pt
 # Linear Probing parameters
-linear_probing_head: !!str simple_linear_probing
+linear_probing_head: !!str simple_linear_probing_regression
 head_structure: # output dimension of each head
   Value: !!int 1
 head_dropout: # dropout for each head

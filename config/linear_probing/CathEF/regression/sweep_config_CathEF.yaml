@@ -4,7 +4,7 @@ command:
   - "--master_port=29500"
   - "scripts/main.py"
   - "--base_config"
-  - "config/linear_probing/base_config_CathEF.yaml"
+  - "config/linear_probing/CathEF/base_config_CathEF.yaml"
   - ${args}
 name: "DeepCORO_video_linear_probing_cathEF"
 project: "DeepCORO_video_linear_probing_cathEF"

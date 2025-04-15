@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import torch
 import tempfile
+import cv2
 from unittest.mock import patch, MagicMock
 from dataloaders.video_dataset import VideoDataset, custom_collate_fn
 from tests.templates import DatasetTestsMixin
@@ -17,11 +18,12 @@ class TestVideoDataset(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.temp_csv_path = os.path.join(self.temp_dir.name, "test_data.csv")
         
-        # Create dummy video paths (we'll mock the actual video loading)
-        self.video_paths = [
-            os.path.join(self.temp_dir.name, f"video_{i}.mp4") 
-            for i in range(3)
-        ]
+        # Create actual dummy video files
+        self.video_paths = []
+        for i in range(3):
+            video_path = os.path.join(self.temp_dir.name, f"video_{i}.mp4")
+            self._create_dummy_video(video_path, frames=10, width=32, height=32)
+            self.video_paths.append(video_path)
         
         # Create dummy CSV data
         data = {
@@ -36,20 +38,27 @@ class TestVideoDataset(unittest.TestCase):
         self.mean = [0.485, 0.456, 0.406]
         self.std = [0.229, 0.224, 0.225]
         
-        # Mock video loading and validation
+        # Mock video loading
         self.patcher = patch('dataloaders.video_dataset.load_video')
         self.mock_load_video = self.patcher.start()
         self.mock_load_video.return_value = np.zeros((32, 224, 224, 3), dtype=np.float32)
         
-        # Mock file existence check to return True for our test files
-        self.file_exists_patcher = patch('os.path.exists')
-        self.mock_exists = self.file_exists_patcher.start()
-        self.mock_exists.return_value = True
+    def _create_dummy_video(self, filepath, frames=10, width=32, height=32):
+        """Create a real dummy video file for testing."""
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(filepath, fourcc, 30.0, (width, height))
         
+        try:
+            # Create random frames
+            for _ in range(frames):
+                frame = np.random.randint(0, 255, (height, width, 3), dtype=np.uint8)
+                out.write(frame)
+        finally:
+            out.release()
+    
     def tearDown(self):
         """Clean up after each test method."""
         self.patcher.stop()
-        self.file_exists_patcher.stop()
         self.temp_dir.cleanup()
         
     def test_init(self):
@@ -122,42 +131,43 @@ class TestVideoDataset(unittest.TestCase):
     def test_validate_videos(self):
         """Test video validation functionality."""
         # Create a dataset with debug_mode=True to trigger validation
-        with patch('cv2.VideoCapture') as mock_video_capture:
-            # Mock the VideoCapture methods
-            mock_instance = MagicMock()
-            mock_instance.isOpened.return_value = True
-            mock_instance.read.return_value = (True, np.zeros((224, 224, 3), dtype=np.uint8))
-            mock_instance.release.return_value = None
-            mock_video_capture.return_value = mock_instance
+        # No need to patch VideoCapture since we're using real video files
+        
+        dataset = VideoDataset(
+            data_filename=self.temp_csv_path,
+            split="train",
+            target_label=["target_label"],
+            datapoint_loc_label="target_video_path",
+            debug_mode=True,
+            mean=self.mean,
+            std=self.std
+        )
+        
+        # All videos should be valid
+        self.assertEqual(len(dataset.valid_indices), 2)
+        
+        # Test with a corrupted video file
+        corrupted_video_path = os.path.join(self.temp_dir.name, "corrupted.mp4")
+        with open(corrupted_video_path, 'wb') as f:
+            f.write(b'This is not a valid video file')
             
-            dataset = VideoDataset(
-                data_filename=self.temp_csv_path,
-                split="train",
-                target_label=["target_label"],
-                datapoint_loc_label="target_video_path",
-                debug_mode=True,
-                mean=self.mean,
-                std=self.std
-            )
-            
-            # All videos should be valid
-            self.assertEqual(len(dataset.valid_indices), 2)
-            
-            # Test with a failing video
-            mock_instance.isOpened.side_effect = [True, False]
-            
-            dataset = VideoDataset(
-                data_filename=self.temp_csv_path,
-                split="train",
-                target_label=["target_label"],
-                datapoint_loc_label="target_video_path",
-                debug_mode=True,
-                mean=self.mean,
-                std=self.std
-            )
-            
-            # Only one video should be valid
-            self.assertEqual(len(dataset.valid_indices), 1)
+        # Update the first video path in the CSV
+        data = pd.read_csv(self.temp_csv_path, sep="α", engine="python")
+        data.iloc[0, data.columns.get_loc("target_video_path")] = corrupted_video_path
+        data.to_csv(self.temp_csv_path, sep="α", index=False)
+        
+        dataset = VideoDataset(
+            data_filename=self.temp_csv_path,
+            split="train",
+            target_label=["target_label"],
+            datapoint_loc_label="target_video_path",
+            debug_mode=True,
+            mean=self.mean,
+            std=self.std
+        )
+        
+        # Only one video should be valid
+        self.assertEqual(len(dataset.valid_indices), 1)
     
     def test_custom_collate_fn(self):
         """Test custom collate function."""

@@ -46,17 +46,17 @@ class TestMultiVideoDataset(unittest.TestCase):
         self.mean = [0.485, 0.456, 0.406]
         self.std = [0.229, 0.224, 0.225]
         
-        # Mock tokenizer
-        self.tokenizer_patcher = patch('models.text_encoder.get_tokenizer')
-        self.mock_tokenizer = self.tokenizer_patcher.start()
+        # Mock the AutoTokenizer.from_pretrained
+        self.auto_tokenizer_patcher = patch('transformers.AutoTokenizer.from_pretrained')
+        self.mock_auto_tokenizer = self.auto_tokenizer_patcher.start()
         
-        # Create a mock tokenizer with the necessary functionality
+        # Create a mock tokenizer
         mock_tokenizer_instance = MagicMock()
-        mock_tokenizer_instance.return_value = {
-            "input_ids": torch.zeros((512,), dtype=torch.long),
-            "attention_mask": torch.ones((512,), dtype=torch.long)
+        mock_tokenizer_instance.side_effect = lambda text, padding, truncation, max_length, return_tensors: {
+            "input_ids": torch.zeros((1, 512), dtype=torch.long),
+            "attention_mask": torch.ones((1, 512), dtype=torch.long)
         }
-        self.mock_tokenizer.return_value = mock_tokenizer_instance
+        self.mock_auto_tokenizer.return_value = mock_tokenizer_instance
         
         # Mock video loading
         self.load_video_patcher = patch('dataloaders.multi_video_dataset.load_video')
@@ -70,7 +70,7 @@ class TestMultiVideoDataset(unittest.TestCase):
         
     def tearDown(self):
         """Clean up after each test method."""
-        self.tokenizer_patcher.stop()
+        self.auto_tokenizer_patcher.stop()
         self.load_video_patcher.stop()
         self.file_exists_patcher.stop()
         self.temp_dir.cleanup()

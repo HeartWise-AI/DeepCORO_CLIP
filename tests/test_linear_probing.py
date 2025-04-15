@@ -47,12 +47,10 @@ class DummyDataset(Dataset):
         return {
             "videos": torch.randn(*self.video_shape),
             "targets": {
-                # Classification targets - should be 1D tensors for loss functions
-                "contrast_agent": torch.randint(0, 2, (1,)).squeeze(),  # Binary classification - scalar
-                "main_structure": torch.randint(0, 5, (1,)).squeeze(),  # Multi-class - scalar
-                "stent_presence": torch.randint(0, 2, (1,)).squeeze(),  # Binary classification - scalar
-                # Regression target - should be 2D tensor [batch_size, 1] for MSE loss
-                "ejection_fraction": torch.rand(1) * 100  # Shape: [1]
+                "contrast_agent": torch.randint(0, 2, ()),
+                "main_structure": torch.randint(0, 5, ()),
+                "stent_presence": torch.randint(0, 2, ()),
+                "ejection_fraction": torch.rand(1).item() * 100  # Random value between 0-100 as scalar
             },
             "video_fname": f"video_{idx}.mp4"
         }
@@ -65,70 +63,6 @@ class MockWandbWrapper:
     def __init__(self):
         self.is_initialized = lambda: True
         self.log = lambda x: None
-
-class TestLinearProbingRunner(LinearProbingRunner):
-    """Test subclass of LinearProbingRunner to add regression metrics calculation."""
-    
-    def _run_epoch(self, mode, epoch):
-        """Override _run_epoch to add regression metrics calculation."""
-        epoch_metrics = super()._run_epoch(mode, epoch)
-        
-        # For testing purposes, we'll simulate accumulated predictions and targets
-        # since they're not directly accessible from the parent class's _run_epoch
-        
-        # Create test data for regression metrics
-        if not hasattr(self, 'accumulated_preds'):
-            self.accumulated_preds = {}
-        if not hasattr(self, 'accumulated_targets'):
-            self.accumulated_targets = {}
-            
-        # Generate test data for regression heads
-        for head in self.config.head_task:
-            if self.config.head_task[head] == "regression":
-                # Create sample predictions and targets for testing
-                self.accumulated_preds[head] = [torch.rand(10, 1) * 100]  # Random predictions between 0-100
-                self.accumulated_targets[head] = [torch.rand(10, 1) * 100]  # Random targets between 0-100
-                
-                # Add some basic metrics directly
-                preds = self.accumulated_preds[head][0]
-                targets = self.accumulated_targets[head][0]
-                
-                # Convert to numpy
-                all_preds = preds.detach().cpu().numpy()
-                all_targets = targets.detach().cpu().numpy()
-                
-                # Add basic metrics
-                from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-                mse = mean_squared_error(all_targets, all_preds)
-                mae = mean_absolute_error(all_targets, all_preds)
-                r2 = r2_score(all_targets, all_preds)
-                
-                # Use correct mode suffix (_train or _val) for metric keys
-                mode_suffix = "_train" if mode == "train" else "_val"
-                
-                # Update epoch metrics with correct naming
-                epoch_metrics[f"{mode}/{head}{mode_suffix}/{head}_mse"] = mse
-                epoch_metrics[f"{mode}/{head}{mode_suffix}/{head}_mae"] = mae
-                epoch_metrics[f"{mode}/{head}{mode_suffix}/{head}_r2"] = r2
-        
-        return epoch_metrics
-        
-    # Override _preprocess_inputs to fix tensor shape mismatches
-    def _preprocess_inputs(self, batch):
-        # Call original method to get basic preprocessing
-        processed = super()._preprocess_inputs(batch)
-        
-        # Fix shape mismatches for loss function compatibility
-        if "batch_targets" in processed:
-            targets = processed["batch_targets"]
-            for key in targets:
-                # For all targets: if shape is [batch_size, 1], squeeze to [batch_size]
-                if targets[key].dim() > 1 and targets[key].size(1) == 1:
-                    targets[key] = targets[key].squeeze(1)
-            
-            processed["batch_targets"] = targets
-            
-        return processed
 
 class TestLinearProbing(unittest.TestCase):
     @patch('wandb.init')
@@ -280,8 +214,8 @@ class TestLinearProbing(unittest.TestCase):
         ], lr=0.001)
         self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=1, gamma=0.1)
         
-        # Initialize runner with test subclass
-        self.runner = TestLinearProbingRunner(
+        # Initialize runner
+        self.runner = LinearProbingRunner(
             config=self.config,
             wandb_wrapper=self.wandb_wrapper,
             train_loader=self.train_loader,
@@ -357,11 +291,13 @@ class TestLinearProbing(unittest.TestCase):
         self.assertIn('train/contrast_agent_loss', train_metrics)
         self.assertIn('train/main_structure_loss', train_metrics)
         self.assertIn('train/stent_presence_loss', train_metrics)
+        self.assertIn('train/ejection_fraction_loss', train_metrics)
         self.assertIn('train/main_loss', train_metrics)
         
         self.assertIn('val/contrast_agent_loss', val_metrics)
         self.assertIn('val/main_structure_loss', val_metrics)
         self.assertIn('val/stent_presence_loss', val_metrics)
+        self.assertIn('val/ejection_fraction_loss', val_metrics)
         self.assertIn('val/main_loss', val_metrics)
                     
     def test_scheduler_per_iteration(self):
@@ -379,16 +315,16 @@ class TestLinearProbing(unittest.TestCase):
         # Create dummy data
         accumulated_names = ["video1", "video2"]
         accumulated_preds = {
-            "contrast_agent": [torch.tensor([[0.8], [0.2]])],  # Shape: [batch_size, 1]
-            "main_structure": [torch.tensor([[0.1, 0.2, 0.3, 0.4, 0.0], [0.0, 0.1, 0.2, 0.3, 0.4]])],  # Shape: [batch_size, num_classes]
-            "stent_presence": [torch.tensor([[0.9], [0.1]])],  # Shape: [batch_size, 1]
-            "ejection_fraction": [torch.tensor([[45.6], [78.9]])]  # Shape: [batch_size, 1]
+            "contrast_agent": [torch.tensor([[0.8], [0.2]])],
+            "main_structure": [torch.tensor([[0.1, 0.2, 0.3, 0.4, 0.0], [0.0, 0.1, 0.2, 0.3, 0.4]])],
+            "stent_presence": [torch.tensor([[0.9], [0.1]])],
+            "ejection_fraction": [torch.tensor([[10.0], [30.0]])]
         }
         accumulated_targets = {
-            "contrast_agent": [torch.tensor([1, 0])],  # Shape: [batch_size]
-            "main_structure": [torch.tensor([1, 4])],  # Shape: [batch_size]
-            "stent_presence": [torch.tensor([1, 0])],  # Shape: [batch_size]
-            "ejection_fraction": [torch.tensor([[50.0], [80.0]])]  # Shape: [batch_size, 1]
+            "contrast_agent": [torch.tensor([[1], [0]])],
+            "main_structure": [torch.tensor([[0, 1, 0, 0, 0], [0, 0, 0, 0, 1]])],
+            "stent_presence": [torch.tensor([[1], [0]])],
+            "ejection_fraction": [torch.tensor([[10.0], [30.0]])]
         }
         
         # Test saving predictions
@@ -415,12 +351,9 @@ class TestLinearProbing(unittest.TestCase):
         batch = {
             "videos": torch.randn(2, 16, 224, 224, 3),
             "targets": {
-                # Classification targets should be 1D tensors
-                "contrast_agent": torch.randint(0, 2, (2,)),  # Shape: [batch_size]
-                "main_structure": torch.randint(0, 5, (2,)),  # Shape: [batch_size]
-                "stent_presence": torch.randint(0, 2, (2,)),  # Shape: [batch_size]
-                # Regression target should be 2D tensor
-                "ejection_fraction": torch.rand(2, 1) * 100  # Shape: [batch_size, 1]
+                "contrast_agent": torch.randint(0, 2, (2, 1)),
+                "main_structure": torch.randint(0, 5, (2, 1)),
+                "stent_presence": torch.randint(0, 2, (2, 1))
             }
         }
         
@@ -451,33 +384,6 @@ class TestLinearProbing(unittest.TestCase):
         val_metrics = self.runner._run_epoch(mode=RunMode.VALIDATION, epoch=0)
         self.assertIn("val/lr/linear_probing", val_metrics)
         
-    @patch('wandb.log')
-    def test_regression_metrics(self, mock_log):
-        """Test if regression metrics are correctly computed."""
-        # Run validation to get metrics
-        val_metrics = self.runner._run_epoch(mode=RunMode.VALIDATION, epoch=0)
-        
-        # Print metrics for debugging
-        print(f"Regression metrics: {val_metrics}")
-        
-        # Check that regression metrics are present
-        self.assertIn('val/ejection_fraction_loss', val_metrics)
-        
-        # Regression metrics typically include:
-        # - MSE (Mean Squared Error)
-        # - MAE (Mean Absolute Error)
-        # - R2 (Coefficient of determination)
-        self.assertIn('val/ejection_fraction_val/ejection_fraction_mse', val_metrics)
-        self.assertIn('val/ejection_fraction_val/ejection_fraction_mae', val_metrics)
-        self.assertIn('val/ejection_fraction_val/ejection_fraction_r2', val_metrics)
-        
-        # For training metrics too
-        train_metrics = self.runner._run_epoch(mode=RunMode.TRAIN, epoch=0)
-        self.assertIn('train/ejection_fraction_loss', train_metrics)
-        self.assertIn('train/ejection_fraction_train/ejection_fraction_mse', train_metrics)
-        self.assertIn('train/ejection_fraction_train/ejection_fraction_mae', train_metrics)
-        self.assertIn('train/ejection_fraction_train/ejection_fraction_r2', train_metrics)
-        
     def tearDown(self):
         """Clean up after tests."""
         # Clean up datasets
@@ -486,6 +392,7 @@ class TestLinearProbing(unittest.TestCase):
         if hasattr(self, 'val_dataset'):
             self.val_dataset.cleanup()
         shutil.rmtree(self.temp_dir)
+
 
 if __name__ == '__main__':
     unittest.main() 

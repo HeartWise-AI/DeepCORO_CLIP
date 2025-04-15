@@ -124,7 +124,11 @@ class TestLinearProbing(unittest.TestCase):
             video_encoder_lr=0.0005,
             
             # Linear Probing parameters
-            task="classification",
+            head_task={
+                "contrast_agent": "classification",
+                "main_structure": "classification",
+                "stent_presence": "classification"
+            },
             linear_probing_head="multi_head",
             head_structure={
                 "contrast_agent": 1,
@@ -258,23 +262,23 @@ class TestLinearProbing(unittest.TestCase):
         
         # Check for essential metrics in training
         # Binary classification heads (contrast_agent and stent_presence)
-        self.assertIn('train/contrast_agent_auc', train_metrics)
-        self.assertIn('train/contrast_agent_auprc', train_metrics)
-        self.assertIn('train/stent_presence_auc', train_metrics)
-        self.assertIn('train/stent_presence_auprc', train_metrics)
+        self.assertIn('train/contrast_agent_train/contrast_agent_auc', train_metrics)
+        self.assertIn('train/contrast_agent_train/contrast_agent_auprc', train_metrics)
+        self.assertIn('train/stent_presence_train/stent_presence_auc', train_metrics)
+        self.assertIn('train/stent_presence_train/stent_presence_auprc', train_metrics)
         
         # Multi-class head (main_structure)
-        self.assertIn('train/main_structure_auc', train_metrics)
+        self.assertIn('train/main_structure_train/main_structure_auc', train_metrics)
         
         # Check for essential metrics in validation
         # Binary classification heads
-        self.assertIn('val/contrast_agent_auc', val_metrics)
-        self.assertIn('val/contrast_agent_auprc', val_metrics)
-        self.assertIn('val/stent_presence_auc', val_metrics)
-        self.assertIn('val/stent_presence_auprc', val_metrics)
+        self.assertIn('val/contrast_agent_val/contrast_agent_auc', val_metrics)
+        self.assertIn('val/contrast_agent_val/contrast_agent_auprc', val_metrics)
+        self.assertIn('val/stent_presence_val/stent_presence_auc', val_metrics)
+        self.assertIn('val/stent_presence_val/stent_presence_auprc', val_metrics)
         
         # Multi-class head
-        self.assertIn('val/main_structure_auc', val_metrics)
+        self.assertIn('val/main_structure_val/main_structure_auc', val_metrics)
         
         # Check for loss metrics
         self.assertIn('train/contrast_agent_loss', train_metrics)

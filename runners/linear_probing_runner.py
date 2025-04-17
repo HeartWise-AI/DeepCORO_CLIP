@@ -2,19 +2,20 @@ import os
 import torch
 import numpy as np
 import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+
 from tqdm import tqdm
 from torch.optim import Optimizer
 from torch.cuda.amp import GradScaler
 from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader
-import seaborn as sns
-import matplotlib.pyplot as plt
+from collections import defaultdict
 from sklearn.metrics import (
     roc_auc_score, 
     average_precision_score, 
     confusion_matrix
 )
-
 from utils.loss.typing import Loss
 from utils.ddp import DistributedUtils
 from utils.registry import RunnerRegistry
@@ -22,7 +23,6 @@ from utils.enums import RunMode, MetricTask
 from utils.wandb_wrapper import WandbWrapper
 from utils.metrics import compute_best_threshold
 from utils.config.linear_probing_config import LinearProbingConfig
-from collections import defaultdict
 from models.linear_probing import LinearProbing
 
 
@@ -305,9 +305,21 @@ class LinearProbingRunner:
                         is_ref_device=self.config.is_ref_device
                     )
                     
-                    # Update epoch metrics with the computed metrics for the current head
-                    for k, v in head_metrics.items():
-                        epoch_metrics[f"{mode}/{head}_{k}"] = v
+                # elif self.config.head_task[head] == MetricTask.REGRESSION:
+                #     head_metrics = compute_regression_metrics(
+                #         preds=preds,
+                #         targets=targets,
+                #         head_name=head,
+                #         head_structure=self.config.head_structure,
+                #         mode=mode,
+                #         device=self.device,
+                #         wandb_wrapper=self.wandb_wrapper,
+                #         is_ref_device=self.config.is_ref_device
+                #     )
+                    
+                # Update epoch metrics with the computed metrics for the current head
+                for k, v in head_metrics.items():
+                    epoch_metrics[f"{mode}/{head}_{k}"] = v
                 
             # Sync after logging metrics and confusion matrix
             DistributedUtils.sync_process_group(
@@ -615,6 +627,15 @@ class LinearProbingRunner:
                 for k, v in predictions_dict.items():
                     print(f"[DEBUG] rank={self.device} =>   {k}: {len(v)}")
 
+# def compute_regression_metrics(
+#     preds: torch.Tensor,
+#     targets: torch.Tensor,
+#     head_name: str,
+#     head_structure: dict,
+#     mode: str = "val",
+# ) -> dict:
+    
+
 def compute_classification_metrics(
     preds: torch.Tensor,
     targets: torch.Tensor,
@@ -622,7 +643,6 @@ def compute_classification_metrics(
     head_structure: dict,
     labels_map: dict = None,
     mode: str = "val",
-    device: int = 0,
     wandb_wrapper = None,
     is_ref_device: bool = False
 ) -> dict:
@@ -643,11 +663,6 @@ def compute_classification_metrics(
     Returns:
         Dictionary of computed metrics
     """
-    import torch
-    import numpy as np
-    import matplotlib.pyplot as plt
-    import seaborn as sns
-    from sklearn.metrics import roc_auc_score, average_precision_score, confusion_matrix
     
     metrics = {}
     
@@ -675,7 +690,6 @@ def compute_classification_metrics(
             if head_structure[head_name] == 1:
                 try:
                     # Compute best threshold using Youden's J statistic
-                    from utils.metrics import compute_best_threshold
                     best_threshold = compute_best_threshold(
                         all_targets.tolist(), 
                         all_preds.tolist()

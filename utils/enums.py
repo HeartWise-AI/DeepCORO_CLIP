@@ -30,19 +30,19 @@ class LossType(str, Enum):
     SIGLIP_DDP = "siglip_ddp"
         
     # Torch losses
-    MSE = "mse"
-    L1 = "l1"
-    RMSE = "rmse"
-    BCE_LOGIT = "bce_logit"
-    CE = "ce"
-    HUBER = "huber"
+    MSE = "mse" # Mean Squared Error
+    MAE = "mae" # Mean Absolute Error
+    RMSE = "rmse" # Root Mean Squared Error
+    BCE_LOGIT = "bce_logit" # Binary Cross Entropy Logits
+    CE = "ce" # Cross Entropy
+    HUBER = "huber" # Huber Loss
     
     # Multi-head loss
-    MULTI_HEAD = "multi_head"
+    MULTI_HEAD = "multi_head" # Multi-head loss
     
     # Custom losses
-    MULTICLASS_FOCAL = "multiclass_focal"
-    BINARY_FOCAL = "binary_focal"
+    MULTICLASS_FOCAL = "multiclass_focal" # Multi-class Focal Loss
+    BINARY_FOCAL = "binary_focal" # Binary Focal Loss
     
     def __str__(self):
         return self.value

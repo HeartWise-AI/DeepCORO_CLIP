@@ -42,13 +42,14 @@ class LinearProbingConfig(HeartWiseConfig):
     pretrained: bool
     video_encoder_checkpoint_path: str
     video_encoder_lr: float
+    
     # Linear Probing parameters
-    task: str
     linear_probing_head: str
     head_structure: Dict[str, int]
     loss_structure: Dict[str, str]
     head_weights: Dict[str, float]
     head_dropout: Dict[str, float]
+    head_task: Dict[str, str]
     
     # Label mappings - Used for confusion matrix
     labels_map: Dict[str, Dict[str, int]]

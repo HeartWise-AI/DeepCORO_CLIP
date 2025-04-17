@@ -116,10 +116,6 @@ if [ "${USE_WANDB}" != "true" ]; then
     fi
 fi
 
-
-# Backup the original sweep config
-cp "${SWEEP_CONFIG_PATH}" "${SWEEP_CONFIG_PATH}.bak"
-
 # Calculate number of GPUs
 NUM_GPUS=$(echo "${SELECTED_GPUS}" | tr ',' '\n' | wc -l)
 
@@ -186,8 +182,11 @@ export OMP_NUM_THREADS=1
 
 # Run the sweep and extract the SWEEP_ID while displaying logs
 echo -e "${BLUE}Initializing W&B Sweep...${NC}"
-SWEEP_OUTPUT=$(wandb sweep "${SWEEP_CONFIG_PATH}" 2>&1)
-echo "${SWEEP_OUTPUT}"   # For debugging
+if ! SWEEP_OUTPUT=$(wandb sweep "${SWEEP_CONFIG_PATH}" 2>&1); then
+    echo -e "${RED}Error: wandb sweep command failed${NC}"
+    echo "${SWEEP_OUTPUT}"
+    exit 1
+fi
 
 # Extract the Sweep ID using Perl-compatible regex for robustness
 SWEEP_ID=$(echo "${SWEEP_OUTPUT}" | grep -oP '([a-z0-9]+)$' | tail -n1)

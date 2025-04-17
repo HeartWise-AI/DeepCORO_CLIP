@@ -339,8 +339,8 @@ class HuberLoss(nn.Module):
         return F.huber_loss(outputs.view(-1), targets, delta=self.delta)
 
 
-@LossRegistry.register(LossType.L1)
-class L1Loss(nn.Module):
+@LossRegistry.register(LossType.MAE)
+class MAELoss(nn.Module):
     def __init__(self):
         super().__init__()
 

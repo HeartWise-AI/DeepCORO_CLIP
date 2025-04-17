@@ -49,7 +49,8 @@ class DummyDataset(Dataset):
             "targets": {
                 "contrast_agent": torch.randint(0, 2, ()),
                 "main_structure": torch.randint(0, 5, ()),
-                "stent_presence": torch.randint(0, 2, ())
+                "stent_presence": torch.randint(0, 2, ()),
+                "ejection_fraction": torch.rand(1).item() * 100  # Random value between 0-100 as scalar
             },
             "video_fname": f"video_{idx}.mp4"
         }
@@ -107,7 +108,7 @@ class TestLinearProbing(unittest.TestCase):
             num_workers=0,
             batch_size=2,
             datapoint_loc_label="video_path",
-            target_label=["contrast_agent", "main_structure", "stent_presence"],
+            target_label=["contrast_agent", "main_structure", "stent_presence", "ejection_fraction"],
             rand_augment=False,
             resize=224,
             frames=16,
@@ -124,27 +125,36 @@ class TestLinearProbing(unittest.TestCase):
             video_encoder_lr=0.0005,
             
             # Linear Probing parameters
-            task="classification",
+            head_task={
+                "contrast_agent": "classification",
+                "main_structure": "classification",
+                "stent_presence": "classification",
+                "ejection_fraction": "regression"
+            },
             linear_probing_head="multi_head",
             head_structure={
                 "contrast_agent": 1,
                 "main_structure": 5,
-                "stent_presence": 1
+                "stent_presence": 1,
+                "ejection_fraction": 1
             },
             loss_structure={
                 "contrast_agent": "bce",
                 "main_structure": "ce",
-                "stent_presence": "bce"
+                "stent_presence": "bce",
+                "ejection_fraction": "mse"
             },
             head_weights={
                 "contrast_agent": 1.0,
                 "main_structure": 1.0,
-                "stent_presence": 1.0
+                "stent_presence": 1.0,
+                "ejection_fraction": 1.0
             },
             head_dropout={
                 "contrast_agent": 0.1,
                 "main_structure": 0.1,
-                "stent_presence": 0.1
+                "stent_presence": 0.1,
+                "ejection_fraction": 0.1
             },
             
             # Label mappings
@@ -175,7 +185,8 @@ class TestLinearProbing(unittest.TestCase):
             head_structure={
                 "contrast_agent": 1,
                 "main_structure": 5,
-                "stent_presence": 1
+                "stent_presence": 1,
+                "ejection_fraction": 1
             },
             dropout=0.1,
             freeze_backbone_ratio=0.0
@@ -258,33 +269,35 @@ class TestLinearProbing(unittest.TestCase):
         
         # Check for essential metrics in training
         # Binary classification heads (contrast_agent and stent_presence)
-        self.assertIn('train/contrast_agent_auc', train_metrics)
-        self.assertIn('train/contrast_agent_auprc', train_metrics)
-        self.assertIn('train/stent_presence_auc', train_metrics)
-        self.assertIn('train/stent_presence_auprc', train_metrics)
+        self.assertIn('train/contrast_agent_train/contrast_agent_auc', train_metrics)
+        self.assertIn('train/contrast_agent_train/contrast_agent_auprc', train_metrics)
+        self.assertIn('train/stent_presence_train/stent_presence_auc', train_metrics)
+        self.assertIn('train/stent_presence_train/stent_presence_auprc', train_metrics)
         
         # Multi-class head (main_structure)
-        self.assertIn('train/main_structure_auc', train_metrics)
+        self.assertIn('train/main_structure_train/main_structure_auc', train_metrics)
         
         # Check for essential metrics in validation
         # Binary classification heads
-        self.assertIn('val/contrast_agent_auc', val_metrics)
-        self.assertIn('val/contrast_agent_auprc', val_metrics)
-        self.assertIn('val/stent_presence_auc', val_metrics)
-        self.assertIn('val/stent_presence_auprc', val_metrics)
+        self.assertIn('val/contrast_agent_val/contrast_agent_auc', val_metrics)
+        self.assertIn('val/contrast_agent_val/contrast_agent_auprc', val_metrics)
+        self.assertIn('val/stent_presence_val/stent_presence_auc', val_metrics)
+        self.assertIn('val/stent_presence_val/stent_presence_auprc', val_metrics)
         
         # Multi-class head
-        self.assertIn('val/main_structure_auc', val_metrics)
+        self.assertIn('val/main_structure_val/main_structure_auc', val_metrics)
         
         # Check for loss metrics
         self.assertIn('train/contrast_agent_loss', train_metrics)
         self.assertIn('train/main_structure_loss', train_metrics)
         self.assertIn('train/stent_presence_loss', train_metrics)
+        self.assertIn('train/ejection_fraction_loss', train_metrics)
         self.assertIn('train/main_loss', train_metrics)
         
         self.assertIn('val/contrast_agent_loss', val_metrics)
         self.assertIn('val/main_structure_loss', val_metrics)
         self.assertIn('val/stent_presence_loss', val_metrics)
+        self.assertIn('val/ejection_fraction_loss', val_metrics)
         self.assertIn('val/main_loss', val_metrics)
                     
     def test_scheduler_per_iteration(self):
@@ -304,12 +317,14 @@ class TestLinearProbing(unittest.TestCase):
         accumulated_preds = {
             "contrast_agent": [torch.tensor([[0.8], [0.2]])],
             "main_structure": [torch.tensor([[0.1, 0.2, 0.3, 0.4, 0.0], [0.0, 0.1, 0.2, 0.3, 0.4]])],
-            "stent_presence": [torch.tensor([[0.9], [0.1]])]
+            "stent_presence": [torch.tensor([[0.9], [0.1]])],
+            "ejection_fraction": [torch.tensor([[10.0], [30.0]])]
         }
         accumulated_targets = {
             "contrast_agent": [torch.tensor([[1], [0]])],
             "main_structure": [torch.tensor([[0, 1, 0, 0, 0], [0, 0, 0, 0, 1]])],
-            "stent_presence": [torch.tensor([[1], [0]])]
+            "stent_presence": [torch.tensor([[1], [0]])],
+            "ejection_fraction": [torch.tensor([[10.0], [30.0]])]
         }
         
         # Test saving predictions

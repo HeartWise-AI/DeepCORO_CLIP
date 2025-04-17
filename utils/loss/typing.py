@@ -1,4 +1,3 @@
-
 from typing import Union
 from dataclasses import dataclass
 from utils.loss.losses import (
@@ -8,7 +7,7 @@ from utils.loss.losses import (
     MultiHeadLoss,
     MSELoss,
     HuberLoss,
-    L1Loss,
+    MAELoss,
     RMSELoss,
     BCEWithLogitsLoss,
     CrossEntropyLoss,
@@ -26,7 +25,7 @@ class Loss:
         MultiHeadLoss,
         MSELoss,
         HuberLoss,
-        L1Loss,
+        MAELoss,
         RMSELoss,
         BCEWithLogitsLoss,
         CrossEntropyLoss,

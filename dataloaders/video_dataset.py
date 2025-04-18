@@ -51,6 +51,24 @@ class VideoDataset(torch.utils.data.Dataset):
         self.rand_augment: bool = rand_augment
         
         self.stride: int = stride
+        
+        # Define X3D model parameters
+        self.x3d_params = {
+            "x3d_s": {
+                "side_size": 182,
+                "crop_size": 182,
+                "num_frames": 13,
+                "sampling_rate": 6,
+            },
+            "x3d_m": {
+                "side_size": 256,
+                "crop_size": 256,
+                "num_frames": 16,
+                "sampling_rate": 5,
+            }
+        }
+        
+        # Set specific parameters based on backbone
         if self.backbone.lower() == "mvit":
             self.num_frames = 16
             print(f"Using MViT backbone - forcing exactly {self.num_frames} frames with stride {self.stride}")
@@ -59,6 +77,10 @@ class VideoDataset(torch.utils.data.Dataset):
 
         self.video_transforms: Optional[Any] = kwargs.pop("video_transforms", None)
         self.resize: int = kwargs.pop("resize", 224)
+        
+        # For X3D models, override resize with their specific side_size
+        if self.backbone.lower() in ["x3d_s", "x3d_m"]:
+            self.resize = self.x3d_params[self.backbone.lower()]["side_size"]
 
         self.target_label: Optional[List[str]] = target_label
         self.external_test_location: Optional[str] = kwargs.pop("external_test_location", None)
@@ -172,7 +194,7 @@ class VideoDataset(torch.utils.data.Dataset):
         try:
             video: np.ndarray = load_video(
                 video_fname,
-                n_frames=16 if self.backbone.lower() == "mvit" else self.num_frames,
+                n_frames=self.num_frames,
                 resize=self.resize,
                 normalize=self.normalize,
                 mean=self.mean,
@@ -183,8 +205,11 @@ class VideoDataset(torch.utils.data.Dataset):
                 stride=self.stride,
             )
 
+            # Validate frame count for specific backbone models
             if self.backbone.lower() == "mvit" and video.shape[0] != 16:
                 raise ValueError(f"Expected 16 frames for MViT, got {video.shape[0]}")
+            elif self.backbone.lower() in ["x3d_s", "x3d_m"] and video.shape[0] != self.x3d_params[self.backbone.lower()]["num_frames"]:
+                raise ValueError(f"Expected {self.x3d_params[self.backbone.lower()]['num_frames']} frames for {self.backbone}, got {video.shape[0]}")
 
         except Exception as e:
             raise RuntimeError(f"Failed to load video {video_fname}: {str(e)}") from e   

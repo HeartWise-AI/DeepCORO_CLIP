@@ -100,6 +100,8 @@ class VideoContrastiveLearningRunner:
         self.output_dir: str = output_dir
         self.best_val_loss: float = float("inf")
         self.best_epoch: int = -1
+        self.highest_alignment_score: float = float("-inf")
+        self.highest_alignment_epoch: int = -1
         self.log_temp: torch.Tensor = log_temp
 
         # For simplicity: check the config for a known scheduler_name
@@ -187,6 +189,26 @@ class VideoContrastiveLearningRunner:
                         },
                         is_best=True,
                     )
+            
+            # Update and save model with highest alignment score
+            if val_metrics["val/alignment_score"] > self.highest_alignment_score:
+                prev_highest: float = self.highest_alignment_score
+                self.highest_alignment_score = val_metrics["val/alignment_score"]
+                self.highest_alignment_epoch = epoch
+                if self.config.is_ref_device:
+                    print(
+                        f"\nNew highest alignment score model! Alignment Score: {val_metrics['val/alignment_score']:.4f} "
+                        f"(previous: {prev_highest:.4f})"
+                    )
+                    self._save_checkpoint(
+                        epoch=epoch,
+                        metrics={
+                            **train_metrics, 
+                            **val_metrics
+                        },
+                        is_best=False,
+                        is_highest_alignment=True,
+                    )
 
             # Always save "latest" checkpoint
             if self.config.is_ref_device:
@@ -204,6 +226,7 @@ class VideoContrastiveLearningRunner:
                         
             if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
                 val_metrics['best_val_loss'] = self.best_val_loss
+                val_metrics['highest_alignment_score'] = self.highest_alignment_score
                 self.wandb_wrapper.log(val_metrics)
                 print(f"[DEBUG] rank={self.device} => Logged val metrics to W&B")
             
@@ -567,13 +590,14 @@ class VideoContrastiveLearningRunner:
         else:
             return val
 
-    def _save_checkpoint(self, epoch: int, metrics: dict, is_best: bool = False):
+    def _save_checkpoint(self, epoch: int, metrics: dict, is_best: bool = False, is_highest_alignment: bool = False):
         """
         Saves model checkpoint (including model weights, optimizer, scheduler, and metrics).
 
         :param epoch: Current epoch index.
         :param metrics: Dictionary of metrics to be saved.
-        :param is_best: If True, saves as 'best_epoch.pt'. Otherwise, saves as 'checkpoint.pt'.
+        :param is_best: If True, saves as 'best_model_epoch_{epoch}.pt'. Otherwise, saves as 'checkpoint.pt'.
+        :param is_highest_alignment: If True, saves as 'highest_alignment_epoch_{epoch}.pt'.
         """
         checkpoint_dir = os.path.join(self.output_dir, "checkpoints")
         os.makedirs(checkpoint_dir, exist_ok=True)
@@ -596,14 +620,20 @@ class VideoContrastiveLearningRunner:
             **metrics,
             "best_val_loss": self.best_val_loss,
             "best_epoch": self.best_epoch,
+            "highest_alignment_score": self.highest_alignment_score,
+            "highest_alignment_epoch": self.highest_alignment_epoch,
         }
 
-        save_path = os.path.join(
-            checkpoint_dir, "best_epoch.pt" if is_best else "checkpoint.pt"
-        )
+        if is_best:
+            save_path = os.path.join(checkpoint_dir, f"best_model_epoch_{epoch}.pt")
+        elif is_highest_alignment:
+            save_path = os.path.join(checkpoint_dir, f"highest_alignment_epoch_{epoch}.pt")
+        else:
+            save_path = os.path.join(checkpoint_dir, "checkpoint.pt")
+            
         torch.save(checkpoint, save_path)
         print(
-            f"\nSaved {'best' if is_best else 'latest'} checkpoint at epoch {epoch + 1} to {save_path}"
+            f"\nSaved {('best' if is_best else 'highest alignment' if is_highest_alignment else 'latest')} checkpoint at epoch {epoch + 1} to {save_path}"
         )
 
     def _preview_checkpoint_for_resuming(self, checkpoint_path: str):

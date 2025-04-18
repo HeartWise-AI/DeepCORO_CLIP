@@ -82,12 +82,33 @@ def load_video(
         std: Standard deviation for normalization
         video_transforms: Optional transforms to apply
         rand_augment: Whether to apply random augmentation
-        backbone: Backbone type ('mvit' or 'default')
+        backbone: Backbone type ('mvit', 'x3d_s', 'x3d_m', or 'default')
         stride: Maximum stride for frame sampling (default: 1). Actual stride will be randomly chosen between 1 and stride.
     """
-    # Force 16 frames for MViT backbone
+    # Model-specific parameters
+    x3d_params = {
+        "x3d_s": {
+            "side_size": 182,
+            "crop_size": 182,
+            "num_frames": 13,
+            "sampling_rate": 6,
+        },
+        "x3d_m": {
+            "side_size": 256,
+            "crop_size": 256,
+            "num_frames": 16,
+            "sampling_rate": 5,
+        }
+    }
+
+    # Set appropriate frame count and resize value based on backbone
     if backbone.lower() == "mvit":
         n_frames = 16
+        model_resize = resize
+    elif backbone.lower() in ["x3d_s", "x3d_m"]:
+        model_resize = x3d_params[backbone.lower()]["side_size"]
+    else:
+        model_resize = resize
 
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -128,30 +149,26 @@ def load_video(
         video = video.permute(0, 3, 1, 2)
 
     # Resize spatial dimensions
-    if resize is not None:
-        video = v2.Resize((resize, resize), antialias=True)(video)
+    if model_resize is not None:
+        video = v2.Resize((model_resize, model_resize), antialias=True)(video)
 
     t, c, h, w = video.shape
 
-    # Force exactly n_frames or 16 frames for MViT
+    # Force exact number of frames based on backbone
     if backbone.lower() == "mvit":
-        # Exactly 16 frames
-        if t < 16:
-            last_frame = video[-1:].repeat(16 - t, 1, 1, 1)
-            video = torch.cat([video, last_frame], dim=0)
-        elif t > 16:
-            indices = torch.linspace(0, t - 1, 16).long()
-            video = video[indices]
         expected_frames = 16
+    elif backbone.lower() in ["x3d_s", "x3d_m"]:
+        expected_frames = x3d_params[backbone.lower()]["num_frames"]
     else:
-        # Keep original frame count to n_frames
-        if t < n_frames:
-            last_frame = video[-1:].repeat(n_frames - t, 1, 1, 1)
-            video = torch.cat([video, last_frame], dim=0)
-        elif t > n_frames:
-            indices = torch.linspace(0, t - 1, n_frames).long()
-            video = video[indices]
         expected_frames = n_frames
+
+    # Ensure correct number of frames
+    if t < expected_frames:
+        last_frame = video[-1:].repeat(expected_frames - t, 1, 1, 1)
+        video = torch.cat([video, last_frame], dim=0)
+    elif t > expected_frames:
+        indices = torch.linspace(0, t - 1, expected_frames).long()
+        video = video[indices]
 
    # Optional transforms (assumes float input)
     if video_transforms is not None:
@@ -187,11 +204,10 @@ def load_video(
 
     # Final checks
     t, c, h, w = video.shape
-    expected_frames = 16 if backbone.lower() == "mvit" else n_frames
     if t != expected_frames:
         raise ValueError(f"Expected {expected_frames} frames, got {t}")
-    if h != resize or w != resize:
-        raise ValueError(f"Expected spatial dimensions {resize}x{resize}, got {h}x{w}")
+    if h != model_resize or w != model_resize:
+        raise ValueError(f"Expected spatial dimensions {model_resize}x{model_resize}, got {h}x{w}")
 
     # Return video in shape [F, H, W, C]
     video = video.permute(0, 2, 3, 1).contiguous()

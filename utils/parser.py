@@ -20,6 +20,8 @@ class HeartWiseParser:
         # Training parameters
         train_group = parser.add_argument_group('Training')
         train_group.add_argument('--lr', type=float)
+        train_group.add_argument('--head_lr', type=float)
+        train_group.add_argument('--video_encoder_lr', type=float)
         train_group.add_argument('--batch_size', type=int)
         train_group.add_argument('--epochs', type=int)
         train_group.add_argument('--num_workers', type=int)
@@ -33,9 +35,9 @@ class HeartWiseParser:
         optim_group.add_argument('--scheduler_name', type=str)
         optim_group.add_argument('--lr_step_period', type=int)
         optim_group.add_argument('--factor', type=float)
-        optim_group.add_argument('--video_weight_decay', type=float)
+        optim_group.add_argument('--video_encoder_weight_decay', type=float)
         optim_group.add_argument('--text_weight_decay', type=float)
-        optim_group.add_argument('--weight_decay', type=float)
+        optim_group.add_argument('--head_weight_decay', type=float)
 
         # Data parameters
         data_group = parser.add_argument_group('Data')

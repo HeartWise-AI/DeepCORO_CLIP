@@ -10,12 +10,13 @@ from utils.config.heartwise_config import HeartWiseConfig
 @ConfigRegistry.register("DeepCORO_video_linear_probing_test")
 class LinearProbingConfig(HeartWiseConfig):    
     # Training parameters
-    lr: float
+    head_lr: float
     scheduler_name: str
     lr_step_period: int
     factor: float    
     optimizer: str
-    weight_decay: float
+    head_weight_decay: float
+    video_encoder_weight_decay: float
     use_amp: bool
     gradient_accumulation_steps: int
     num_warmup_percent: float

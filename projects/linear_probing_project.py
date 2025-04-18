@@ -116,13 +116,13 @@ class LinearProbingProject(BaseProject):
                 'params': linear_probing.module.backbone.parameters(),  # Backbone parameters
                 'lr': self.config.video_encoder_lr,  # Lower learning rate for backbone
                 'name': 'backbone',
-                'weight_decay': self.config.weight_decay
+                'weight_decay': self.config.video_encoder_weight_decay
             },
             {
                 'params': linear_probing.module.heads.parameters(),  # Linear probe head parameters
-                'lr': self.config.lr,  # Higher learning rate for probe heads
+                'lr': self.config.head_lr,  # Higher learning rate for probe heads
                 'name': 'heads',
-                'weight_decay': self.config.weight_decay
+                'weight_decay': self.config.head_weight_decay
             }
         ]
         optimizer_class: torch.optim.Optimizer = getattr(torch.optim, self.config.optimizer)

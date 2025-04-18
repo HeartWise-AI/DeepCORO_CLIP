@@ -13,16 +13,16 @@ class HeartWiseConfig:
     """
     # Pipeline parameters
     pipeline_project: str
-    output_dir: str    
+    base_checkpoint_path: str    
     run_mode: str
     epochs: int   
     seed: int
     
     # wandb parameters
-    tag: str
-    name: str
-    project: str
-    entity: str
+    wandb_tag: str
+    wandb_name: str
+    wandb_project: str
+    wandb_entity: str
     use_wandb: bool
     
     @classmethod

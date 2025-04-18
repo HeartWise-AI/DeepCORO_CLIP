@@ -30,7 +30,7 @@ class WandbWrapper:
             is_ref_device (bool): If True, initializes wandb for full logging; 
                                     otherwise, wandb is set into a disabled mode.
             sweep_params (Tuple[str]): List of parameters to be excluded from wandb logging.
-           """        
+        """        
         self.config = config
         if initialized:
             if is_ref_device:
@@ -45,8 +45,8 @@ class WandbWrapper:
                     config_dict['loss_name'] = config.loss_name
                     
                 wandb.init(
-                    project=config.project,
-                    entity=config.entity,
+                    project=config.wandb_project,
+                    entity=config.wandb_entity,
                     config=config_dict,
                     allow_val_change=True
                 )

@@ -21,9 +21,9 @@ from utils.ddp import DistributedUtils
 from utils.enums import RunMode, LossType
 from utils.schedulers import get_scheduler
 from utils.wandb_wrapper import WandbWrapper
-from utils.files_handler import generate_output_dir_name
 from utils.video_project import calculate_dataset_statistics_ddp
 from utils.config.linear_probing_config import LinearProbingConfig
+from utils.files_handler import generate_output_dir_name, backup_config
 from dataloaders.video_dataset import get_distributed_video_dataloader
 
 @ProjectRegistry.register("DeepCORO_video_linear_probing")
@@ -36,18 +36,28 @@ class LinearProbingProject(BaseProject):
         self.config: LinearProbingConfig = config
         self.wandb_wrapper: WandbWrapper = wandb_wrapper
 
+    def _setup_project(self):
+        # Generate the output directory name
+        self.config.output_dir = generate_output_dir_name(
+            config=self.config, 
+            run_id=self.wandb_wrapper.get_run_id() if self.wandb_wrapper.is_initialized() else None
+        )
+        
+        # Create the output directory
+        os.makedirs(self.config.output_dir, exist_ok=True)
+        
+        # Backup the configuration file
+        backup_config(
+            config=self.config,
+            output_dir=self.config.output_dir
+        )
+        
     def _setup_training_objects(
         self
     )->dict[str, Any]:
         
-        full_output_path = None
         if self.config.is_ref_device:
-            # Generate output directory using wandb run ID that was already created
-            run_id = self.wandb_wrapper.get_run_id() if self.wandb_wrapper.is_initialized() else ""
-            output_subdir = generate_output_dir_name(self.config, run_id)
-            full_output_path = os.path.join(self.config.output_dir, output_subdir)        
-            os.makedirs(full_output_path, exist_ok=True)
-        print(f"Full output path: {full_output_path}")
+            self._setup_project()
         
         # Calculate dataset statistics
         mean, std = calculate_dataset_statistics_ddp(self.config)        
@@ -163,7 +173,7 @@ class LinearProbingProject(BaseProject):
             "train_loader": train_loader,
             "val_loader": val_loader,
             "scaler": scaler,
-            "output_dir": full_output_path,
+            "output_dir": self.config.output_dir,
             "loss_fn": loss_fn,
         }            
         

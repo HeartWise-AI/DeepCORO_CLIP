@@ -43,6 +43,8 @@ class LinearProbingProject(BaseProject):
             run_id=self.wandb_wrapper.get_run_id() if self.wandb_wrapper.is_initialized() else None
         )
         
+        print(f"Output directory: {self.config.output_dir}")        
+        
         # Create the output directory
         os.makedirs(self.config.output_dir, exist_ok=True)
         
@@ -107,7 +109,7 @@ class LinearProbingProject(BaseProject):
             name=self.config.pipeline_project
         )(
             backbone=video_encoder,
-            linear_probing_head=self.config.linear_probing_head,
+            head_linear_probing=self.config.head_linear_probing,
             head_structure=self.config.head_structure,
             dropout=self.config.dropout,
             freeze_backbone_ratio=self.config.video_freeze_ratio,
@@ -127,14 +129,16 @@ class LinearProbingProject(BaseProject):
                 'lr': self.config.video_encoder_lr,  # Lower learning rate for backbone
                 'name': 'backbone',
                 'weight_decay': self.config.video_encoder_weight_decay
-            },
-            {
-                'params': linear_probing.module.heads.parameters(),  # Linear probe head parameters
-                'lr': self.config.head_lr,  # Higher learning rate for probe heads
-                'name': 'heads',
-                'weight_decay': self.config.head_weight_decay
             }
         ]
+        for head_name in self.config.head_structure:
+            param_groups.append({
+                'params': linear_probing.module.heads[head_name].parameters(),
+                'lr': self.config.head_lr[head_name],
+                'name': head_name,
+                'weight_decay': self.config.head_weight_decay[head_name]
+            })
+            
         optimizer_class: torch.optim.Optimizer = getattr(torch.optim, self.config.optimizer)
         optimizer: torch.optim.Optimizer = optimizer_class(param_groups)
         # Initialize scheduler
@@ -173,7 +177,7 @@ class LinearProbingProject(BaseProject):
             "train_loader": train_loader,
             "val_loader": val_loader,
             "scaler": scaler,
-            "output_dir": self.config.output_dir,
+            "output_dir": self.config.output_dir if self.config.is_ref_device else None,
             "loss_fn": loss_fn,
         }            
         

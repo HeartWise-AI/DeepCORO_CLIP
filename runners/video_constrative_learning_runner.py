@@ -32,6 +32,8 @@ from utils.loss.typing import Loss
 from utils.wandb_wrapper import WandbWrapper
 from models.video_encoder import VideoEncoder
 from models.text_encoder import TextEncoder
+import itertools
+from torch.nn.utils import clip_grad_norm_
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -714,138 +716,121 @@ class VideoContrastiveLearningRunner:
         }, batch["paths"]
 
     def _train_step(
-        self, 
-        videos: torch.Tensor, 
-        input_ids: torch.Tensor, 
-        attention_mask: torch.Tensor
-    ) -> tuple[dict, dict]:
+    self,
+    videos: torch.Tensor,
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+) -> tuple[dict, dict]:
         """
-        Performs a single training step, including forward, backward, gradient update,
-        and metric computation.
+        One training iteration: forward → backward → (optional) clip → optimizer step →
+        metric computation.
 
-        :param videos: Tensor of shape [B, num_clips, T, H, W, C].
-        :param input_ids: Encoded text token IDs.
-        :param attention_mask: Attention mask for text.
-        :return: (batch_metrics, embeddings) where
-          - batch_metrics is a dictionary with loss, alignment scores, etc.
-          - embeddings is a dictionary with 'video_embeddings' and 'text_embeddings'.
+        Returns
+        -------
+        batch_metrics : dict
+            loss, LR(s), temperature, alignment score, embedding norms …
+        embeddings : dict
+            'video_embeddings' | 'text_embeddings' (fp32, detached only at caller’s request)
         """
-        self.optimizer.zero_grad()
+        # ------------------------------------------------------------------
+        # 0. housekeeping
+        # ------------------------------------------------------------------
+        self.optimizer.zero_grad(set_to_none=True)
 
-        if self.scaler:
-            with torch.amp.autocast("cuda"):
-                video_embeddings = self.video_encoder(videos)
-                text_embeddings = self.text_encoder(input_ids, attention_mask)
-                loss = self.loss_fn.run(
-                    video_features=video_embeddings, 
-                    text_features=text_embeddings, 
-                    log_temp=self.log_temp
-                )
+        amp_enabled = self.scaler is not None
+        autocast_ctx = torch.amp.autocast(device_type="cuda", enabled=amp_enabled)
 
+        # ------------------------------------------------------------------
+        # 1. forward
+        # ------------------------------------------------------------------
+        with autocast_ctx:
+            video_emb = self.video_encoder(videos)
+            text_emb  = self.text_encoder(input_ids, attention_mask)
+            loss      = self.loss_fn.run(
+                video_features=video_emb,
+                text_features=text_emb,
+                log_temp=self.log_temp,
+            )
+
+        # ------------------------------------------------------------------
+        # 2. backward
+        # ------------------------------------------------------------------
+        if amp_enabled:
             self.scaler.scale(loss).backward()
-            self.scaler.unscale_(self.optimizer)
-
-            DistributedUtils.sync_process_group(
-                world_size=self.world_size,
-                device_ids=self.device
-            )
-
-            # Log gradient norms
-            if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
-                log_gradient_norms(
-                    model=self.video_encoder, 
-                    wandb_wrapper=self.wandb_wrapper,
-                    prefix="train/video_encoder/"
-                )
-                log_gradient_norms(
-                    model=self.text_encoder, 
-                    wandb_wrapper=self.wandb_wrapper, 
-                    prefix="train/text_encoder/"
-                )
-
-            DistributedUtils.sync_process_group(
-                world_size=self.world_size,
-                device_ids=self.device
-            )
-
-            # # Clip gradients
-            # torch.nn.utils.clip_grad_norm_(self.video_encoder.parameters(), max_norm=5.0)
-            # torch.nn.utils.clip_grad_norm_(self.text_encoder.parameters(), max_norm=5.0)
-
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-
-            video_embeddings = video_embeddings.float()
-            text_embeddings = text_embeddings.float()
+            self.scaler.unscale_(self.optimizer)          # grads now in fp32
         else:
-            video_embeddings = self.video_encoder(videos)
-            text_embeddings = self.text_encoder(input_ids, attention_mask)
-            loss = self.loss_fn.run(
-                video_features=video_embeddings, 
-                text_features=text_embeddings, 
-                log_temp=self.log_temp
-            )
-
             loss.backward()
 
-            DistributedUtils.sync_process_group(
-                world_size=self.world_size,
-                device_ids=self.device
+        # ------------------------------------------------------------------
+        # 3. (optional) gradient clipping
+        # ------------------------------------------------------------------
+        max_norm = getattr(self.config, "max_grad_norm", 5.0)  # 0 or None → disabled
+        if max_norm:
+            # Gather all trainable parameters once (store in __init__ if you prefer)
+            params = itertools.chain(
+                self.video_encoder.parameters(),
+                self.text_encoder.parameters(),
             )
+            clip_grad_norm_(params, max_norm=max_norm)
 
-            if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
-                log_gradient_norms(
-                    model=self.video_encoder, 
-                    wandb_wrapper=self.wandb_wrapper,
-                    prefix="train/video_encoder/"
-                )
-                log_gradient_norms(
-                    model=self.text_encoder, 
-                    wandb_wrapper=self.wandb_wrapper, 
-                    prefix="train/text_encoder/"
-                )
-
-            DistributedUtils.sync_process_group(
-                world_size=self.world_size,
-                device_ids=self.device
-            )
-
-            # Clip gradients
-            torch.nn.utils.clip_grad_norm_(self.video_encoder.parameters(), max_norm=5.0)
-            torch.nn.utils.clip_grad_norm_(self.text_encoder.parameters(), max_norm=5.0)
-
+        # ------------------------------------------------------------------
+        # 4. optimizer step
+        # ------------------------------------------------------------------
+        if amp_enabled:
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
             self.optimizer.step()
-        
-        # metrics
-        with torch.no_grad():
-            embedding_norms = compute_embedding_norms(video_embeddings, text_embeddings)
-            alignment_score = compute_alignment_score(video_embeddings, text_embeddings)
 
-        metrics = {
-            **embedding_norms,
-            "alignment_score": alignment_score,
+        # ------------------------------------------------------------------
+        # 5. logging (rank‑0 only)
+        # ------------------------------------------------------------------
+        if (
+            self.config.is_ref_device
+            and self.wandb_wrapper.is_initialized()
+        ):
+            # Norms already unscaled; no extra sync needed if you run this on rank‑0
+            log_gradient_norms(
+                model=self.video_encoder,
+                wandb_wrapper=self.wandb_wrapper,
+                prefix="train/video_encoder/",
+            )
+            log_gradient_norms(
+                model=self.text_encoder,
+                wandb_wrapper=self.wandb_wrapper,
+                prefix="train/text_encoder/",
+            )
+
+        # ------------------------------------------------------------------
+        # 6. metrics (no_grad)
+        # ------------------------------------------------------------------
+        with torch.no_grad():
+            video_fp32 = video_emb.float()
+            text_fp32  = text_emb.float()
+
+            embedding_norms  = compute_embedding_norms(video_fp32, text_fp32)
+            alignment_score  = compute_alignment_score(video_fp32, text_fp32)
+
+        # LR per param‑group (torch‑native ≥ 2.2 supports names)
+        lr_metrics = {
+            f"lr/{pg.get('name', str(i))}": pg["lr"]
+            for i, pg in enumerate(self.optimizer.param_groups)
         }
 
-        lr_metrics = {}
-        for pg in self.optimizer.param_groups:
-            lr_metrics[f"lr/{pg['name']}"] = pg["lr"]
+        batch_metrics = {
+            "loss": loss.detach().item(),
+            "temperature": self.log_temp.exp().detach().item(),
+            "alignment_score": alignment_score,
+            **embedding_norms,
+            **lr_metrics,
+        }
 
-        return (
-            {
-                "loss": loss.detach().item(),
-                **lr_metrics,
-                "temperature": self.log_temp.exp().detach().item(),
-                **{
-                    k: v.detach().item() if torch.is_tensor(v) else v
-                    for k, v in metrics.items()
-                },
-            },
-            {
-                "video_embeddings": video_embeddings,
-                "text_embeddings": text_embeddings,
-            },
-        )
+        embeddings = {
+            "video_embeddings": video_fp32,
+            "text_embeddings": text_fp32,
+        }
 
+        return batch_metrics, embeddings
     def _val_step(
         self, 
         videos: torch.Tensor, 

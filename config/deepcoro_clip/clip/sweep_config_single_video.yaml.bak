@@ -1,20 +1,20 @@
 command:
   - torchrun
-  - "--nproc_per_node=3"
-  - "--master_port=29500"
+  - "--nproc_per_node=2"
+  - "--master_port=29501"
   - "scripts/main.py"
   - "--base_config"
-  - "config/clip/base_config.yaml"
+  - "config/deepcoro_clip/clip/base_config.yaml"
   - ${args}
 
-name: "dev_deep_coro_clip_single_video"
-project: "dev_deep_coro_clip_single_video"
+name: "DeepCORO_Clip_Sweep_Single_Video"
+project: "DeepCORO_Clip_Sweep_Single_Video"
 entity: "mhi_ai"
 
 method: bayes
 
 metric:
-  name: best_val_loss
+  name: val/loss
   goal: minimize
 
 parameters:
@@ -24,71 +24,72 @@ parameters:
     max: 0.0001
 
   optimizer:
-    values: ["RAdam", "AdamW"]
+    values: [RAdam, AdamW]
 
   scheduler_name:
     values: ["linear_warmup", "cosine_with_warmup", "cosine_with_hard_restarts_with_warmup"]
 
-  lr_step_period:
-    values: [15, 20, 30]
+  loss_name:
+    values: ["siglip_ddp", "clip_loss", "clip_loss_with_margin"]
 
-  gradient_accumulation_steps:  
-    values: [1]
-
-  num_warmup_percent:
-    values: [0.05, 0.1, 0.15]
-
-  factor:
-    distribution: uniform
-    min: 0.10
-    max: 0.30
-    
-  stride:
-    values: [1, 2]
-
-  dropout:
-    distribution: uniform
-    min: 0.05
-    max: 0.12
-
-  video_freeze_ratio:
-    distribution: uniform
-    min: 0.8
-    max: 0.95
-
-  text_freeze_ratio:
-    distribution: uniform
-    min: 0.7
-    max: 0.95
-
-  num_heads:
-    values: [8, 16]
-
-  aggregator_depth:
-    values: [2, 4]
+  model_name:
+    values: ["x3d_m"]
 
   temperature:
     distribution: uniform
-    min: 0.05
+    min: 0.01
     max: 0.1
 
-  video_weight_decay:
-    distribution: log_uniform_values
-    min: 1e-7
-    max: 1e-4
-  text_weight_decay:
-    distribution: log_uniform_values
-    min: 1e-7
-    max: 1e-6
+  num_warmup_percent:
+    values: [0.1, 0.2]
+
+  dropout:
+    distribution: uniform
+    min: 0.1
+    max: 0.5
+
+  video_freeze_ratio:
+    values: [0.8, 0.9, 1.0]
+
+  text_freeze_ratio:
+    values: [0.0, 0.5, 0.8, 0.9, 1.0]
+
+  view_count:
+    values: [1, 2]
+
+  num_heads:
+    values: [2, 4]
+
+  aggregator_depth:
+    values: [1, 2]
+
+  rand_augment:
+    values: [true]
+
+  gradient_accumulation_steps:
+    values: [1, 2]
 
   batch_size:
-    values: [24]
+    values: [12, 24]
+
+  max_grad_norm:
+    values: [5.0, 10.0]
+
+  frames:
+    values: [32, 48, 72]
+
+  apply_mask:
+    values: [false]
+
   tag:
     values: ["mvit_pretrained"]
+
   name:
-    values: ["dev_deep_coro_clip_single_video"]
+    values: ["DeepCORO_Clip_Sweep_Single_Video"]
+
   project:
-    values: ["dev_deep_coro_clip_single_video"]
+    values: ["DeepCORO_Clip_Sweep_Single_Video"]
+
   entity:
     values: ["mhi_ai"]
 

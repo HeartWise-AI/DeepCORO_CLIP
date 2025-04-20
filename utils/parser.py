@@ -26,6 +26,7 @@ class HeartWiseParser:
         train_group.add_argument('--debug', type=str2bool)
         train_group.add_argument('--temperature', type=float)
         train_group.add_argument('--mode', type=str)
+        train_group.add_argument('--max_grad_norm', type=float)
         
         # Optimization parameters
         optim_group = parser.add_argument_group('Optimization')

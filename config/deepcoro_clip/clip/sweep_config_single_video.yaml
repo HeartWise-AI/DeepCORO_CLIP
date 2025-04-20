@@ -2,11 +2,9 @@ command:
   - torchrun
   - "--nproc_per_node=2"
   - "--master_port=29501"
-  - "scripts/train_model_multi_gpu.py"
+  - "scripts/main.py"
   - "--base_config"
   - "config/deepcoro_clip/clip/base_config.yaml"
-  - "--trainer_project"
-  - "DeepCORO_clip"
   - ${args}
 
 name: "DeepCORO_Clip_Sweep_Single_Video"
@@ -35,7 +33,7 @@ parameters:
     values: ["siglip_ddp", "clip_loss", "clip_loss_with_margin"]
 
   model_name:
-    values: ["mvit", "x3d_s", "x3d_m"]
+    values: ["x3d_m"]
 
   temperature:
     distribution: uniform
@@ -74,6 +72,12 @@ parameters:
   batch_size:
     values: [12, 24]
 
+  max_grad_norm:
+    values: [5.0, 10.0]
+
+  frames:
+    values: [32, 48, 72]
+
   apply_mask:
     values: [false]
 
@@ -81,10 +85,10 @@ parameters:
     values: ["mvit_pretrained"]
 
   name:
-    values: ["DeepCORO_Clip_Sweep_Learnable_Temp_Single_Video"]
+    values: ["DeepCORO_Clip_Sweep_Single_Video"]
 
   project:
-    values: ["DeepCORO_Clip_Sweep_Learnable_Temp_Single_Video"]
+    values: ["DeepCORO_Clip_Sweep_Single_Video"]
 
   entity:
     values: ["mhi_ai"]

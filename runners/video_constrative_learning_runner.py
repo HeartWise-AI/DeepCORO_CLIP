@@ -135,108 +135,129 @@ class VideoContrastiveLearningRunner:
           - Validation step
           - Checkpoint saving
           - LR scheduling
+
+        :param start_epoch: Starting epoch index.
+        :param end_epoch: Ending epoch index.
+        :raises RuntimeError: If NaN loss is detected during training.
         """
-        for epoch in range(start_epoch, end_epoch):
-            # Synchronize before epoch starts
-            DistributedUtils.sync_process_group(
-                world_size=self.world_size,
-                device_ids=self.device
-            )
+        try:
+            for epoch in range(start_epoch, end_epoch):
+                # Synchronize before epoch starts
+                DistributedUtils.sync_process_group(
+                    world_size=self.world_size,
+                    device_ids=self.device
+                )
 
-            # Training phase
-            train_metrics: dict[str, float] = self._run_epoch(mode=RunMode.TRAIN, epoch=epoch)
-            if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
-                # Let wandb auto-increment steps
-                self.wandb_wrapper.log(train_metrics)
-                print(f"[DEBUG] rank={self.device} => Logged train metrics to W&B")
+                # Training phase
+                train_metrics: dict[str, float] = self._run_epoch(mode=RunMode.TRAIN, epoch=epoch)
+                if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
+                    # Let wandb auto-increment steps
+                    self.wandb_wrapper.log(train_metrics)
+                    print(f"[DEBUG] rank={self.device} => Logged train metrics to W&B")
 
-            # Sync before validation
-            DistributedUtils.sync_process_group(
-                world_size=self.world_size,
-                device_ids=self.device
-            )
+                # Sync before validation
+                DistributedUtils.sync_process_group(
+                    world_size=self.world_size,
+                    device_ids=self.device
+                )
 
-            # Validation phase
-            val_metrics: dict[str, float] = self._run_epoch(
-                mode=RunMode.VALIDATION, 
-                epoch=epoch
-            )
-            
-            # Sync after validation
-            DistributedUtils.sync_process_group(
-                world_size=self.world_size,
-                device_ids=self.device
-            )
-            
-            # If it's an epoch-based scheduler (like StepLR, CosineAnnealingLR, etc.),
-            # call lr_scheduler.step() after each epoch
-            if self.lr_scheduler and (not self.scheduler_per_iteration):
-                self.lr_scheduler.step()
+                # Validation phase
+                val_metrics: dict[str, float] = self._run_epoch(
+                    mode=RunMode.VALIDATION, 
+                    epoch=epoch
+                )
+                
+                # Sync after validation
+                DistributedUtils.sync_process_group(
+                    world_size=self.world_size,
+                    device_ids=self.device
+                )
+                
+                # If it's an epoch-based scheduler (like StepLR, CosineAnnealingLR, etc.),
+                # call lr_scheduler.step() after each epoch
+                if self.lr_scheduler and (not self.scheduler_per_iteration):
+                    self.lr_scheduler.step()
 
-            # Update best model
-            if val_metrics["val/loss"] < self.best_val_loss:
-                prev_best: float = self.best_val_loss
-                self.best_val_loss = val_metrics["val/loss"]
-                self.best_epoch = epoch
+                # Update best model
+                if val_metrics["val/loss"] < self.best_val_loss:
+                    prev_best: float = self.best_val_loss
+                    self.best_val_loss = val_metrics["val/loss"]
+                    self.best_epoch = epoch
+                    if self.config.is_ref_device:
+                        print(
+                            f"\nNew best model! Val Loss: {val_metrics['val/loss']:.4f} "
+                            f"(previous: {prev_best:.4f})"
+                        )
+                        self._save_checkpoint(
+                            epoch=epoch,
+                            metrics={
+                                **train_metrics, 
+                                **val_metrics
+                            },
+                            is_best=True,
+                        )
+                
+                # Update and save model with highest alignment score
+                if val_metrics["val/alignment_score"] > self.highest_alignment_score:
+                    prev_highest: float = self.highest_alignment_score
+                    self.highest_alignment_score = val_metrics["val/alignment_score"]
+                    self.highest_alignment_epoch = epoch
+                    if self.config.is_ref_device:
+                        print(
+                            f"\nNew highest alignment score model! Alignment Score: {val_metrics['val/alignment_score']:.4f} "
+                            f"(previous: {prev_highest:.4f})"
+                        )
+                        self._save_checkpoint(
+                            epoch=epoch,
+                            metrics={
+                                **train_metrics, 
+                                **val_metrics
+                            },
+                            is_best=False,
+                            is_highest_alignment=True,
+                        )
+
+                # Always save "latest" checkpoint
                 if self.config.is_ref_device:
-                    print(
-                        f"\nNew best model! Val Loss: {val_metrics['val/loss']:.4f} "
-                        f"(previous: {prev_best:.4f})"
+                    self._save_checkpoint(
+                        epoch=epoch,
+                        metrics={**train_metrics, **val_metrics},
+                        is_best=False,
                     )
+                
+                # Sync after saving checkpoint
+                DistributedUtils.sync_process_group(
+                    world_size=self.world_size,
+                    device_ids=self.device
+                )
+                            
+                if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
+                    val_metrics['best_val_loss'] = self.best_val_loss
+                    val_metrics['highest_alignment_score'] = self.highest_alignment_score
+                    self.wandb_wrapper.log(val_metrics)
+                    print(f"[DEBUG] rank={self.device} => Logged val metrics to W&B")
+                
+                # Sync after logging
+                DistributedUtils.sync_process_group(
+                    world_size=self.world_size,
+                    device_ids=self.device
+                )
+
+        except RuntimeError as e:
+            if "NaN loss" in str(e):
+                if self.config.is_ref_device:
+                    print("\nTraining stopped due to NaN loss. Saving final checkpoint...")
+                    # Save a checkpoint with the error state
                     self._save_checkpoint(
                         epoch=epoch,
                         metrics={
-                            **train_metrics, 
-                            **val_metrics
-                        },
-                        is_best=True,
-                    )
-            
-            # Update and save model with highest alignment score
-            if val_metrics["val/alignment_score"] > self.highest_alignment_score:
-                prev_highest: float = self.highest_alignment_score
-                self.highest_alignment_score = val_metrics["val/alignment_score"]
-                self.highest_alignment_epoch = epoch
-                if self.config.is_ref_device:
-                    print(
-                        f"\nNew highest alignment score model! Alignment Score: {val_metrics['val/alignment_score']:.4f} "
-                        f"(previous: {prev_highest:.4f})"
-                    )
-                    self._save_checkpoint(
-                        epoch=epoch,
-                        metrics={
-                            **train_metrics, 
-                            **val_metrics
+                            "error": str(e),
+                            "train/loss": float("nan"),
+                            "val/loss": float("nan"),
                         },
                         is_best=False,
-                        is_highest_alignment=True,
                     )
-
-            # Always save "latest" checkpoint
-            if self.config.is_ref_device:
-                self._save_checkpoint(
-                    epoch=epoch,
-                    metrics={**train_metrics, **val_metrics},
-                    is_best=False,
-                )
-            
-            # Sync after saving checkpoint
-            DistributedUtils.sync_process_group(
-                world_size=self.world_size,
-                device_ids=self.device
-            )
-                        
-            if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
-                val_metrics['best_val_loss'] = self.best_val_loss
-                val_metrics['highest_alignment_score'] = self.highest_alignment_score
-                self.wandb_wrapper.log(val_metrics)
-                print(f"[DEBUG] rank={self.device} => Logged val metrics to W&B")
-            
-            # Sync after logging
-            DistributedUtils.sync_process_group(
-                world_size=self.world_size,
-                device_ids=self.device
-            )
+            raise  # Re-raise the exception after saving checkpoint
 
     def _gather_tensor_along_batch(self, local_tensor: torch.Tensor, world_size: int) -> torch.Tensor:
         """
@@ -333,6 +354,7 @@ class VideoContrastiveLearningRunner:
         :param mode: One of ["train", "val"] indicating the mode.
         :param epoch: Current epoch index.
         :return: Dictionary of metrics, averaged over all batches and reduced across ranks.
+        :raises RuntimeError: If NaN loss is detected during training.
         """
         assert mode in [RunMode.TRAIN, RunMode.VALIDATION]
 
@@ -368,6 +390,13 @@ class VideoContrastiveLearningRunner:
                 # shape => [B, 1, T, H, W, C]
                 step_inputs["videos"] = step_inputs["videos"].unsqueeze(1)
             batch_metrics, embeddings = step_fn(**step_inputs)
+
+            # Check for NaN loss
+            if torch.isnan(torch.tensor(batch_metrics["loss"])):
+                error_msg = f"NaN loss detected in {mode} at epoch {epoch + 1}, batch {batch_count + 1}"
+                if self.config.is_ref_device:
+                    print(f"\nERROR: {error_msg}")
+                raise RuntimeError(error_msg)
 
             if self.lr_scheduler and self.scheduler_per_iteration and (mode == RunMode.TRAIN):
                 self.lr_scheduler.step()
@@ -730,7 +759,7 @@ class VideoContrastiveLearningRunner:
         batch_metrics : dict
             loss, LR(s), temperature, alignment score, embedding norms …
         embeddings : dict
-            'video_embeddings' | 'text_embeddings' (fp32, detached only at caller’s request)
+            'video_embeddings' | 'text_embeddings' (fp32, detached only at caller's request)
         """
         # ------------------------------------------------------------------
         # 0. housekeeping
@@ -811,7 +840,7 @@ class VideoContrastiveLearningRunner:
             embedding_norms  = compute_embedding_norms(video_fp32, text_fp32)
             alignment_score  = compute_alignment_score(video_fp32, text_fp32)
 
-        # LR per param‑group (torch‑native ≥ 2.2 supports names)
+        # LR per param‑group (torch‑native ≥ 2.2 supports names)
         lr_metrics = {
             f"lr/{pg.get('name', str(i))}": pg["lr"]
             for i, pg in enumerate(self.optimizer.param_groups)

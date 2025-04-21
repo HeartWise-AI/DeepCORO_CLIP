@@ -15,6 +15,7 @@ class ClipConfig(HeartWiseConfig):
     num_workers: int
     debug: bool
     temperature: float
+    max_grad_norm: float  # Maximum gradient norm for clipping
 
     # Data parameters
     data_filename: str

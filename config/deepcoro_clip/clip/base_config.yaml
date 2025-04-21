@@ -7,7 +7,7 @@ use_amp: !!bool true
 period: !!int 1
 device: !!str cuda
 run_mode: !!str train
-max_grad_norm: !!float 5.0
+max_grad_norm: !!float 1.0
 # Dataset parameters
 data_filename: !!str data/reports/reports_with_alpha_separator_with_Calcifc_Stenosis_IFR_20250407_RCA_LCA.csv
 root: !!str "."
@@ -19,7 +19,7 @@ multi_video: !!bool false
 num_videos: !!int 4
 groupby_column: !!str StudyInstanceUID
 shuffle_videos: !!bool true
-batch_size: !!int 32
+batch_size: !!int 24
 # Seed
 seed: !!int 42
 # Model parameters
@@ -33,8 +33,8 @@ lr: !!float 0.0002087457921275152
 lr_step_period: !!int 5
 factor: !!float 0.1
 loss_name: !!str siglip_ddp
-video_weight_decay: !!float 0.000001
-text_weight_decay: !!float 0.000001
+video_weight_decay: !!float 0.0001
+text_weight_decay: !!float 0.00001
 gradient_accumulation_steps: !!int 1
 num_warmup_percent: !!float 0.1
 num_hard_restarts_cycles: !!float 1.0
@@ -44,8 +44,8 @@ num_heads: !!int 2
 aggregator_depth: !!int 2
 temperature: !!float 0.08944473130286856
 dropout: !!float 0.21500802783103076
-video_freeze_ratio: !!float 0.9
-text_freeze_ratio: !!float 0.8
+video_freeze_ratio: !!float 0.7
+text_freeze_ratio: !!float 0.85
 # Checkpointing
 resume_training: !!bool false
 checkpoint: !!str outputs/deepCORO_CLIP/DeepCORO_Clip_Sweep_Learnable_Temp_Full_mvit_b12_f16_RAdam_lr0.0001_20250114-190320_2o5xoevj/checkpoints/latest.pt

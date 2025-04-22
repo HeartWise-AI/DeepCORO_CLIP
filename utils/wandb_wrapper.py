@@ -45,8 +45,8 @@ class WandbWrapper:
                     config_dict['loss_name'] = config.loss_name
                     
                 wandb.init(
-                    project=config.wandb_project,
-                    entity=config.wandb_entity,
+                    project=config.project,
+                    entity=config.entity,
                     config=config_dict,
                     allow_val_change=True
                 )

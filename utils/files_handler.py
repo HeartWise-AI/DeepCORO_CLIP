@@ -20,10 +20,11 @@ def generate_output_dir_name(
 
     run_folder: str = f"{run_id}_{current_time}" if run_id is not None else f"{current_time}_no_wandb"
 
+    wandb_project: str = config.project
     model_dir: str = os.path.join(
         config.base_checkpoint_path, 
         config.pipeline_project,
-        config.wandb_project,
+        wandb_project,
         run_folder
     )
     return model_dir

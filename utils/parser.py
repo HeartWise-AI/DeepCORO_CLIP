@@ -37,8 +37,8 @@ class BaseParser:
         common_group.add_argument('--device', type=str, help="Device to use (e.g., 'cuda', 'cpu').")
         common_group.add_argument('--world_size', type=int, help="Number of processes for distributed training.")
     
-
 @ParserRegistry.register("DeepCORO_clip")
+@ParserRegistry.register("DeepCORO_clip_test")
 class ClipParser(BaseParser):
     """Parser for CLIP-style contrastive pretraining."""
     def __init__(self):
@@ -55,7 +55,8 @@ class ClipParser(BaseParser):
         clip_train_group.add_argument('--num_workers', type=int, help="Number of workers for the CLIP model.")
         clip_train_group.add_argument('--debug', type=str2bool, help="Enable debug mode for the CLIP model.")
         clip_train_group.add_argument('--temperature', type=float, help="Temperature parameter for CLIP loss.")
-
+        clip_train_group.add_argument('--base_checkpoint_path', type=str, help="Path to the base checkpoint file.")
+        
         clip_data_group = self.parser.add_argument_group('CLIP Data parameters')
         clip_data_group.add_argument('--data_filename', type=str, help="Path to the data CSV/manifest file.")
         clip_data_group.add_argument('--root', type=str, help="Root directory for data.")
@@ -91,7 +92,6 @@ class ClipParser(BaseParser):
 
         clip_system_group = self.parser.add_argument_group('CLIP System parameters')
         clip_system_group.add_argument('--use_amp', type=str2bool, help="Enable Automatic Mixed Precision (AMP).")
-        clip_system_group.add_argument('--device', type=str, help="Device to use (e.g., 'cuda', 'cpu').")
         clip_system_group.add_argument('--period', type=int, help="Logging/checkpointing period.")
 
         clip_metrics_group = self.parser.add_argument_group('CLIP Metrics parameters')

@@ -80,23 +80,32 @@ class TestLinearProbing(unittest.TestCase):
         self.config = LinearProbingConfig(
             # Base config parameters
             pipeline_project="DeepCORO_video_linear_probing",
-            output_dir=self.temp_dir,
+            base_checkpoint_path="tmp",
             run_mode="train",
             epochs=10,
             seed=42,
-            tag="test",
             name="test_run",
             project="test_project",
             entity="test_entity",
             use_wandb=False,
             
             # Training parameters
-            lr=0.001,
+            head_lr={
+                "contrast_agent": 0.001, 
+                "main_structure": 0.001, 
+                "stent_presence": 0.001, 
+                "ejection_fraction": 0.001
+            },
             scheduler_name="step",
             lr_step_period=1,
             factor=0.1,
             optimizer="adam",
-            weight_decay=0.0,
+            head_weight_decay={
+                "contrast_agent": 0.0, 
+                "main_structure": 0.0, 
+                "stent_presence": 0.0, 
+                "ejection_fraction": 0.0
+            },
             use_amp=False,
             gradient_accumulation_steps=1,
             num_warmup_percent=0.1,
@@ -108,13 +117,19 @@ class TestLinearProbing(unittest.TestCase):
             num_workers=0,
             batch_size=2,
             datapoint_loc_label="video_path",
-            target_label=["contrast_agent", "main_structure", "stent_presence", "ejection_fraction"],
+            target_label=[
+                "contrast_agent", 
+                "main_structure", 
+                "stent_presence", 
+                "ejection_fraction"
+            ],
             rand_augment=False,
             resize=224,
             frames=16,
             stride=1,
             
             # Video Encoder parameters
+            video_encoder_weight_decay=0.0,
             model_name="resnet50",
             aggregator_depth=1,
             num_heads=1,
@@ -125,13 +140,18 @@ class TestLinearProbing(unittest.TestCase):
             video_encoder_lr=0.0005,
             
             # Linear Probing parameters
+            head_linear_probing={
+                "contrast_agent": "simple_linear_probing",
+                "main_structure": "simple_linear_probing",
+                "stent_presence": "simple_linear_probing",
+                "ejection_fraction": "simple_linear_probing_regression"
+            },
             head_task={
                 "contrast_agent": "classification",
                 "main_structure": "classification",
                 "stent_presence": "classification",
                 "ejection_fraction": "regression"
             },
-            linear_probing_head="multi_head",
             head_structure={
                 "contrast_agent": 1,
                 "main_structure": 5,
@@ -142,7 +162,7 @@ class TestLinearProbing(unittest.TestCase):
                 "contrast_agent": "bce",
                 "main_structure": "ce",
                 "stent_presence": "bce",
-                "ejection_fraction": "mse"
+                "ejection_fraction": "mae"
             },
             head_weights={
                 "contrast_agent": 1.0,
@@ -167,7 +187,8 @@ class TestLinearProbing(unittest.TestCase):
                     "lcx": 3,
                     "rca": 4
                 },
-                "stent_presence": {"no": 0, "yes": 1}
+                "stent_presence": {"no": 0, "yes": 1},
+                "ejection_fraction": {"absent": 0, "present": 1}
             }
         )
         
@@ -181,13 +202,8 @@ class TestLinearProbing(unittest.TestCase):
         self.video_encoder = VideoEncoder()
         self.linear_probing = LinearProbing(
             backbone=self.video_encoder,
-            linear_probing_head="simple_linear_probing",
-            head_structure={
-                "contrast_agent": 1,
-                "main_structure": 5,
-                "stent_presence": 1,
-                "ejection_fraction": 1
-            },
+            head_linear_probing=self.config.head_linear_probing,
+            head_structure=self.config.head_structure,
             dropout=0.1,
             freeze_backbone_ratio=0.0
         )

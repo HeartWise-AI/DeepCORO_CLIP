@@ -23,6 +23,7 @@ class MultiviewConfig(HeartWiseConfig):
     warm_restart_tmult: int
     
     # Dataset parameters
+    root: str  # Chemin racine pour les données
     data_filename: str
     num_workers: int
     batch_size: int
@@ -32,7 +33,11 @@ class MultiviewConfig(HeartWiseConfig):
     resize: int
     frames: int
     stride: int
-    
+    mean: List[float]  # Moyenne pour la normalisation
+    std: List[float]   # Écart-type pour la normalisation
+    num_videos: int    # Nombre de vidéos par examen
+    object_value_filter: int
+
     # Video Encoder parameters
     model_name: str
     aggregator_depth: int
@@ -42,6 +47,8 @@ class MultiviewConfig(HeartWiseConfig):
     pretrained: bool
     video_encoder_checkpoint_path: str
     video_encoder_lr: float
+    input_channels: int
+
     # Linear Probing parameters
     task: str
     linear_probing_head: str

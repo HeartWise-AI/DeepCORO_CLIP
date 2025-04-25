@@ -2,7 +2,8 @@ from typing import Any, Union
 from dataclasses import dataclass
 from runners import (
     LinearProbingRunner, 
-    VideoContrastiveLearningRunner
+    VideoContrastiveLearningRunner,
+    MultiviewRunner,
 )
 
 
@@ -10,7 +11,8 @@ from runners import (
 class Runner:
     runner_type: Union[
         VideoContrastiveLearningRunner, 
-        LinearProbingRunner
+        LinearProbingRunner,
+        MultiviewRunner,
     ]
     
     def train(

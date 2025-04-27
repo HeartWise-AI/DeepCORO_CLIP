@@ -1,6 +1,6 @@
 command:
   - torchrun
-  - "--nproc_per_node=2"
+  - "--nproc_per_node=3"
   - "--master_port=29501"
   - "scripts/main.py"
   - "--base_config"
@@ -21,7 +21,7 @@ parameters:
   lr:
     distribution: log_uniform_values
     min: 0.00001
-    max: 0.0001
+    max: 0.0002
 
   optimizer:
     values: [RAdam, AdamW]
@@ -30,38 +30,35 @@ parameters:
     values: ["linear_warmup", "cosine_with_warmup", "cosine_with_hard_restarts_with_warmup"]
 
   loss_name:
-    values: ["siglip_ddp", "clip_loss", "clip_loss_with_margin"]
+    values: ["siglip_ddp"]
 
   model_name:
     values: ["x3d_m"]
 
   temperature:
     distribution: uniform
-    min: 0.01
-    max: 0.1
+    min: 0.02
+    max: 0.15
 
   num_warmup_percent:
-    values: [0.1, 0.2]
+    values: [0.05, 0.1, 0.15]
 
   dropout:
     distribution: uniform
-    min: 0.1
-    max: 0.5
+    min: 0.05
+    max: 0.25
 
   video_freeze_ratio:
-    values: [0.8, 0.9, 1.0]
+    values: [0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
 
   text_freeze_ratio:
-    values: [0.0, 0.5, 0.8, 0.9, 1.0]
-
-  view_count:
-    values: [1, 2]
+    values: [0.8, 0.9, 1.0]
 
   num_heads:
-    values: [2, 4]
+    values: [2, 4, 8]
 
   aggregator_depth:
-    values: [1, 2]
+    values: [1, 2, 3, 4]
 
   rand_augment:
     values: [true]
@@ -70,19 +67,19 @@ parameters:
     values: [1, 2]
 
   batch_size:
-    values: [12, 24]
+    values: [64, 96, 128]
 
   max_grad_norm:
-    values: [5.0, 10.0]
+    values: [1.0, 2.0]
 
   frames:
-    values: [32, 48, 72]
+    values: [32, 48]
 
   apply_mask:
     values: [false]
 
   tag:
-    values: ["mvit_pretrained"]
+    values: ["x3d_m_pretrained"]
 
   name:
     values: ["DeepCORO_Clip_Sweep_Single_Video"]
@@ -92,6 +89,16 @@ parameters:
 
   entity:
     values: ["mhi_ai"]
+
+  video_weight_decay:
+    distribution: log_uniform_values
+    min: 1e-7
+    max: 1e-4
+
+  text_weight_decay:
+    distribution: log_uniform_values
+    min: 1e-7
+    max: 1e-6
 
 early_terminate:
   type: hyperband

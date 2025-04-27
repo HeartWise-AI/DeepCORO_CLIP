@@ -105,6 +105,7 @@ class VideoContrastiveLearningRunner:
         self.highest_alignment_score: float = float("-inf")
         self.highest_alignment_epoch: int = -1
         self.log_temp: torch.Tensor = log_temp
+        self.step: int = 0  # Initialize step counter for gradient accumulation
 
         # For simplicity: check the config for a known scheduler_name
         # If it includes "_warmup" or is from HF, we treat it as per-iteration
@@ -745,11 +746,11 @@ class VideoContrastiveLearningRunner:
         }, batch["paths"]
 
     def _train_step(
-    self,
-    videos: torch.Tensor,
-    input_ids: torch.Tensor,
-    attention_mask: torch.Tensor,
-) -> tuple[dict, dict]:
+        self,
+        videos: torch.Tensor,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+    ) -> tuple[dict, dict]:
         """
         One training iteration: forward → backward → (optional) clip → optimizer step →
         metric computation.
@@ -764,7 +765,9 @@ class VideoContrastiveLearningRunner:
         # ------------------------------------------------------------------
         # 0. housekeeping
         # ------------------------------------------------------------------
-        self.optimizer.zero_grad(set_to_none=True)
+        # Clear gradients only if this is the first step in accumulation
+        if self.step % self.config.gradient_accumulation_steps == 0:
+            self.optimizer.zero_grad(set_to_none=True)
 
         amp_enabled = self.scaler is not None
         autocast_ctx = torch.amp.autocast(device_type="cuda", enabled=amp_enabled)
@@ -781,35 +784,44 @@ class VideoContrastiveLearningRunner:
                 log_temp=self.log_temp,
             )
 
+        # Scale loss by gradient accumulation steps
+        scaled_loss = loss / self.config.gradient_accumulation_steps
+
         # ------------------------------------------------------------------
         # 2. backward
         # ------------------------------------------------------------------
         if amp_enabled:
-            self.scaler.scale(loss).backward()
-            self.scaler.unscale_(self.optimizer)          # grads now in fp32
+            self.scaler.scale(scaled_loss).backward()
         else:
-            loss.backward()
+            scaled_loss.backward()
 
         # ------------------------------------------------------------------
         # 3. (optional) gradient clipping
         # ------------------------------------------------------------------
         max_norm = getattr(self.config, "max_grad_norm", 5.0)  # 0 or None → disabled
-        if max_norm:
+        if max_norm and (self.step + 1) % self.config.gradient_accumulation_steps == 0:
             # Gather all trainable parameters once (store in __init__ if you prefer)
             params = itertools.chain(
                 self.video_encoder.parameters(),
                 self.text_encoder.parameters(),
             )
+            if amp_enabled:
+                self.scaler.unscale_(self.optimizer)  # Unscale before clipping
             clip_grad_norm_(params, max_norm=max_norm)
 
         # ------------------------------------------------------------------
         # 4. optimizer step
         # ------------------------------------------------------------------
-        if amp_enabled:
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-        else:
-            self.optimizer.step()
+        # Only step optimizer and update scaler if this is the last step in accumulation
+        if (self.step + 1) % self.config.gradient_accumulation_steps == 0:
+            if amp_enabled:
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                self.optimizer.step()
+
+        # Increment step counter
+        self.step += 1
 
         # ------------------------------------------------------------------
         # 5. logging (rank‑0 only)
@@ -860,6 +872,7 @@ class VideoContrastiveLearningRunner:
         }
 
         return batch_metrics, embeddings
+
     def _val_step(
         self, 
         videos: torch.Tensor, 

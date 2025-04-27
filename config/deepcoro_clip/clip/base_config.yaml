@@ -1,7 +1,7 @@
 pipeline_project: !!str "DeepCORO_clip"
 # Training parameters
-epochs: !!int 25
-num_workers: !!int 24
+epochs: !!int 10
+num_workers: !!int 48
 debug: !!bool false
 use_amp: !!bool true
 period: !!int 1
@@ -13,13 +13,13 @@ data_filename: !!str data/reports/reports_with_alpha_separator_with_Calcifc_Sten
 root: !!str "."
 target_label: !!str Report
 datapoint_loc_label: !!str FileName
-frames: !!int 48
+frames: !!int 32
 stride: !!int 1
 multi_video: !!bool false
 num_videos: !!int 4
 groupby_column: !!str StudyInstanceUID
 shuffle_videos: !!bool true
-batch_size: !!int 24
+batch_size: !!int 256
 # Seed
 seed: !!int 42
 # Model parameters
@@ -28,8 +28,9 @@ model_name: !!str x3d_m
 pretrained: !!bool true
 # Optimizer parameters
 optimizer: !!str RAdam
-scheduler_name: !!str step
 lr: !!float 0.0002087457921275152
+scheduler_name: !!str cosine_with_warmup
+num_warmup_percent: !!float 0.1
 lr_step_period: !!int 5
 factor: !!float 0.1
 loss_name: !!str siglip_ddp
@@ -62,7 +63,7 @@ resize: !!int 224
 view_count: !!null null
 apply_mask: !!bool false
 # wandb parameters
-tag: !!str mvit_pretrained
+tag: !!str x3d_m_pretrained
 name: !!str dev_deep_coro_clip_single_video
 project: !!str dev_deep_coro_clip_single_video
 entity: !!str mhi_ai

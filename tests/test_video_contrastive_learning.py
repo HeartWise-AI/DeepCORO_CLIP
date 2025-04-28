@@ -140,7 +140,7 @@ class TestVideoContrastiveLearning(unittest.TestCase):
         
         # Create test config by simulating CLI arguments
         original_argv = sys.argv.copy()
-        sys.argv = [sys.argv[0], "--base_config", "tests/config/clip_base_config.yaml", "--output_dir", self.temp_dir]
+        sys.argv = [sys.argv[0], "--base_config", "tests/config/clip_base_config.yaml", "--base_checkpoint_path", self.temp_dir]
         self.test_config = HeartWiseParser.parse_config()
         sys.argv = original_argv
         print(f"test_config: {self.test_config}")

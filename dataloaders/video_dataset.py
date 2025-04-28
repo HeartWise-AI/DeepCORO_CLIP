@@ -212,7 +212,7 @@ def custom_collate_fn(batch: List[Tuple[np.ndarray, Dict[str, torch.Tensor], str
         for k, v in target.items():
             targets_dict[k].append(v)
 
-    targets_dict = {k: torch.tensor(v) for k, v in targets_dict.items()}
+    targets_dict = {k: torch.tensor(v, dtype=torch.bfloat16) for k, v in targets_dict.items()}
     
     return {
         "videos": videos,

@@ -1,12 +1,12 @@
 pipeline_project: !!str "DeepCORO_clip"
+base_checkpoint_path: !!str outputs
 # Training parameters
 epochs: !!int 30
 num_workers: !!int 32
 debug: !!bool false
 use_amp: !!bool true
 period: !!int 1
-device: !!str cuda
-run_mode: !!str train
+run_mode: !!str inference
 # Dataset parameters
 data_filename: !!str data/reports/reports_sampled_300_study_ids.csv
 root: !!str "."
@@ -64,4 +64,4 @@ tag: !!str mvit_pretrained
 name: !!str dev_deep_coro_clip_single_video
 project: !!str dev_deep_coro_clip_single_video
 entity: !!str mhi_ai
-use_wandb: !!bool true
+use_wandb: !!bool false

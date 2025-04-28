@@ -1,22 +1,20 @@
 # Pipeline parameters
 pipeline_project: !!str DeepCORO_video_linear_probing
-output_dir: !!str outputs
+base_checkpoint_path: !!str outputs
 run_mode: !!str train
-epochs: !!int 30
+epochs: !!int 8
 seed: !!int 42
 # wandb parameters
-tag: !!str mvit_pretrained
 name: !!str DeepCORO_video_linear_probing_cathEF
 project: !!str DeepCORO_video_linear_probing_cathEF
 entity: !!str mhi_ai
 use_wandb: !!bool true
 # Training parameters
-lr: !!float 0.001
 scheduler_name: !!str step
 lr_step_period: !!int 5
 factor: !!float 0.3
 optimizer: !!str AdamW
-weight_decay: !!float 0.00001
+video_encoder_weight_decay: !!float 0.00000387825282805052
 use_amp: !!bool true
 gradient_accumulation_steps: !!int 1
 num_warmup_percent: !!float 0.1
@@ -27,7 +25,7 @@ data_filename: !!str data/CathEF_MHI_UCSF_2016-to-july-2022-and-2023-08-30-post-
 num_workers: !!int 16
 batch_size: !!int 16
 datapoint_loc_label: !!str FileName
-target_label: [y_true_cat]
+target_label: [Value, y_true_cat]
 rand_augment: !!bool true
 resize: !!int 224
 frames: !!int 16
@@ -42,18 +40,33 @@ pretrained: !!bool true
 video_encoder_lr: !!float 1e-5
 video_encoder_checkpoint_path: !!str outputs/dev_deep_coro_clip_single_video/mvit_pretrained_mvit_b24_f16_AdamW_lr2.527361715636149e-05_20250325-001727_xvwwv5ar/checkpoints/best_epoch.pt
 # Linear Probing parameters
-task: !!str classification
-linear_probing_head: !!str simple_linear_probing
-head_structure:
+head_linear_probing: # linear probing class for each head
+  Value: !!str simple_linear_probing_regression
+  y_true_cat: !!str simple_linear_probing
+head_structure: # output dimension of each head
+  Value: !!int 1
   y_true_cat: !!int 1
-head_dropout:
+head_dropout: # dropout for each head
+  Value: !!float 0.1
   y_true_cat: !!float 0.1
-loss_structure:
+loss_structure: # loss function for each head
+  Value: !!str mae
   y_true_cat: !!str bce_logit
-head_weights:
+head_lr: # learning rate for each head
+  Value: !!float 0.00006998050654973559
+  y_true_cat: !!float 0.00006998050654973559
+head_weight_decay: # weight decay for each head
+  Value: !!float 0.00000387825282805052
+  y_true_cat: !!float 0.00000387825282805052
+head_weights: # weight per head for loss computation - f_loss = f_loss * f_weight + f_loss_2 * f_weight_2 + ...
+  Value: !!float 1.0
   y_true_cat: !!float 1.0
+head_task: # task for each head
+  Value: !!str regression
+  y_true_cat: !!str classification
 # Label mappings - Used for confusion matrix
-labels_map:
+labels_map: # label mapping for each head
+  Value:
+    Value: !!str regression
   y_true_cat:
-    Reduced: !!int 1
-    NonReduced: !!int 0
+    y_true_cat: !!str EF

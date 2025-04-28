@@ -2,27 +2,29 @@ import os
 import torch
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
-from torch.optim import Optimizer
-from torch.cuda.amp import GradScaler
-from torch.optim.lr_scheduler import LRScheduler
-from torch.utils.data import DataLoader
 import seaborn as sns
 import matplotlib.pyplot as plt
+
+from tqdm import tqdm
+from scipy.stats import pearsonr
+from torch.optim import Optimizer
+from torch.cuda.amp import GradScaler
+from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import LRScheduler
+from collections import defaultdict
 from sklearn.metrics import (
     roc_auc_score, 
     average_precision_score, 
     confusion_matrix
 )
-
 from utils.loss.typing import Loss
 from utils.ddp import DistributedUtils
 from utils.registry import RunnerRegistry
 from utils.enums import RunMode, MetricTask
 from utils.wandb_wrapper import WandbWrapper
 from utils.metrics import compute_best_threshold
+from utils.loss.losses import LossRegistry, LossType
 from utils.config.linear_probing_config import LinearProbingConfig
-from collections import defaultdict
 from models.linear_probing import LinearProbing
 
 
@@ -172,8 +174,7 @@ class LinearProbingRunner:
             DistributedUtils.sync_process_group(
                 world_size=self.world_size,
                 device_ids=self.device
-            )
-                                      
+            )                                 
 
     def _run_epoch(
         self, 
@@ -216,8 +217,8 @@ class LinearProbingRunner:
                             gathered_metrics[f'mean_{loss_name}'] = gathered_metrics.get(f"mean_{loss_name}", 0.0) + loss_val
                     elif k == 'logits':
                         # Handle logits for classification metrics
-                        if self.config.task == MetricTask.CLASSIFICATION:
-                            for head_name, logits in v.items():
+                        for head_name, logits in v.items():
+                            if self.config.head_task[head_name] == MetricTask.CLASSIFICATION:
                                 preds = torch.sigmoid(logits.float())
                                 targets = processed_batch['batch_targets'][head_name].long()
                                 if preds.ndim > 1 and preds.shape[1] > 1:
@@ -226,6 +227,14 @@ class LinearProbingRunner:
                                     targets = one_hot_targets
                                 accumulated_preds[head_name].append(preds)
                                 accumulated_targets[head_name].append(targets)
+                            elif self.config.head_task[head_name] == MetricTask.REGRESSION:
+                                accumulated_preds[head_name].append(logits)
+                                accumulated_targets[head_name].append(processed_batch['batch_targets'][head_name].float())
+                            else:
+                                raise ValueError(
+                                    f"[DEBUG] rank={self.device} => Unknown head task: {self.config.head_task[head_name]} "
+                                    f"Supported tasks: {MetricTask.CLASSIFICATION}, {MetricTask.REGRESSION}"
+                                )
                 
                 accumulated_names.extend(batch['video_fname'])
                 
@@ -257,18 +266,17 @@ class LinearProbingRunner:
             # Gather predictions and targets for each head
             for head in accumulated_preds.keys():
                 # Convert lists to tensors
-                local_preds = torch.cat(accumulated_preds[head], dim=0)
-                local_targets = torch.cat(accumulated_targets[head], dim=0)
+                local_preds: torch.Tensor = torch.cat(accumulated_preds[head], dim=0)
+                local_targets: torch.Tensor = torch.cat(accumulated_targets[head], dim=0)
 
                 # Gather tensors
-                gathered_preds = DistributedUtils.gather_tensor(local_preds, self.config.world_size)
-                gathered_targets = DistributedUtils.gather_tensor(local_targets, self.config.world_size)
+                gathered_preds: torch.Tensor = DistributedUtils.gather_tensor(local_preds, self.config.world_size)
+                gathered_targets: torch.Tensor = DistributedUtils.gather_tensor(local_targets, self.config.world_size)
 
                 # Update accumulated tensors
                 accumulated_preds[head] = [gathered_preds]
                 accumulated_targets[head] = [gathered_targets]
 
-        print(f"[DEBUG] rank={self.device} => {mode} Epoch metrics: {epoch_metrics}")
         # Get mean epoch losses
         for k, v in gathered_metrics.items():
             if 'mean' in k:
@@ -282,93 +290,45 @@ class LinearProbingRunner:
         # Compute AUC metrics for each head
         if mode == RunMode.TRAIN or mode == RunMode.VALIDATION:
             for head in accumulated_preds.keys():
-                if len(accumulated_preds[head]) > 0:
-                    preds = torch.cat(accumulated_preds[head], dim=0)
-                    targets = torch.cat(accumulated_targets[head], dim=0)
-
-                    # Convert to numpy for sklearn metrics
-                    all_preds: np.ndarray = preds.detach().cpu().numpy()
-                    all_targets: np.ndarray = targets.detach().cpu().numpy()
-                    print(f"[DEBUG] rank={self.device} => head={head} all_preds shape: {all_preds.shape}, all_targets shape: {all_targets.shape}")
-                    try:
-                        auc: float = roc_auc_score(all_targets.tolist(), all_preds.tolist(), average="micro")
-                        print(f"[DEBUG] rank={self.device} => head={head} AUC: {auc}")
-                    except Exception as e:
-                        raise Exception(f"[DEBUG] rank={self.device} => Error in AUC: {e}")
-
-                    try:
-                        auprc: float = average_precision_score(all_targets.tolist(), all_preds.tolist(), average="micro")
-                        print(f"[DEBUG] rank={self.device} => {mode} head={head} AUPRC: {auprc}")
-                    except Exception as e:
-                        raise Exception(f"[DEBUG] rank={self.device} => Error in AUPRC: {e}")
-
-                    epoch_metrics[f"{mode}/{head}_auc"] = auc
-                    epoch_metrics[f"{mode}/{head}_auprc"] = auprc
-
-                    # Compute and log confusion matrix
-                    if self.config.is_ref_device and self.wandb_wrapper.is_initialized():
-                        try:
-                            # For binary classification
-                            if self.config.head_structure[head] == 1:
-                                try:
-                                    # Compute best threshold using Youden's J statistic
-                                    best_threshold: float = compute_best_threshold(
-                                        all_targets.tolist(), 
-                                        all_preds.tolist()
-                                    )
-                                    print(f"[DEBUG] rank={self.device} => head={head} best_threshold: {best_threshold}")
-                                except Exception as e:
-                                    # If error, use default threshold 0.5
-                                    print(f"[DEBUG] rank={self.device} => Error computing threshold: {e} using default threshold 0.5")
-                                    best_threshold = 0.5
-
-                                # Binarize predictions
-                                pred_labels: np.ndarray = (all_preds > best_threshold).astype(int)
-
-                                # Log best threshold
-                                epoch_metrics[f"{mode}/{head}_best_threshold"] = best_threshold
-
-                            # For multi-class classification
-                            else:
-                                pred_labels: np.ndarray = all_preds.argmax(axis=1)
-                                all_targets: np.ndarray = all_targets.argmax(axis=1)
-
-                            # Create confusion matrix using preprocessed targets and predictions
-                            labels: list[str] = [''] * len(self.config.labels_map[head])
-                            for k, v in self.config.labels_map[head].items():
-                                labels[v] = k
-
-                            cm: np.ndarray = confusion_matrix(y_true=all_targets, y_pred=pred_labels)
-
-                            # Create confusion matrix plot
-                            plt.figure(figsize=(10, 8))
-                            sns.heatmap(
-                                cm, 
-                                annot=True, 
-                                fmt='d', 
-                                cmap='Blues', 
-                                xticklabels=labels, 
-                                yticklabels=labels
-                            )
-                            plt.title(f'{mode.capitalize()} Confusion Matrix - {head}')
-                            plt.ylabel('True Label')
-                            plt.xlabel('Predicted Label')
-
-                            # Log to wandb
-                            self.wandb_wrapper.log_plot({
-                                f"confusion_matrix/{mode}/{head}": plt
-                            })
-                            plt.close()
-
-                        except Exception as e:
-                            print(f"[DEBUG] rank={self.device} => Error in confusion matrix: {e}")
-                            print(f"[DEBUG] rank={self.device} => all_preds shape: {all_preds.shape}, all_targets shape: {all_targets.shape}")
-
+                # Gather accumulated predictions and targets for each head
+                preds = torch.cat(accumulated_preds[head], dim=0)
+                targets = torch.cat(accumulated_targets[head], dim=0)
+                
+                if self.config.head_task[head] == MetricTask.CLASSIFICATION:                
+                    # Compute metrics using the helper function
+                    head_metrics = compute_classification_metrics(
+                        preds=preds,
+                        targets=targets,
+                        head_name=head,
+                        head_structure=self.config.head_structure,
+                        labels_map=self.config.labels_map,
+                        mode=mode,
+                        wandb_wrapper=self.wandb_wrapper,
+                        is_ref_device=self.config.is_ref_device
+                    )
+                    
+                elif self.config.head_task[head] == MetricTask.REGRESSION:
+                    # Compute metrics using the helper function
+                    head_metrics = compute_regression_metrics(
+                        preds=preds,
+                        targets=targets,
+                        head_name=head,
+                        mode=mode,
+                        wandb_wrapper=self.wandb_wrapper,
+                        is_ref_device=self.config.is_ref_device
+                    )
+                    
+                # Update epoch metrics with the computed metrics for the current head
+                for k, v in head_metrics.items():
+                    epoch_metrics[f"{mode}/{head}_{k}"] = v
+                
             # Sync after logging metrics and confusion matrix
             DistributedUtils.sync_process_group(
                 world_size=self.world_size,
                 device_ids=self.device
             )
+
+        print(f"[DEBUG] rank={self.device} => {mode} epoch metrics: {epoch_metrics}")
 
         # Save predictions for validation mode
         if mode == RunMode.VALIDATION and self.config.is_ref_device:
@@ -594,8 +554,8 @@ class LinearProbingRunner:
             
             # Add predictions and ground truth for each head
             for head in accumulated_preds.keys():
-                preds: np.ndarray = accumulated_preds[head][0].squeeze().detach().cpu().numpy()
-                targets: np.ndarray = accumulated_targets[head][0].squeeze().detach().cpu().numpy()
+                preds: np.ndarray = accumulated_preds[head][0].squeeze().detach().cpu().float().numpy()
+                targets: np.ndarray = accumulated_targets[head][0].squeeze().detach().cpu().float().numpy()
                 
                 # Debug shapes after conversion
                 print(f"[DEBUG] rank={self.device} => Head {head} - After conversion - Preds shape: {preds.shape}, Targets shape: {targets.shape}")
@@ -667,3 +627,182 @@ class LinearProbingRunner:
                 print(f"[DEBUG] rank={self.device} => Predictions dictionary keys and lengths:")
                 for k, v in predictions_dict.items():
                     print(f"[DEBUG] rank={self.device} =>   {k}: {len(v)}")
+
+def compute_regression_metrics(
+    preds: torch.Tensor,
+    targets: torch.Tensor,
+    head_name: str,
+    mode: str = "val",
+    wandb_wrapper = None,
+    is_ref_device: bool = False
+) -> dict:
+    """
+    Compute regression metrics for the given predictions and targets,
+    and log a regression plot if on the reference device and W&B is initialized.
+    """
+    metrics = {}
+
+    with torch.no_grad():
+        # Compute MAE
+        metrics[f"{mode}/{head_name}_mae"] = LossRegistry.get(LossType.MAE)()(
+            outputs=preds,
+            targets=targets
+        ).item()
+
+        # Compute MSE
+        metrics[f"{mode}/{head_name}_mse"] = LossRegistry.get(LossType.MSE)()(
+            outputs=preds,
+            targets=targets
+        ).item()
+
+        # Compute RMSE
+        metrics[f"{mode}/{head_name}_rmse"] = LossRegistry.get(LossType.RMSE)()(
+            outputs=preds,
+            targets=targets
+        ).item()
+
+    # Convert tensors to numpy arrays
+    preds_np = preds.detach().cpu().float().numpy().squeeze()
+    targets_np = targets.detach().cpu().float().numpy().squeeze()
+
+    # Calculate Pearson correlation using numpy arrays
+    try:
+        r, _ = pearsonr(preds_np, targets_np)
+        metrics[f"{mode}/{head_name}_pearson_r"] = r
+    except ValueError as e:
+        print(f"Could not compute Pearson correlation for {head_name}: {e}")
+        r, p_value = np.nan, np.nan # Assign NaN if calculation fails
+
+    # Generate and log regression plot if wandb is initialized and on ref device
+    if is_ref_device and wandb_wrapper and wandb_wrapper.is_initialized():
+        try:
+            plt.figure(figsize=(10, 8))
+            sns.regplot(x=targets_np, y=preds_np, line_kws={'color': 'red'})
+            plt.xlabel('True Values')
+            plt.ylabel('Predicted Values')
+            plot_title = (
+                f'{mode.capitalize()} Regression Plot - {head_name}\n'
+                f'Pearson r: {r:.3f}'
+            )
+            plt.title(plot_title)
+            plt.grid(True)
+
+            # Log to wandb
+            wandb_wrapper.log_plot({
+                f"regression_plot/{mode}/{head_name}": plt
+            })
+            plt.close() # Close the plot to free memory
+
+        except Exception as e:
+            print(f"Error generating/logging regression plot for {head_name}: {e}")
+            plt.close() # Ensure plot is closed even if error occurs
+
+    return metrics
+
+def compute_classification_metrics(
+    preds: torch.Tensor,
+    targets: torch.Tensor,
+    head_name: str,
+    head_structure: dict,
+    labels_map: dict = None,
+    mode: str = "val",
+    wandb_wrapper = None,
+    is_ref_device: bool = False
+) -> dict:
+    """
+    Compute classification metrics for the given predictions and targets.
+    
+    Args:
+        preds: Tensor of model predictions
+        targets: Tensor of ground truth labels
+        head_name: Name of the model head being evaluated
+        head_structure: Dictionary containing output dimensions for each head
+        labels_map: Dictionary mapping class names to indices
+        mode: Current mode (train or validation)
+        device: Current device ID
+        wandb_wrapper: WandbWrapper instance for logging
+        is_ref_device: Whether this device is the reference device for logging
+        
+    Returns:
+        Dictionary of computed metrics
+    """
+    
+    metrics = {}
+    
+    # Convert to numpy for sklearn metrics
+    all_preds = preds.detach().cpu().numpy()
+    all_targets = targets.detach().cpu().numpy()
+    
+    # Compute AUC and AUPRC
+    try:
+        auc = roc_auc_score(all_targets.tolist(), all_preds.tolist(), average="micro")
+        metrics[f"{mode}/{head_name}_auc"] = auc
+    except Exception as e:
+        print(f"Error computing AUC: {e}")
+    
+    try:
+        auprc = average_precision_score(all_targets.tolist(), all_preds.tolist(), average="micro")
+        metrics[f"{mode}/{head_name}_auprc"] = auprc
+    except Exception as e:
+        print(f"Error computing AUPRC: {e}")
+    
+    # Compute and log confusion matrix if wandb is initialized
+    if is_ref_device and wandb_wrapper and wandb_wrapper.is_initialized():
+        try:
+            # For binary classification
+            if head_structure[head_name] == 1:
+                try:
+                    # Compute best threshold using Youden's J statistic
+                    best_threshold = compute_best_threshold(
+                        all_targets.tolist(), 
+                        all_preds.tolist()
+                    )
+                except Exception:
+                    # If error, use default threshold 0.5
+                    best_threshold = 0.5
+                
+                # Binarize predictions
+                pred_labels = (all_preds > best_threshold).astype(int)
+                
+                # Log best threshold
+                metrics[f"{mode}/{head_name}_best_threshold"] = best_threshold
+            
+            # For multi-class classification
+            else:
+                pred_labels = all_preds.argmax(axis=1)
+                all_targets = all_targets.argmax(axis=1)
+            
+            # Create confusion matrix if labels_map is provided
+            if labels_map:
+                # Create labels list
+                labels = [''] * len(labels_map[head_name])
+                for k, v in labels_map[head_name].items():
+                    labels[v] = k
+                
+                # Compute confusion matrix
+                cm = confusion_matrix(y_true=all_targets, y_pred=pred_labels)
+                
+                # Create confusion matrix plot
+                plt.figure(figsize=(10, 8))
+                sns.heatmap(
+                    cm, 
+                    annot=True, 
+                    fmt='d', 
+                    cmap='Blues', 
+                    xticklabels=labels, 
+                    yticklabels=labels
+                )
+                plt.title(f'{mode.capitalize()} Confusion Matrix - {head_name}')
+                plt.ylabel('True Label')
+                plt.xlabel('Predicted Label')
+                
+                # Log to wandb
+                wandb_wrapper.log_plot({
+                    f"confusion_matrix/{mode}/{head_name}": plt
+                })
+                plt.close()
+        
+        except Exception as e:
+            print(f"Error computing confusion matrix: {e}")
+    
+    return metrics

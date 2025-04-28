@@ -1,10 +1,10 @@
 command:
   - torchrun
-  - "--nproc_per_node=2"
+  - "--nproc_per_node=4"
   - "--master_port=29500"
   - "scripts/main.py"
   - "--base_config"
-  - "config/linear_probing/base_config_CathEF.yaml"
+  - "config/linear_probing/CathEF/regression/base_config_CathEF.yaml"
   - ${args}
 name: "DeepCORO_video_linear_probing_cathEF"
 project: "DeepCORO_video_linear_probing_cathEF"
@@ -14,10 +14,14 @@ metric:
   name: best_val_loss
   goal: minimize
 parameters:
-  lr:
+  head_lr.Value:
     distribution: uniform
-    min: 0.0001
-    max: 0.001
+    min: 1e-6
+    max: 1e-5
+  head_lr.y_true_cat:
+    distribution: uniform
+    min: 1e-6
+    max: 1e-5
   optimizer:
     values: [RAdam, AdamW]
   scheduler_name:
@@ -38,16 +42,26 @@ parameters:
     max: 0.5
   video_freeze_ratio:
     distribution: uniform
-    min: 1.0
+    min: 0.7
     max: 1.0
-  weight_decay: 
+  video_encoder_lr:
+    distribution: uniform
+    min: 1e-6
+    max: 1e-5
+  video_encoder_weight_decay:
+    distribution: uniform
+    min: 1e-7
+    max: 1e-6
+  head_weight_decay.Value:
+    distribution: uniform
+    min: 1e-7
+    max: 1e-6
+  head_weight_decay.y_true_cat:
     distribution: uniform
     min: 1e-7
     max: 1e-6
   batch_size:
-    values: [24, 32, 64]
-  tag:
-    values: ["mvit_pretrained"]
+    values: [8, 16, 24, 32]
   name:
     values: ["DeepCORO_video_linear_probing_cathEF"]
   project:

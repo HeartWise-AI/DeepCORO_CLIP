@@ -30,7 +30,7 @@ class WandbWrapper:
             is_ref_device (bool): If True, initializes wandb for full logging; 
                                     otherwise, wandb is set into a disabled mode.
             sweep_params (Tuple[str]): List of parameters to be excluded from wandb logging.
-           """        
+        """        
         self.config = config
         if initialized:
             if is_ref_device:

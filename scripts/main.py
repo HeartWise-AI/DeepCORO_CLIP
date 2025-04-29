@@ -30,7 +30,6 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if project_root not in sys.path:
     sys.path.append(project_root)
 
-
 def main(config: HeartWiseConfig):
     
     # Set seed for reproducibility
@@ -91,6 +90,6 @@ def main(config: HeartWiseConfig):
 if __name__ == "__main__":
     # Get HeartWiseConfig with GPU info already set
     config: HeartWiseConfig = HeartWiseParser.parse_config()
-        
+
     # Run the main function
     main(config=config)

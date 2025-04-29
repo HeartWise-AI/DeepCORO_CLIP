@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import numpy as np
 import torch
+import pandas as pd
 from torch.optim import AdamW
 from torch.utils.data import Dataset, DataLoader
 
@@ -140,7 +141,7 @@ class TestVideoContrastiveLearning(unittest.TestCase):
         
         # Create test config by simulating CLI arguments
         original_argv = sys.argv.copy()
-        sys.argv = [sys.argv[0], "--base_config", "tests/config/clip_base_config.yaml", "--output_dir", self.temp_dir]
+        sys.argv = [sys.argv[0], "--base_config", "tests/config/clip_base_config.yaml", "--base_checkpoint_path", self.temp_dir]
         self.test_config = HeartWiseParser.parse_config()
         sys.argv = original_argv
         print(f"test_config: {self.test_config}")
@@ -274,6 +275,38 @@ class TestVideoContrastiveLearning(unittest.TestCase):
         local_strings = ["text1", "text2"]
         gathered = self.runner.runner_type._gather_strings_across_gpus(local_strings, world_size=1, device=torch.device("cpu"))
         self.assertEqual(gathered, ["text1", "text2"])  # Single GPU case
+        
+    @patch('pandas.DataFrame.to_csv')
+    @patch('pandas.read_parquet')
+    @patch('torch.load')
+    def test_inference(self, mock_torch_load, mock_pd_read, mock_to_csv):
+        """Test if inference runs without errors and produces expected output."""
+        # Set up mock text embeddings
+        mock_text_embeddings = torch.randn(10, 512)  # 10 sample embeddings
+        mock_torch_load.return_value = mock_text_embeddings
+        
+        # Set up mock metadata DataFrame
+        mock_metadata = pd.DataFrame({
+            'numeric_col': [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
+            'string_col': ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J']
+        })
+        mock_pd_read.return_value = mock_metadata
+        
+        # Set necessary config attributes for inference
+        self.test_config.text_embeddings_path = "dummy_embeddings.pt"
+        self.test_config.metadata_path = "dummy_metadata.parquet"
+        self.test_config.topk = 3
+        
+        # Run inference
+        self.runner.runner_type.inference()
+        
+        # Check that to_csv was called (output was saved)
+        mock_to_csv.assert_called_once()
+        
+        # Check the path argument to to_csv
+        args, kwargs = mock_to_csv.call_args
+        self.assertTrue(kwargs['index'] is False)
+        self.assertTrue(os.path.basename(args[0]) == "averaged_metadata.csv")
         
     def tearDown(self):
         """Clean up after tests."""

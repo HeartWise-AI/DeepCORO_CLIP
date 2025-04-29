@@ -21,7 +21,6 @@ from utils.ddp import DistributedUtils
 from utils.enums import RunMode, LossType
 from utils.schedulers import get_scheduler
 from utils.wandb_wrapper import WandbWrapper
-from utils.files_handler import generate_output_dir_name
 from utils.video_project import calculate_dataset_statistics_ddp
 from utils.config.linear_probing_config import LinearProbingConfig
 from dataloaders.video_dataset import get_distributed_video_dataloader
@@ -33,21 +32,14 @@ class LinearProbingProject(BaseProject):
         config: LinearProbingConfig,
         wandb_wrapper: WandbWrapper
     ):
-        self.config: LinearProbingConfig = config
-        self.wandb_wrapper: WandbWrapper = wandb_wrapper
+        super().__init__(config, wandb_wrapper)
 
     def _setup_training_objects(
         self
     )->dict[str, Any]:
         
-        full_output_path = None
         if self.config.is_ref_device:
-            # Generate output directory using wandb run ID that was already created
-            run_id = self.wandb_wrapper.get_run_id() if self.wandb_wrapper.is_initialized() else ""
-            output_subdir = generate_output_dir_name(self.config, run_id)
-            full_output_path = os.path.join(self.config.output_dir, output_subdir)        
-            os.makedirs(full_output_path, exist_ok=True)
-        print(f"Full output path: {full_output_path}")
+            self._setup_project()
         
         # Calculate dataset statistics
         mean, std = calculate_dataset_statistics_ddp(self.config)        
@@ -97,7 +89,7 @@ class LinearProbingProject(BaseProject):
             name=self.config.pipeline_project
         )(
             backbone=video_encoder,
-            linear_probing_head=self.config.linear_probing_head,
+            head_linear_probing=self.config.head_linear_probing,
             head_structure=self.config.head_structure,
             dropout=self.config.dropout,
             freeze_backbone_ratio=self.config.video_freeze_ratio,
@@ -116,15 +108,17 @@ class LinearProbingProject(BaseProject):
                 'params': linear_probing.module.backbone.parameters(),  # Backbone parameters
                 'lr': self.config.video_encoder_lr,  # Lower learning rate for backbone
                 'name': 'backbone',
-                'weight_decay': self.config.weight_decay
-            },
-            {
-                'params': linear_probing.module.heads.parameters(),  # Linear probe head parameters
-                'lr': self.config.lr,  # Higher learning rate for probe heads
-                'name': 'heads',
-                'weight_decay': self.config.weight_decay
+                'weight_decay': self.config.video_encoder_weight_decay
             }
         ]
+        for head_name in self.config.head_structure:
+            param_groups.append({
+                'params': linear_probing.module.heads[head_name].parameters(),
+                'lr': self.config.head_lr[head_name],
+                'name': head_name,
+                'weight_decay': self.config.head_weight_decay[head_name]
+            })
+            
         optimizer_class: torch.optim.Optimizer = getattr(torch.optim, self.config.optimizer)
         optimizer: torch.optim.Optimizer = optimizer_class(param_groups)
         # Initialize scheduler
@@ -163,7 +157,7 @@ class LinearProbingProject(BaseProject):
             "train_loader": train_loader,
             "val_loader": val_loader,
             "scaler": scaler,
-            "output_dir": full_output_path,
+            "output_dir": self.config.output_dir if self.config.is_ref_device else None,
             "loss_fn": loss_fn,
         }            
         

@@ -2,7 +2,7 @@
 pipeline_project: !!str DeepCORO_video_linear_probing_test
 output_dir: !!str outputs
 run_mode: !!str train
-epochs: !!int 5
+epochs: !!int 2
 seed: !!int 42
 # wandb parameters
 tag: !!str mvit_pretrained
@@ -11,12 +11,20 @@ project: !!str dev_deep_coro_linear_probing
 entity: !!str jacques-delfrate
 use_wandb: !!bool true
 # Training parameters
-lr: !!float 0.0003
+head_lr:
+  contrast_agent: !!float 0.0003
+  main_structure: !!float 0.0003
+  stent_presence: !!float 0.0003
+  ejection_fraction: !!float 0.0003
 scheduler_name: !!str step
 lr_step_period: !!int 5
 factor: !!float 0.3
 optimizer: !!str AdamW
-weight_decay: !!float 0.00001
+head_weight_decay: 
+  contrast_agent: !!float 0.00001
+  main_structure: !!float 0.00001
+  stent_presence: !!float 0.00001
+  ejection_fraction: !!float 0.00001
 use_amp: !!bool true
 gradient_accumulation_steps: !!int 1
 num_warmup_percent: !!float 0.1
@@ -27,7 +35,7 @@ data_filename: !!str data/stenting/stenting_annotations.csv
 num_workers: !!int 4
 batch_size: !!int 4
 datapoint_loc_label: !!str FileName
-target_label: [contrast_agent, main_structure, stent_presence]
+target_label: [contrast_agent, main_structure, stent_presence, ejection_fraction]
 rand_augment: !!bool true
 resize: !!int 224
 frames: !!int 16
@@ -47,18 +55,22 @@ head_structure:
   contrast_agent: !!int 1
   main_structure: !!int 5
   stent_presence: !!int 1
+  ejection_fraction: !!int 1
 head_dropout:
   contrast_agent: !!float 0.1
   main_structure: !!float 0.1
   stent_presence: !!float 0.1
+  ejection_fraction: !!float 0.1
 loss_structure:
   contrast_agent: !!str bce_logit
   main_structure: !!str ce
   stent_presence: !!str bce_logit
+  ejection_fraction: !!str mae
 head_weights:
   contrast_agent: !!float 1.0
   main_structure: !!float 1.0
   stent_presence: !!float 1.0
+  ejection_fraction: !!float 1.0
 # Label mappings - Used for confusion matrix
 labels_map:
   contrast_agent:
@@ -71,5 +83,8 @@ labels_map:
     Catheter: !!int 3
     Femoral: !!int 4
   stent_presence:
+    present: !!int 1
+    absent: !!int 0
+  ejection_fraction:
     present: !!int 1
     absent: !!int 0

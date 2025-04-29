@@ -99,7 +99,7 @@ def stats_collate_fn(batch):
 def get_stats_dataloader(config: HeartWiseConfig):
     stats_dataset = StatsDataset(
         data_filename=config.data_filename,
-        split="train",
+        split=config.run_mode,
         target_label=config.target_label,
         datapoint_loc_label=config.datapoint_loc_label,
         num_frames=config.frames,

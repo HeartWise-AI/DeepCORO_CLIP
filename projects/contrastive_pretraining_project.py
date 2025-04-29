@@ -35,8 +35,7 @@ class ContrastivePretrainingProject(BaseProject):
         config: ClipConfig,
         wandb_wrapper: WandbWrapper
     ):
-        self.config: ClipConfig = config
-        self.wandb_wrapper: WandbWrapper = wandb_wrapper
+        super().__init__(config, wandb_wrapper)
         
     def _setup_training_objects(
         self,
@@ -50,13 +49,8 @@ class ContrastivePretrainingProject(BaseProject):
         Returns:
             dict: Dictionary containing training objects
         """
-        full_output_path = None
         if self.config.is_ref_device:
-            # Generate output directory using wandb run ID that was already created
-            run_id: str = self.wandb_wrapper.get_run_id() if self.wandb_wrapper.is_initialized() else ""
-            output_subdir: str = generate_output_dir_name(self.config, run_id)
-            full_output_path: str = os.path.join(self.config.output_dir, output_subdir)        
-            os.makedirs(full_output_path, exist_ok=True)
+            self._setup_project()
                         
         # Calculate dataset statistics
         mean, std = calculate_dataset_statistics_ddp(self.config)

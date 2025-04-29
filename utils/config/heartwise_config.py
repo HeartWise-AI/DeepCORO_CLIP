@@ -15,6 +15,7 @@ class HeartWiseConfig:
     pipeline_project: str
     base_checkpoint_path: str    
     run_mode: str
+    epochs: int
     seed: int
     
     # wandb parameters

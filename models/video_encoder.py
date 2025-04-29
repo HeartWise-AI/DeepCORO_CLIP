@@ -28,7 +28,7 @@ class VideoEncoder(nn.Module):
         """Initialize the video encoder.
 
         Args:
-            backbone (str): Name of the backbone model to use ("mvit" or "r3d")
+            backbone (str): Name of the backbone model to use ("mvit", "r3d", "x3d_s", or "x3d_m")
             input_channels (int): Number of input channels (1 for grayscale, 3 for RGB)
             num_frames (int): Number of frames in the input video
             pretrained (bool): Whether to use pretrained weights
@@ -41,7 +41,6 @@ class VideoEncoder(nn.Module):
         self.output_dim: int = output_dim
         self.dropout: float = dropout
         self.freeze_ratio: float = freeze_ratio
-
 
         # 1) Build backbone
         if backbone == "mvit":
@@ -64,6 +63,15 @@ class VideoEncoder(nn.Module):
             self.model: nn.Module = r3d_18(pretrained=pretrained)
             in_features: int = self.model.fc.in_features
             self.model.fc = nn.Identity()
+            
+        elif backbone in ["x3d_s", "x3d_m"]:
+            # Load X3D model from torch.hub
+            self.model = torch.hub.load('facebookresearch/pytorchvideo', backbone, pretrained=pretrained)
+            # Get feature dimension from the head
+            in_features = self.model.blocks[5].proj.in_features
+            # Replace classification head with Identity
+            self.model.blocks[5].proj = nn.Identity()
+            self.model.blocks[5].activation = nn.Identity()
             
         else:
             raise ValueError(f"Unsupported backbone: {backbone}")

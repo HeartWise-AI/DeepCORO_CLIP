@@ -79,6 +79,7 @@ class ClipParser(BaseParser):
         clip_model_group.add_argument('--aggregator_depth', type=int, help="Depth of the aggregation/classification head.")
 
         clip_optim_group = self.parser.add_argument_group('CLIP Optimization parameters')
+        clip_optim_group.add_argument('--max_grad_norm', type=float, help="Maximum gradient norm.")
         clip_optim_group.add_argument('--optimizer', type=str, help="Optimizer name (e.g., 'AdamW').")
         clip_optim_group.add_argument('--scheduler_name', type=str, help="Learning rate scheduler name.")
         clip_optim_group.add_argument('--lr_step_period', type=int, help="Period for step LR scheduler.")

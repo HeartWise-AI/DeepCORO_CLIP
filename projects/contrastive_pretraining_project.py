@@ -158,7 +158,7 @@ class ContrastivePretrainingProject(BaseProject):
             },
             {
                 'params': text_encoder.module.parameters(),  # Entire text encoder
-                'lr': 0.00001,  # Lower learning rate for text encoder
+                'lr': 0.00002,  # Lower learning rate for text encoder
                 'name': 'text_encoder',
                 'weight_decay': self.config.text_weight_decay
             },

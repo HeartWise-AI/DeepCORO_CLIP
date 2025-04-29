@@ -42,6 +42,7 @@ dependencies = [
     "opencv-python-headless>=4.11.0.86",
     "scikit-learn>=1.6.1",
     "seaborn>=0.13.2",
+    "pyarrow>=19.0.1",
 ]
 
 [project.optional-dependencies]

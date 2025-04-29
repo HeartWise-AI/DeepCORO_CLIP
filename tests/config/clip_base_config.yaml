@@ -1,3 +1,4 @@
+# Pipeline parameters
 pipeline_project: !!str "DeepCORO_clip_test"
 base_checkpoint_path: !!str tmp
 # Training parameters
@@ -65,3 +66,8 @@ name: !!str dummy_name
 project: !!str dummy_project
 entity: !!str dummy_entity
 use_wandb: !!bool false
+# Inference parameters
+topk: !!int 5
+text_embeddings_path: !!str utils/inference/reports_embeddings.pt
+metadata_path: !!str utils/inference/reports_metadata.parquet
+inference_results_path: !!str utils/inference/inference_results.csv

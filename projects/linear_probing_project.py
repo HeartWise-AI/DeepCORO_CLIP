@@ -23,7 +23,6 @@ from utils.schedulers import get_scheduler
 from utils.wandb_wrapper import WandbWrapper
 from utils.video_project import calculate_dataset_statistics_ddp
 from utils.config.linear_probing_config import LinearProbingConfig
-from utils.files_handler import generate_output_dir_name, backup_config
 from dataloaders.video_dataset import get_distributed_video_dataloader
 
 @ProjectRegistry.register("DeepCORO_video_linear_probing")
@@ -33,27 +32,8 @@ class LinearProbingProject(BaseProject):
         config: LinearProbingConfig,
         wandb_wrapper: WandbWrapper
     ):
-        self.config: LinearProbingConfig = config
-        self.wandb_wrapper: WandbWrapper = wandb_wrapper
+        super().__init__(config, wandb_wrapper)
 
-    def _setup_project(self):
-        # Generate the output directory name
-        self.config.output_dir = generate_output_dir_name(
-            config=self.config, 
-            run_id=self.wandb_wrapper.get_run_id() if self.wandb_wrapper.is_initialized() else None
-        )
-        
-        print(f"Output directory: {self.config.output_dir}")        
-        
-        # Create the output directory
-        os.makedirs(self.config.output_dir, exist_ok=True)
-        
-        # Backup the configuration file
-        backup_config(
-            config=self.config,
-            output_dir=self.config.output_dir
-        )
-        
     def _setup_training_objects(
         self
     )->dict[str, Any]:

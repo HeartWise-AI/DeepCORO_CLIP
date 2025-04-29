@@ -28,14 +28,6 @@ from utils.video_project import calculate_dataset_statistics_ddp
 from dataloaders.video_clip_dataset import get_distributed_video_clip_dataloader
 from dataloaders.multi_video_dataset import get_distributed_multi_video_dataloader
 
-def stats_collate_fn(batch):
-    """Collate function for StatsDataset that stacks video tensors."""
-    valid_samples = [item for item in batch if item[0] is not None]
-    if not valid_samples:
-        raise RuntimeError("No valid samples in batch")
-    videos = torch.stack([torch.from_numpy(sample[0]) for sample in valid_samples])
-    return videos
-
 @ProjectRegistry.register('DeepCORO_clip')
 class ContrastivePretrainingProject(BaseProject):
     def __init__(

@@ -2,7 +2,7 @@
 pipeline_project: !!str DeepCORO_video_linear_probing_test
 output_dir: !!str outputs
 run_mode: !!str train
-epochs: !!int 5
+epochs: !!int 2
 seed: !!int 42
 # wandb parameters
 tag: !!str mvit_pretrained

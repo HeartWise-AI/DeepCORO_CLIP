@@ -30,7 +30,6 @@ scheduler_name: !!str step
 lr: !!float 0.00002087457921275152
 lr_step_period: !!int 5
 factor: !!float 0.1
-
 loss_name: !!str siglip_ddp
 video_weight_decay: !!float 0.000001
 text_weight_decay: !!float 0.000001
@@ -38,6 +37,7 @@ gradient_accumulation_steps: !!int 1
 num_warmup_percent: !!float 0.1
 num_hard_restarts_cycles: !!float 1.0
 warm_restart_tmult: !!int 2
+max_grad_norm: !!float 1.0
 # Model architecture parameters
 num_heads: !!int 2
 aggregator_depth: !!int 2

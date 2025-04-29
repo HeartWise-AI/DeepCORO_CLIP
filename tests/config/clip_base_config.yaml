@@ -38,6 +38,7 @@ gradient_accumulation_steps: !!int 1
 num_warmup_percent: !!float 0.1
 num_hard_restarts_cycles: !!float 1.0
 warm_restart_tmult: !!int 1
+max_grad_norm: !!float 1.0
 # Model architecture parameters
 num_heads: !!int 8
 aggregator_depth: !!int 2

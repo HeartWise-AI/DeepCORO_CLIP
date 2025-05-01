@@ -23,7 +23,7 @@ from utils.metrics import (
     compute_embedding_norms,
     compute_alignment_score,
 )
-from utils.logging import (
+from utils.wandb_logger import (
     log_best_worst_retrievals,
     log_gradient_norms,
     save_retrieval_results,

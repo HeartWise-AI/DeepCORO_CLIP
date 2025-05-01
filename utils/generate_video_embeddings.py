@@ -8,8 +8,17 @@ from torch.utils.data import DataLoader
 from models.video_encoder import VideoEncoder
 from dataloaders.video_dataset import VideoDataset, custom_collate_fn
 
-cuda_idx: int = 2
-multi_video: bool = False
+import argparse
+
+args: argparse.Namespace = argparse.ArgumentParser()
+args.add_argument("--cuda_idx", type=int, default=2)
+args.add_argument("--multi_video", type=bool, default=False)
+args.add_argument("--split", type=str, default='test')
+args = args.parse_args()
+
+cuda_idx: int = args.cuda_idx
+multi_video: bool = args.multi_video
+split: str = args.split
 
 def load_checkpoint(
     checkpoint_path: str

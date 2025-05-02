@@ -35,7 +35,7 @@ def load_checkpoint(
 def generate_video_embeddings():
     video_dataset: VideoDataset = VideoDataset(
         data_filename='data/CathEF_MHI_UCSF_2016-to-july-2022-and-2023-08-30-post-CathEF_alpha.csv',
-        split='test',
+        split=split,
         target_label=['y_true_cat'],
         datapoint_loc_label='FileName',
         num_frames=16,

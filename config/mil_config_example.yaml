@@ -1,0 +1,120 @@
+# Example Configuration for Multi-Instance Linear Probing
+
+# Inherit from a base config if available, otherwise define all needed fields
+# defaults:
+#   - override /base_config: heartwise_base # Example inheritance
+
+# --- Project Settings ---
+run_name: mil_probing_run_01
+pipeline_project: DeepCORO_video_linear_probing # Matches ProjectRegistry/RunnerRegistry name
+output_dir: ./outputs/${run_name}
+run_mode: train # train or inference
+device: cuda # or cpu
+seed: 42
+world_size: 1 # Set > 1 for DDP
+
+# --- Dataset Parameters ---
+data_filename: /path/to/your/dataset_metadata.csv # CSV with video paths and labels
+datapoint_loc_label: study_id # Column name to group videos/instances by
+target_label: ["binary_outcome", "multi_class_view", "regression_score"] # List of target column names
+data_root_dir: /path/to/video/files/ # Base directory for relative video paths
+num_workers: 8
+batch_size: 16 # Adjust based on N and GPU memory
+frames: 32
+stride: 2
+resize: 224
+rand_augment: true
+
+# --- Video Encoder Parameters ---
+model_name: mvit_base_32x3 # Example backbone
+aggregator_depth: 2
+num_heads: 8 # Encoder attention heads, not prediction heads
+video_freeze_ratio: 0.5 # Example: Freeze first 50% of the encoder
+dropout: 0.1
+pretrained: true
+video_encoder_checkpoint_path: /path/to/pretrained/video_encoder.pt
+video_encoder_lr: 1e-5 # LR for unfrozen encoder parts
+video_encoder_weight_decay: 1e-6
+
+# --- Multi-Instance Linear Probing Parameters ---
+pooling_mode: "attention" # 'mean', 'max', or 'attention'
+attention_hidden: 256 # Hidden dim for attention mechanism
+dropout_attention: 0.1 # Dropout within attention block
+attention_lr: 5e-5 # Specific LR for attention parameters
+attention_weight_decay: 1e-6 # Specific WD for attention parameters
+
+# --- Head & Loss Structure ---
+# Define prediction heads (name: num_classes)
+head_structure:
+  binary_head: 1 # Binary classification (sigmoid output)
+  view_head: 5 # 5-class classification (softmax output)
+  score_head: 1 # Regression
+
+# Define loss for each head (must match LossRegistry names)
+loss_structure:
+  binary_head: "bce_with_logits"
+  view_head: "cross_entropy"
+  score_head: "mse"
+
+# Define task type for metrics
+head_task:
+  binary_head: "classification"
+  view_head: "classification"
+  score_head: "regression"
+
+# Learning rates per head
+head_lr:
+  binary_head: 1e-4
+  view_head: 1e-4
+  score_head: 5e-4
+
+# Weight decay per head
+head_weight_decay:
+  binary_head: 0.0
+  view_head: 0.0
+  score_head: 0.0
+
+# Weights for combining head losses
+head_weights:
+  binary_head: 1.0
+  view_head: 0.5
+  score_head: 1.0
+
+# Dropout per head (applied *after* pooling, before final layer)
+# This 'head_dropout' might need to be added to the MIL model if desired
+# head_dropout: 
+#   binary_head: 0.2
+#   view_head: 0.2
+#   score_head: 0.0
+
+# (Deprecated for MIL model, use dropout_attention instead if needed)
+# head_linear_probing: {}
+
+# --- Training Parameters ---
+optimizer: AdamW
+scheduler_name: cosine_with_warmup # Example scheduler
+epochs: 50
+use_amp: true
+gradient_accumulation_steps: 1
+num_warmup_percent: 0.1
+num_hard_restarts_cycles: 1.0
+warm_restart_tmult: 1
+lr_step_period: 10 # Only for step schedulers
+factor: 0.1 # Only for step schedulers
+
+# --- Logging/Misc ---
+wandb:
+  project: DeepCORO-MIL
+  entity: your_wandb_entity # Optional
+  log_freq: 100 # Log metrics every N steps
+  log_code: true
+
+# Label mappings for confusion matrices (Optional)
+labels_map:
+  view_head: 
+    "View A": 0
+    "View B": 1
+    "View C": 2
+    "View D": 3
+    "Other": 4
+

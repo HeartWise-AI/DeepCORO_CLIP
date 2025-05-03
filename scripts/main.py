@@ -49,7 +49,7 @@ def main(config: HeartWiseConfig):
             'text_freeze_ratio', 'dropout', 'num_heads', 'aggregator_depth',
             'optimizer', 'scheduler_name', 'lr_step_period', 'factor',
             'weight_decay', 'loss_name', 'tag', 'name', 'project', 'entity',
-            'gradient_accumulation_steps', 'num_warmup_percent'
+            'gradient_accumulation_steps', 'num_warmup_percent', 'loss_structure.Value'
         )
         
         wandb_wrapper: WandbWrapper = WandbWrapper(

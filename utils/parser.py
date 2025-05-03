@@ -77,6 +77,7 @@ class HeartWiseParser:
         metrics_group.add_argument('--loss_name', type=str)
         metrics_group.add_argument('--recall_k', type=parse_list)
         metrics_group.add_argument('--ndcg_k', type=parse_list)
+        metrics_group.add_argument('--loss_structure.Value', type=str, help='Loss function for the Value head (mse, mae, huber, smooth_l1)')
 
         # Data augmentation parameters
         augment_group = parser.add_argument_group('Data Augmentation')

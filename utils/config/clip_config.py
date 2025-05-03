@@ -51,7 +51,6 @@ class ClipConfig(HeartWiseConfig):
 
     # System parameters
     use_amp: bool
-    device: str
     period: int
 
     # Loss and metrics parameters

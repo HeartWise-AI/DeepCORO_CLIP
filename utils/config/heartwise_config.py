@@ -1,5 +1,5 @@
 import os
-from typing import Dict, Any
+from typing import Dict, Any, List
 from dataclasses import dataclass, asdict
 
 from utils.files_handler import load_yaml
@@ -13,26 +13,31 @@ class HeartWiseConfig:
     """
     # Pipeline parameters
     pipeline_project: str
-    output_dir: str    
+    base_checkpoint_path: str    
     run_mode: str
     epochs: int   
     seed: int
     
     # wandb parameters
-    tag: str
     name: str
     project: str
     entity: str
     use_wandb: bool
     
     @classmethod
-    def update_config_with_args(cls, base_config: 'HeartWiseConfig', args: Any) -> 'HeartWiseConfig':  
+    def update_config_with_args(
+        cls, 
+        base_config: 'HeartWiseConfig', 
+        args: Any
+    ) -> 'HeartWiseConfig':  
         """Update a HeartWiseConfig instance with command line arguments."""
         data_parameters: Dict[str, Any] = base_config.to_dict().copy()
-        registered_config = ConfigRegistry.get(base_config.pipeline_project)
+        registered_config: Any = ConfigRegistry.get(base_config.pipeline_project)
+
         for key, value in vars(args).items():
             if value is not None and key in registered_config.__dataclass_fields__:
                 data_parameters[key] = value
+                
         return registered_config(**data_parameters)
     
     @classmethod
@@ -51,7 +56,7 @@ class HeartWiseConfig:
         for key, value in yaml_config.items():
             if key in registered_config.__dataclass_fields__:
                 data_parameters[key] = value
-        return registered_config(**data_parameters)    
+        return registered_config(**data_parameters)
 
     @classmethod
     def set_gpu_info_in_place(cls, config: 'HeartWiseConfig') -> None:

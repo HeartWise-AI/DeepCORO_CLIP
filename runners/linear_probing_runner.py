@@ -2,27 +2,29 @@ import os
 import torch
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
-from torch.optim import Optimizer
-from torch.cuda.amp import GradScaler
-from torch.optim.lr_scheduler import LRScheduler
-from torch.utils.data import DataLoader
 import seaborn as sns
 import matplotlib.pyplot as plt
+
+from tqdm import tqdm
+from scipy.stats import pearsonr
+from torch.optim import Optimizer
+from torch.cuda.amp import GradScaler
+from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import LRScheduler
+from collections import defaultdict
 from sklearn.metrics import (
     roc_auc_score, 
     average_precision_score, 
     confusion_matrix
 )
-
 from utils.loss.typing import Loss
 from utils.ddp import DistributedUtils
 from utils.registry import RunnerRegistry
 from utils.enums import RunMode, MetricTask
 from utils.wandb_wrapper import WandbWrapper
 from utils.metrics import compute_best_threshold
+from utils.loss.losses import LossRegistry, LossType
 from utils.config.linear_probing_config import LinearProbingConfig
-from collections import defaultdict
 from models.linear_probing import LinearProbing
 
 
@@ -288,10 +290,11 @@ class LinearProbingRunner:
         # Compute AUC metrics for each head
         if mode == RunMode.TRAIN or mode == RunMode.VALIDATION:
             for head in accumulated_preds.keys():
-                if self.config.head_task[head] == MetricTask.CLASSIFICATION:
-                    preds = torch.cat(accumulated_preds[head], dim=0)
-                    targets = torch.cat(accumulated_targets[head], dim=0)
+                # Gather accumulated predictions and targets for each head
+                preds = torch.cat(accumulated_preds[head], dim=0)
+                targets = torch.cat(accumulated_targets[head], dim=0)
                 
+                if self.config.head_task[head] == MetricTask.CLASSIFICATION:                
                     # Compute metrics using the helper function
                     head_metrics = compute_classification_metrics(
                         preds=preds,
@@ -300,14 +303,24 @@ class LinearProbingRunner:
                         head_structure=self.config.head_structure,
                         labels_map=self.config.labels_map,
                         mode=mode,
-                        device=self.device,
                         wandb_wrapper=self.wandb_wrapper,
                         is_ref_device=self.config.is_ref_device
                     )
                     
-                    # Update epoch metrics with the computed metrics for the current head
-                    for k, v in head_metrics.items():
-                        epoch_metrics[f"{mode}/{head}_{k}"] = v
+                elif self.config.head_task[head] == MetricTask.REGRESSION:
+                    # Compute metrics using the helper function
+                    head_metrics = compute_regression_metrics(
+                        preds=preds,
+                        targets=targets,
+                        head_name=head,
+                        mode=mode,
+                        wandb_wrapper=self.wandb_wrapper,
+                        is_ref_device=self.config.is_ref_device
+                    )
+                    
+                # Update epoch metrics with the computed metrics for the current head
+                for k, v in head_metrics.items():
+                    epoch_metrics[f"{mode}/{head}_{k}"] = v
                 
             # Sync after logging metrics and confusion matrix
             DistributedUtils.sync_process_group(
@@ -541,8 +554,8 @@ class LinearProbingRunner:
             
             # Add predictions and ground truth for each head
             for head in accumulated_preds.keys():
-                preds: np.ndarray = accumulated_preds[head][0].squeeze().detach().cpu().numpy()
-                targets: np.ndarray = accumulated_targets[head][0].squeeze().detach().cpu().numpy()
+                preds: np.ndarray = accumulated_preds[head][0].squeeze().detach().cpu().float().numpy()
+                targets: np.ndarray = accumulated_targets[head][0].squeeze().detach().cpu().float().numpy()
                 
                 # Debug shapes after conversion
                 print(f"[DEBUG] rank={self.device} => Head {head} - After conversion - Preds shape: {preds.shape}, Targets shape: {targets.shape}")
@@ -615,6 +628,77 @@ class LinearProbingRunner:
                 for k, v in predictions_dict.items():
                     print(f"[DEBUG] rank={self.device} =>   {k}: {len(v)}")
 
+def compute_regression_metrics(
+    preds: torch.Tensor,
+    targets: torch.Tensor,
+    head_name: str,
+    mode: str = "val",
+    wandb_wrapper = None,
+    is_ref_device: bool = False
+) -> dict:
+    """
+    Compute regression metrics for the given predictions and targets,
+    and log a regression plot if on the reference device and W&B is initialized.
+    """
+    metrics = {}
+
+    with torch.no_grad():
+        # Compute MAE
+        metrics[f"{mode}/{head_name}_mae"] = LossRegistry.get(LossType.MAE)()(
+            outputs=preds,
+            targets=targets
+        ).item()
+
+        # Compute MSE
+        metrics[f"{mode}/{head_name}_mse"] = LossRegistry.get(LossType.MSE)()(
+            outputs=preds,
+            targets=targets
+        ).item()
+
+        # Compute RMSE
+        metrics[f"{mode}/{head_name}_rmse"] = LossRegistry.get(LossType.RMSE)()(
+            outputs=preds,
+            targets=targets
+        ).item()
+
+    # Convert tensors to numpy arrays
+    preds_np = preds.detach().cpu().float().numpy().squeeze()
+    targets_np = targets.detach().cpu().float().numpy().squeeze()
+
+    # Calculate Pearson correlation using numpy arrays
+    try:
+        r, _ = pearsonr(preds_np, targets_np)
+        metrics[f"{mode}/{head_name}_pearson_r"] = r
+    except ValueError as e:
+        print(f"Could not compute Pearson correlation for {head_name}: {e}")
+        r, p_value = np.nan, np.nan # Assign NaN if calculation fails
+
+    # Generate and log regression plot if wandb is initialized and on ref device
+    if is_ref_device and wandb_wrapper and wandb_wrapper.is_initialized():
+        try:
+            plt.figure(figsize=(10, 8))
+            sns.regplot(x=targets_np, y=preds_np, line_kws={'color': 'red'})
+            plt.xlabel('True Values')
+            plt.ylabel('Predicted Values')
+            plot_title = (
+                f'{mode.capitalize()} Regression Plot - {head_name}\n'
+                f'Pearson r: {r:.3f}'
+            )
+            plt.title(plot_title)
+            plt.grid(True)
+
+            # Log to wandb
+            wandb_wrapper.log_plot({
+                f"regression_plot/{mode}/{head_name}": plt
+            })
+            plt.close() # Close the plot to free memory
+
+        except Exception as e:
+            print(f"Error generating/logging regression plot for {head_name}: {e}")
+            plt.close() # Ensure plot is closed even if error occurs
+
+    return metrics
+
 def compute_classification_metrics(
     preds: torch.Tensor,
     targets: torch.Tensor,
@@ -622,7 +706,6 @@ def compute_classification_metrics(
     head_structure: dict,
     labels_map: dict = None,
     mode: str = "val",
-    device: int = 0,
     wandb_wrapper = None,
     is_ref_device: bool = False
 ) -> dict:
@@ -643,11 +726,6 @@ def compute_classification_metrics(
     Returns:
         Dictionary of computed metrics
     """
-    import torch
-    import numpy as np
-    import matplotlib.pyplot as plt
-    import seaborn as sns
-    from sklearn.metrics import roc_auc_score, average_precision_score, confusion_matrix
     
     metrics = {}
     
@@ -675,7 +753,6 @@ def compute_classification_metrics(
             if head_structure[head_name] == 1:
                 try:
                     # Compute best threshold using Youden's J statistic
-                    from utils.metrics import compute_best_threshold
                     best_threshold = compute_best_threshold(
                         all_targets.tolist(), 
                         all_preds.tolist()

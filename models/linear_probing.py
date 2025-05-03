@@ -1,11 +1,35 @@
 import torch.nn as nn
 
+from typing import Dict
 from utils.registry import ModelRegistry
 from models.video_encoder import VideoEncoder
 
 
+class BaseLinearProbingHead(nn.Module):
+    """
+    Base abstract class for all linear probing heads.
+    
+    This class defines the common interface for linear probing heads.
+    All specific linear probing implementations should inherit from this class.
+    """
+    def __init__(
+        self, 
+        input_dim: int, 
+        output_dim: int, 
+        dropout: float = 0.1
+    ):
+        super().__init__()
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.dropout = dropout
+        
+    def forward(self, x):
+        """Forward pass for the linear probing head."""
+        raise NotImplementedError("Subclasses must implement forward method")
+
+
 @ModelRegistry.register("simple_linear_probing_regression")
-class SimpleLinearProbingHead(nn.Module):
+class SimpleLinearProbingRegressionHead(BaseLinearProbingHead):
     def __init__(
         self, 
         input_dim: int, 
@@ -13,14 +37,14 @@ class SimpleLinearProbingHead(nn.Module):
         dropout: float = 0.1
     ):
         """
-        Initialize a simple linear probing head.
+        Initialize a simple linear probing head for regression tasks.
 
         Args:
             input_dim (int): The input dimension
             output_dim (int): The output dimension
             dropout (float): The dropout rate
         """        
-        super().__init__()
+        super().__init__(input_dim, output_dim, dropout)
         self.fc1 = nn.Linear(input_dim, 256)
         self.norm = nn.LayerNorm(256)  # Add normalization
         self.linear_probe = nn.Linear(256, output_dim)
@@ -46,7 +70,7 @@ class SimpleLinearProbingHead(nn.Module):
         return x
 
 @ModelRegistry.register("simple_linear_probing")
-class SimpleLinearProbingHead(nn.Module):
+class SimpleLinearProbingHead(BaseLinearProbingHead):
     def __init__(
         self, 
         input_dim: int, 
@@ -61,7 +85,7 @@ class SimpleLinearProbingHead(nn.Module):
             output_dim (int): The output dimension
             dropout (float): The dropout rate
         """        
-        super().__init__()
+        super().__init__(input_dim, output_dim, dropout)
         # Replace Conv3d with Linear layer since input is now [batch_size, input_dim]
         self.fc1 = nn.Linear(input_dim, 256)
         self.linear_probe = nn.Linear(256, output_dim)
@@ -95,8 +119,8 @@ class LinearProbing(BaseLinearProbing):
     def __init__(
         self, 
         backbone: VideoEncoder,
-        linear_probing_head: str,
-        head_structure: dict[str, int],
+        head_linear_probing: Dict[str, str],
+        head_structure: Dict[str, int],
         dropout: float = 0.1,
         freeze_backbone_ratio: float = 0.0
     ):
@@ -105,10 +129,12 @@ class LinearProbing(BaseLinearProbing):
 
         Args:
             backbone (VideoEncoder): The backbone model
-            linear_probing_head (str): The type of linear probing head to use
+            head_linear_probing (dict[str, str]): Dictionary mapping head names to their type of linear probing head
+                e.g. {"contrast_agent": "simple_linear_probing", "main_structure": "simple_linear_probing", "stent_presence": "simple_linear_probing"}
             head_structure (dict[str, int]): Dictionary mapping head names to their number of output classes
                 e.g. {"contrast_agent": 1, "main_structure": 5, "stent_presence": 1}
             dropout (float): The dropout rate
+            freeze_backbone_ratio (float): Ratio of backbone parameters to freeze
         """        
         super().__init__(backbone)
         
@@ -134,7 +160,7 @@ class LinearProbing(BaseLinearProbing):
             if not isinstance(num_classes, int) or num_classes < 1:
                 raise ValueError(f"Invalid number of classes for head {head_name}: {num_classes}")
             self.heads[head_name] = nn.Sequential(
-                ModelRegistry.get(name=linear_probing_head)(
+                ModelRegistry.get(name=head_linear_probing[head_name])(
                     input_dim=input_dim, 
                     output_dim=num_classes,
                     dropout=dropout

@@ -53,25 +53,26 @@ class VideoClipDataset(torch.utils.data.Dataset):
         self.resize = kwargs.pop("resize", 224)
         self.max_length = kwargs.pop("max_length", 250)
 
-        target_label = (
-            [target_label]
-            if target_label and not isinstance(target_label, list)
-            else target_label
-        )
-        self.target_label = target_label
-        self.external_test_location = kwargs.pop("external_test_location", None)
+        if self.split != "inference":
+            target_label = (
+                [target_label]
+                if target_label and not isinstance(target_label, list)
+                else target_label
+            )
+            self.target_label = target_label
+            self.external_test_location = kwargs.pop("external_test_location", None)
 
-        self.fnames, self.outcome, self.target_index = self.load_data(
-            self.split, self.target_label
-        )
+            self.fnames, self.outcome, self.target_index = self.load_data(
+                self.split, self.target_label
+            )
 
-        # Initialize tokenizer
-        try:
-            self.tokenizer = get_tokenizer()
-            print("Tokenizer initialized successfully")
-        except Exception as e:
-            print(f"Error initializing tokenizer: {str(e)}")
-            raise RuntimeError("Failed to initialize tokenizer") from e
+            # Initialize tokenizer
+            try:
+                self.tokenizer = get_tokenizer()
+                print("Tokenizer initialized successfully")
+            except Exception as e:
+                print(f"Error initializing tokenizer: {str(e)}")
+                raise RuntimeError("Failed to initialize tokenizer") from e
 
         if self.debug_mode:
             self.valid_indices = self._validate_all_videos()
@@ -179,7 +180,7 @@ class VideoClipDataset(torch.utils.data.Dataset):
                 raise ValueError(f"Expected 16 frames for MViT, got {video.shape[0]}")
 
             encoded = None
-            if self.target_label is not None and self.target_index is not None:
+            if self.split != "inference" and self.target_label is not None and self.target_index is not None:
                 text = self.outcome[actual_idx]
                 if not isinstance(text, str):
                     text = str(text)
@@ -220,7 +221,6 @@ class VideoClipDataset(torch.utils.data.Dataset):
         Return all text outcomes from the dataset.
         """
         return [str(o) for o in self.outcome]
-    
     
 def custom_collate_fn(batch):
     """Custom collate function to handle video and text data.

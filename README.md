@@ -99,7 +99,7 @@ The project uses configuration files located in the `config/` directory:
 
 ### 1. Contrastive Learning (CLIP)
 
-Train the model on video-report pairs using contrastive learning:
+#### Train the model on video-report pairs using contrastive learning
 
 Process multiple videos per study with aggregation:
 ```bash
@@ -111,6 +111,12 @@ bash scripts/runner.sh --base_config config/clip/base_config.yaml --selected_gpu
 
 # Multi-GPU hyperparameters fine-tuning - RunMode and UseWandb are forced to train and true respectively (see scripts/run_sweep.sh)
 bash scripts/run_sweep.sh --base_config config/clip/base_config.yaml --sweep_config config/clip/sweep_config_single_video.yaml --selected_gpus 0,1 --count 5
+```
+
+#### Run inference
+Process data from input csv with for each row[Split] == 'inference' - **working on single GPU only**
+```bash
+bash scripts/runner.sh --selected_gpus 0 --base_config config/clip/base_config.yaml --run_mode inference --use_wandb false
 ```
 
 ### 2. Linear Probing

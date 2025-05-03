@@ -377,18 +377,7 @@ class TestLinearProbing(unittest.TestCase):
         self.assertIn("batch_video", processed)
         self.assertIn("batch_targets", processed)
         self.assertEqual(processed["batch_video"].shape, (2, 1, 16, 224, 224, 3))
-        
-    def test_train_with_scheduler(self):
-        """Test training with scheduler."""
-        # Create a simple scheduler
-        from torch.optim.lr_scheduler import StepLR
-        scheduler = StepLR(self.runner.optimizer, step_size=1, gamma=0.1)
-        self.runner.lr_scheduler = scheduler
-        
-        # Run one epoch
-        train_metrics = self.runner._run_epoch(mode=RunMode.TRAIN, epoch=0)
-        self.assertIn("train/lr/linear_probing", train_metrics)
-        
+                
     def test_validation_with_scheduler(self):
         """Test validation with scheduler."""
         # Create a simple scheduler

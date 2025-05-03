@@ -1,3 +1,4 @@
+# Pipeline parameters
 pipeline_project: !!str "DeepCORO_clip_test"
 base_checkpoint_path: !!str tmp
 # Training parameters
@@ -37,6 +38,7 @@ gradient_accumulation_steps: !!int 1
 num_warmup_percent: !!float 0.1
 num_hard_restarts_cycles: !!float 1.0
 warm_restart_tmult: !!int 1
+max_grad_norm: !!float 1.0
 # Model architecture parameters
 num_heads: !!int 8
 aggregator_depth: !!int 2
@@ -65,3 +67,8 @@ name: !!str dummy_name
 project: !!str dummy_project
 entity: !!str dummy_entity
 use_wandb: !!bool false
+# Inference parameters
+topk: !!int 5
+text_embeddings_path: !!str utils/inference/reports_embeddings.pt
+metadata_path: !!str utils/inference/reports_metadata.parquet
+inference_results_path: !!str utils/inference/inference_results.csv

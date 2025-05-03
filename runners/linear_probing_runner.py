@@ -80,6 +80,7 @@ class LinearProbingRunner:
         # For simplicity: check the config for a known scheduler_name
         # If it includes "_warmup" or is from HF, we treat it as per-iteration
         self.scheduler_per_iteration = self._scheduler_is_per_iteration()
+        self.step = 0
 
     def _scheduler_is_per_iteration(self) -> bool:
         """
@@ -362,8 +363,9 @@ class LinearProbingRunner:
         batch_video: torch.Tensor,
         batch_targets: dict[str, torch.Tensor]
     ) -> dict[str, dict[str, torch.Tensor]]:
-        # Clear gradients
-        self.optimizer.zero_grad()
+        # Clear gradients only if this is the first step in accumulation
+        if self.step % self.config.gradient_accumulation_steps == 0:
+            self.optimizer.zero_grad()
                 
         # Forward pass with autocast for mixed precision
         with torch.amp.autocast(
@@ -383,12 +385,14 @@ class LinearProbingRunner:
         except Exception as e:
             raise Exception(f"[DEBUG] rank={self.device} => Error in loss_fn: {e} for batch with outputs_dict {outputs_dict} and batch_targets {batch_targets}")
 
+        # Scale loss by gradient accumulation steps
+        scaled_loss = losses['main'] / self.config.gradient_accumulation_steps
         
         # Backward pass with gradient scaling
         if self.scaler:
-            self.scaler.scale(losses['main']).backward()
+            self.scaler.scale(scaled_loss).backward()
         else:
-            losses['main'].backward()
+            scaled_loss.backward()
         
         # Sync gradients across processes before optimizer step
         DistributedUtils.sync_process_group(
@@ -396,11 +400,16 @@ class LinearProbingRunner:
             device_ids=self.config.device
         )
         
-        if self.scaler:
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-        else:
-            self.optimizer.step()
+        # Only step optimizer and update scaler if this is the last step in accumulation
+        if (self.step + 1) % self.config.gradient_accumulation_steps == 0:
+            if self.scaler:
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                self.optimizer.step()
+
+        # Increment step counter
+        self.step += 1
 
         # Get learning rate metrics
         lr_metrics = {}

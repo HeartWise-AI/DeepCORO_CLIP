@@ -23,7 +23,7 @@ from utils.metrics import (
     compute_embedding_norms,
     compute_alignment_score,
 )
-from utils.logging import (
+from utils.wandb_logger import (
     log_best_worst_retrievals,
     log_gradient_norms,
     save_retrieval_results,
@@ -32,6 +32,8 @@ from utils.loss.typing import Loss
 from utils.wandb_wrapper import WandbWrapper
 from models.video_encoder import VideoEncoder
 from models.text_encoder import TextEncoder
+import itertools
+from torch.nn.utils import clip_grad_norm_
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -45,18 +47,18 @@ class VideoContrastiveLearningRunner:
 
     def __init__(
         self,
-        config: ClipConfig,
-        wandb_wrapper: WandbWrapper,
-        train_loader: DataLoader,
-        val_loader: DataLoader,
-        video_encoder: VideoEncoder,
-        text_encoder: TextEncoder,
-        optimizer: Optimizer,
-        scaler: GradScaler,
-        log_temp: torch.Tensor,
-        lr_scheduler: LRScheduler,
-        loss_fn: Loss,
-        output_dir: str,
+        config: ClipConfig = None,
+        wandb_wrapper: WandbWrapper = None,
+        train_loader: DataLoader = None,
+        val_loader: DataLoader = None,
+        video_encoder: VideoEncoder = None,
+        text_encoder: TextEncoder = None,
+        optimizer: Optimizer = None,
+        scaler: GradScaler = None,
+        log_temp: torch.Tensor = None,
+        lr_scheduler: LRScheduler = None,
+        loss_fn: Loss = None,
+        output_dir: str = None,
     ):
         """
         Initialize the runner with provided configurations, data loaders, and modules.
@@ -100,7 +102,10 @@ class VideoContrastiveLearningRunner:
         self.output_dir: str = output_dir
         self.best_val_loss: float = float("inf")
         self.best_epoch: int = -1
+        self.highest_alignment_score: float = float("-inf")
+        self.highest_alignment_epoch: int = -1
         self.log_temp: torch.Tensor = log_temp
+        self.step: int = 0  # Initialize step counter for gradient accumulation
 
         # For simplicity: check the config for a known scheduler_name
         # If it includes "_warmup" or is from HF, we treat it as per-iteration
@@ -131,87 +136,129 @@ class VideoContrastiveLearningRunner:
           - Validation step
           - Checkpoint saving
           - LR scheduling
+
+        :param start_epoch: Starting epoch index.
+        :param end_epoch: Ending epoch index.
+        :raises RuntimeError: If NaN loss is detected during training.
         """
-        for epoch in range(start_epoch, end_epoch):
-            # Synchronize before epoch starts
-            DistributedUtils.sync_process_group(
-                world_size=self.world_size,
-                device_ids=self.device
-            )
+        try:
+            for epoch in range(start_epoch, end_epoch):
+                # Synchronize before epoch starts
+                DistributedUtils.sync_process_group(
+                    world_size=self.world_size,
+                    device_ids=self.device
+                )
 
-            # Training phase
-            train_metrics: dict[str, float] = self._run_epoch(mode=RunMode.TRAIN, epoch=epoch)
-            if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
-                # Let wandb auto-increment steps
-                self.wandb_wrapper.log(train_metrics)
-                print(f"[DEBUG] rank={self.device} => Logged train metrics to W&B")
+                # Training phase
+                train_metrics: dict[str, float] = self._run_epoch(mode=RunMode.TRAIN, epoch=epoch)
+                if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
+                    # Let wandb auto-increment steps
+                    self.wandb_wrapper.log(train_metrics)
+                    print(f"[DEBUG] rank={self.device} => Logged train metrics to W&B")
 
-            # Sync before validation
-            DistributedUtils.sync_process_group(
-                world_size=self.world_size,
-                device_ids=self.device
-            )
+                # Sync before validation
+                DistributedUtils.sync_process_group(
+                    world_size=self.world_size,
+                    device_ids=self.device
+                )
 
-            # Validation phase
-            val_metrics: dict[str, float] = self._run_epoch(
-                mode=RunMode.VALIDATION, 
-                epoch=epoch
-            )
-            
-            # Sync after validation
-            DistributedUtils.sync_process_group(
-                world_size=self.world_size,
-                device_ids=self.device
-            )
-            
-            # If it's an epoch-based scheduler (like StepLR, CosineAnnealingLR, etc.),
-            # call lr_scheduler.step() after each epoch
-            if self.lr_scheduler and (not self.scheduler_per_iteration):
-                self.lr_scheduler.step()
+                # Validation phase
+                val_metrics: dict[str, float] = self._run_epoch(
+                    mode=RunMode.VALIDATION, 
+                    epoch=epoch
+                )
+                
+                # Sync after validation
+                DistributedUtils.sync_process_group(
+                    world_size=self.world_size,
+                    device_ids=self.device
+                )
+                
+                # If it's an epoch-based scheduler (like StepLR, CosineAnnealingLR, etc.),
+                # call lr_scheduler.step() after each epoch
+                if self.lr_scheduler and (not self.scheduler_per_iteration):
+                    self.lr_scheduler.step()
 
-            # Update best model
-            if val_metrics["val/loss"] < self.best_val_loss:
-                prev_best: float = self.best_val_loss
-                self.best_val_loss = val_metrics["val/loss"]
-                self.best_epoch = epoch
+                # Update best model
+                if val_metrics["val/loss"] < self.best_val_loss:
+                    prev_best: float = self.best_val_loss
+                    self.best_val_loss = val_metrics["val/loss"]
+                    self.best_epoch = epoch
+                    if self.config.is_ref_device:
+                        print(
+                            f"\nNew best model! Val Loss: {val_metrics['val/loss']:.4f} "
+                            f"(previous: {prev_best:.4f})"
+                        )
+                        self._save_checkpoint(
+                            epoch=epoch,
+                            metrics={
+                                **train_metrics, 
+                                **val_metrics
+                            },
+                            is_best=True,
+                        )
+                
+                # Update and save model with highest alignment score
+                if val_metrics["val/alignment_score"] > self.highest_alignment_score:
+                    prev_highest: float = self.highest_alignment_score
+                    self.highest_alignment_score = val_metrics["val/alignment_score"]
+                    self.highest_alignment_epoch = epoch
+                    if self.config.is_ref_device:
+                        print(
+                            f"\nNew highest alignment score model! Alignment Score: {val_metrics['val/alignment_score']:.4f} "
+                            f"(previous: {prev_highest:.4f})"
+                        )
+                        self._save_checkpoint(
+                            epoch=epoch,
+                            metrics={
+                                **train_metrics, 
+                                **val_metrics
+                            },
+                            is_best=False,
+                            is_highest_alignment=True,
+                        )
+
+                # Always save "latest" checkpoint
                 if self.config.is_ref_device:
-                    print(
-                        f"\nNew best model! Val Loss: {val_metrics['val/loss']:.4f} "
-                        f"(previous: {prev_best:.4f})"
+                    self._save_checkpoint(
+                        epoch=epoch,
+                        metrics={**train_metrics, **val_metrics},
+                        is_best=False,
                     )
+                
+                # Sync after saving checkpoint
+                DistributedUtils.sync_process_group(
+                    world_size=self.world_size,
+                    device_ids=self.device
+                )
+                            
+                if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
+                    val_metrics['best_val_loss'] = self.best_val_loss
+                    val_metrics['highest_alignment_score'] = self.highest_alignment_score
+                    self.wandb_wrapper.log(val_metrics)
+                    print(f"[DEBUG] rank={self.device} => Logged val metrics to W&B")
+                
+                # Sync after logging
+                DistributedUtils.sync_process_group(
+                    world_size=self.world_size,
+                    device_ids=self.device
+                )
+
+        except RuntimeError as e:
+            if "NaN loss" in str(e):
+                if self.config.is_ref_device:
+                    print("\nTraining stopped due to NaN loss. Saving final checkpoint...")
+                    # Save a checkpoint with the error state
                     self._save_checkpoint(
                         epoch=epoch,
                         metrics={
-                            **train_metrics, 
-                            **val_metrics
+                            "error": str(e),
+                            "train/loss": float("nan"),
+                            "val/loss": float("nan"),
                         },
-                        is_best=True,
+                        is_best=False,
                     )
-
-            # Always save "latest" checkpoint
-            if self.config.is_ref_device:
-                self._save_checkpoint(
-                    epoch=epoch,
-                    metrics={**train_metrics, **val_metrics},
-                    is_best=False,
-                )
-            
-            # Sync after saving checkpoint
-            DistributedUtils.sync_process_group(
-                world_size=self.world_size,
-                device_ids=self.device
-            )
-                        
-            if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
-                val_metrics['best_val_loss'] = self.best_val_loss
-                self.wandb_wrapper.log(val_metrics)
-                print(f"[DEBUG] rank={self.device} => Logged val metrics to W&B")
-            
-            # Sync after logging
-            DistributedUtils.sync_process_group(
-                world_size=self.world_size,
-                device_ids=self.device
-            )
+            raise  # Re-raise the exception after saving checkpoint
 
     def _gather_tensor_along_batch(self, local_tensor: torch.Tensor, world_size: int) -> torch.Tensor:
         """
@@ -308,6 +355,7 @@ class VideoContrastiveLearningRunner:
         :param mode: One of ["train", "val"] indicating the mode.
         :param epoch: Current epoch index.
         :return: Dictionary of metrics, averaged over all batches and reduced across ranks.
+        :raises RuntimeError: If NaN loss is detected during training.
         """
         assert mode in [RunMode.TRAIN, RunMode.VALIDATION]
 
@@ -343,6 +391,13 @@ class VideoContrastiveLearningRunner:
                 # shape => [B, 1, T, H, W, C]
                 step_inputs["videos"] = step_inputs["videos"].unsqueeze(1)
             batch_metrics, embeddings = step_fn(**step_inputs)
+
+            # Check for NaN loss
+            if torch.isnan(torch.tensor(batch_metrics["loss"])):
+                error_msg = f"NaN loss detected in {mode} at epoch {epoch + 1}, batch {batch_count + 1}"
+                if self.config.is_ref_device:
+                    print(f"\nERROR: {error_msg}")
+                raise RuntimeError(error_msg)
 
             if self.lr_scheduler and self.scheduler_per_iteration and (mode == RunMode.TRAIN):
                 self.lr_scheduler.step()
@@ -567,13 +622,14 @@ class VideoContrastiveLearningRunner:
         else:
             return val
 
-    def _save_checkpoint(self, epoch: int, metrics: dict, is_best: bool = False):
+    def _save_checkpoint(self, epoch: int, metrics: dict, is_best: bool = False, is_highest_alignment: bool = False):
         """
         Saves model checkpoint (including model weights, optimizer, scheduler, and metrics).
 
         :param epoch: Current epoch index.
         :param metrics: Dictionary of metrics to be saved.
-        :param is_best: If True, saves as 'best_epoch.pt'. Otherwise, saves as 'checkpoint.pt'.
+        :param is_best: If True, saves as 'best_model_epoch_{epoch}.pt'. Otherwise, saves as 'checkpoint.pt'.
+        :param is_highest_alignment: If True, saves as 'highest_alignment_epoch_{epoch}.pt'.
         """
         checkpoint_dir = os.path.join(self.output_dir, "checkpoints")
         os.makedirs(checkpoint_dir, exist_ok=True)
@@ -596,14 +652,20 @@ class VideoContrastiveLearningRunner:
             **metrics,
             "best_val_loss": self.best_val_loss,
             "best_epoch": self.best_epoch,
+            "highest_alignment_score": self.highest_alignment_score,
+            "highest_alignment_epoch": self.highest_alignment_epoch,
         }
 
-        save_path = os.path.join(
-            checkpoint_dir, "best_epoch.pt" if is_best else "checkpoint.pt"
-        )
+        if is_best:
+            save_path = os.path.join(checkpoint_dir, f"best_model_epoch_{epoch}.pt")
+        elif is_highest_alignment:
+            save_path = os.path.join(checkpoint_dir, f"highest_alignment_epoch_{epoch}.pt")
+        else:
+            save_path = os.path.join(checkpoint_dir, "checkpoint.pt")
+            
         torch.save(checkpoint, save_path)
         print(
-            f"\nSaved {'best' if is_best else 'latest'} checkpoint at epoch {epoch + 1} to {save_path}"
+            f"\nSaved {('best' if is_best else 'highest alignment' if is_highest_alignment else 'latest')} checkpoint at epoch {epoch + 1} to {save_path}"
         )
 
     def _preview_checkpoint_for_resuming(self, checkpoint_path: str):
@@ -684,137 +746,132 @@ class VideoContrastiveLearningRunner:
         }, batch["paths"]
 
     def _train_step(
-        self, 
-        videos: torch.Tensor, 
-        input_ids: torch.Tensor, 
-        attention_mask: torch.Tensor
+        self,
+        videos: torch.Tensor,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
     ) -> tuple[dict, dict]:
         """
-        Performs a single training step, including forward, backward, gradient update,
-        and metric computation.
+        One training iteration: forward → backward → (optional) clip → optimizer step →
+        metric computation.
 
-        :param videos: Tensor of shape [B, num_clips, T, H, W, C].
-        :param input_ids: Encoded text token IDs.
-        :param attention_mask: Attention mask for text.
-        :return: (batch_metrics, embeddings) where
-          - batch_metrics is a dictionary with loss, alignment scores, etc.
-          - embeddings is a dictionary with 'video_embeddings' and 'text_embeddings'.
+        Returns
+        -------
+        batch_metrics : dict
+            loss, LR(s), temperature, alignment score, embedding norms …
+        embeddings : dict
+            'video_embeddings' | 'text_embeddings' (fp32, detached only at caller's request)
         """
-        self.optimizer.zero_grad()
+        # ------------------------------------------------------------------
+        # 0. housekeeping
+        # ------------------------------------------------------------------
+        # Clear gradients only if this is the first step in accumulation
+        if self.step % self.config.gradient_accumulation_steps == 0:
+            self.optimizer.zero_grad(set_to_none=True)
 
-        if self.scaler:
-            with torch.amp.autocast("cuda"):
-                video_embeddings = self.video_encoder(videos)
-                text_embeddings = self.text_encoder(input_ids, attention_mask)
-                loss = self.loss_fn.run(
-                    video_features=video_embeddings, 
-                    text_features=text_embeddings, 
-                    log_temp=self.log_temp
-                )
+        amp_enabled = self.scaler is not None
+        autocast_ctx = torch.amp.autocast(device_type="cuda", enabled=amp_enabled)
 
-            self.scaler.scale(loss).backward()
-            self.scaler.unscale_(self.optimizer)
-
-            DistributedUtils.sync_process_group(
-                world_size=self.world_size,
-                device_ids=self.device
+        # ------------------------------------------------------------------
+        # 1. forward
+        # ------------------------------------------------------------------
+        with autocast_ctx:
+            video_emb = self.video_encoder(videos)
+            text_emb  = self.text_encoder(input_ids, attention_mask)
+            loss      = self.loss_fn.run(
+                video_features=video_emb,
+                text_features=text_emb,
+                log_temp=self.log_temp,
             )
 
-            # Log gradient norms
-            if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
-                log_gradient_norms(
-                    model=self.video_encoder, 
-                    wandb_wrapper=self.wandb_wrapper,
-                    prefix="train/video_encoder/"
-                )
-                log_gradient_norms(
-                    model=self.text_encoder, 
-                    wandb_wrapper=self.wandb_wrapper, 
-                    prefix="train/text_encoder/"
-                )
+        # Scale loss by gradient accumulation steps
+        scaled_loss = loss / self.config.gradient_accumulation_steps
 
-            DistributedUtils.sync_process_group(
-                world_size=self.world_size,
-                device_ids=self.device
-            )
-
-            # # Clip gradients
-            # torch.nn.utils.clip_grad_norm_(self.video_encoder.parameters(), max_norm=5.0)
-            # torch.nn.utils.clip_grad_norm_(self.text_encoder.parameters(), max_norm=5.0)
-
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-
-            video_embeddings = video_embeddings.float()
-            text_embeddings = text_embeddings.float()
+        # ------------------------------------------------------------------
+        # 2. backward
+        # ------------------------------------------------------------------
+        if amp_enabled:
+            self.scaler.scale(scaled_loss).backward()
         else:
-            video_embeddings = self.video_encoder(videos)
-            text_embeddings = self.text_encoder(input_ids, attention_mask)
-            loss = self.loss_fn.run(
-                video_features=video_embeddings, 
-                text_features=text_embeddings, 
-                log_temp=self.log_temp
+            scaled_loss.backward()
+
+        # ------------------------------------------------------------------
+        # 3. (optional) gradient clipping
+        # ------------------------------------------------------------------
+        max_norm = getattr(self.config, "max_grad_norm", 5.0)  # 0 or None → disabled
+        if max_norm and (self.step + 1) % self.config.gradient_accumulation_steps == 0:
+            # Gather all trainable parameters once (store in __init__ if you prefer)
+            params = itertools.chain(
+                self.video_encoder.parameters(),
+                self.text_encoder.parameters(),
+            )
+            if amp_enabled:
+                self.scaler.unscale_(self.optimizer)  # Unscale before clipping
+            clip_grad_norm_(params, max_norm=max_norm)
+
+        # ------------------------------------------------------------------
+        # 4. optimizer step
+        # ------------------------------------------------------------------
+        # Only step optimizer and update scaler if this is the last step in accumulation
+        if (self.step + 1) % self.config.gradient_accumulation_steps == 0:
+            if amp_enabled:
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                self.optimizer.step()
+
+        # Increment step counter
+        self.step += 1
+
+        # ------------------------------------------------------------------
+        # 5. logging (rank‑0 only)
+        # ------------------------------------------------------------------
+        if (
+            self.config.is_ref_device
+            and self.wandb_wrapper.is_initialized()
+        ):
+            # Norms already unscaled; no extra sync needed if you run this on rank‑0
+            log_gradient_norms(
+                model=self.video_encoder,
+                wandb_wrapper=self.wandb_wrapper,
+                prefix="train/video_encoder/",
+            )
+            log_gradient_norms(
+                model=self.text_encoder,
+                wandb_wrapper=self.wandb_wrapper,
+                prefix="train/text_encoder/",
             )
 
-            loss.backward()
-
-            DistributedUtils.sync_process_group(
-                world_size=self.world_size,
-                device_ids=self.device
-            )
-
-            if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
-                log_gradient_norms(
-                    model=self.video_encoder, 
-                    wandb_wrapper=self.wandb_wrapper,
-                    prefix="train/video_encoder/"
-                )
-                log_gradient_norms(
-                    model=self.text_encoder, 
-                    wandb_wrapper=self.wandb_wrapper, 
-                    prefix="train/text_encoder/"
-                )
-
-            DistributedUtils.sync_process_group(
-                world_size=self.world_size,
-                device_ids=self.device
-            )
-
-            # Clip gradients
-            torch.nn.utils.clip_grad_norm_(self.video_encoder.parameters(), max_norm=5.0)
-            torch.nn.utils.clip_grad_norm_(self.text_encoder.parameters(), max_norm=5.0)
-
-            self.optimizer.step()
-        
-        # metrics
+        # ------------------------------------------------------------------
+        # 6. metrics (no_grad)
+        # ------------------------------------------------------------------
         with torch.no_grad():
-            embedding_norms = compute_embedding_norms(video_embeddings, text_embeddings)
-            alignment_score = compute_alignment_score(video_embeddings, text_embeddings)
+            video_fp32 = video_emb.float()
+            text_fp32  = text_emb.float()
 
-        metrics = {
-            **embedding_norms,
-            "alignment_score": alignment_score,
+            embedding_norms  = compute_embedding_norms(video_fp32, text_fp32)
+            alignment_score  = compute_alignment_score(video_fp32, text_fp32)
+
+        # LR per param‑group (torch‑native ≥ 2.2 supports names)
+        lr_metrics = {
+            f"lr/{pg.get('name', str(i))}": pg["lr"]
+            for i, pg in enumerate(self.optimizer.param_groups)
         }
 
-        lr_metrics = {}
-        for pg in self.optimizer.param_groups:
-            lr_metrics[f"lr/{pg['name']}"] = pg["lr"]
+        batch_metrics = {
+            "loss": loss.detach().item(),
+            "temperature": self.log_temp.exp().detach().item(),
+            "alignment_score": alignment_score,
+            **embedding_norms,
+            **lr_metrics,
+        }
 
-        return (
-            {
-                "loss": loss.detach().item(),
-                **lr_metrics,
-                "temperature": self.log_temp.exp().detach().item(),
-                **{
-                    k: v.detach().item() if torch.is_tensor(v) else v
-                    for k, v in metrics.items()
-                },
-            },
-            {
-                "video_embeddings": video_embeddings,
-                "text_embeddings": text_embeddings,
-            },
-        )
+        embeddings = {
+            "video_embeddings": video_fp32,
+            "text_embeddings": text_fp32,
+        }
+
+        return batch_metrics, embeddings
 
     def _val_step(
         self, 
@@ -871,4 +928,65 @@ class VideoContrastiveLearningRunner:
         """
         Method for a dedicated inference.
         """
-        raise NotImplementedError("Inference is not implemented for this runner")
+        # Load text embeddings tensor
+        text_embeddings: torch.Tensor = torch.load(self.config.text_embeddings_path, weights_only=True, map_location=torch.device(self.device))
+        # Load metadata
+        metadata: pd.DataFrame = pd.read_parquet(self.config.metadata_path)
+        
+        # Create a list to store all averaged metadata
+        all_averaged_metadata = []
+        
+        for batch in tqdm(
+            self.val_loader, 
+            desc=f"[GPU {self.device}] Running inference", 
+            disable=not self.config.is_ref_device
+        ):
+            with torch.no_grad():
+                with torch.amp.autocast("cuda"):
+                    video_embeddings = self.video_encoder(batch["videos"]).float()
+                    
+            similarity_matrix = torch.matmul(video_embeddings, text_embeddings.t())
+            _, topk_indices = torch.topk(similarity_matrix, k=self.config.topk, dim=1)
+            
+            # Compute the average of the topk metadata rows for each video embedding
+            topk_indices_np = topk_indices.cpu().numpy()  # shape: [N, topk]
+
+            # Get video paths from batch
+            video_paths = batch["paths"]
+            
+            for idx, indices in enumerate(topk_indices_np):
+                # Get the top-k metadata rows
+                topk_metadata = metadata.iloc[indices]
+                
+                # Calculate column-wise averages based on data type
+                averaged_row = {
+                    'video_name': video_paths[idx],  # Add video name to the row
+                }
+                
+                for column in metadata.columns:
+                    if pd.api.types.is_numeric_dtype(metadata[column]):
+                        # For numeric columns, compute mean
+                        averaged_row[column] = topk_metadata[column].mean()
+                    elif pd.api.types.is_string_dtype(metadata[column]):
+                        # For string columns, get most frequent value
+                        averaged_row[column] = topk_metadata[column].mode().iloc[0]
+                    else:
+                        raise ValueError(f"Unsupported data type: {metadata[column].dtype}")
+                
+                all_averaged_metadata.append(averaged_row)
+        
+        # Convert list of averaged metadata to DataFrame
+        averaged_metadata_df = pd.DataFrame(all_averaged_metadata)
+        
+        # Reorder columns to have video_name first
+        cols = ['video_name'] + [col for col in averaged_metadata_df.columns if col != 'video_name']
+        averaged_metadata_df = averaged_metadata_df[cols]
+        
+        # Create output directory if it doesn't exist
+        os.makedirs(self.output_dir, exist_ok=True)
+        
+        # Save to CSV
+        output_path = os.path.join(self.output_dir, "averaged_metadata.csv")
+        averaged_metadata_df.to_csv(output_path, index=False)
+        print(f"Saved averaged metadata to: {output_path}")        
+        print("Inference completed")

@@ -15,6 +15,7 @@ class ClipConfig(HeartWiseConfig):
     num_workers: int
     debug: bool
     temperature: float
+    max_grad_norm: float  # Maximum gradient norm for clipping
 
     # Data parameters
     data_filename: str
@@ -69,7 +70,9 @@ class ClipConfig(HeartWiseConfig):
     resume_training: bool
     checkpoint: Optional[str]
     
-    # Parameters with default values must come last used for testing
-    world_size: int = 1  # Number of GPUs/processes for DDP
-    is_ref_device: bool = True  # Whether this is the reference device for logging
+    # Inference parameters
+    topk: int
+    text_embeddings_path: str
+    metadata_path: str
+    inference_results_path: str
 

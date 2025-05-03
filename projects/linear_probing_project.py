@@ -31,8 +31,7 @@ class LinearProbingProject(BaseProject):
         config: LinearProbingConfig,
         wandb_wrapper: WandbWrapper
     ):
-        self.config: LinearProbingConfig = config
-        self.wandb_wrapper: WandbWrapper = wandb_wrapper
+        super().__init__(config, wandb_wrapper)
 
     def _setup_project(self):
         # Generate the output directory name

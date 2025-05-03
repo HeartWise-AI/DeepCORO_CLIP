@@ -1,10 +1,10 @@
 command:
   - torchrun
-  - "--nproc_per_node=2"
+  - "--nproc_per_node="
   - "--master_port=29500"
   - "scripts/main.py"
   - "--base_config"
-  - "config/clip/base_config.yaml"
+  - "config/base_config.yaml"
   - ${args}
 
 name: "dev_deep_coro_clip_single_video"
@@ -20,31 +20,22 @@ metric:
 parameters:
   lr:
     distribution: log_uniform_values
-    min: 0.00001
-    max: 0.0001
+    min: 5e-5
+    max: 1e-3
 
   optimizer:
     values: ["RAdam", "AdamW"]
 
   scheduler_name:
-    values: ["linear_warmup", "cosine_with_warmup", "cosine_with_hard_restarts_with_warmup"]
+    values: ["step", "cosine"]
 
   lr_step_period:
     values: [15, 20, 30]
 
-  gradient_accumulation_steps:  
-    values: [1]
-
-  num_warmup_percent:
-    values: [0.05, 0.1, 0.15]
-
   factor:
     distribution: uniform
-    min: 0.10
-    max: 0.30
-    
-  stride:
-    values: [1, 2]
+    min: 0.2
+    max: 0.5
 
   dropout:
     distribution: uniform
@@ -56,13 +47,16 @@ parameters:
     min: 0.8
     max: 0.95
 
+  stride:
+    values: [1, 2, 3]
+
   text_freeze_ratio:
     distribution: uniform
     min: 0.7
     max: 0.95
 
   num_heads:
-    values: [2, 4, 8, 16]
+    values: [2, 4, 6, 8, 10]
 
   aggregator_depth:
     values: [1, 2, 3, 4]
@@ -83,14 +77,16 @@ parameters:
 
   batch_size:
     values: [4]
+  num_videos:
+    values: [6, 7, 8]
   loss_name:
     values: ["contrastive"]
   tag:
     values: ["mvit_pretrained"]
   name:
-    values: ["dev_deep_coro_clip_single_video"]
+    values: ["dev_deep_coro_clip"]
   project:
-    values: ["dev_deep_coro_clip_single_video"]
+    values: ["dev_deep_coro_clip"]
   entity:
     values: ["mhi_ai"]
 

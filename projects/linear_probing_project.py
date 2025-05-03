@@ -8,6 +8,7 @@ from torch.optim.lr_scheduler import LRScheduler
 from runners.typing import Runner
 from models.video_encoder import VideoEncoder
 from models.linear_probing import LinearProbing
+from models.multi_instance_linear_probing import MultiInstanceLinearProbing
 from projects.base_project import BaseProject
 from utils.registry import (
     ProjectRegistry, 
@@ -79,46 +80,73 @@ class LinearProbingProject(BaseProject):
             aggregator_depth=self.config.aggregator_depth,
         )        
 
+        # Get embedding dimension from encoder
+        embedding_dim = video_encoder.embedding_dim
+
         # Load video encoder checkpoint
         video_encoder = video_encoder.to(self.config.device).float()        
         checkpoint: dict[str, Any] = self._load_checkpoint(self.config.video_encoder_checkpoint_path)       
         video_encoder.load_state_dict(checkpoint["video_encoder"])
 
-        # Initialize linear probing model
-        linear_probing: LinearProbing = ModelRegistry.get(
-            name=self.config.pipeline_project
-        )(
-            backbone=video_encoder,
-            head_linear_probing=self.config.head_linear_probing,
-            head_structure=self.config.head_structure,
-            dropout=self.config.dropout,
-            freeze_backbone_ratio=self.config.video_freeze_ratio,
-        )
-        linear_probing = linear_probing.to(self.config.device).float()
+        # Freeze video encoder if specified
+        if self.config.video_freeze_ratio == 1.0:
+            for param in video_encoder.parameters():
+                param.requires_grad = False
+            video_encoder.eval() # Set to eval mode if fully frozen
+        elif self.config.video_freeze_ratio > 0:
+             # Partial freezing logic might be needed here if supported by VideoEncoder
+             pass # Assuming freeze_ratio in VideoEncoder init handles partial freezing
 
-        # Distribute linear probing model
-        linear_probing = DistributedUtils.DDP(
-            linear_probing, 
+        # Initialize Multi-Instance Linear Probing model
+        mil_model: MultiInstanceLinearProbing = ModelRegistry.get(
+            name="multi_instance_linear_probing"
+        )(
+            embedding_dim=embedding_dim, 
+            head_structure=self.config.head_structure,
+            pooling_mode=self.config.pooling_mode, 
+            attention_hidden=self.config.attention_hidden, 
+            dropout=self.config.dropout_attention, 
+        )
+        mil_model = mil_model.to(self.config.device).float()
+
+        # Distribute MIL model
+        mil_model = DistributedUtils.DDP(
+            mil_model, 
             device_ids=[self.config.device]
         )
         
-        # Initialize optimizer with separate learning rates for backbone and heads
-        param_groups = [
-            {
-                'params': linear_probing.module.backbone.parameters(),  # Backbone parameters
-                'lr': self.config.video_encoder_lr,  # Lower learning rate for backbone
-                'name': 'backbone',
+        # Initialize optimizer with separate learning rates
+        param_groups = []
+
+        # Add video encoder parameters if not fully frozen
+        if self.config.video_freeze_ratio < 1.0:
+             param_groups.append({
+                'params': video_encoder.parameters(), 
+                'lr': self.config.video_encoder_lr, 
+                'name': 'video_encoder',
                 'weight_decay': self.config.video_encoder_weight_decay
-            }
-        ]
+            })
+
+        # Add MIL model parameters (pooling layers, heads)
+        # Assuming MIL model parameters excluding heads might need a base LR
+        # Add head parameters
         for head_name in self.config.head_structure:
             param_groups.append({
-                'params': linear_probing.module.heads[head_name].parameters(),
+                'params': mil_model.module.heads[head_name].parameters(),
                 'lr': self.config.head_lr[head_name],
                 'name': head_name,
                 'weight_decay': self.config.head_weight_decay[head_name]
             })
             
+        # Add attention parameters if applicable (potentially different LR/WD)
+        if self.config.pooling_mode == "attention":
+            param_groups.append({
+                'params': mil_model.module.attention_pooling.parameters(), 
+                'lr': self.config.attention_lr, 
+                'name': 'attention_pooling',
+                'weight_decay': self.config.attention_weight_decay 
+            })            
+
         optimizer_class: torch.optim.Optimizer = getattr(torch.optim, self.config.optimizer)
         optimizer: torch.optim.Optimizer = optimizer_class(param_groups)
         # Initialize scheduler
@@ -151,7 +179,8 @@ class LinearProbingProject(BaseProject):
         )
 
         return {
-            "linear_probing": linear_probing,
+            "video_encoder": video_encoder, 
+            "mil_model": mil_model, 
             "optimizer": optimizer,
             "lr_scheduler": scheduler,
             "train_loader": train_loader,
@@ -170,25 +199,48 @@ class LinearProbingProject(BaseProject):
     def run(self):
         training_setup: dict[str, Any] = self._setup_training_objects()
         
-        start_epoch: int = 0
-        
-        runner: Runner = Runner(
-            runner_type=RunnerRegistry.get(
-                name=self.config.pipeline_project
-            )(
-                config=self.config,
-                wandb_wrapper=self.wandb_wrapper,
-                **training_setup
-            )
+        # Create runner instance
+        runner: Runner = RunnerRegistry.get(
+            name=self.config.pipeline_project
+        )(
+            config=self.config,
+            wandb_wrapper=self.wandb_wrapper,
+            **training_setup
         )
-        if self.config.run_mode == RunMode.TRAIN:
-            end_epoch = start_epoch + self.config.epochs
-            runner.train(
-                start_epoch=start_epoch, 
-                end_epoch=end_epoch
-            ) 
-        elif self.config.run_mode == RunMode.INFERENCE:
-            runner.inference()
-        else:
-            raise ValueError(f"Invalid run mode: {self.config.run_mode}, must be one of {RunMode.TRAIN} or {RunMode.INFERENCE}")
 
+        # Load Checkpoint if resume path is provided
+        start_epoch: int = 0
+        if self.config.resume_checkpoint_path:
+            start_epoch = self._load_runner_checkpoint(
+                runner=runner, 
+                path=self.config.resume_checkpoint_path
+            )
+        
+        # Train the model
+        runner.train(start_epoch=start_epoch, end_epoch=self.config.epochs)
+
+        # Final cleanup
+        if self.config.is_ref_device:
+            self.wandb_wrapper.finish()
+
+    def _load_checkpoint(self, path: str) -> dict[str, Any]:
+        """Load checkpoint from path."""
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"Checkpoint not found at {path}")
+        checkpoint: dict[str, Any] = torch.load(path, map_location=self.config.device)
+        return checkpoint
+
+    def _load_runner_checkpoint(self, runner: Runner, path: str) -> int:
+        """Load checkpoint for the entire runner."""
+        checkpoint: dict[str, Any] = self._load_checkpoint(path)
+        # Load state for video encoder and MIL model
+        runner.video_encoder.load_state_dict(checkpoint["video_encoder"])
+        runner.mil_model.module.load_state_dict(checkpoint["mil_model"])
+        # Load optimizer, scaler, and scheduler states
+        runner.optimizer.load_state_dict(checkpoint["optimizer"])
+        if runner.scaler and checkpoint["scaler"]:
+            runner.scaler.load_state_dict(checkpoint["scaler"])
+        if runner.lr_scheduler and checkpoint["scheduler"]:
+            runner.lr_scheduler.load_state_dict(checkpoint["scheduler"])
+        # Return the epoch to resume from
+        return checkpoint.get("epoch", 0) + 1 # Start from next epoch

@@ -43,8 +43,7 @@ class ContrastivePretrainingProject(BaseProject):
         config: ClipConfig,
         wandb_wrapper: WandbWrapper
     ):
-        self.config: ClipConfig = config
-        self.wandb_wrapper: WandbWrapper = wandb_wrapper
+        super().__init__(config, wandb_wrapper)
         
     def _setup_training_objects(
         self,
@@ -274,33 +273,3 @@ class ContrastivePretrainingProject(BaseProject):
         training_setup["log_temp"].data.copy_(checkpoint["train/temperature"])
         return training_setup
         
-    def run(self):
-        training_setup: dict[str, Any] = self._setup_training_objects()
-
-        start_epoch = 0
-        if self.config.resume_training:
-            checkpoint = self._load_checkpoint(self.config.checkpoint)
-            training_setup = self._update_training_setup_with_checkpoint(training_setup, checkpoint)
-            start_epoch = checkpoint["epoch"]
-            print(f"Resuming from epoch: {start_epoch}")
-
-        runner: Runner = Runner(
-            runner_type=RunnerRegistry.get(
-                name=self.config.pipeline_project
-            )(
-                config=self.config,
-                wandb_wrapper=self.wandb_wrapper,
-                **training_setup,
-            )
-        )
-        if self.config.run_mode == RunMode.TRAIN:
-            end_epoch = start_epoch + self.config.epochs
-            runner.train(
-                start_epoch=start_epoch, 
-                end_epoch=end_epoch
-            ) 
-        elif self.config.run_mode == RunMode.INFERENCE:
-            runner.inference()
-        else:
-            raise ValueError(f"Invalid run mode: {self.config.run_mode}, must be one of {RunMode.TRAIN} or {RunMode.INFERENCE}")
-

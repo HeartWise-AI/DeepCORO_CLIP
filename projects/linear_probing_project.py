@@ -5,20 +5,18 @@ from torch.amp import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
 
-from runners.typing import Runner
 from models.video_encoder import VideoEncoder
 from models.linear_probing import LinearProbing
 from projects.base_project import BaseProject
 from utils.registry import (
     ProjectRegistry, 
-    RunnerRegistry, 
     ModelRegistry,
     LossRegistry
 )
 
 from utils.loss.typing import Loss
 from utils.ddp import DistributedUtils
-from utils.enums import RunMode, LossType
+from utils.enums import LossType
 from utils.schedulers import get_scheduler
 from utils.wandb_wrapper import WandbWrapper
 from utils.files_handler import generate_output_dir_name
@@ -167,34 +165,3 @@ class LinearProbingProject(BaseProject):
             "loss_fn": loss_fn,
         }            
         
-
-    def _setup_inference_objects(
-        self
-    )->dict[str, Any]:
-        raise NotImplementedError("Inference is not implemented for this project")
-
-    def run(self):
-        training_setup: dict[str, Any] = self._setup_training_objects()
-        
-        start_epoch: int = 0
-        
-        runner: Runner = Runner(
-            runner_type=RunnerRegistry.get(
-                name=self.config.pipeline_project
-            )(
-                config=self.config,
-                wandb_wrapper=self.wandb_wrapper,
-                **training_setup
-            )
-        )
-        if self.config.run_mode == RunMode.TRAIN:
-            end_epoch = start_epoch + self.config.epochs
-            runner.train(
-                start_epoch=start_epoch, 
-                end_epoch=end_epoch
-            ) 
-        elif self.config.run_mode == RunMode.INFERENCE:
-            runner.inference()
-        else:
-            raise ValueError(f"Invalid run mode: {self.config.run_mode}, must be one of {RunMode.TRAIN} or {RunMode.INFERENCE}")
-

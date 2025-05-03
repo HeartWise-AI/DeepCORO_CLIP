@@ -54,3 +54,10 @@ class LinearProbingConfig(HeartWiseConfig):
     
     # Label mappings - Used for confusion matrix
     labels_map: Dict[str, Dict[str, int]]
+
+    # Multi-Instance Learning parameters (added)
+    pooling_mode: str = "mean" # Pooling mode ("mean", "max", "attention")
+    attention_hidden: int = 128 # Hidden size for attention pooling
+    dropout_attention: float = 0.0 # Dropout for attention pooling block
+    attention_lr: float = 1e-4 # Learning rate for attention pooling parameters
+    attention_weight_decay: float = 0.0 # Weight decay for attention pooling parameters

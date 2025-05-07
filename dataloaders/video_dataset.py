@@ -127,7 +127,7 @@ class VideoDataset(torch.utils.data.Dataset):
                     raise ValueError(f"Target label '{label}' not found in data columns")
 
         fnames = []
-        outcomes = []
+        outcomes = None if target_indices is None else []
 
         # Iterate through rows using iterrows
         for _, row in data.iterrows():
@@ -158,9 +158,7 @@ class VideoDataset(torch.utils.data.Dataset):
                 if skip_row:
                     continue
                 outcomes.append(row_outcomes)
-            else:
-                outcomes.append(None)
-
+            
             fnames.append(file_name)
 
         return fnames, outcomes, target_indices
@@ -214,7 +212,7 @@ class VideoDataset(torch.utils.data.Dataset):
         except Exception as e:
             raise RuntimeError(f"Failed to load video {video_fname}: {str(e)}") from e   
         
-        return video, self.outcomes[actual_idx], video_fname
+        return video, self.outcomes[actual_idx] if self.outcomes is not None else None, video_fname
     
 def custom_collate_fn(batch: List[Tuple[np.ndarray, Dict[str, torch.Tensor], str]]) -> Dict[str, Any]:
     """Custom collate function to handle video, targets, and video_fname data.
@@ -228,16 +226,18 @@ def custom_collate_fn(batch: List[Tuple[np.ndarray, Dict[str, torch.Tensor], str
         video_fname: List of file paths
     """
     videos, targets, paths = zip(*batch)
+
     # Stack videos - handle both tensor and numpy inputs
     videos = torch.stack([torch.from_numpy(v) for v in videos])  # Shape: [B, F, H, W, C]
     
     # Convert targets to tensor - handle tuple of dictionaries
     targets_dict: dict[str, torch.Tensor] = defaultdict(list)
     for target in targets:
-        for k, v in target.items():
-            targets_dict[k].append(v)
+        if target is not None:
+            for k, v in target.items():
+                targets_dict[k].append(v)
 
-    targets_dict = {k: torch.tensor(v, dtype=torch.bfloat16) for k, v in targets_dict.items()}
+        targets_dict = {k: torch.tensor(v, dtype=torch.bfloat16) for k, v in targets_dict.items()}
     
     return {
         "videos": videos,

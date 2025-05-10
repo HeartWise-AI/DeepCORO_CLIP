@@ -2,7 +2,7 @@ import os
 
 import torch
 import torch.nn as nn
-from torch.amp import GradScaler
+from torch.amp.grad_scaler import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
 
@@ -26,7 +26,6 @@ from utils.wandb_wrapper import WandbWrapper
 from utils.files_handler import generate_output_dir_name
 from utils.video_project import calculate_dataset_statistics_ddp
 from dataloaders.video_clip_dataset import get_distributed_video_clip_dataloader
-from dataloaders.multi_video_dataset import get_distributed_multi_video_dataloader
 
 @ProjectRegistry.register('DeepCORO_clip')
 class ContrastivePretrainingProject(BaseProject):
@@ -55,48 +54,26 @@ class ContrastivePretrainingProject(BaseProject):
         # Calculate dataset statistics
         mean, std = calculate_dataset_statistics_ddp(self.config)
 
-        if self.config.multi_video:
-            train_loader: DataLoader = get_distributed_multi_video_dataloader(
-                self.config, 
-                split="train",
-                mean=mean.tolist(),
-                std=std.tolist(),
-                shuffle=True,
-                num_replicas=self.config.world_size,
-                rank=self.config.device,
-                drop_last=True,
-            )
-            val_loader: DataLoader = get_distributed_multi_video_dataloader(
-                self.config, 
-                split="val", 
-                mean=mean.tolist(),
-                std=std.tolist(),
-                shuffle=False,
-                num_replicas=self.config.world_size,
-                rank=self.config.device,
-                drop_last=False,
-            )
-        else:
-            train_loader: DataLoader = get_distributed_video_clip_dataloader(
-                self.config, 
-                split="train", 
-                mean=mean.tolist(),
-                std=std.tolist(),
-                shuffle=True,
-                num_replicas=self.config.world_size,
-                rank=self.config.device,
-                drop_last=True,
-            )
-            val_loader: DataLoader = get_distributed_video_clip_dataloader(
-                self.config, 
-                split="val", 
-                mean=mean.tolist(),
-                std=std.tolist(),
-                shuffle=False,
-                num_replicas=self.config.world_size,
-                rank=self.config.device,
-                drop_last=False,
-            )
+        train_loader: DataLoader = get_distributed_video_clip_dataloader(
+            self.config, 
+            split="train", 
+            mean=mean.tolist(),
+            std=std.tolist(),
+            shuffle=True,
+            num_replicas=self.config.world_size,
+            rank=self.config.device,
+            drop_last=True,
+        )
+        val_loader: DataLoader = get_distributed_video_clip_dataloader(
+            self.config, 
+            split="val", 
+            mean=mean.tolist(),
+            std=std.tolist(),
+            shuffle=False,
+            num_replicas=self.config.world_size,
+            rank=self.config.device,
+            drop_last=False,
+        )
 
         # Create models
         video_encoder: VideoEncoder = ModelRegistry.get(
@@ -241,7 +218,7 @@ class ContrastivePretrainingProject(BaseProject):
         # Calculate dataset statistics
         mean, std = calculate_dataset_statistics_ddp(self.config)
         
-        val_loader: DataLoader = get_distributed_multi_video_dataloader(
+        val_loader: DataLoader = get_distributed_video_clip_dataloader(
             self.config, 
             split="inference", 
             mean=mean.tolist(),

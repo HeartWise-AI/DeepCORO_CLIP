@@ -66,7 +66,7 @@ tag: !!str x3d_m_pretrained
 name: !!str DeepCORO_Clip_Sweep_Multi_Video
 project: !!str DeepCORO_Clip_Sweep_Multi_Video
 entity: !!str mhi_ai
-use_wandb: !!bool false
+use_wandb: !!bool true
 # Inference parameters
 inference_results_path: outputs/inference_results
 metadata_path: !!null null

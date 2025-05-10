@@ -90,14 +90,12 @@ def load_video(
         "x3d_s": {
             "side_size": 182,
             "crop_size": 182,
-            "num_frames": 13,
-            "sampling_rate": 6,
+            "num_frames": n_frames
         },
         "x3d_m": {
-            "side_size": 256,
-            "crop_size": 256,
-            "num_frames": 16,
-            "sampling_rate": 5,
+            "side_size": resize,
+            "crop_size": resize,
+            "num_frames": n_frames
         }
     }
 

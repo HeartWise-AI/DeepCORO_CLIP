@@ -42,6 +42,9 @@ class VideoEncoder(nn.Module):
         self.dropout: float = dropout
         self.freeze_ratio: float = freeze_ratio
 
+        # Add embedding_dim property
+        self._embedding_dim: int = output_dim
+
         # 1) Build backbone
         if backbone == "mvit":
             # Load the pretrained MViT v2 S
@@ -112,6 +115,10 @@ class VideoEncoder(nn.Module):
             if i < (total_count - train_count):
                 param.requires_grad = False
 
+    @property
+    def embedding_dim(self) -> int:
+        """Get the embedding dimension."""
+        return self._embedding_dim
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """

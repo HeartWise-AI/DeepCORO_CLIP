@@ -4,12 +4,18 @@ output_dir: !!str outputs
 run_mode: !!str train
 epochs: !!int 3
 seed: !!int 42
+mean: [0.485, 0.456, 0.406]
+std: [0.229, 0.224, 0.225]
+num_videos: 3
+root: "/volume/DeepCORO_CLIP_Sarra" # adapte selon ton arborescence
+input_channels: 3
+num_frames: 16
 # wandb parameters
 tag: !!str mvit_pretrained
 name: !!str dev_deep_coro_linear_probing
 project: !!str dev_deep_coro_linear_probing
 entity: !!str mhi_ai
-use_wandb: !!bool true
+use_wandb: !!bool false
 # Training parameters
 lr: !!float 0.0003
 scheduler_name: !!str step
@@ -32,6 +38,7 @@ rand_augment: !!bool true
 resize: !!int 224
 frames: !!int 16
 stride: !!int 1
+object_value_filter: !!int 9
 # Video Encoder parameters
 model_name: !!str mvit
 aggregator_depth: !!int 2

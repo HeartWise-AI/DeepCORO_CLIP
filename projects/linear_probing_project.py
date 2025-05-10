@@ -1,7 +1,7 @@
 import os
 import torch
 from typing import Any
-from torch.amp import GradScaler
+from torch.amp.grad_scaler import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
 
@@ -25,6 +25,17 @@ from utils.wandb_wrapper import WandbWrapper
 from utils.video_project import calculate_dataset_statistics_ddp
 from utils.config.linear_probing_config import LinearProbingConfig
 from dataloaders.video_dataset import get_distributed_video_dataloader
+
+class VideoMILWrapper(torch.nn.Module):
+    def __init__(self, video_encoder, mil_model):
+        super().__init__()
+        self.video_encoder = video_encoder
+        self.mil_model = mil_model
+    def forward(self, x):
+        embeddings = self.video_encoder(x)
+        if embeddings.ndim == 2:
+            embeddings = embeddings.unsqueeze(1)  # [B, 1, D]
+        return self.mil_model(embeddings)
 
 @ProjectRegistry.register("DeepCORO_video_linear_probing")
 class LinearProbingProject(BaseProject):
@@ -115,6 +126,9 @@ class LinearProbingProject(BaseProject):
             device_ids=[self.config.device]
         )
         
+        # Wrap both models
+        linear_probing = VideoMILWrapper(video_encoder, mil_model)
+        
         # Initialize optimizer with separate learning rates
         param_groups = []
 
@@ -179,15 +193,14 @@ class LinearProbingProject(BaseProject):
         )
 
         return {
-            "video_encoder": video_encoder, 
-            "mil_model": mil_model, 
-            "optimizer": optimizer,
-            "lr_scheduler": scheduler,
             "train_loader": train_loader,
             "val_loader": val_loader,
+            "linear_probing": linear_probing,
+            "optimizer": optimizer,
             "scaler": scaler,
-            "output_dir": self.config.output_dir if self.config.is_ref_device else None,
+            "lr_scheduler": scheduler,
             "loss_fn": loss_fn,
+            "output_dir": self.config.output_dir if self.config.is_ref_device else None,
         }            
         
 
@@ -208,16 +221,8 @@ class LinearProbingProject(BaseProject):
             **training_setup
         )
 
-        # Load Checkpoint if resume path is provided
-        start_epoch: int = 0
-        if self.config.resume_checkpoint_path:
-            start_epoch = self._load_runner_checkpoint(
-                runner=runner, 
-                path=self.config.resume_checkpoint_path
-            )
-        
         # Train the model
-        runner.train(start_epoch=start_epoch, end_epoch=self.config.epochs)
+        runner.train(start_epoch=0, end_epoch=self.config.epochs)
 
         # Final cleanup
         if self.config.is_ref_device:
@@ -227,15 +232,18 @@ class LinearProbingProject(BaseProject):
         """Load checkpoint from path."""
         if not os.path.exists(path):
             raise FileNotFoundError(f"Checkpoint not found at {path}")
-        checkpoint: dict[str, Any] = torch.load(path, map_location=self.config.device)
+        device = self.config.device
+        if isinstance(device, int):
+            device = f"cuda:{device}"
+        checkpoint: dict[str, Any] = torch.load(path, map_location=device)
         return checkpoint
 
     def _load_runner_checkpoint(self, runner: Runner, path: str) -> int:
         """Load checkpoint for the entire runner."""
         checkpoint: dict[str, Any] = self._load_checkpoint(path)
-        # Load state for video encoder and MIL model
-        runner.video_encoder.load_state_dict(checkpoint["video_encoder"])
-        runner.mil_model.module.load_state_dict(checkpoint["mil_model"])
+        # Load state for the wrapper model (video_encoder + mil_model)
+        runner.linear_probing.video_encoder.load_state_dict(checkpoint["video_encoder"])
+        runner.linear_probing.mil_model.module.load_state_dict(checkpoint["mil_model"])
         # Load optimizer, scaler, and scheduler states
         runner.optimizer.load_state_dict(checkpoint["optimizer"])
         if runner.scaler and checkpoint["scaler"]:

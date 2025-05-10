@@ -1,0 +1,79 @@
+!!python/object:utils.config.linear_probing_config.LinearProbingConfig
+aggregator_depth: 2
+attention_hidden: 256
+attention_lr: 5e-5
+attention_weight_decay: 1e-6
+base_checkpoint_path: ''
+batch_size: 16
+data_filename: data/reports/reports_with_alpha_separator_with_Calcifc_Stenosis_IFR_20250507_STUDYLEVEL.csv
+datapoint_loc_label: FileName
+device: 0
+dropout: 0.1
+dropout_attention: 0.1
+entity: mhi_ai
+epochs: 50
+factor: 0.1
+frames: 32
+gradient_accumulation_steps: 1
+head_dropout:
+  lad_stenosis: 0.1
+  mid_rca_stenosis: 0.1
+  prox_rca_stenosis: 0.1
+head_linear_probing: {}
+head_lr:
+  lad_stenosis: 5e-4
+  mid_rca_stenosis: 5e-4
+  prox_rca_stenosis: 5e-4
+head_structure:
+  lad_stenosis: 1
+  mid_rca_stenosis: 1
+  prox_rca_stenosis: 1
+head_task:
+  lad_stenosis: regression
+  mid_rca_stenosis: regression
+  prox_rca_stenosis: regression
+head_weight_decay:
+  lad_stenosis: 0.0
+  mid_rca_stenosis: 0.0
+  prox_rca_stenosis: 0.0
+head_weights:
+  lad_stenosis: 1.0
+  mid_rca_stenosis: 1.0
+  prox_rca_stenosis: 1.0
+is_ref_device: true
+labels_map: {}
+loss_structure:
+  lad_stenosis: mse
+  mid_rca_stenosis: mse
+  prox_rca_stenosis: mse
+lr_step_period: 10
+model_name: mvit
+name: mil_probing_example
+num_hard_restarts_cycles: 1.0
+num_heads: 8
+num_warmup_percent: 0.1
+num_workers: 8
+optimizer: AdamW
+output_dir: DeepCORO_video_linear_probing/DeepCORO-MIL/20250510-170112_no_wandb
+pipeline_project: DeepCORO_video_linear_probing
+pooling_mode: attention
+pretrained: true
+project: DeepCORO-MIL
+rand_augment: true
+resize: 224
+run_mode: train
+scheduler_name: cosine_with_warmup
+seed: 42
+stride: 2
+target_label:
+- prox_rca_stenosis
+- mid_rca_stenosis
+- lad_stenosis
+use_amp: true
+use_wandb: false
+video_encoder_checkpoint_path: outputs/dev_deep_coro_clip_single_video/mvit_pretrained_mvit_b84_f16_RAdam_lr3.4463358702078706e-05_20250303-043853_l6gi9o3j_best/checkpoints/best_epoch.pt
+video_encoder_lr: 1e-5
+video_encoder_weight_decay: 1e-6
+video_freeze_ratio: 0.5
+warm_restart_tmult: 1
+world_size: 1

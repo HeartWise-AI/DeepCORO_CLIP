@@ -433,7 +433,10 @@ class VideoContrastiveLearningRunner:
                     }
                 )
 
-        del batch_metrics, embeddings
+        if 'batch_metrics' in locals():
+            del batch_metrics
+        if 'embeddings' in locals():
+            del embeddings
         torch.cuda.empty_cache()
 
         # finalize epoch metrics

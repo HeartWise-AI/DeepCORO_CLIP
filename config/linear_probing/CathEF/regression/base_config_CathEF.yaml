@@ -21,24 +21,25 @@ num_warmup_percent: !!float 0.1
 num_hard_restarts_cycles: !!float 1.0
 warm_restart_tmult: !!int 2
 # Dataset parameters
-data_filename: !!str data/CathEF_MHI_UCSF_2016-to-july-2022-and-2023-08-30-post-CathEF_alpha.csv
-num_workers: !!int 16
-batch_size: !!int 16
+data_filename: !!str /media/data1/ravram/CathEF_Retrain/CathEF_MHI_UCSF_2016-to-july-2022-and-2023-08-30-post-CathEF_alpha.csv
+num_workers: !!int 32
+batch_size: !!int 32
+multi_video: !!bool false
 datapoint_loc_label: !!str FileName
 target_label: [Value, y_true_cat]
 rand_augment: !!bool true
 resize: !!int 224
-frames: !!int 16
+frames: !!int 32
 stride: !!int 1
 # Video Encoder parameters
-model_name: !!str mvit
+model_name: !!str x3d_m
 aggregator_depth: !!int 2
 num_heads: !!int 4
 video_freeze_ratio: !!float 0.8
 dropout: !!float 0.2
 pretrained: !!bool true
 video_encoder_lr: !!float 1e-5
-video_encoder_checkpoint_path: !!str outputs/dev_deep_coro_clip_single_video/mvit_pretrained_mvit_b24_f16_AdamW_lr2.527361715636149e-05_20250325-001727_xvwwv5ar/checkpoints/best_epoch.pt
+video_encoder_checkpoint_path: !!str outputs/DeepCORO_Clip_Sweep_Single_Video/x3d_m_pretrained_x3d_m_b96_f32_AdamW_lr0.0001078401014773209_20250425-123225_srplnj0e_BEST_X3D/checkpoints/checkpoint.pt
 # Linear Probing parameters
 head_linear_probing: # linear probing class for each head
   Value: !!str simple_linear_probing_regression

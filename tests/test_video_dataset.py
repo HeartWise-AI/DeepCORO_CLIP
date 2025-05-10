@@ -6,7 +6,8 @@ import torch
 import tempfile
 import cv2
 from unittest.mock import patch, MagicMock
-from dataloaders.video_dataset import VideoDataset, custom_collate_fn
+# DEPRECATED: Use VideoClipDataset instead of VideoDataset. This will be removed in a future release.
+from dataloaders.video_dataset import VideoDataset, custom_collate_fn  # Deprecated, use VideoClipDataset
 from tests.templates import DatasetTestsMixin
 from utils.video import load_video
 

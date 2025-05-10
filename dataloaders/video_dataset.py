@@ -18,10 +18,12 @@ from utils.ddp import DistributedUtils
 from utils.video import load_video, format_mean_std
 from utils.config.heartwise_config import HeartWiseConfig
 
+# DEPRECATED: Use VideoClipDataset instead. This class will be removed in a future release.
 class VideoDataset(torch.utils.data.Dataset):
     """
+    DEPRECATED: Use VideoClipDataset instead. This class will be removed in a future release.
     Single-video dataset class for video-text pairs.
-    """
+    """ 
 
     def __init__(
         self,
@@ -39,6 +41,12 @@ class VideoDataset(torch.utils.data.Dataset):
         stride: int = 1,
         **kwargs,
     ):
+        import warnings
+        warnings.warn(
+            "VideoDataset is deprecated and will be removed in a future release. Use VideoClipDataset instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.filename: str = data_filename
         self.split: str = split
         self.datapoint_loc_label: str = datapoint_loc_label

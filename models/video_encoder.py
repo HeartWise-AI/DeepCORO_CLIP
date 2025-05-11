@@ -132,7 +132,7 @@ class VideoEncoder(nn.Module):
         We'll reorder => [B,N,C,T,H,W], flatten => [B*N, C, T, H, W],
         pass through the backbone, then aggregator => [B, output_dim].
         """
-        print(x.shape)
+        #print(x.shape)
         if x.ndim == 7:
             # Workaround for unexpected 7D input.
             # The method expects 6D [B, N, T, H, W, C].

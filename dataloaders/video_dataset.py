@@ -232,21 +232,24 @@ def custom_collate_fn(batch: List[Tuple[np.ndarray, Dict[str, torch.Tensor], str
     videos = torch.stack([torch.from_numpy(v) for v in videos])  # Shape: [B, F, H, W, C]
     
     # Convert targets to tensor - handle tuple of dictionaries
-    targets_dict: dict[str, torch.Tensor] = defaultdict(list)
+    temp_targets_dict: Dict[str, List[Any]] = defaultdict(list)
     for target in targets:
-        for k, v in target.items():
-            targets_dict[k].append(v)
+        if target is not None: # Ensure target is not None before iterating
+            for k, v in target.items():
+                temp_targets_dict[k].append(v)
 
-    targets_dict = {k: torch.tensor(v, dtype=torch.bfloat16) for k, v in targets_dict.items()}
+    final_targets_dict: Dict[str, torch.Tensor] = { # New variable for final dict
+        k: torch.tensor(v, dtype=torch.bfloat16) for k, v in temp_targets_dict.items()
+    }
     
     return {
         "videos": videos,
-        "targets": targets_dict,
+        "targets": final_targets_dict, # Return the correctly typed dict
         "video_fname": paths
     }
 
 def get_distributed_video_dataloader(
-    config: HeartWiseConfig,
+    config: Any,
     split: str,
     mean: List[float],
     std: List[float],

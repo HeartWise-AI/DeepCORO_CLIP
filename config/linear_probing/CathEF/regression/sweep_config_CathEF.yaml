@@ -1,6 +1,6 @@
 command:
   - torchrun
-  - "--nproc_per_node=4"
+  - "--nproc_per_node=2"
   - "--master_port=29500"
   - "scripts/main.py"
   - "--base_config"
@@ -61,7 +61,7 @@ parameters:
     min: 1e-7
     max: 1e-6
   batch_size:
-    values: [8, 16, 24, 32]
+    values: [32, 64, 128]
   name:
     values: ["DeepCORO_video_linear_probing_cathEF"]
   project:

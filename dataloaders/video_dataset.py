@@ -39,6 +39,7 @@ class VideoDataset(torch.utils.data.Dataset):
         std: Optional[Any] = None,
         rand_augment: bool = False,
         stride: int = 1,
+        resize: int = 224,
         **kwargs,
     ):
         import warnings
@@ -52,44 +53,36 @@ class VideoDataset(torch.utils.data.Dataset):
         self.datapoint_loc_label: str = datapoint_loc_label
         self.debug_mode: bool = debug_mode
         self.backbone: str = backbone
+        
+        # Initialize general versions first, potentially overridden by backbone specifics
         self.num_frames: int = num_frames
+        self.resize: int = resize 
+
         self.mean: List[float] = format_mean_std(mean)
         self.std: List[float] = format_mean_std(std)
         self.normalize: bool = normalize
         self.rand_augment: bool = rand_augment
-        
         self.stride: int = stride
         
-        # Define X3D model parameters
-        self.x3d_params = {
-            "x3d_s": {
-                "side_size": 182,
-                "crop_size": 182,
-                "num_frames": 13,
-                "sampling_rate": 6,
-            },
-            "x3d_m": {
-                "side_size": 256,
-                "crop_size": 256,
-                "num_frames": 16,
-                "sampling_rate": 5,
-            }
+        # Define X3D model specific parameters (requirements)
+        self.x3d_default_params = {
+            "x3d_s": {"side_size": 182, "crop_size": 182, "num_frames": self.num_frames, "sampling_rate": 6},
+            "x3d_m": {"side_size": self.resize, "crop_size": self.resize, "num_frames": self.num_frames, "sampling_rate": 5},
         }
         
-        # Set specific parameters based on backbone
+        # Adjust num_frames and resize based on backbone requirements
         if self.backbone.lower() == "mvit":
-            self.num_frames = 16
-            print(f"Using MViT backbone - forcing exactly {self.num_frames} frames with stride {self.stride}")
-            if "length" in kwargs:
-                kwargs["length"] = 16
+            self.num_frames = 16 # MViT specific requirement
+            print(f"Using MViT backbone - forcing {self.num_frames} frames.")
+        elif self.backbone.lower() in self.x3d_default_params:
+            params = self.x3d_default_params[self.backbone.lower()]
+            self.resize = params["side_size"]    # X3D specific resize
+            self.num_frames = params["num_frames"] # X3D specific num_frames
+            print(f"Using {self.backbone} backbone - forcing resize to {self.resize} and {self.num_frames} frames.")
 
+        # video_transforms are applied after backbone-specific adjustments
         self.video_transforms: Optional[Any] = kwargs.pop("video_transforms", None)
-        self.resize: int = kwargs.pop("resize", 224)
         
-        # For X3D models, override resize with their specific side_size
-        if self.backbone.lower() in ["x3d_s", "x3d_m"]:
-            self.resize = self.x3d_params[self.backbone.lower()]["side_size"]
-
         self.target_label: Optional[List[str]] = target_label
         self.external_test_location: Optional[str] = kwargs.pop("external_test_location", None)
 
@@ -200,24 +193,23 @@ class VideoDataset(torch.utils.data.Dataset):
         video_fname: str = self.fnames[actual_idx]
 
         try:
-            video: np.ndarray = load_video(
+            video = load_video(
                 video_fname,
                 n_frames=self.num_frames,
                 resize=self.resize,
                 normalize=self.normalize,
-                mean=self.mean,
-                std=self.std,
+                mean=self.mean[0],
+                std=self.std[0],
                 video_transforms=self.video_transforms,
                 rand_augment=self.rand_augment,
                 backbone=self.backbone,
                 stride=self.stride,
             )
 
-            # Validate frame count for specific backbone models
             if self.backbone.lower() == "mvit" and video.shape[0] != 16:
                 raise ValueError(f"Expected 16 frames for MViT, got {video.shape[0]}")
-            elif self.backbone.lower() in ["x3d_s", "x3d_m"] and video.shape[0] != self.x3d_params[self.backbone.lower()]["num_frames"]:
-                raise ValueError(f"Expected {self.x3d_params[self.backbone.lower()]['num_frames']} frames for {self.backbone}, got {video.shape[0]}")
+            elif self.backbone.lower() in ["x3d_s", "x3d_m"] and video.shape[0] != self.x3d_default_params[self.backbone.lower()]["num_frames"]:
+                raise ValueError(f"Expected {self.x3d_default_params[self.backbone.lower()]['num_frames']} frames for {self.backbone}, got {video.shape[0]}")
 
         except Exception as e:
             raise RuntimeError(f"Failed to load video {video_fname}: {str(e)}") from e   
@@ -275,6 +267,7 @@ def get_distributed_video_dataloader(
         std=std,
         rand_augment=config.rand_augment,
         stride=config.stride,
+        resize=config.resize,
     )
 
     # Create a sampler for distributed training

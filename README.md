@@ -110,7 +110,7 @@ bash scripts/runner.sh --base_config config/clip/base_config.yaml --selected_gpu
 bash scripts/runner.sh --base_config config/clip/base_config.yaml --selected_gpus 0,1 --use_wandb true --run_mode train
 
 # Multi-GPU hyperparameters fine-tuning - RunMode and UseWandb are forced to train and true respectively (see scripts/run_sweep.sh)
-bash scripts/run_sweep.sh --base_config config/deepcoro_clip/clip/base_config_x3d_m.yaml --sweep_config config/deepcoro_clip/clip/sweep_config_single_video.yaml --selected_gpus 0,1 --count 5
+bash scripts/run_sweep.sh --base_config config/linear_probing/CathEF/regression/base_config_CathEF.yaml --sweep_config config/linear_probing/CathEF/regression/sweep_config_CathEF.yaml --selected_gpus 0,1 --count 5
 ```
 
 #### Run inference

@@ -81,8 +81,10 @@ class VideoClipDataset(torch.utils.data.Dataset):
             self.external_test_location = kwargs.pop("external_test_location", None)
 
             if self.multi_video_mode:
+                print("Initializing multi-video mode")
                 self._init_multi_video()
             else:
+                print("Initializing single-video mode")
                 self.fnames, self.outcome, self.target_index = self.load_data(
                     self.split, self.target_label
                 )
@@ -97,8 +99,10 @@ class VideoClipDataset(torch.utils.data.Dataset):
                     raise RuntimeError("Failed to initialize tokenizer") from e
 
         if self.debug_mode and not self.multi_video_mode:
+            print("Validating all videos in single-video mode with groupby_column", self.groupby_column)
             self.valid_indices = self._validate_all_videos()
         elif not self.multi_video_mode:
+            print("Initializing single-video mode")
             self.valid_indices = list(range(len(self.fnames)))
 
     def _init_multi_video(self):
@@ -254,6 +258,7 @@ class VideoClipDataset(torch.utils.data.Dataset):
                 arr = np.zeros((16 if self.backbone.lower() == "mvit" else self.num_frames, self.resize, self.resize, 3), dtype=np.float32)
                 loaded.append(arr)
             multi_stack = np.stack(loaded, axis=0)
+
             encoded = self.tokenizer(
                 text_report,
                 padding="max_length",
@@ -394,6 +399,10 @@ def get_distributed_video_clip_dataloader(
         num_videos=getattr(config, 'num_videos', 4),
         shuffle_videos=getattr(config, 'shuffle_videos', False),
         seed=getattr(config, 'seed', None),
+        multi_video=getattr(config, 'multi_video', False),
+        video_transforms=getattr(config, 'video_transforms', None),
+        resize=getattr(config, 'resize', 224),
+        max_length=getattr(config, 'max_length', 250),
     )
     # Create a sampler for distributed training
     sampler = DistributedUtils.DS.DistributedSampler(

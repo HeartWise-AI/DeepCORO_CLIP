@@ -18,7 +18,6 @@ from utils.ddp import DistributedUtils
 from utils.video import load_video, format_mean_std
 from utils.config.heartwise_config import HeartWiseConfig
 
-# DEPRECATED: Use VideoClipDataset instead. This class will be removed in a future release.
 class VideoDataset(torch.utils.data.Dataset):
     """
     DEPRECATED: Use VideoClipDataset instead. This class will be removed in a future release.

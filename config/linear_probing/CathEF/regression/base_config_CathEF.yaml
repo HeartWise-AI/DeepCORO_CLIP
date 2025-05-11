@@ -41,6 +41,8 @@ pretrained: !!bool true
 video_encoder_lr: !!float 1e-5
 video_encoder_checkpoint_path: !!str outputs/DeepCORO_Clip_Sweep_Single_Video/x3d_m_pretrained_x3d_m_b96_f32_AdamW_lr0.0001078401014773209_20250425-123225_srplnj0e_BEST_X3D/checkpoints/checkpoint.pt
 video_encoder_weight_decay: !!float 0.00000387825282805052
+attention_lr: !!float 1e-4
+attention_weight_decay: !!float 0.0
 # Linear Probing parameters
 head_linear_probing: # linear probing class for each head
   Value: !!str simple_linear_probing_regression

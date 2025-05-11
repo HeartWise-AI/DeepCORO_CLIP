@@ -7,6 +7,7 @@ from torch.optim import Optimizer
 from torch.cuda.amp import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
+from typing import Callable, Dict, Tuple, List, Any
 
 from tqdm import tqdm
 
@@ -32,6 +33,7 @@ from utils.loss.typing import Loss
 from utils.wandb_wrapper import WandbWrapper
 from models.video_encoder import VideoEncoder
 from models.text_encoder import TextEncoder
+from dataloaders.video_clip_dataset import VideoClipDataset
 import itertools
 from torch.nn.utils import clip_grad_norm_
 
@@ -366,22 +368,28 @@ class VideoContrastiveLearningRunner:
         epoch_metrics: dict[str, float] = {}
 
         dataloader: DataLoader = self.train_loader if mode == RunMode.TRAIN else self.val_loader
-        step_fn: callable = self._train_step if mode == RunMode.TRAIN else self._val_step
+        # Explicitly cast dataset to VideoClipDataset for type safety and access to custom methods
+        dataset: VideoClipDataset = dataloader.dataset # type: ignore
+        
+        # Improved type hint for step_fn
+        step_fn: Callable[..., Tuple[Dict[str, Any], Dict[str, torch.Tensor]]] = self._train_step if mode == RunMode.TRAIN else self._val_step
+
 
         # Store local embeddings & text for retrieval computations
-        all_video_embeddings_local: list[torch.Tensor] = []
-        all_text_embeddings_local: list[torch.Tensor] = []
-        all_paths_local: list[str] = []
-        all_ground_truth_reports_local: list[str] = []
+        all_video_embeddings_local: List[torch.Tensor] = []
+        all_text_embeddings_local: List[torch.Tensor] = []
+        all_paths_local: List[str] = []
+        all_ground_truth_reports_local: List[str] = []
 
         tqdm_desc = f"[GPU {self.device}] Running {mode} Epoch {epoch + 1}"
-        if (self.config.is_ref_device or (self.device == 0)):
-            data_iter = tqdm(dataloader, desc=tqdm_desc)
-        else:
-            data_iter = dataloader
+        
+        # Determine the iterator: tqdm-wrapped or raw dataloader
+        iterator_obj: Any = dataloader # Use Any for iterator_obj as it can be DataLoader or tqdm
+        if self.config.is_ref_device or (self.device == 0):
+            iterator_obj = tqdm(dataloader, desc=tqdm_desc)
 
         batch_count: int = 0
-        for _, batch in enumerate(data_iter, start=1):
+        for _, batch in enumerate(iterator_obj, start=1): # Use iterator_obj
             if batch["videos"] is None or batch["encoded_texts"] is None:
                 continue
 
@@ -403,17 +411,12 @@ class VideoContrastiveLearningRunner:
             all_video_embeddings_local.append(embeddings["video_embeddings"].cpu())
             all_text_embeddings_local.append(embeddings["text_embeddings"].cpu())
 
-            if self.config.multi_video:
-                for sid in paths_or_sids:
-                    vid_list = dataloader.dataset.get_video_paths(sid)
-                    if len(vid_list) > 0:
-                        all_paths_local.append(vid_list[0])
-                    else:
-                        all_paths_local.append(str(sid))
-            else:
-                all_paths_local.extend(paths_or_sids)
+            # Use dataset.multi_video_mode for consistency
+            # paths_or_sids contains SIDs in multi-video mode, and direct file paths in single-video mode.
+            # all_paths_local will store these identifiers directly.
+            all_paths_local.extend(paths_or_sids)
 
-            all_ground_truth_reports_local.extend(dataloader.dataset.get_reports(paths_or_sids))
+            all_ground_truth_reports_local.extend(dataset.get_reports(paths_or_sids)) # Now type-safe
 
             # accumulate metrics
             for k, v in batch_metrics.items():
@@ -422,13 +425,14 @@ class VideoContrastiveLearningRunner:
             total_loss += float(batch_metrics["loss"])
             batch_count += 1
 
-            if (self.config.is_ref_device or (self.device == 0)) and mode == "train":
-                data_iter.set_postfix(
-                    {
-                        f"{mode}_loss": f"{batch_metrics['loss']:.4f}",
-                        "avg_loss": f"{(total_loss / batch_count):.4f}",
-                    }
-                )
+            if (self.config.is_ref_device or (self.device == 0)) and mode == RunMode.TRAIN:
+                if hasattr(iterator_obj, 'set_postfix'): # Check if it's the tqdm instance
+                    iterator_obj.set_postfix(
+                        {
+                            f"{mode}_loss": f"{batch_metrics['loss']:.4f}", # Use mode variable
+                            "avg_loss": f"{(total_loss / batch_count):.4f}",
+                        }
+                    )
 
         if 'batch_metrics' in locals():
             del batch_metrics
@@ -449,12 +453,6 @@ class VideoContrastiveLearningRunner:
             local_video_feats: torch.Tensor = torch.empty((0, 512), device=self.device)
             local_text_feats: torch.Tensor = torch.empty((0, 512), device=self.device)
 
-        if (self.config.is_ref_device or (self.device == 0)):
-            print(
-                f"[DEBUG rank={self.device}] local_video_feats={local_video_feats.shape}, "
-                f"local_text_feats={local_text_feats.shape}, mode={mode}"
-            )
-
         # 2) gather across GPUs
         global_video_feats: torch.Tensor = self._gather_tensor_along_batch(local_video_feats, self.world_size)
 
@@ -474,8 +472,8 @@ class VideoContrastiveLearningRunner:
             )
             
             # Step 1: Deduplicate texts and create mapping
-            unique_texts: list[str] = sorted(set(global_reports))
-            text_to_index: dict[str, int] = {text: idx for idx, text in enumerate(unique_texts)}
+            unique_texts: List[str] = sorted(set(global_reports))
+            text_to_index: Dict[str, int] = {text: idx for idx, text in enumerate(unique_texts)}
             
             # Step 2: Get ground truth indices for each video
             ground_truth_indices: torch.Tensor = torch.tensor(
@@ -486,7 +484,7 @@ class VideoContrastiveLearningRunner:
             print(f"[DEBUG rank={self.device}] Found {len(unique_texts)} unique texts out of {len(global_reports)} total.")
             
             # Step 3: Encode unique texts
-            unique_text_embeddings: list[torch.Tensor] = []
+            unique_text_embeddings_list: List[torch.Tensor] = [] # Renamed list
             batch_size: int = 64  # Process in batches to avoid OOM
             
             self.text_encoder.eval()
@@ -512,17 +510,17 @@ class VideoContrastiveLearningRunner:
                         encoded["input_ids"],
                         encoded["attention_mask"]
                     )
-                    unique_text_embeddings.append(text_embs)
+                    unique_text_embeddings_list.append(text_embs) # Append to renamed list
             
-            # Concatenate all batches
-            unique_text_embeddings: torch.Tensor = torch.cat(unique_text_embeddings, dim=0)
+            # Concatenate all batches into a new tensor variable
+            unique_text_embeddings_tensor: torch.Tensor = torch.cat(unique_text_embeddings_list, dim=0)
             
             # Step 4: Normalize embeddings
-            global_video_feats: torch.Tensor = nn.functional.normalize(global_video_feats, dim=1)
-            unique_text_embeddings: torch.Tensor = nn.functional.normalize(unique_text_embeddings, dim=1)
+            global_video_feats_norm: torch.Tensor = nn.functional.normalize(global_video_feats, dim=1)
+            unique_text_embeddings_norm: torch.Tensor = nn.functional.normalize(unique_text_embeddings_tensor, dim=1) # Use normalized tensor
             
             # Step 5: Compute NxM similarity matrix
-            similarity_matrix: torch.Tensor = torch.matmul(global_video_feats, unique_text_embeddings.t())
+            similarity_matrix: torch.Tensor = torch.matmul(global_video_feats_norm, unique_text_embeddings_norm.t()) # Use normalized embeddings
             print(
                 f"[DEBUG rank={self.device}] Computed NxM sim matrix with shape={similarity_matrix.shape}"
             )
@@ -532,37 +530,39 @@ class VideoContrastiveLearningRunner:
                 log_best_worst_retrievals(
                     similarity_matrix=similarity_matrix,
                     all_paths=global_paths,
-                    unique_texts=unique_texts,  # Now using actual unique texts
+                    unique_texts=unique_texts,
                     ground_truth_indices=ground_truth_indices,
                     epoch=epoch,
                     wandb_wrapper=self.wandb_wrapper,
+                    dataset_obj=dataset # Pass the dataset object
                 )
 
             # Save retrieval results with mapping
             save_retrieval_results(
                 similarity_matrix=similarity_matrix,
-                all_paths=global_paths,
+                all_identifiers=global_paths, # Pass SIDs or file paths
                 all_ground_truth_reports=global_reports,
-                report_to_global_index=text_to_index,  # Pass the mapping
+                report_to_global_index=text_to_index,
                 epoch=epoch,
                 output_dir=self.output_dir,
+                dataset_obj=dataset # Pass the dataset object
             )
             print(f"ground_truth_indices={ground_truth_indices}")
             # Compute retrieval metrics using ground truth indices
-            recall_metrics = compute_recall_at_k(
+            recall_metrics: Dict[str, float] = compute_recall_at_k( # Ensure it's a Dict
                 similarity_matrix, ground_truth_indices, k_values=self.config.recall_k
             )
-            mrr_score: float = compute_mrr(similarity_matrix, ground_truth_indices)
-            map_score: float = compute_map(similarity_matrix, ground_truth_indices)
-            median_rank_score: float = compute_median_rank(similarity_matrix, ground_truth_indices)
-            ndcg_score: list[float] = compute_ndcg_at_k(
+            mrr_score_dict: Dict[str, float] = compute_mrr(similarity_matrix, ground_truth_indices) # Assign to dict
+            map_score: float = compute_map(similarity_matrix, ground_truth_indices) # Assuming this returns float
+            median_rank_score: float = compute_median_rank(similarity_matrix, ground_truth_indices) # Assuming this returns float
+            ndcg_scores_dict: Dict[str, float] = compute_ndcg_at_k( # Assign to dict
                 similarity_matrix, ground_truth_indices, k_values=self.config.ndcg_k
             )
 
             retrieval_metrics.update(recall_metrics)
-            retrieval_metrics.update(mrr_score)
-            retrieval_metrics.update(ndcg_score)
-            retrieval_metrics["MAP"] = map_score
+            retrieval_metrics.update(mrr_score_dict) # Update with dict
+            retrieval_metrics.update(ndcg_scores_dict) # Update with dict
+            retrieval_metrics["MAP"] = map_score 
             retrieval_metrics["MedianRank_V2T"] = median_rank_score
             
             # Save unique texts and their indices
@@ -577,7 +577,7 @@ class VideoContrastiveLearningRunner:
             # Also save text embeddings for future use
             embeddings_path: str = os.path.join(self.output_dir, f"val_text_embeddings_epoch_{epoch}.pt")
             torch.save({
-                'text_embeddings': unique_text_embeddings.cpu(),
+                'text_embeddings': unique_text_embeddings_tensor.cpu(), # Save the concatenated tensor
                 'text_to_index': text_to_index,
                 'unique_texts': unique_texts
             }, embeddings_path)
@@ -936,6 +936,11 @@ class VideoContrastiveLearningRunner:
         # Create a list to store all averaged metadata
         all_averaged_metadata = []
         
+        # Get the dataset object to access get_video_paths and groupby_column
+        # Assuming val_loader has a dataset attribute which is an instance of VideoClipDataset
+        dataset = self.val_loader.dataset
+        groupby_col_name = self.config.groupby_column if hasattr(self.config, 'groupby_column') and self.config.groupby_column else "study_id"
+
         for batch in tqdm(
             self.val_loader, 
             desc=f"[GPU {self.device}] Running inference", 
@@ -951,36 +956,61 @@ class VideoContrastiveLearningRunner:
             # Compute the average of the topk metadata rows for each video embedding
             topk_indices_np = topk_indices.cpu().numpy()  # shape: [N, topk]
 
-            # Get video paths from batch
-            video_paths = batch["paths"]
+            # Get SIDs from batch (in multi-video mode, 'paths' contains SIDs)
+            # In single-video mode, 'paths' would contain actual file paths.
+            # The logic here assumes 'paths' from the batch correctly gives the identifier needed.
+            identifiers_from_batch = batch["paths"]
             
-            for idx, indices in enumerate(topk_indices_np):
+            for idx, top_k_meta_indices in enumerate(topk_indices_np):
+                current_identifier = identifiers_from_batch[idx]
+                
                 # Get the top-k metadata rows
-                topk_metadata = metadata.iloc[indices]
+                topk_metadata = metadata.iloc[top_k_meta_indices]
                 
-                # Calculate column-wise averages based on data type
-                averaged_row = {
-                    'video_name': video_paths[idx],  # Add video name to the row
-                }
+                averaged_row = {}
                 
+                # If in multi-video mode, add groupby column and all its video filenames
+                print(f"Dataset multi_video_mode status: {getattr(dataset, 'multi_video_mode', False)}")
+                if getattr(dataset, 'multi_video_mode', False):
+                    actual_video_filenames = dataset.get_video_paths(current_identifier) # current_identifier is SID
+                    video_filenames_str = ";".join(actual_video_filenames)
+                    averaged_row[groupby_col_name] = current_identifier
+                    averaged_row['video_filenames'] = video_filenames_str
+                else: # Single video mode
+                    averaged_row['video_name'] = current_identifier # current_identifier is filename
+
                 for column in metadata.columns:
                     if pd.api.types.is_numeric_dtype(metadata[column]):
                         # For numeric columns, compute mean
                         averaged_row[column] = topk_metadata[column].mean()
                     elif pd.api.types.is_string_dtype(metadata[column]):
                         # For string columns, get most frequent value
-                        averaged_row[column] = topk_metadata[column].mode().iloc[0]
+                        # Ensure there's at least one mode, otherwise, handle appropriately
+                        modes = topk_metadata[column].mode()
+                        averaged_row[column] = modes.iloc[0] if not modes.empty else None
                     else:
-                        raise ValueError(f"Unsupported data type: {metadata[column].dtype}")
+                        # If not numeric or string, try to get the first value or handle as error
+                        # This part might need adjustment based on expected non-numeric/non-string data
+                        try:
+                            averaged_row[column] = topk_metadata[column].iloc[0] 
+                        except IndexError:
+                             averaged_row[column] = None # Or some other placeholder
+                        # For strictness: raise ValueError(f"Unsupported data type for averaging/aggregation: {metadata[column].dtype} in column {column}")
                 
                 all_averaged_metadata.append(averaged_row)
         
         # Convert list of averaged metadata to DataFrame
         averaged_metadata_df = pd.DataFrame(all_averaged_metadata)
         
-        # Reorder columns to have video_name first
-        cols = ['video_name'] + [col for col in averaged_metadata_df.columns if col != 'video_name']
-        averaged_metadata_df = averaged_metadata_df[cols]
+        # Reorder columns to have identifier and filenames first
+        if getattr(dataset, 'multi_video_mode', False):
+            cols_prefix = [groupby_col_name, 'video_filenames']
+        else:
+            cols_prefix = ['video_name']
+        
+        remaining_cols = [col for col in averaged_metadata_df.columns if col not in cols_prefix]
+        ordered_cols = cols_prefix + remaining_cols
+        averaged_metadata_df = averaged_metadata_df[ordered_cols]
         
         # Create output directory if it doesn't exist
         os.makedirs(self.output_dir, exist_ok=True)

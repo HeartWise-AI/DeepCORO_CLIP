@@ -298,6 +298,7 @@ class HeartWiseParser:
         updated_config = pipeline_parser.parse_args_and_update(config)
 
         # 3. Perform any final updates or checks (e.g., setting GPU info)
-        HeartWiseConfig.set_gpu_info_in_place(updated_config) # Example if needed
+        if hasattr(type(updated_config), 'set_gpu_info_in_place'):
+            type(updated_config).set_gpu_info_in_place(updated_config)
 
         return updated_config

@@ -387,9 +387,6 @@ class VideoContrastiveLearningRunner:
 
             step_inputs, paths_or_sids = self._preprocess_inputs(batch)
 
-            if not self.config.multi_video:
-                # shape => [B, 1, T, H, W, C]
-                step_inputs["videos"] = step_inputs["videos"].unsqueeze(1)
             batch_metrics, embeddings = step_fn(**step_inputs)
 
             # Check for NaN loss

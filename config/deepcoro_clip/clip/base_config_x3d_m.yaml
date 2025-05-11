@@ -16,8 +16,8 @@ datapoint_loc_label: !!str FileName
 frames: !!int 32
 stride: !!int 1
 multi_video: !!bool false
-num_videos: !!int 4
-groupby_column: !!str StudyInstanceUID
+num_videos: !!int 1
+groupby_column: !!null 'StudyInstanceUID'
 shuffle_videos: !!bool true
 batch_size: !!int 16
 # Seed
@@ -66,10 +66,10 @@ tag: !!str x3d_m_pretrained
 name: !!str DeepCORO_Clip_Sweep_Single_Video
 project: !!str DeepCORO_Clip_Sweep_Single_Video
 entity: !!str mhi_ai
-use_wandb: !!bool true
 # Inference parameters
 inference_results_path: outputs/inference_results
 metadata_path: !!null null
 text_embeddings_path: !!null null
 topk: !!int 5
 base_checkpoint_path: outputs/checkpoints
+use_wandb: true

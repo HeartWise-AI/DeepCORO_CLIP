@@ -76,3 +76,22 @@ class ClipConfig(HeartWiseConfig):
     metadata_path: str
     inference_results_path: str
 
+    # Device and distributed info (must be last)
+    device: object = None
+    world_size: int = 1
+    is_ref_device: bool = True
+
+    @classmethod
+    def set_gpu_info_in_place(cls, config: 'ClipConfig') -> None:
+        """Set GPU information from environment variables."""
+        import os
+        if "LOCAL_RANK" in os.environ:
+            config.device = int(os.environ["LOCAL_RANK"])
+            config.world_size = int(os.environ["WORLD_SIZE"])
+            config.is_ref_device = (int(os.environ["LOCAL_RANK"]) == 0)
+        else: # This is mostly use for unit testing with github actions
+            print("No GPU info found in environment variables")
+            config.device = "cpu"
+            config.world_size = 1
+            config.is_ref_device = True
+

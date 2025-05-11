@@ -56,7 +56,8 @@ class VideoClipDataset(torch.utils.data.Dataset):
         self.num_videos = num_videos
         self.shuffle_videos = shuffle_videos
         self.seed = seed
-        self.multi_video_mode = groupby_column is not None
+        self.multi_video_mode = kwargs.pop("multi_video", False)
+
 
         self.video_transforms = kwargs.pop("video_transforms", None)
         self.rand_augment = kwargs.pop("rand_augment", False)
@@ -351,7 +352,8 @@ def custom_collate_fn(batch):
         videos = torch.from_numpy(np.stack(videos, axis=0))  # (B, N, F, H, W, C)
     else:
         # Single-video mode: (F, H, W, C)
-        videos = torch.stack([torch.from_numpy(v) for v in videos])  # (B, F, H, W, C)
+        # Stack to (B, F, H, W, C) and then unsqueeze to (B, 1, F, H, W, C) for consistent N dimension
+        videos = torch.stack([torch.from_numpy(v) for v in videos]).unsqueeze(1)
     if encoded_texts[0] is not None:
         combined_texts = {
             "input_ids": torch.stack([text["input_ids"] for text in encoded_texts]),

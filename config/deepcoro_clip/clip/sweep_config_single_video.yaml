@@ -4,7 +4,7 @@ command:
   - "--master_port=29501"
   - "scripts/main.py"
   - "--base_config"
-  - "config/deepcoro_clip/clip/base_config.yaml"
+  - "config/deepcoro_clip/clip/base_config_x3d_m.yaml"
   - ${args}
 
 name: "DeepCORO_Clip_Sweep_Single_Video"

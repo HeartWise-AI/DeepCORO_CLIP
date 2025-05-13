@@ -1,155 +1,194 @@
-# project/multiview.dataset.py
-
-import os  # gestion des chemins de fichiers
-import pandas as pd  # manipulation du CSV
-import numpy as np  # opérations sur tableaux
-import torch  # gestion des tenseurs
-from typing import List, Optional
-from torch.utils.data import Dataset, DataLoader
-from utils.video import load_video  # utilitaire de chargement vidéo
-from utils.config.heartwise_config import HeartWiseConfig  # config générale du projet
-import pathlib
-from utils.seed import seed_worker
-
+import os  # système de fichiers
+import pandas as pd  # lecture du CSV
+import numpy as np  # tableaux numériques
+import torch  # tenseurs PyTorch
+from typing import List, Optional, Union
+from torch.utils.data import Dataset, DataLoader  # abstractions PyTorch
+from pathlib import Path  # manipulation de chemins
+from utils.video import load_video  # utilitaire pour charger les vidéos
+from utils.config.heartwise_config import HeartWiseConfig  # gestion de la config
+from utils.seed import seed_worker  # pour la reproductibilité
+from utils.ddp import DS  # DistributedSampler
 
 
 
 def multiview_collate_fn(batch):
     """
-    Collate function for MultiViewDataset:
-    Batch structure:
-      - videos: list of tensors of shape (num_videos, frames, C, H, W)
-      - examen_id: list of IDs
-    Returns:
-      dict with:
-        - 'videos': Tensor of shape (B, num_videos, frames, C, H, W)
-        - 'examen_id': List[str]
+    Empile un batch issu de MultiViewDataset:
+    - videos        : Tensor (B, n, frames, C, H, W)
+    - exam_embedding: Tensor (B, embedding_dim)
+    - target_label  : Tensor (B, n, num_labels)
+    - examen_id     : List[str]
     """
-    videos = torch.stack([item['videos'] for item in batch], dim=0)
-    examen_ids = [item['examen_id'] for item in batch]
-    return {'examen_id': examen_ids, 'videos': videos}
+    
+    # Empilement des embeddings moyens par examen
+    embeddings = torch.stack([item['exam_embedding'] for item in batch], dim=0)
+    # Empilement des labels par échantillon
+    labels = torch.stack([item['target_label'] for item in batch], dim=0)
+    # Récupération des identifiants d'examen
+    ids = [item['examen_id'] for item in batch]
+    return {
+        'examen_id': ids,
+        'exam_embedding': embeddings,
+        'target_label': labels
+    }
 
 
 class MultiViewDataset(Dataset):
     """
-    DataLoader PyTorch pour charger plusieurs vidéos d'un même examen.
-
-    - root: dossier racine contenant les données et le CSV
-    - data_filename: chemin relatif du CSV par rapport à root
-    - split: 'train', 'val' ou 'test'
-    - object_value_filter: filtre sur la colonne 'object_value'
-    - num_videos: nombre fixe de vidéos par examen
-    - frames, resize, mean, std, rand_augment, model_name, stride: paramètres pour load_video
+    Charge :
+    - plusieurs vidéos par examen (jusqu'à config.num_videos ou 'all')
+    - labels associés (config.target_label)
+    - embeddings pré-calculés (.pt) correspondant aux mêmes filenames
+    Les embeddings sont groupés par examen_id puis moyennés.
     """
-
     def __init__(
         self,
         root: str,
         data_filename: str,
-        split: str = 'train',
-        datapoint_loc_label: str = "FileName",
-        object_value_filter: Optional[int] = None,
-        model_name: str = "mvit",  # forcibly for 16 frames
-        num_videos: int = 3,
+        split: str,
+        config: HeartWiseConfig,
         frames: int = 16,
         resize: int = 224,
         mean: List[float] = [0.485, 0.456, 0.406],
         std: List[float] = [0.229, 0.224, 0.225],
         rand_augment: bool = False,
+        model_name: str = 'mvit',
         stride: int = 1,
     ):
         super().__init__()
-        # 1) Paramètres
-        self.root = pathlib.Path(root)
-        self.split = split.lower()
-        self.filename = data_filename
-        self.data_filename = data_filename  # Correction: Initialize the missing attribute
-        self.object_value_filter = object_value_filter
-        self.model_name = model_name.lower()
-        self.num_videos = num_videos
-        self.frames = frames
-        self.resize = resize
-        self.mean = mean
-        self.std = std
+        # Initialisation des chemins et paramètres vidéo
+        self.root = Path(root)
+        self.csv_file = data_filename
+        self.frames = frames; self.resize = resize
+        self.mean = mean; self.std = std
         self.rand_augment = rand_augment
-        self.model_name = model_name
-        self.stride = stride
+        self.model_name = model_name; self.stride = stride
+        
+        # Lecture de la configuration externe
+        self.split = split.lower()
+        self.target_label = config.target_label  # colonnes de labels à extraire
+        self.datapoint_loc_label = config.datapoint_loc_label  # nom de la colonne FileName
+        self.object_value_filter = config.object_value_filter  # filtre object_value (int, liste ou 'all')
+        self.num_videos = config.num_videos  # int (max vidéos) ou 'all'
+        self.embeddings_dir = Path(config.embeddings_dir)
+        
         print(f"[multiviewdataset] resize={self.resize}")
         print(f"[multiviewdataset] mean={self.mean}")
-        print(f"[multiviewdataset] std={self.std}")
+        print(f"[multiviewdataset] std={self.std}")# dossier contenant fichiers .pt
 
-        # 2) Lecture du CSV
-        csv_path = self.root / self.data_filename
-        df = pd.read_csv(csv_path, sep='α', engine='python')
-
-        # 3) Filtrage par split
+        # Lecture du CSV et filtres
+        df = pd.read_csv(self.root / self.csv_file, sep='α', engine='python')
+        df.columns = df.columns.str.strip()  # Nettoie les espaces
+        print("Colonnes du CSV :", df.columns.tolist())
+        print("Nombre de lignes CSV avant filtrage :", len(df))
+        # Filtrage selon la phase (train/val/test)
         if 'Split' in df.columns:
             df = df[df['Split'].str.lower() == self.split]
+        print("Après filtrage split :", len(df))
+        # Filtrage selon object_value s'il n'est pas 'all'
+        if self.object_value_filter != 'all' and 'object_value' in df.columns:
+            if isinstance(self.object_value_filter, list):
+                df = df[df['object_value'].isin(self.object_value_filter)]
+            else:
+                df = df[df['object_value'] == self.object_value_filter]
+        print("Après filtrage object_value :", len(df))
 
-        # 4) Filtrage optionnel par object_value
-        if self.object_value_filter is not None and 'object_value' in df.columns:
-            df = df[df['object_value'] == self.object_value_filter]
-
-        # 5) Groupement par examen et collecte des vidéos
+        
+        # Construction de self.samples
+        # self.samples est une liste de dictionnaires, chacun représentant un examen unique.
+        # Chaque dict contient :
+        #   - 'examen_id'  : identifiant de l'examen (clé de regroupement)
+        #   - 'file_names' : liste des vidéos associées (du CSV) devant être chargées
+        #   - 'labels'     : liste des vecteurs de labels correspondant à chaque vidéo
+        # Cette structure permet à __len__ de connaître le nombre total d'examens,
+        # et à __getitem__ d'accéder efficacement à toutes les informations
+        # (vidéos, labels, embeddings) pour un examen donné.
         self.samples = []
-        grouped = df.groupby('EXAMEN_ID')['FileName'].apply(list).reset_index()
-        for _, row in grouped.iterrows():
-            examen_id = row['EXAMEN_ID']
-            paths = row['FileName'][:self.num_videos]
-            # Garder uniquement les fichiers existants
-            valid_paths = [self.root / p for p in paths if (self.root / p).is_file()]
-            if not valid_paths:
+        nb_without_emb = 0
+        nb_with_emb = 0 
+        for exam_id, group in df.groupby('EXAMEN_ID'):
+            rows = list(group.itertuples(index=False))
+            # Limitation du nombre de vidéos selon config.num_videos
+            if isinstance(self.num_videos, int):
+                rows = rows[:self.num_videos]
+            # Si aucune vidéo restante, on skip cet examen
+            if not rows:
                 continue
-            self.samples.append((examen_id, valid_paths))
+            # Extraction des filenames
+            fnames = [getattr(r, self.datapoint_loc_label) for r in rows]
+            # Extraction de tous les labels, puis on prend le premier vecteur
+            labs = [[getattr(r, col) for col in self.target_label] for r in rows]
+            first_lbl = labs[0]
+            # Vérification embeddings existants
+            has_emb = any((self.embeddings_dir / f"{Path(fn).stem}.pt").is_file() for fn in fnames)
+            if not has_emb:
+                nb_without_emb += 1
+                continue
+            nb_with_emb += 1
+                #print(f"PAS D'EMBEDDING pour {exam_id} (fichiers attendus : {[str(self.embeddings_dir / f'{Path(fn).stem}.pt') for fn in fnames]})")    
+            self.samples.append({
+                'examen_id': exam_id,
+                'file_names': fnames,
+                'target_label': first_lbl
+            })
 
+        assert len(self.samples) == len(df.EXAMEN_ID.unique()), \
+            f"Erreur : {len(self.samples)} != {len(df.EXAMEN_ID.unique())} (split={self.split})"
+        
         print(f"[MultiViewDataset] Chargés {len(self.samples)} examens "
-              f"(filter={self.object_value_filter}, max {self.num_videos} vidéos)")
+            f"(split={self.split}, object_values={self.object_value_filter}, num_videos={self.num_videos})")
+        print(f"[MultiViewDataset] Examens AVEC embeddings : {nb_with_emb}")
+        print(f"[MultiViewDataset] Examens SANS embeddings : {nb_without_emb}")
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        examen_id, paths = self.samples[idx]
-        tensors: List[torch.Tensor] = []
+        # Récupération de la configuration de l'examen
+        sample = self.samples[idx]
+        exam_id = sample['examen_id']
+        fnames = sample['file_names']
+        labs = sample['target_label']
 
-        for video_path in paths:
-            try:
-                arr = load_video(
-                    str(video_path),
-                    n_frames=self.frames,
-                    resize=self.resize,
-                    mean=self.mean,
-                    std=self.std,
-                    rand_augment=self.rand_augment,
-                    backbone=self.model_name,
-                    stride=self.stride,
-                )  # shape => (frames, H, W, C)
-                if isinstance(arr, np.ndarray):
-                    vid = torch.from_numpy(arr).permute(0, 3, 1, 2)
-                else:
-                    vid = arr
-            except Exception as e:
-                print(f"[MultiViewDataset] Erreur chargement {video_path}: {e}")
-                dummy = np.zeros((self.frames, self.resize, self.resize, 3), dtype=np.float32)
-                vid = torch.from_numpy(dummy).permute(0, 3, 1, 2)
-            tensors.append(vid)
+        # Chargement des embeddings correspondant aux fichiers
+        embs = []
+        for fname in fnames:
+            stem = Path(fname).stem
+            emb_file = self.embeddings_dir / f"{stem}.pt"
+            # Vérification si le fichier d'embedding existe
+            if emb_file.is_file():
+                try:
+                    emb = torch.load(str(emb_file), weights_only=True)  # Chargement de l'embedding avec sécurité
+                    embs.append(emb.detach())  # Détacher le tenseur pour éviter les problèmes de sérialisation
+                except Exception as e:
+                    print(f"Erreur lors du chargement de l'embedding {emb_file}: {e}")
 
-        # 6) Padding si moins de vidéos
-        while len(tensors) < self.num_videos:
-            tensors.append(torch.zeros_like(tensors[0]))
+        # Moyenne des embeddings pour cet examen_id
+        if embs:
+            exam_embedding = torch.stack(embs, dim=0).mean(dim=0)
+        else:
+            # Si aucun embedding trouvé, vecteur nul
+            exam_embedding = torch.zeros((1,), dtype=torch.float32)
+            
+        #print(f"[MultiViewDataset] exam_embedding size après mean : {exam_embedding.size()}")
 
-        # 7) Empilement final
-        videos = torch.stack(tensors, dim=0)  # shape => (num_videos, frames, C, H, W)
+        # Conversion des labels en tenseur Long
+        target_label = torch.tensor(labs, dtype=torch.long)
 
-        return {'examen_id': examen_id, 'videos': videos}
+        # Retourne uniquement les embeddings moyens, labels et id
+        return {
+            'examen_id': exam_id,
+            'exam_embedding': exam_embedding,
+            'target_label': target_label
+        }
 
 
 def get_multiview_loader(
     root: str,
-    data_filename: str,
-    split: str = 'train',
-    object_value_filter: Optional[int] = None,
-    num_videos: int = 3,
+    split: str,
+    data_filename:str,
+    config: HeartWiseConfig,
     frames: int = 16,
     resize: int = 224,
     mean: List[float] = [0.485, 0.456, 0.406],
@@ -159,33 +198,44 @@ def get_multiview_loader(
     stride: int = 1,
     batch_size: int = 1,
     shuffle: bool = False,
-    num_workers: int = 0,
+    rank: Optional[int] = None,
+    num_replicas: Optional[int] = None,
     drop_last: bool = False,
+    num_workers: int = 0  # Ajout de l'argument num_workers
+    
 ):
     """
-    Wrapper DataLoader pour MultiViewDataset avec options.
+    Crée un DataLoader PyTorch pour MultiViewDataset.
     """
     dataset = MultiViewDataset(
         root=root,
         data_filename=data_filename,
         split=split,
-        object_value_filter=object_value_filter,
-        num_videos=num_videos,
+        config=config,
         frames=frames,
         resize=resize,
         mean=mean,
         std=std,
         rand_augment=rand_augment,
         model_name=model_name,
-        stride=stride,
+        stride=stride
+    )
+    
+    # Create a sampler for distributed training
+    sampler = DS.DistributedSampler(
+        dataset,
+        shuffle=shuffle,
+        num_replicas=num_replicas,
+        rank=rank
     )
     return DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=num_workers,
+        #shuffle=shuffle,
+        sampler=sampler,
+        num_workers=num_workers,        
         pin_memory=True,
         drop_last=drop_last,
         collate_fn=multiview_collate_fn,
-        worker_init_fn=seed_worker,
+        worker_init_fn=seed_worker
     )

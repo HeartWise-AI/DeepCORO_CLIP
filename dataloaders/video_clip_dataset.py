@@ -88,6 +88,7 @@ class VideoClipDataset(torch.utils.data.Dataset):
                 self.fnames, self.outcome, self.target_index = self.load_data(
                     self.split, self.target_label
                 )
+                self.study_ids = self.fnames  # Ensure study_ids always exists
 
             # Initialize tokenizer only once
             if not hasattr(self, 'tokenizer'):

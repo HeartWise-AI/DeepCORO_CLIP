@@ -9,7 +9,8 @@ from typing import (
     Any,
     List,
     Optional,
-    Union
+    Union,
+    cast
 )
 
 
@@ -62,8 +63,8 @@ def load_video(
     n_frames: int = 32,
     resize: int = 224,
     normalize: bool = True,
-    mean: float = 0.0,
-    std: float = 1.0,
+    mean: Union[float, List[float]] = 0.0,
+    std: Union[float, List[float]] = 1.0,
     video_transforms: Optional[Any] = None,
     rand_augment: bool = False,
     backbone: str = "default",
@@ -196,6 +197,9 @@ def load_video(
             mean = [float(mean)] * c
         if isinstance(std, (int, float)):
             std = [float(std)] * c
+        # Linter: mean and std are now List[float]
+        mean = cast(List[float], mean)
+        std = cast(List[float], std)
         mean = mean[:c]
         std = std[:c]
         video = v2.Normalize(mean=mean, std=std)(video)

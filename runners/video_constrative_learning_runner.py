@@ -429,7 +429,7 @@ class VideoContrastiveLearningRunner:
                 if hasattr(iterator_obj, 'set_postfix'): # Check if it's the tqdm instance
                     iterator_obj.set_postfix(
                         {
-                            f"{mode}_loss": f"{batch_metrics['loss']:.4f}", # Use mode variable
+                            f"{mode.name.lower()}_loss": f"{batch_metrics['loss']:.4f}", # Use mode.name.lower() for consistent key naming
                             "avg_loss": f"{(total_loss / batch_count):.4f}",
                         }
                     )

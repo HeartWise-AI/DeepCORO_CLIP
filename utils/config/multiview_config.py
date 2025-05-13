@@ -37,6 +37,7 @@ class MultiviewConfig(HeartWiseConfig):
     std: List[float]   # Écart-type pour la normalisation
     num_videos: int    # Nombre de vidéos par examen
     object_value_filter: int
+    embeddings_dir: str
 
     # Video Encoder parameters
     model_name: str

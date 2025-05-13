@@ -195,7 +195,7 @@ class TestVideoDataset(unittest.TestCase):
         self.assertIn("video_fname", collated)
         
         # Check shapes and types
-        self.assertEqual(collated["videos"].shape, torch.Size([2, 32, 224, 224, 3]))
+        self.assertEqual(collated["videos"].shape, torch.Size([2, 1, 32, 224, 224, 3]))
         self.assertIsInstance(collated["videos"], torch.Tensor)
         self.assertIsInstance(collated["targets"], dict)
         self.assertIn("target_label", collated["targets"])

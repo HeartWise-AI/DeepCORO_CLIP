@@ -290,7 +290,7 @@ class TestVideoClipDataset(unittest.TestCase):
         self.assertIn("paths", collated)
         
         # Check shapes and types
-        self.assertEqual(collated["videos"].shape, torch.Size([2, 32, 224, 224, 3]))
+        self.assertEqual(collated["videos"].shape, torch.Size([2, 1, 32, 224, 224, 3]))
         self.assertIsInstance(collated["videos"], torch.Tensor)
         
         self.assertIn("input_ids", collated["encoded_texts"])

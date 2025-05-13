@@ -56,7 +56,6 @@ class ClipConfig(HeartWiseConfig):
     period: int
 
     # Loss and metrics parameters
-    loss_name: str
     recall_k: List[int]
     ndcg_k: List[int]
 
@@ -71,12 +70,14 @@ class ClipConfig(HeartWiseConfig):
     resume_training: bool
     checkpoint: Optional[str]
     
-    # Inference parameters
-    topk: int
-    text_embeddings_path: str
-    metadata_path: str
+    # Inference parameters (non-defaults first)
     inference_results_path: str
 
+    # All default-valued fields must come last
+    loss_name: str = "InfoNCE"
+    topk: int = 3
+    text_embeddings_path: str = ""
+    metadata_path: str = ""
     # Device and distributed info are now inherited from HeartWiseConfig
     # No local definition of device, world_size, is_ref_device, 
     # __post_init__ for device setup, or set_gpu_info_in_place needed here.

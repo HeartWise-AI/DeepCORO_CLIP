@@ -88,7 +88,8 @@ class TestMultiVideoDataset(unittest.TestCase):
             backbone="mvit",
             num_frames=16,
             mean=self.mean,
-            std=self.std
+            std=self.std,
+            multi_video=True
         )
         
         # Check internal state
@@ -114,7 +115,8 @@ class TestMultiVideoDataset(unittest.TestCase):
             backbone="mvit",
             num_frames=16,
             mean=self.mean,
-            std=self.std
+            std=self.std,
+            multi_video=True
         )
         
         # Get the first item
@@ -161,7 +163,8 @@ class TestMultiVideoDataset(unittest.TestCase):
             seed=42,  # Fixed seed for reproducibility
             num_frames=16,
             mean=self.mean,
-            std=self.std
+            std=self.std,
+            multi_video=True
         )
         
         # With fixed seed, we expect deterministic shuffling
@@ -176,7 +179,8 @@ class TestMultiVideoDataset(unittest.TestCase):
             seed=42,  # Fixed seed for reproducibility
             num_frames=16,
             mean=self.mean,
-            std=self.std
+            std=self.std,
+            multi_video=True
         )
         
         # Get the video paths for verification
@@ -224,7 +228,8 @@ class TestMultiVideoDataset(unittest.TestCase):
             groupby_column="StudyInstanceUID",
             num_frames=16,
             mean=self.mean,
-            std=self.std
+            std=self.std,
+            multi_video=True
         )
         
         # Test get_reports

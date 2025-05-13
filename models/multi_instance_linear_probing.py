@@ -6,12 +6,12 @@ pooling modes (mean / max / gated-attention) and then feeds the aggregated
 representation into one or more *linear heads* (one per task).
 
 The core logic is adapted from a demo script discussed in a previous
-conversation and refactored here so that it fits DeepCORO_CLIP’s module /
+conversation and refactored here so that it fits DeepCORO_CLIP's module /
 registry system.
 """
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import torch
 import torch.nn as nn
@@ -111,39 +111,64 @@ class MultiInstanceLinearProbing(nn.Module):
     # Internal helpers
     # ------------------------------------------------------------------
     def _pool_instances(
-        self, x: torch.Tensor, mask: torch.Tensor | None
-    ) -> torch.Tensor:  # noqa: D401
-        """Aggregate over the *instance* dimension using the configured rule."""
+        self, x: torch.Tensor, mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """Aggregate over the *instance* dimension using the configured rule.
+        
+        Args:
+            x: Input tensor of shape [B, N, D] where N is the number of instances
+            mask: Optional boolean mask of shape [B, N] indicating valid instances
+            
+        Returns:
+            Tensor of shape [B, D] containing aggregated features
+        """
+        if mask is None:
+            # If no mask provided, treat all instances as valid
+            mask = torch.ones(x.shape[0], x.shape[1], dtype=torch.bool, device=x.device)
+        
+        # Ensure mask has correct shape and type
+        if mask.shape != x.shape[:2]:
+            raise ValueError(
+                f"Mask shape {mask.shape} does not match input shape {x.shape[:2]}"
+            )
+        if not mask.dtype == torch.bool:
+            mask = mask.bool()
+            
+        # Handle empty sequences (no valid instances)
+        if not mask.any():
+            return torch.zeros(
+                x.shape[0], x.shape[2], 
+                dtype=x.dtype, 
+                device=x.device
+            )
+            
         if self.pooling_mode == "mean":
-            if mask is None:
-                return x.mean(dim=1)
-            # Masked mean
+            # Masked mean pooling
             mask_f = mask.unsqueeze(-1).float()  # [B, N, 1]
-            sum_x = (x * mask_f).sum(dim=1)
-            count = mask_f.sum(dim=1).clamp(min=1.0)
+            sum_x = (x * mask_f).sum(dim=1)  # [B, D]
+            count = mask_f.sum(dim=1).clamp(min=1.0)  # [B, 1]
             return sum_x / count
-
-        if self.pooling_mode == "max":
-            if mask is not None:
-                x = x.masked_fill(mask.unsqueeze(-1) == 0, float("-inf"))
-            # torch.max returns (values, indices)
-            pooled, _ = x.max(dim=1)
-            return pooled
-
-        if self.pooling_mode == "attention":
-            if mask is not None:
-                x = x.masked_fill(mask.unsqueeze(-1) == 0, 0.0)
-
-            # Gated attention mechanism (Ilse et al., 2018)
+            
+        elif self.pooling_mode == "max":
+            # Masked max pooling
+            x_masked = x.clone()
+            x_masked[~mask] = float('-inf')
+            return x_masked.max(dim=1)[0]  # [B, D]
+            
+        elif self.pooling_mode == "attention":
+            # Gated attention mechanism with masking
             A_V = torch.tanh(self.attention_V(x))  # [B, N, H]
             A_U = torch.sigmoid(self.attention_U(x))  # [B, N, H]
             A = self.attention_w(A_V * A_U)  # [B, N, 1]
-            if mask is not None:
-                A = A.masked_fill(mask.unsqueeze(-1) == 0, float("-inf"))
+            
+            # Apply mask to attention scores
+            A = A.masked_fill(~mask.unsqueeze(-1), float('-inf'))
             A = F.softmax(A, dim=1)  # [B, N, 1]
             A = self.attn_dropout(A)
-            return torch.sum(A * x, dim=1)  # [B, D]
-
+            
+            # Apply attention weights
+            return (A * x).sum(dim=1)  # [B, D]
+            
         raise RuntimeError("Invalid pooling_mode – this should never happen")
 
     def _reset_parameters(self):

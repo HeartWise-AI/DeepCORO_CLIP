@@ -10,6 +10,14 @@ from utils.config.heartwise_config import HeartWiseConfig
 @ConfigRegistry.register("DeepCORO_video_linear_probing")
 @ConfigRegistry.register("DeepCORO_video_linear_probing_test")
 class LinearProbingConfig(HeartWiseConfig):    
+    # Pipeline parameters
+    pipeline_project: str
+    base_checkpoint_path: str
+    run_mode: str
+    epochs: int
+    seed: int
+    output_dir: str
+    
     # Training parameters
     head_lr: Dict[str, float] # learning rate for heads
     scheduler_name: str # scheduler name
@@ -54,9 +62,13 @@ class LinearProbingConfig(HeartWiseConfig):
     head_task: Dict[str, str] # task for each head
     
     # Label mappings - Used for confusion matrix
-    labels_map: Dict[str, Dict[str, int]]
+    labels_map: Dict[str, Dict[str, str]]
 
-    # Multi-Instance Learning parameters (added)
+    # Multi-Instance Learning parameters
+    multi_video: bool = False # Whether to load multiple videos per sample
+    groupby_column: str = "StudyInstanceUID" # Column to group videos by
+    num_videos: int = 1 # Number of videos to load per sample/group
+    shuffle_videos: bool = True # Whether to shuffle videos within a group
     pooling_mode: str = "mean" # Pooling mode ("mean", "max", "attention")
     attention_hidden: int = 128 # Hidden size for attention pooling
     dropout_attention: float = 0.0 # Dropout for attention pooling block

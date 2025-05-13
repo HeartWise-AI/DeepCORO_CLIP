@@ -132,7 +132,7 @@ class VideoEncoder(nn.Module):
         We'll reorder => [B,N,C,T,H,W], flatten => [B*N, C, T, H, W],
         pass through the backbone, then aggregator => [B, output_dim].
         """
-        #print(x.shape)
+        print("Video shape: ", x.shape)
         if x.ndim == 7:
             # Workaround for unexpected 7D input.
             # The method expects 6D [B, N, T, H, W, C].
@@ -141,14 +141,15 @@ class VideoEncoder(nn.Module):
             s = x.shape
             x = x.view(s[0], s[1] * s[2], s[3], s[4], s[5], s[6])
             # Now x should be 6D: [B, N_combined, T, H, W, C]
-
-        # Reorder last dimension (C) to after N => [B, N, C, T, H, W]
-        x = x.permute(0, 1, 5, 2, 3, 4)  # Now shape: [B, N, 3, T, H, W]
-        B, N, C, T, H, W = x.shape
         
+        # Reorder last dimensio n (C) to after N => [B, N, C, T, H, W]
+        x = x.permute(0, 1, 5, 2, 3, 4)  # Now shape: [B, N, 3, T, H, W]
+        print("Video shape after permute: ", x.shape)
+        B, N, C, T, H, W = x.shape
+
         # Flatten => [B*N, 3, T, H, W]
         x = x.view(B*N, C, T, H, W)
-        
+        print("Video shape after flatten: ", x.shape)
         # Pass through backbone => [B*N, in_features]
         feats = self.model(x)
         # Then projection => [B*N, output_dim]

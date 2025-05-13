@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
+from typing import Optional
 
 from tqdm import tqdm
 from scipy.stats import pearsonr
@@ -347,33 +348,56 @@ class LinearProbingRunner:
         self, 
         batch: dict[str, torch.Tensor]
     ) -> dict[str, torch.Tensor]:
-        batch_video = batch['videos'].to(self.device)
+        """
+        Preprocess batch inputs for the model.
+        
+        Args:
+            batch: Dictionary containing:
+                videos: Tensor of shape [B * num_videos, C, F, H, W] for multi-video
+                       or [B, C, F, H, W] for single-video
+                targets: Dict of tensors [B, ...]
+                video_indices: Optional tensor [B * num_videos] mapping videos to batch indices
+                video_fname: List of file paths
+                
+        Returns:
+            Dictionary containing processed tensors ready for model input
+        """
+        # Move videos to device
+        batch_video = batch['videos'].to(self.config.device)
+        
+        # Move targets to device
         batch_targets = batch['targets']
         for k, v in batch_targets.items():
-            batch_targets[k] = v.to(self.device)
-        # [B, 1, T, H, W, C] -> 1 is the aggregator dimension
-        batch_video = batch_video.unsqueeze(1)
+            batch_targets[k] = v.to(self.config.device)
+            
+        # Move video indices to device if present
+        video_indices = batch.get('video_indices')
+        if video_indices is not None:
+            video_indices = video_indices.to(self.config.device)
+            
         return {
             "batch_video": batch_video,
-            "batch_targets": batch_targets
+            "batch_targets": batch_targets,
+            "video_indices": video_indices
         }
         
     def _train_step(
         self, 
         batch_video: torch.Tensor,
-        batch_targets: dict[str, torch.Tensor]
+        batch_targets: dict[str, torch.Tensor],
+        video_indices: Optional[torch.Tensor] = None,
     ) -> dict[str, dict[str, torch.Tensor]]:
         # Clear gradients only if this is the first step in accumulation
         if self.step % self.config.gradient_accumulation_steps == 0:
             self.optimizer.zero_grad()
                 
         # Forward pass with autocast for mixed precision
-        with torch.amp.autocast(
-            device_type='cuda',
-            dtype=torch.bfloat16
-        ):
+        with torch.cuda.amp.autocast(enabled=self.config.use_amp):
             try:
-                outputs_dict: dict[str, torch.Tensor] = self.linear_probing(batch_video)
+                outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
+                    batch_video, 
+                    video_indices=video_indices
+                )
             except Exception as e:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")
 
@@ -417,7 +441,7 @@ class LinearProbingRunner:
             lr_metrics[f"lr/{pg['name']}"] = pg["lr"]
 
         # Convert losses to scalar values
-        scalar_losses = {k: v.detach().item() for k, v in losses.items()}
+        scalar_losses = {k: v.item() for k, v in losses.items()}
         scalar_outputs = {k: v.detach() for k, v in outputs_dict.items()}
 
         return {
@@ -429,12 +453,16 @@ class LinearProbingRunner:
     def _val_step(
         self, 
         batch_video: torch.Tensor,
-        batch_targets: dict[str, torch.Tensor]
+        batch_targets: dict[str, torch.Tensor],
+        video_indices: Optional[torch.Tensor] = None,
     ) -> dict[str, dict[str, torch.Tensor]]:                
         # Forward pass with autocast for mixed precision
         with torch.no_grad():
             try:
-                outputs_dict: dict[str, torch.Tensor] = self.linear_probing(batch_video)
+                outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
+                    batch_video,
+                    video_indices=video_indices
+                )
             except Exception as e:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")
 
@@ -458,7 +486,7 @@ class LinearProbingRunner:
             lr_metrics[f"lr/{pg['name']}"] = pg["lr"]
 
         # Convert losses to scalar values
-        scalar_losses = {k: v.detach().item() for k, v in losses.items()}
+        scalar_losses = {k: v.item() for k, v in losses.items()}
         scalar_outputs = {k: v.detach() for k, v in outputs_dict.items()}
                 
         return {

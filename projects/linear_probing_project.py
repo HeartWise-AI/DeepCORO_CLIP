@@ -1,6 +1,6 @@
 import os
 import torch
-from typing import Any
+from typing import Any, Optional, Dict
 from torch.amp.grad_scaler import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
@@ -31,11 +31,19 @@ class VideoMILWrapper(torch.nn.Module):
         super().__init__()
         self.video_encoder = video_encoder
         self.mil_model = mil_model
-    def forward(self, x):
-        embeddings = self.video_encoder(x)
-        if embeddings.ndim == 2:
-            embeddings = embeddings.unsqueeze(1)  # [B, 1, D]
-        return self.mil_model(embeddings)
+
+    def forward(self, x: torch.Tensor, video_indices: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
+        if video_indices is None:
+            # Single video: [B, 1, C, F, H, W]
+            embeddings = self.video_encoder(x)  # [B, D] or [B, 1, D]
+            if embeddings.ndim == 2:
+                embeddings = embeddings.unsqueeze(1)  # [B, 1, D]
+            return self.mil_model(embeddings)
+        else:
+            B, N = x.shape[0], x.shape[1]
+            embeddings = self.video_encoder(x)  # [B, N, D]
+            attention_mask = torch.ones([B, N], dtype=torch.bool, device=x.device)
+            return self.mil_model(embeddings, mask=attention_mask)
 
 @ProjectRegistry.register("DeepCORO_video_linear_probing")
 class LinearProbingProject(BaseProject):
@@ -56,9 +64,9 @@ class LinearProbingProject(BaseProject):
         # Calculate dataset statistics
         mean, std = calculate_dataset_statistics_ddp(self.config)        
         
-        # Get dataloaders
+        # Get dataloaders with multi-video parameters
         train_loader: DataLoader = get_distributed_video_dataloader(
-            self.config, 
+            config=self.config, 
             split="train", 
             mean=mean.tolist(),
             std=std.tolist(),
@@ -66,9 +74,13 @@ class LinearProbingProject(BaseProject):
             num_replicas=self.config.world_size,
             rank=self.config.device,
             drop_last=False,
+            multi_video=self.config.multi_video,
+            groupby_column=self.config.groupby_column,
+            num_videos=self.config.num_videos,
+            shuffle_videos=self.config.shuffle_videos,
         )
         val_loader: DataLoader = get_distributed_video_dataloader(
-            self.config, 
+            config=self.config, 
             split="val", 
             mean=mean.tolist(),
             std=std.tolist(),
@@ -76,12 +88,14 @@ class LinearProbingProject(BaseProject):
             num_replicas=self.config.world_size,
             rank=self.config.device,
             drop_last=False,
+            multi_video=self.config.multi_video,
+            groupby_column=self.config.groupby_column,
+            num_videos=self.config.num_videos,
+            shuffle_videos=False,  # Don't shuffle validation videos
         )        
         
         # Initialize video encoder backbone for linear probing
-        video_encoder: VideoEncoder = ModelRegistry.get(
-            name="video_encoder"
-        )(
+        video_encoder: VideoEncoder = ModelRegistry.get("video_encoder")(
             backbone=self.config.model_name,
             num_frames=self.config.frames,
             pretrained=self.config.pretrained,
@@ -96,7 +110,7 @@ class LinearProbingProject(BaseProject):
 
         # Load video encoder checkpoint
         video_encoder = video_encoder.to(self.config.device).float()        
-        checkpoint: dict[str, Any] = self._load_checkpoint(self.config.video_encoder_checkpoint_path)       
+        checkpoint: Dict[str, Any] = self._load_checkpoint(self.config.video_encoder_checkpoint_path)       
         video_encoder.load_state_dict(checkpoint["video_encoder"])
 
         # Freeze video encoder if specified
@@ -109,9 +123,7 @@ class LinearProbingProject(BaseProject):
              pass # Assuming freeze_ratio in VideoEncoder init handles partial freezing
 
         # Initialize Multi-Instance Linear Probing model
-        mil_model: MultiInstanceLinearProbing = ModelRegistry.get(
-            name="multi_instance_linear_probing"
-        )(
+        mil_model: MultiInstanceLinearProbing = ModelRegistry.get("multi_instance_linear_probing")(
             embedding_dim=embedding_dim, 
             head_structure=self.config.head_structure,
             pooling_mode=self.config.pooling_mode, 
@@ -142,7 +154,6 @@ class LinearProbingProject(BaseProject):
             })
 
         # Add MIL model parameters (pooling layers, heads)
-        # Assuming MIL model parameters excluding heads might need a base LR
         # Add head parameters
         for head_name in self.config.head_structure:
             param_groups.append({
@@ -161,10 +172,11 @@ class LinearProbingProject(BaseProject):
                 'weight_decay': self.config.attention_weight_decay 
             })            
 
-        optimizer_class: torch.optim.Optimizer = getattr(torch.optim, self.config.optimizer)
-        optimizer: torch.optim.Optimizer = optimizer_class(param_groups)
+        optimizer_class = getattr(torch.optim, self.config.optimizer)
+        optimizer = optimizer_class(param_groups)
+
         # Initialize scheduler
-        scheduler: LRScheduler = get_scheduler(
+        scheduler = get_scheduler(
             scheduler_name=self.config.scheduler_name,
             optimizer=optimizer,
             num_epochs=self.config.epochs,
@@ -179,13 +191,11 @@ class LinearProbingProject(BaseProject):
 
         # Initialize scaler
         print(f"Using AMP: {self.config.use_amp}")
-        scaler: GradScaler = GradScaler() if self.config.use_amp else None
+        scaler = GradScaler() if self.config.use_amp else None
         
         # Create loss function
-        loss_fn: Loss = Loss(
-            loss_type=LossRegistry.get(
-                name=LossType.MULTI_HEAD
-            )(
+        loss_fn = Loss(
+            loss_type=LossRegistry.get(LossType.MULTI_HEAD)(
                 head_structure=self.config.head_structure,
                 loss_structure=self.config.loss_structure,
                 head_weights=self.config.head_weights,

@@ -23,6 +23,7 @@ num_warmup_percent: !!float 0.1
 num_hard_restarts_cycles: !!float 1.0
 warm_restart_tmult: !!int 2
 # Dataset parameters
+root: !!str /volume/DeepCORO_CLIP_Sarra
 data_filename: !!str data/stenting/stenting_annotations.csv
 num_workers: !!int 4
 batch_size: !!int 4
@@ -40,6 +41,8 @@ video_freeze_ratio: !!float 0.8
 dropout: !!float 0.2
 pretrained: !!bool true
 video_encoder_checkpoint_path: !!str outputs/dev_deep_coro_clip_single_video/current_best/best_epoch.pt
+input_channels: !!int 3
+num_frames: !!int 16 
 # Linear Probing parameters
 task: !!str classification
 linear_probing_head: !!str simple_linear_probing

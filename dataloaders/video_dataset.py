@@ -291,8 +291,8 @@ class VideoDataset(torch.utils.data.Dataset):
                         n_frames=self.num_frames,
                         resize=self.resize,
                         normalize=self.normalize,
-                        mean=self.mean[0], # Note: uses only the first element of the mean list
-                        std=self.std[0],   # Note: uses only the first element of the std list
+                        mean=self.mean, # Pass the full mean list for correct multi-channel normalization
+                        std=self.std,   # Pass the full std list for correct multi-channel normalization
                         video_transforms=self.video_transforms,
                         rand_augment=self.rand_augment,
                         backbone=self.backbone,

@@ -33,17 +33,21 @@ class VideoMILWrapper(torch.nn.Module):
         self.mil_model = mil_model
 
     def forward(self, x: torch.Tensor, video_indices: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
-        if video_indices is None:
-            # Single video: [B, 1, C, F, H, W]
-            embeddings = self.video_encoder(x)  # [B, D] or [B, 1, D]
-            if embeddings.ndim == 2:
-                embeddings = embeddings.unsqueeze(1)  # [B, 1, D]
-            return self.mil_model(embeddings)
-        else:
-            B, N = x.shape[0], x.shape[1]
-            embeddings = self.video_encoder(x)  # [B, N, D]
-            attention_mask = torch.ones([B, N], dtype=torch.bool, device=x.device)
-            return self.mil_model(embeddings, mask=attention_mask)
+        # Get batch size and number of videos per study
+        B, N = x.shape[0], x.shape[1]
+        
+        # Process through video encoder - this will handle the reshaping internally
+        embeddings = self.video_encoder(x)  # [B, D]
+        
+        # Reshape to [B, N, D] if needed
+        if embeddings.ndim == 2:
+            embeddings = embeddings.unsqueeze(1)  # [B, 1, D]
+            
+        # Create attention mask for valid positions
+        attention_mask = torch.ones([B, N], dtype=torch.bool, device=x.device)
+        
+        # Pass through MIL model with mask
+        return self.mil_model(embeddings, mask=attention_mask)
 
 @ProjectRegistry.register("DeepCORO_video_linear_probing")
 class LinearProbingProject(BaseProject):

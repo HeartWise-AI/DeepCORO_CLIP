@@ -8,7 +8,7 @@ seed: !!int 42
 name: !!str DeepCORO_video_linear_probing_cathEF
 project: !!str DeepCORO_video_linear_probing_cathEF
 entity: !!str mhi_ai
-use_wandb: !!bool false
+use_wandb: !!bool true
 # Training parameters
 scheduler_name: !!str step
 lr_step_period: !!int 5

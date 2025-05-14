@@ -380,7 +380,7 @@ class TestLinearProbing(unittest.TestCase):
     def test_preprocess_inputs(self):
         """Test input preprocessing."""
         batch = {
-            "videos": torch.randn(2, 16, 224, 224, 3),
+            "videos": torch.randn(2, 1, 16, 224, 224, 3),
             "targets": {
                 "contrast_agent": torch.randint(0, 2, (2, 1)),
                 "main_structure": torch.randint(0, 5, (2, 1)),

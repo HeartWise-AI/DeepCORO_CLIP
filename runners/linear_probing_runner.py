@@ -392,7 +392,7 @@ class LinearProbingRunner:
             self.optimizer.zero_grad()
                 
         # Forward pass with autocast for mixed precision
-        with torch.cuda.amp.autocast(enabled=self.config.use_amp):
+        with torch.amp.autocast('cuda', enabled=self.config.use_amp):
             try:
                 outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
                     batch_video, 

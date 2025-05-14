@@ -4,6 +4,7 @@ from typing import Any, Optional, Dict
 from torch.amp.grad_scaler import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
+import itertools
 
 from runners.typing import Runner
 from models.video_encoder import VideoEncoder
@@ -103,6 +104,7 @@ class LinearProbingProject(BaseProject):
             dropout=self.config.dropout,
             num_heads=self.config.num_heads,
             aggregator_depth=self.config.aggregator_depth,
+            aggregate=not self.config.multi_video,
         )        
 
         # Get embedding dimension from encoder
@@ -165,12 +167,18 @@ class LinearProbingProject(BaseProject):
             
         # Add attention parameters if applicable (potentially different LR/WD)
         if self.config.pooling_mode == "attention":
+            # Combine all attention-specific parameters (V, U, w) into one group
+            attention_params = itertools.chain(
+                mil_model.module.attention_V.parameters(),
+                mil_model.module.attention_U.parameters(),
+                mil_model.module.attention_w.parameters(),
+            )
             param_groups.append({
-                'params': mil_model.module.attention_pooling.parameters(), 
-                'lr': self.config.attention_lr, 
+                'params': attention_params,
+                'lr': self.config.attention_lr,
                 'name': 'attention_pooling',
-                'weight_decay': self.config.attention_weight_decay 
-            })            
+                'weight_decay': self.config.attention_weight_decay,
+            })
 
         optimizer_class = getattr(torch.optim, self.config.optimizer)
         optimizer = optimizer_class(param_groups)

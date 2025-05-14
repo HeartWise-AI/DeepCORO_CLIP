@@ -23,7 +23,8 @@ class VideoEncoder(nn.Module):
         dropout: float = 0.2,
         num_heads: int = 4,
         freeze_ratio: float = 0.8,
-        aggregator_depth: int = 2
+        aggregator_depth: int = 2,
+        aggregate: bool = True,
     ):
         """Initialize the video encoder.
 
@@ -33,6 +34,10 @@ class VideoEncoder(nn.Module):
             num_frames (int): Number of frames in the input video
             pretrained (bool): Whether to use pretrained weights
             output_dim (int): Output dimension of the encoder
+            aggregate (bool): If False, the transformer-based aggregator is skipped and the
+                per-segment embeddings ``[B, N, D]`` are returned. This is useful in multi-
+                instance learning settings where another model is responsible for aggregating
+                over the *N* dimension.
         """
         super().__init__()
         self.backbone: str = backbone
@@ -89,17 +94,20 @@ class VideoEncoder(nn.Module):
         # Check if output_dim is divisible by num_heads
         if output_dim % num_heads != 0:
             raise ValueError(f"Output dimension ({output_dim}) must be divisible by number of heads ({num_heads})")
-        # 3) Enhanced aggregator
+        # 3) Enhanced aggregator (can be optionally disabled)
         self.aggregator = EnhancedVideoAggregator(
             embedding_dim=output_dim,
             num_heads=num_heads,
             dropout=self.dropout,
             use_positional_encoding=True,
             aggregator_depth=aggregator_depth
-        )                
+        )
                 
         # 4) Freeze partial layers
         self._freeze_partial_layers()
+
+        # Whether to apply the internal aggregator in the forward pass.
+        self._apply_aggregator: bool = aggregate
 
     def _freeze_partial_layers(self):
         """
@@ -132,7 +140,7 @@ class VideoEncoder(nn.Module):
         We'll reorder => [B,N,C,T,H,W], flatten => [B*N, C, T, H, W],
         pass through the backbone, then aggregator => [B, output_dim].
         """
-        print("Video shape: ", x.shape)
+
         if x.ndim == 7:
             # Workaround for unexpected 7D input.
             # The method expects 6D [B, N, T, H, W, C].
@@ -144,12 +152,12 @@ class VideoEncoder(nn.Module):
         
         # Reorder last dimensio n (C) to after N => [B, N, C, T, H, W]
         x = x.permute(0, 1, 5, 2, 3, 4)  # Now shape: [B, N, 3, T, H, W]
-        print("Video shape after permute: ", x.shape)
+
         B, N, C, T, H, W = x.shape
 
         # Flatten => [B*N, 3, T, H, W]
         x = x.view(B*N, C, T, H, W)
-        print("Video shape after flatten: ", x.shape)
+      
         # Pass through backbone => [B*N, in_features]
         feats = self.model(x)
         # Then projection => [B*N, output_dim]
@@ -157,11 +165,15 @@ class VideoEncoder(nn.Module):
         
         # Reshape => [B, N, output_dim]
         feats = feats.view(B, N, self.output_dim)
-        
-        # aggregator => [B, output_dim]
-        out = self.aggregator(feats)
 
-        return out
+        
+        if self._apply_aggregator:
+            # Aggregate over the *N* dimension ➔ [B, D] for CLIP
+            out = self.aggregator(feats)
+            return out
+
+        # Return per-instance embeddings  [B, N, D] for MIL
+        return feats
 
 
 

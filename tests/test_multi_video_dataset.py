@@ -5,7 +5,7 @@ import pandas as pd
 import torch
 import tempfile
 from unittest.mock import patch, MagicMock
-from dataloaders.multi_video_dataset import MultiVideoDataset, multi_video_collate_fn
+from dataloaders.video_clip_dataset import VideoClipDataset, custom_collate_fn
 from tests.templates import DatasetTestsMixin
 
 
@@ -59,7 +59,7 @@ class TestMultiVideoDataset(unittest.TestCase):
         self.mock_auto_tokenizer.return_value = mock_tokenizer_instance
         
         # Mock video loading
-        self.load_video_patcher = patch('dataloaders.multi_video_dataset.load_video')
+        self.load_video_patcher = patch('dataloaders.video_clip_dataset.load_video')
         self.mock_load_video = self.load_video_patcher.start()
         # We'll set the return value in each test as needed
         
@@ -77,7 +77,7 @@ class TestMultiVideoDataset(unittest.TestCase):
         
     def test_init(self):
         """Test initialization and data grouping."""
-        dataset = MultiVideoDataset(
+        dataset = VideoClipDataset(
             root=self.temp_dir.name,
             data_filename=os.path.basename(self.temp_csv_path),
             split="train",
@@ -86,8 +86,10 @@ class TestMultiVideoDataset(unittest.TestCase):
             groupby_column="StudyInstanceUID",
             num_videos=4,
             backbone="mvit",
+            num_frames=16,
             mean=self.mean,
-            std=self.std
+            std=self.std,
+            multi_video=True
         )
         
         # Check internal state
@@ -102,7 +104,7 @@ class TestMultiVideoDataset(unittest.TestCase):
         # Set up mock to return non-zero values for video content
         self.mock_load_video.return_value = np.ones((16, 224, 224, 3), dtype=np.float32)
         
-        dataset = MultiVideoDataset(
+        dataset = VideoClipDataset(
             root=self.temp_dir.name,
             data_filename=os.path.basename(self.temp_csv_path),
             split="train",
@@ -111,8 +113,10 @@ class TestMultiVideoDataset(unittest.TestCase):
             groupby_column="StudyInstanceUID",
             num_videos=4,
             backbone="mvit",
+            num_frames=16,
             mean=self.mean,
-            std=self.std
+            std=self.std,
+            multi_video=True
         )
         
         # Get the first item
@@ -143,10 +147,12 @@ class TestMultiVideoDataset(unittest.TestCase):
     def test_shuffle_videos(self):
         """Test video shuffling functionality."""
         # Set up mock to return non-zero values
-        self.mock_load_video.return_value = np.ones((16, 224, 224, 3), dtype=np.float32)
+        # Always return the same shape for all calls
+        consistent_shape = (16, 224, 224, 3)
+        self.mock_load_video.return_value = np.ones(consistent_shape, dtype=np.float32)
         
         # Create two datasets - one with shuffling, one without
-        dataset_no_shuffle = MultiVideoDataset(
+        dataset_no_shuffle = VideoClipDataset(
             root=self.temp_dir.name,
             data_filename=os.path.basename(self.temp_csv_path),
             split="train",
@@ -155,12 +161,14 @@ class TestMultiVideoDataset(unittest.TestCase):
             groupby_column="StudyInstanceUID",
             shuffle_videos=False,
             seed=42,  # Fixed seed for reproducibility
+            num_frames=16,
             mean=self.mean,
-            std=self.std
+            std=self.std,
+            multi_video=True
         )
         
         # With fixed seed, we expect deterministic shuffling
-        dataset_with_shuffle = MultiVideoDataset(
+        dataset_with_shuffle = VideoClipDataset(
             root=self.temp_dir.name,
             data_filename=os.path.basename(self.temp_csv_path),
             split="train",
@@ -169,8 +177,10 @@ class TestMultiVideoDataset(unittest.TestCase):
             groupby_column="StudyInstanceUID",
             shuffle_videos=True,
             seed=42,  # Fixed seed for reproducibility
+            num_frames=16,
             mean=self.mean,
-            std=self.std
+            std=self.std,
+            multi_video=True
         )
         
         # Get the video paths for verification
@@ -183,6 +193,7 @@ class TestMultiVideoDataset(unittest.TestCase):
         
         # Reset mock for first dataset getitem call
         self.mock_load_video.reset_mock()
+        self.mock_load_video.return_value = np.ones(consistent_shape, dtype=np.float32)
         dataset_no_shuffle[0]  # This will load videos in original order
         
         # Get the calls made to load_video
@@ -191,6 +202,7 @@ class TestMultiVideoDataset(unittest.TestCase):
         
         # Reset mock for second dataset getitem call  
         self.mock_load_video.reset_mock()
+        self.mock_load_video.return_value = np.ones(consistent_shape, dtype=np.float32)
         dataset_with_shuffle[0]  # This will load videos in shuffled order
         
         # Get the calls made to load_video
@@ -207,15 +219,17 @@ class TestMultiVideoDataset(unittest.TestCase):
     
     def test_utility_methods(self):
         """Test utility methods like get_reports and get_video_paths."""
-        dataset = MultiVideoDataset(
+        dataset = VideoClipDataset(
             root=self.temp_dir.name,
             data_filename=os.path.basename(self.temp_csv_path),
             split="train",
             target_label="Report",
             datapoint_loc_label="FileName",
             groupby_column="StudyInstanceUID",
+            num_frames=16,
             mean=self.mean,
-            std=self.std
+            std=self.std,
+            multi_video=True
         )
         
         # Test get_reports
@@ -251,7 +265,7 @@ class TestMultiVideoDataset(unittest.TestCase):
         ]
         
         # Apply collate function
-        collated = multi_video_collate_fn(batch)
+        collated = custom_collate_fn(batch)
         
         # Check the collated batch
         self.assertIn("videos", collated)

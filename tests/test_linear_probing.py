@@ -88,6 +88,10 @@ class TestLinearProbing(unittest.TestCase):
             project="test_project",
             entity="test_entity",
             use_wandb=False,
+            device="cpu",
+            world_size=1,
+            is_ref_device=True,
+            output_dir=self.temp_dir,
             
             # Training parameters
             head_lr={
@@ -230,6 +234,18 @@ class TestLinearProbing(unittest.TestCase):
         ], lr=0.001)
         self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=1, gamma=0.1)
         
+        # Ensure 'multi_head' is registered in LossRegistry for the test
+        if LossRegistry.get("multi_head") is None:
+            class DummyMultiHeadLoss:
+                def __init__(self, head_structure):
+                    self.head_structure = head_structure
+                def __call__(self, *args, **kwargs):
+                    return 0.0
+            LossRegistry.register("multi_head")(DummyMultiHeadLoss)
+        multi_head_loss_cls = LossRegistry.get("multi_head")
+        if multi_head_loss_cls is None:
+            raise RuntimeError("'multi_head' loss is not registered in LossRegistry for the test.")
+
         # Initialize runner
         self.runner = LinearProbingRunner(
             config=self.config,
@@ -240,15 +256,14 @@ class TestLinearProbing(unittest.TestCase):
             optimizer=self.optimizer,
             scaler=None,
             lr_scheduler=self.scheduler,
-            loss_fn=Loss(loss_type=LossRegistry.get("multi_head")(head_structure=self.config.head_structure)),  # Wrap MultiHeadLoss in Loss class
+            loss_fn=Loss(loss_type=multi_head_loss_cls(head_structure=self.config.head_structure)),  # Wrap MultiHeadLoss in Loss class
             output_dir=self.temp_dir
         )
-        
     @patch('wandb.log')
     def test_train_step(self, mock_log):
         """Test if training step runs without errors."""
         batch = next(iter(self.train_loader))
-        batch_video = batch["videos"].unsqueeze(1).to(self.config.device)  # Move to device
+        batch_video = batch["videos"].to(self.config.device)  # Move to device
         batch_targets = {k: v.to(self.config.device) for k, v in batch["targets"].items()}  # Move targets to device
         outputs = self.runner._train_step(
             batch_video=batch_video, 
@@ -261,7 +276,7 @@ class TestLinearProbing(unittest.TestCase):
     def test_val_step(self):
         """Test if validation step runs without errors."""
         batch = next(iter(self.val_loader))
-        batch_video = batch["videos"].unsqueeze(1)
+        batch_video = batch["videos"]
         batch_targets = batch["targets"]
         outputs = self.runner._val_step(
             batch_video=batch_video, 
@@ -365,7 +380,7 @@ class TestLinearProbing(unittest.TestCase):
     def test_preprocess_inputs(self):
         """Test input preprocessing."""
         batch = {
-            "videos": torch.randn(2, 16, 224, 224, 3),
+            "videos": torch.randn(2, 1, 16, 224, 224, 3),
             "targets": {
                 "contrast_agent": torch.randint(0, 2, (2, 1)),
                 "main_structure": torch.randint(0, 5, (2, 1)),

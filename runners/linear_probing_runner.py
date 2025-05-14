@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
+from typing import Optional
 
 from tqdm import tqdm
 from scipy.stats import pearsonr
@@ -347,33 +348,56 @@ class LinearProbingRunner:
         self, 
         batch: dict[str, torch.Tensor]
     ) -> dict[str, torch.Tensor]:
-        batch_video = batch['videos'].to(self.device)
+        """
+        Preprocess batch inputs for the model.
+        
+        Args:
+            batch: Dictionary containing:
+                videos: Tensor of shape [B * num_videos, C, F, H, W] for multi-video
+                       or [B, C, F, H, W] for single-video
+                targets: Dict of tensors [B, ...]
+                video_indices: Optional tensor [B * num_videos] mapping videos to batch indices
+                video_fname: List of file paths
+                
+        Returns:
+            Dictionary containing processed tensors ready for model input
+        """
+        # Move videos to device
+        batch_video = batch['videos'].to(self.config.device)
+        
+        # Move targets to device
         batch_targets = batch['targets']
         for k, v in batch_targets.items():
-            batch_targets[k] = v.to(self.device)
-        # [B, 1, T, H, W, C] -> 1 is the aggregator dimension
-        batch_video = batch_video.unsqueeze(1)
+            batch_targets[k] = v.to(self.config.device)
+            
+        # Move video indices to device if present
+        video_indices = batch.get('video_indices')
+        if video_indices is not None:
+            video_indices = video_indices.to(self.config.device)
+            
         return {
             "batch_video": batch_video,
-            "batch_targets": batch_targets
+            "batch_targets": batch_targets,
+            "video_indices": video_indices
         }
         
     def _train_step(
         self, 
         batch_video: torch.Tensor,
-        batch_targets: dict[str, torch.Tensor]
+        batch_targets: dict[str, torch.Tensor],
+        video_indices: Optional[torch.Tensor] = None,
     ) -> dict[str, dict[str, torch.Tensor]]:
         # Clear gradients only if this is the first step in accumulation
         if self.step % self.config.gradient_accumulation_steps == 0:
             self.optimizer.zero_grad()
                 
         # Forward pass with autocast for mixed precision
-        with torch.amp.autocast(
-            device_type='cuda',
-            dtype=torch.bfloat16
-        ):
+        with torch.amp.autocast('cuda', enabled=self.config.use_amp):
             try:
-                outputs_dict: dict[str, torch.Tensor] = self.linear_probing(batch_video)
+                outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
+                    batch_video, 
+                    video_indices=video_indices
+                )
             except Exception as e:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")
 
@@ -417,7 +441,7 @@ class LinearProbingRunner:
             lr_metrics[f"lr/{pg['name']}"] = pg["lr"]
 
         # Convert losses to scalar values
-        scalar_losses = {k: v.detach().item() for k, v in losses.items()}
+        scalar_losses = {k: v.item() for k, v in losses.items()}
         scalar_outputs = {k: v.detach() for k, v in outputs_dict.items()}
 
         return {
@@ -429,12 +453,16 @@ class LinearProbingRunner:
     def _val_step(
         self, 
         batch_video: torch.Tensor,
-        batch_targets: dict[str, torch.Tensor]
+        batch_targets: dict[str, torch.Tensor],
+        video_indices: Optional[torch.Tensor] = None,
     ) -> dict[str, dict[str, torch.Tensor]]:                
         # Forward pass with autocast for mixed precision
         with torch.no_grad():
             try:
-                outputs_dict: dict[str, torch.Tensor] = self.linear_probing(batch_video)
+                outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
+                    batch_video,
+                    video_indices=video_indices
+                )
             except Exception as e:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")
 
@@ -458,7 +486,7 @@ class LinearProbingRunner:
             lr_metrics[f"lr/{pg['name']}"] = pg["lr"]
 
         # Convert losses to scalar values
-        scalar_losses = {k: v.detach().item() for k, v in losses.items()}
+        scalar_losses = {k: v.item() for k, v in losses.items()}
         scalar_outputs = {k: v.detach() for k, v in outputs_dict.items()}
                 
         return {
@@ -550,62 +578,75 @@ class LinearProbingRunner:
             return
 
         try:
-            # Debug array lengths
+            # Debug array shapes before processing
             print(f"[DEBUG] rank={self.device} => Number of accumulated names: {len(accumulated_names)}")
-            for head in accumulated_preds.keys():
-                print(f"[DEBUG] rank={self.device} => Head {head} - Predictions shape: {accumulated_preds[head][0].shape}, Targets shape: {accumulated_targets[head][0].shape}")
-
+            
             # Create predictions dictionary with epoch column
             predictions_dict: dict[str, list] = {
                 'epoch': [epoch] * len(accumulated_names),
                 'video_name': accumulated_names
             }
             
-            # Add predictions and ground truth for each head
+            # Process each head's predictions
             for head in accumulated_preds.keys():
-                preds: np.ndarray = accumulated_preds[head][0].squeeze().detach().cpu().float().numpy()
-                targets: np.ndarray = accumulated_targets[head][0].squeeze().detach().cpu().float().numpy()
+                print(f"[DEBUG] rank={self.device} => Head {head} - Raw shapes:")
+                # Concatenate all predictions and targets for this head
+                preds = torch.cat(accumulated_preds[head], dim=0)
+                targets = torch.cat(accumulated_targets[head], dim=0)
+
+                # Convert to numpy and flatten if needed
+                preds = preds.cpu().numpy()
+                targets = targets.cpu().numpy()
                 
-                # Debug shapes after conversion
-                print(f"[DEBUG] rank={self.device} => Head {head} - After conversion - Preds shape: {preds.shape}, Targets shape: {targets.shape}")
+                if preds.ndim > 1 and preds.shape[1] == 1:
+                    preds = preds.squeeze()
+                if targets.ndim > 1 and targets.shape[1] == 1:
+                    targets = targets.squeeze()
                 
                 # Handle binary vs multi-class classification
                 if self.config.head_structure[head] == 1:
-                    predictions_dict[f'{head}_pred'] = preds
-                    predictions_dict[f'{head}_true'] = targets
+                    # Convert to list to ensure compatibility
+                    preds_list = preds.tolist()
+                    targets_list = targets.tolist()
+
+                    
+                    predictions_dict[f'{head}_pred'] = preds_list
+                    predictions_dict[f'{head}_true'] = targets_list
                 else:
                     # For multi-class, get both raw probabilities and predicted class
-                    pred_labels: np.ndarray = preds.argmax(axis=1)
-                    target_labels: np.ndarray = targets.argmax(axis=1)
+                    pred_labels = preds.argmax(axis=1)
+                    target_labels = targets.argmax(axis=1)
                     
-                    # Debug shapes after argmax
-                    print(f"[DEBUG] rank={self.device} => Head {head} - After argmax - Pred labels shape: {pred_labels.shape}, Target labels shape: {target_labels.shape}")
-                    
+
                     # Map numeric labels to actual class names
-                    label_map: dict[str, int] = self.config.labels_map[head]
-                    rev_label_map: dict[int, str] = {v: k for k, v in label_map.items()}
+                    label_map = self.config.labels_map[head]
+                    rev_label_map = {v: k for k, v in label_map.items()}
                     
-                    pred_classes: list[str] = [rev_label_map[i] for i in pred_labels]
-                    true_classes: list[str] = [rev_label_map[i] for i in target_labels]
-                    
-                    # Debug lengths after class mapping
-                    print(f"[DEBUG] rank={self.device} => Head {head} - After class mapping - Pred classes len: {len(pred_classes)}, True classes len: {len(true_classes)}")
+                    pred_classes = [rev_label_map[i] for i in pred_labels]
+                    true_classes = [rev_label_map[i] for i in target_labels]
                     
                     predictions_dict[f'{head}_pred_class'] = pred_classes
                     predictions_dict[f'{head}_true_class'] = true_classes
                     
                     # Add probabilities for each class
                     for class_name, class_idx in label_map.items():
-                        predictions_dict[f'{head}_prob_{class_name}'] = preds[:, class_idx]
+                        class_probs = preds[:, class_idx].tolist()
+                        predictions_dict[f'{head}_prob_{class_name}'] = class_probs
+                
+
+                for k, v in predictions_dict.items():
+                    print(f"[DEBUG] rank={self.device} =>     {k}: {len(v)}")
             
-            # Debug final dictionary lengths
-            print(f"[DEBUG] rank={self.device} => Final dictionary lengths:")
-            for k, v in predictions_dict.items():
-                print(f"[DEBUG] rank={self.device} => {k}: {len(v)}")
+            # Verify all arrays have the same length
+            lengths = set(len(v) for v in predictions_dict.values())
+            if len(lengths) > 1:
+                raise ValueError(
+                    f"[DEBUG] rank={self.device} => Mismatched lengths in predictions dictionary: {lengths}"
+                )
             
             # Create and save DataFrame
-            df: pd.DataFrame = pd.DataFrame(predictions_dict)
-            predictions_dir: str = os.path.join(self.output_dir, "predictions") 
+            df = pd.DataFrame(predictions_dict)
+            predictions_dir = os.path.join(self.output_dir, "predictions") 
             os.makedirs(predictions_dir, exist_ok=True)
             
             # Save current epoch predictions

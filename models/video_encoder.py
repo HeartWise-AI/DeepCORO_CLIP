@@ -42,36 +42,40 @@ class VideoEncoder(nn.Module):
         self.dropout: float = dropout
         self.freeze_ratio: float = freeze_ratio
 
+        # Add embedding_dim property
+        self._embedding_dim: int = output_dim
+
         # 1) Build backbone
         if backbone == "mvit":
             # Load the pretrained MViT v2 S
             self.model: nn.Module = mvit_v2_s(weights="KINETICS400_V1" if pretrained else None)
             # self.model.head is a Sequential. We find the final nn.Linear layer:
-            in_features = None
-            for layer in reversed(self.model.head):
+            in_features: int = 768  # Default MViT feature dimension
+            for layer in reversed(list(self.model.head)):
                 if isinstance(layer, nn.Linear):
                     in_features = layer.in_features
                     break
-            # If we didn't find a linear, default to a known dimension (e.g., 768)
-            if in_features is None:
-                in_features = 768
 
-            # Replace classification head with Identity
-            self.model.head = nn.Identity()
+            # Replace classification head with custom head
+            self.model.head = nn.Sequential(nn.Identity())
         
         elif backbone == "r3d":
             self.model: nn.Module = r3d_18(pretrained=pretrained)
             in_features: int = self.model.fc.in_features
-            self.model.fc = nn.Identity()
+            # Replace fc with Identity (keeping as Linear for type compatibility)
+            self.model.fc = nn.Linear(in_features, in_features)
+            # Initialize as identity transformation
+            self.model.fc.weight.data = torch.eye(in_features)
+            self.model.fc.bias.data.zero_()
             
         elif backbone in ["x3d_s", "x3d_m"]:
             # Load X3D model from torch.hub
             self.model = torch.hub.load('facebookresearch/pytorchvideo', backbone, pretrained=pretrained)
             # Get feature dimension from the head
             in_features = self.model.blocks[5].proj.in_features
-            # Replace classification head with Identity
-            self.model.blocks[5].proj = nn.Identity()
-            self.model.blocks[5].activation = nn.Identity()
+            # Replace classification head with Identity wrapped in Sequential
+            self.model.blocks[5].proj = nn.Sequential(nn.Identity())
+            self.model.blocks[5].activation = nn.Sequential(nn.Identity())
             
         else:
             raise ValueError(f"Unsupported backbone: {backbone}")
@@ -112,6 +116,10 @@ class VideoEncoder(nn.Module):
             if i < (total_count - train_count):
                 param.requires_grad = False
 
+    @property
+    def embedding_dim(self) -> int:
+        """Get the embedding dimension."""
+        return self._embedding_dim
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -123,15 +131,24 @@ class VideoEncoder(nn.Module):
             W= width,
             C= channels=3
         We'll reorder => [B,N,C,T,H,W], flatten => [B*N, C, T, H, W],
-        pass through the backbone, then aggregator => [B, output_dim].
+        pass through the backbone, then aggregator => [B, N, output_dim].
         """
+        if x.ndim == 7:
+            # Workaround for unexpected 7D input.
+            # The method expects 6D [B, N, T, H, W, C].
+            # Assuming 7D is [B, D1, D2, T_actual, H_actual, W_actual, C_actual]
+            # and D1, D2 should be combined into the 'N' dimension.
+            s = x.shape
+            x = x.view(s[0], s[1] * s[2], s[3], s[4], s[5], s[6])
+            # Now x should be 6D: [B, N_combined, T, H, W, C]
+        
         # Reorder last dimension (C) to after N => [B, N, C, T, H, W]
         x = x.permute(0, 1, 5, 2, 3, 4)  # Now shape: [B, N, 3, T, H, W]
         B, N, C, T, H, W = x.shape
-        
+
         # Flatten => [B*N, 3, T, H, W]
         x = x.view(B*N, C, T, H, W)
-        
+
         # Pass through backbone => [B*N, in_features]
         feats = self.model(x)
         # Then projection => [B*N, output_dim]
@@ -140,10 +157,8 @@ class VideoEncoder(nn.Module):
         # Reshape => [B, N, output_dim]
         feats = feats.view(B, N, self.output_dim)
         
-        # aggregator => [B, output_dim]
-        out = self.aggregator(feats)
-
-        return out
+        # Pass through aggregator to get final output [B, N, output_dim]
+        return feats
 
 
 

@@ -8,11 +8,18 @@ import wandb
 import torch
 import torch.nn as nn
 from datetime import datetime
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, Tuple
+from PIL import Image
+import numpy as np
+import tempfile
+import shutil
+import cv2
+import subprocess
 
 from utils.wandb_wrapper import WandbWrapper
 from utils.config.heartwise_config import HeartWiseConfig
 from utils.video import convert_video_for_wandb, cleanup_temp_video
+from dataloaders.video_clip_dataset import VideoClipDataset
 
 class WandbLogger:
     """
@@ -381,37 +388,42 @@ class WandbLogger:
             cleanup_temp_video(temp_file)
 
 
-def convert_video_for_wandb(video_path):
+def convert_video_for_wandb(video_path: str, max_frames: int = 50, fps: int = 10) -> Tuple[str, bool]:
     """Convert video to MP4 format for wandb logging if needed.
 
     Args:
         video_path: Path to input video
+        max_frames: Maximum number of frames to include in the video
+        fps: Frames per second to use in the output video
 
     Returns:
         tuple: (output_path, is_temp) where is_temp indicates if the file needs cleanup
     """
-    # If already MP4, return as is
     if video_path.lower().endswith(".mp4"):
         return video_path, False
 
-    import subprocess
-    import tempfile
-
-    # Create temporary MP4 file
     temp_fd, temp_path = tempfile.mkstemp(suffix=".mp4")
     os.close(temp_fd)
 
     try:
-        # Convert to MP4 using ffmpeg
-        subprocess.run(
-            ["ffmpeg", "-i", video_path, "-c:v", "libx264", "-preset", "fast", "-y", temp_path],
-            check=True,
-            capture_output=True,
-        )
+        # Simplified ffmpeg command for compatibility, ensure target scale is reasonable
+        # Example: scale to width 320, preserve aspect ratio for height, limit frames
+        # The original scaling logic was: f"scale=-1:{(max_frames * fps) // fps}"
+        # This can lead to very large dimensions if fps is high. Let's use a fixed width.
+        # It seems the user wants a grid, so convert_video_for_wandb will be for single videos or fallback.
+        # The grid creation will handle its own resizing.
+        cmd = [
+            "ffmpeg", "-i", video_path,
+            "-vf", f"fps={fps},scale=320:-1", # Scale to width 320, adjust fps
+            "-frames:v", str(max_frames), # Limit total frames
+            "-c:v", "libx264", "-y", temp_path # Removed -preset fast
+        ]
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
         return temp_path, True
     except subprocess.CalledProcessError as e:
-        print(f"Warning: Failed to convert video {video_path}: {e.stderr.decode()}")
-        os.unlink(temp_path)
+        print(f"Warning: Failed to convert video {video_path} with ffmpeg: {e.stderr}")
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
         return video_path, False
 
 
@@ -545,50 +557,70 @@ def log_best_worst_retrievals(
     unique_texts: List[str],
     ground_truth_indices: torch.Tensor,
     epoch: int, 
-    wandb_wrapper: WandbWrapper
+    wandb_wrapper: WandbWrapper,
+    dataset_obj: VideoClipDataset 
 ) -> None:
     """Log best and worst retrievals to wandb.
     
     Args:
         wandb_logger: Wandb logger instance to use for logging
         similarity_matrix: Tensor of shape [num_videos x num_unique_texts] containing similarity scores
-        all_paths: List of video paths
+        all_paths: List of video paths (or SIDs in multi-video mode)
         unique_texts: List of unique text descriptions
         ground_truth_indices: Tensor mapping each video to its ground truth text index
         epoch: Current epoch number
+        dataset_obj: The VideoClipDataset instance for multi-video path resolution.
     """
-    # Find best and worst retrievals based on maximum similarity scores
-    max_scores, _ = similarity_matrix.max(dim=1)
-    k = 1  # Only pick top 1 best and worst
-    best_scores, best_indices = torch.topk(max_scores, k=k)
-    worst_scores, worst_indices = torch.topk(max_scores, k=k, largest=False)
+    if not wandb_wrapper.is_initialized(): # Check if wandb is initialized
+        return
+        
+    # Find best and worst retrievals based on maximum similarity scores for each video
+    max_scores_per_video, _ = similarity_matrix.max(dim=1)
     
-    # Process and log best retrieval
-    if best_indices.numel() > 0:
+    num_examples_to_log = 2  # Log top 2 best and top 2 worst
+    
+    # Ensure k is not greater than the number of videos
+    k_actual = min(num_examples_to_log, max_scores_per_video.numel())
+    
+    if k_actual == 0:
+        print("Warning: No videos to log for best/worst retrievals.")
+        return
+
+    best_scores, best_indices = torch.topk(max_scores_per_video, k=k_actual)
+    worst_scores, worst_indices = torch.topk(max_scores_per_video, k=k_actual, largest=False)
+    
+    # Process and log best retrievals
+    for i in range(best_indices.numel()):
+        video_idx = best_indices[i].item()
+        score = best_scores[i].item()
         _log_retrieval(
-            idx=best_indices[0].item(),
-            score=best_scores[0].item(),
+            idx=video_idx,
+            score=score,
             similarity_matrix=similarity_matrix,
             all_paths=all_paths,
             unique_texts=unique_texts,
             ground_truth_indices=ground_truth_indices,
             epoch=epoch,
             is_best=True,
-            wandb_wrapper=wandb_wrapper
+            wandb_wrapper=wandb_wrapper,
+            dataset_obj=dataset_obj
         )
 
-    # Process and log worst retrieval
-    if worst_indices.numel() > 0:
+    # Process and log worst retrievals
+    for i in range(worst_indices.numel()):
+        video_idx = worst_indices[i].item()
+        score = worst_scores[i].item()
         _log_retrieval(
-            idx=worst_indices[0].item(),
-            score=worst_scores[0].item(),
+            idx=video_idx,
+            score=score,
             similarity_matrix=similarity_matrix,
             all_paths=all_paths,
             unique_texts=unique_texts,
             ground_truth_indices=ground_truth_indices,
             epoch=epoch,
             is_best=False,
-            wandb_wrapper=wandb_wrapper
+            wandb_wrapper=wandb_wrapper,
+            dataset_obj=dataset_obj
         )
 
 def _log_retrieval(
@@ -600,95 +632,242 @@ def _log_retrieval(
     ground_truth_indices: torch.Tensor,
     epoch: int,
     is_best: bool,
-    wandb_wrapper: WandbWrapper
+    wandb_wrapper: WandbWrapper,
+    dataset_obj: VideoClipDataset
 ) -> None:
     """Helper function to log a single retrieval example."""
-    # Get top 5 predicted texts
     top_5_text_indices = torch.argsort(similarity_matrix[idx], descending=True)[:5]
     predicted_texts = [unique_texts[j.item()] for j in top_5_text_indices]
     
-    # Convert video and log
-    mp4_path, is_temp = convert_video_for_wandb(all_paths[idx])
-    
-    prefix = "good" if is_best else "bad"
-    wandb_wrapper.log({
-        f"qualitative/{prefix}_retrieval": wandb.Video(
-            mp4_path,
-            caption=f"Sim: {score:.3f}",
-            format="mp4"
-        ),
-        "epoch": epoch
-    })
-    
-    # Log text information
-    predicted_html = "<br>".join(
-        [f"{i+1}. {text}" for i, text in enumerate(predicted_texts)]
-    )
-    ground_truth_html = (
-        f"<b>Ground Truth:</b> {unique_texts[ground_truth_indices[idx]]}<br>"
-        f"<b>Top 5 Predicted:</b><br>{predicted_html}"
-    )
-    wandb.log({
-        f"qualitative/{prefix}_retrieval_text": wandb.Html(ground_truth_html),
-        "epoch": epoch
-    })
-    
-    if is_temp:
-        cleanup_temp_video(mp4_path)
+    video_to_log_path: Optional[str] = None
+    is_temp_video = False
 
+    if dataset_obj.multi_video_mode:
+        sid = all_paths[idx]
+        actual_video_files = dataset_obj.get_video_paths(sid)
+        videos_for_grid = [vp for vp in actual_video_files if os.path.exists(vp)][:4]
+        
+        if videos_for_grid:
+            print(f"Creating video grid for SID: {sid} with videos: {videos_for_grid}")
+            video_to_log_path, is_temp_video = _create_video_grid(videos_for_grid)
+            if not video_to_log_path:
+                print(f"Warning: Failed to create video grid for SID {sid}. Skipping video log.")
+        else:
+            print(f"Warning: No valid video files found for SID {sid} to create a grid. Skipping video log.")
+    else:
+        single_video_path = all_paths[idx]
+        if os.path.exists(single_video_path):
+            video_to_log_path, is_temp_video = convert_video_for_wandb(single_video_path)
+        else:
+            print(f"Warning: Single video path '{single_video_path}' does not exist. Skipping video log.")
+
+    if video_to_log_path:
+        prefix = "good" if is_best else "bad"
+        wandb_wrapper.log({
+            f"qualitative/{prefix}_retrieval": wandb.Video(
+                video_to_log_path,
+                caption=f"Sim: {score:.3f} (Identifier: {all_paths[idx]})",
+                format="mp4"
+            ),
+            "epoch": epoch
+        })
+        
+        # Log text information
+        predicted_html = "<br>".join(
+            [f"{i+1}. {text}" for i, text in enumerate(predicted_texts)]
+        )
+        gt_text_idx = ground_truth_indices[idx].item()
+        ground_truth_text_display = "N/A"
+        if 0 <= gt_text_idx < len(unique_texts):
+            ground_truth_text_display = unique_texts[gt_text_idx]
+        else:
+            print(f"Warning: Ground truth index {gt_text_idx} is out of bounds for unique_texts (len: {len(unique_texts)}). Using N/A.")
+
+        ground_truth_html = (
+            f"<b>Identifier:</b> {all_paths[idx]}<br>"
+            f"<b>Ground Truth:</b> {ground_truth_text_display}<br>"
+            f"<b>Top 5 Predicted:</b><br>{predicted_html}"
+        )
+        wandb.log({
+            f"qualitative/{prefix}_retrieval_text": wandb.Html(ground_truth_html),
+            "epoch": epoch
+        })
+        
+        if is_temp_video:
+            cleanup_temp_video(video_to_log_path)
+    # else: (warnings for not logging video are handled above)
+
+
+def _create_video_grid(video_paths: List[str], output_fps: int = 10, cell_resolution: Tuple[int, int] = (224, 224), grid_dim: Tuple[int, int] = (2,2)) -> Tuple[Optional[str], bool]:
+    """
+    Creates a video grid from a list of up to 4 videos.
+
+    Args:
+        video_paths: List of paths to input videos (max 4).
+        output_fps: FPS for the output grid video.
+        cell_resolution: Tuple (width, height) for each cell in the grid.
+        grid_dim: Tuple (rows, cols) for the grid layout (e.g., (2,2) for 4 videos).
+
+    Returns:
+        Tuple (path_to_grid_video, is_temp_file) or (None, False) if failed.
+    """
+    if not video_paths:
+        return None, False
+
+    videos_to_process = video_paths[:grid_dim[0] * grid_dim[1]]
+    caps = []
+    for vp in videos_to_process:
+        if not os.path.exists(vp):
+            print(f"Warning: Video path {vp} not found for grid. Skipping this video.")
+            continue
+        cap = cv2.VideoCapture(vp)
+        if not cap.isOpened():
+            print(f"Warning: Could not open video {vp} for grid. Skipping this video.")
+            continue
+        caps.append(cap)
+
+    if not caps:
+        print("No valid videos to create a grid.")
+        return None, False
+
+    # Determine minimum frame count across all valid videos to sync them
+    min_frames = float('inf')
+    original_fps_list = []
+    for cap in caps:
+        original_fps_list.append(cap.get(cv2.CAP_PROP_FPS))
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if frame_count > 0:
+            min_frames = min(min_frames, frame_count)
+    
+    if min_frames == float('inf') or min_frames == 0:
+        print("Warning: Could not determine frame counts or videos are empty. Cannot create grid.")
+        for cap in caps:
+            cap.release()
+        return None, False
+
+    # Ensure min_frames is an integer for range()
+    min_frames = int(min_frames)
+
+    grid_width = grid_dim[1] * cell_resolution[0]
+    grid_height = grid_dim[0] * cell_resolution[1]
+
+    temp_fd, temp_grid_path = tempfile.mkstemp(suffix=".mp4")
+    os.close(temp_fd)
+
+    # Define the codec and create VideoWriter object
+    # Using 'avc1' (H.264) or 'mp4v' (MPEG-4) - mp4v is often more compatible
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v') 
+    out_writer = cv2.VideoWriter(temp_grid_path, fourcc, output_fps, (grid_width, grid_height))
+
+    if not out_writer.isOpened():
+        print(f"Error: Could not open VideoWriter for path {temp_grid_path}. Check OpenCV/ffmpeg setup.")
+        for cap in caps:
+            cap.release()
+        if os.path.exists(temp_grid_path):
+            os.unlink(temp_grid_path)
+        return None, False
+
+    try:
+        for frame_num in range(min_frames):
+            grid_frame = np.zeros((grid_height, grid_width, 3), dtype=np.uint8) # Black background
+            for i, cap in enumerate(caps):
+                if frame_num == 0: # Reset video to beginning if looping or re-reading (not strictly needed here due to min_frames)
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                
+                ret, frame = cap.read()
+                if not ret:
+                    # If a video ends prematurely (shouldn't happen if min_frames is correct)
+                    # Fill its cell with black or last good frame (here, simply skip updating its cell)
+                    continue 
+                
+                resized_frame = cv2.resize(frame, cell_resolution)
+                
+                row = i // grid_dim[1]
+                col = i % grid_dim[1]
+                y_offset = row * cell_resolution[1]
+                x_offset = col * cell_resolution[0]
+                
+                grid_frame[y_offset:y_offset+cell_resolution[1], x_offset:x_offset+cell_resolution[0]] = resized_frame
+            out_writer.write(grid_frame)
+    finally:
+        for cap in caps:
+            cap.release()
+        out_writer.release()
+
+    return temp_grid_path, True
 
 
 def save_retrieval_results(
     similarity_matrix: torch.Tensor,
-    all_paths: List[str],
+    all_identifiers: List[str],
     all_ground_truth_reports: List[str],
     report_to_global_index: Optional[Dict[str, int]],
     epoch: int,
-    output_dir: str
+    output_dir: str,
+    dataset_obj: VideoClipDataset
 ) -> None:
     """
     Save retrieval results to a CSV, showing top-5 predicted indices and their similarities
     for each sample. If report_to_global_index is None, we default to using row index i as the
     ground-truth index.
+    Handles different CSV structures for single vs. multi-video modes.
     """
     val_csv_path = os.path.join(output_dir, f"val_epoch{epoch}.csv")
+    
+    multi_video_mode = dataset_obj.multi_video_mode
+    actual_groupby_col_name = dataset_obj.groupby_column if dataset_obj.groupby_column else "study_id"
+
     with open(val_csv_path, mode="w", newline="", encoding="utf-8") as csvfile:
         writer = csv.writer(csvfile)
-        header = [
-            "FileName",
+        
+        header_base = [
             "ground_truth_idx",
-            "predicted_idx_1",
-            "sim_1",
-            "predicted_idx_2",
-            "sim_2",
-            "predicted_idx_3",
-            "sim_3",
-            "predicted_idx_4",
-            "sim_4",
-            "predicted_idx_5",
-            "sim_5",
+            "predicted_idx_1", "sim_1",
+            "predicted_idx_2", "sim_2",
+            "predicted_idx_3", "sim_3",
+            "predicted_idx_4", "sim_4",
+            "predicted_idx_5", "sim_5",
         ]
-        writer.writerow(header)
+        
+        header_prefix = []
+        if multi_video_mode:
+            header_prefix = [actual_groupby_col_name, "VideoFileNames"]
+        else:
+            header_prefix = ["FileName"]
+            
+        writer.writerow(header_prefix + header_base)
 
-        for i, path in enumerate(all_paths):
-            top_5_text_indices = torch.argsort(similarity_matrix[i], descending=True)[:5]
+        for i, identifier in enumerate(all_identifiers):
+            top_5_sim_scores, top_5_text_indices = torch.topk(similarity_matrix[i], k=5)
             predicted_indices = [idx.item() for idx in top_5_text_indices]
-            predicted_sims = [similarity_matrix[i, idx].item() for idx in top_5_text_indices]
+            predicted_sims = [score.item() for score in top_5_sim_scores]
 
             gt_text = all_ground_truth_reports[i]
 
-            # If we have a mapping dict, use it. Otherwise just use row index i.
-            if report_to_global_index is not None:
+            if report_to_global_index is not None and gt_text in report_to_global_index:
                 gt_idx = report_to_global_index[gt_text]
             else:
-                gt_idx = i
+                print(f"Warning: Ground truth text '{gt_text}' not found in report_to_global_index for identifier '{identifier}'. Using row index {i} as fallback gt_idx.")
+                gt_idx = i 
 
-            row_data = [path, gt_idx]
-
+            current_row_prefix_data = []
+            if multi_video_mode:
+                sid = identifier
+                video_files_list = dataset_obj.get_video_paths(sid)
+                video_files_str = ";".join(video_files_list) if video_files_list else ""
+                current_row_prefix_data.extend([sid, video_files_str])
+            else:
+                filename = identifier
+                current_row_prefix_data.append(filename)
+            
+            row_data_suffix = [gt_idx]
             for p_idx, p_sim in zip(predicted_indices, predicted_sims):
-                row_data.append(p_idx)
-                row_data.append(f"{p_sim:.4f}")
-
-            writer.writerow(row_data)
-
+                row_data_suffix.append(p_idx)
+                row_data_suffix.append(f"{p_sim:.4f}")
+            
+            num_prediction_pairs = (len(header_base) -1) // 2
+            while len(predicted_indices) < num_prediction_pairs:
+                row_data_suffix.extend(["", ""])
+                predicted_indices.append(-1) 
+            writer.writerow(current_row_prefix_data + row_data_suffix)
     print(f"Saved retrieval results to {val_csv_path}")

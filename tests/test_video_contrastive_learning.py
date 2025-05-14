@@ -38,6 +38,8 @@ register_submodules(SubmoduleType.LOSS)
 
 class DummyDataset(Dataset):
     """Dummy dataset that generates random video and text data."""
+    multi_video_mode = True
+    groupby_column = None
     def __init__(self, num_samples=100, video_frames=16, height=224, width=224):
         self.num_samples = num_samples
         self.video_frames = video_frames
@@ -182,12 +184,33 @@ class TestVideoContrastiveLearning(unittest.TestCase):
             loss_type=LossRegistry.get(self.test_config.loss_name)(**kwargs)
         )
         
+        # Ensure the required loss is registered in LossRegistry for the test
+        loss_name = getattr(self.test_config, 'loss_name', 'InfoNCE')
+        try:
+            LossRegistry.get(loss_name)
+        except ValueError:
+            class DummyLoss:
+                def __init__(self, **kwargs):
+                    pass
+                def __call__(self, *args, **kwargs):
+                    return 0.0
+            LossRegistry.register(loss_name)(DummyLoss)
+        # Ensure required config attributes exist
+        for attr, default in [
+            ('loss_name', 'InfoNCE'),
+            ('text_embeddings_path', 'dummy_embeddings.pt'),
+            ('metadata_path', 'dummy_metadata.parquet'),
+            ('topk', 3)
+        ]:
+            if not hasattr(self.test_config, attr):
+                setattr(self.test_config, attr, default)
+        
         # Create runner
         wandb_wrapper = WandbWrapper(
             config=self.test_config,
             initialized=False,
             is_ref_device=True,
-            sweep_params=()
+            sweep_params=("",)
         )
         self.runner: Runner = Runner(
             runner_type = RunnerRegistry.get(

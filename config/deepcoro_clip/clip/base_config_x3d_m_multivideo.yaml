@@ -9,13 +9,13 @@ device: !!str cuda
 run_mode: !!str train
 max_grad_norm: !!float 1.0
 # Dataset parameters
-data_filename: !!str data/reports/reports_with_alpha_separator_with_Calcifc_Stenosis_IFR_20250407_RCA_LCA.csv
+data_filename: !!str data/reports/report_sampled_200.csv
 root: !!str "."
 target_label: !!str Report
 datapoint_loc_label: !!str FileName
 frames: !!int 32
 stride: !!int 1
-multi_video: !!bool false
+multi_video: !!bool true
 num_videos: !!int 4
 groupby_column: !!str StudyInstanceUID
 shuffle_videos: !!bool true
@@ -63,7 +63,13 @@ view_count: !!null null
 apply_mask: !!bool false
 # wandb parameters
 tag: !!str x3d_m_pretrained
-name: !!str DeepCORO_Clip_Sweep_Single_Video
-project: !!str DeepCORO_Clip_Sweep_Single_Video
+name: !!str DeepCORO_Clip_Sweep_Multi_Video
+project: !!str DeepCORO_Clip_Sweep_Multi_Video
 entity: !!str mhi_ai
 use_wandb: !!bool true
+# Inference parameters
+inference_results_path: outputs/inference_results
+metadata_path: !!null null
+text_embeddings_path: !!null null
+topk: !!int 5
+base_checkpoint_path: outputs/checkpoints

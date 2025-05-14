@@ -6,7 +6,8 @@ import torch
 import tempfile
 import cv2
 from unittest.mock import patch, MagicMock
-from dataloaders.video_dataset import VideoDataset, custom_collate_fn
+# DEPRECATED: Use VideoClipDataset instead of VideoDataset. This will be removed in a future release.
+from dataloaders.video_dataset import VideoDataset, custom_collate_fn  # Deprecated, use VideoClipDataset
 from tests.templates import DatasetTestsMixin
 from utils.video import load_video
 
@@ -194,7 +195,7 @@ class TestVideoDataset(unittest.TestCase):
         self.assertIn("video_fname", collated)
         
         # Check shapes and types
-        self.assertEqual(collated["videos"].shape, torch.Size([2, 32, 224, 224, 3]))
+        self.assertEqual(collated["videos"].shape, torch.Size([2, 1, 32, 224, 224, 3]))
         self.assertIsInstance(collated["videos"], torch.Tensor)
         self.assertIsInstance(collated["targets"], dict)
         self.assertIn("target_label", collated["targets"])

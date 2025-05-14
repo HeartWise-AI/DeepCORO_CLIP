@@ -521,10 +521,10 @@ class TestHeartWiseParser(unittest.TestCase):
         mock_parser = MagicMock()
         mock_parser.parse_args_and_update.return_value = mock_config
         mock_get_pipeline_parser.return_value = (mock_parser, mock_config)
-        
+        # Ensure the config's type has set_gpu_info_in_place
+        type(mock_config).set_gpu_info_in_place = mock_set_gpu_info
         # Call the method
         result = HeartWiseParser.parse_config()
-        
         # Check the result
         self.assertEqual(result, mock_config)
         mock_parser.parse_args_and_update.assert_called_once_with(mock_config)

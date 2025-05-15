@@ -36,10 +36,22 @@ parameters:
     max: 0.5
   stride:
     values: [1, 2]
+  pooling_mode:
+    values: ["attention", "mean", "max"]
   dropout:
     distribution: uniform
     min: 0.05
     max: 0.2
+  num_videos:
+    values: [2, 3, 4]
+  attention_lr:
+    distribution: uniform
+    min: 1e-4
+    max: 1e-3
+  attention_weight_decay:
+    distribution: uniform
+    min: 0.0
+    max: 0.0001
   video_freeze_ratio:
     distribution: uniform
     min: 0.8

@@ -21,14 +21,12 @@ num_hard_restarts_cycles: !!float 1.0
 warm_restart_tmult: !!int 2
 # Dataset parameters
 data_filename: !!str data/reports/CathEF_MHI_UCSF_2016-to-july-2022-and-2023-08-30-post-CathEF_alpha_StudyInstanceUID_updated.csv
-num_workers: !!int 20
-batch_size: !!int 20
+num_workers: !!int 24
+batch_size: !!int 24
 multi_video: !!bool true
 groupby_column: !!str 'StudyInstanceUID'
 num_videos: !!int 4
 pooling_mode: !!str attention
-
-
 shuffle_videos: !!bool true
 datapoint_loc_label: !!str FileName
 target_label: [Value, y_true_cat]

@@ -37,6 +37,15 @@ class BaseParser:
         common_group.add_argument('--device', type=str, help="Device to use (e.g., 'cuda', 'cpu').")
         common_group.add_argument('--world_size', type=int, help="Number of processes for distributed training.")
     
+    # ------------------------------------------------------------------
+    # Provide a stub for parse_args_and_update so that static type checkers
+    # recognize the method on BaseParser references. Sub-classes are expected
+    # to override this.
+    # ------------------------------------------------------------------
+    def parse_args_and_update(self, config: 'HeartWiseConfig', args_list=None):  # type: ignore[override]
+        """Stub to satisfy static type checkers. Should be overridden by subclasses."""
+        raise NotImplementedError("Subclasses must implement parse_args_and_update().")
+
 @ParserRegistry.register("DeepCORO_clip")
 @ParserRegistry.register("DeepCORO_clip_test")
 class ClipParser(BaseParser):
@@ -171,6 +180,19 @@ class LinearProbingParser(BaseParser):
         lp_data_group.add_argument('--resize', type=int, help="Resize dimension for input frames.")
         lp_data_group.add_argument('--frames', type=int, help="Number of frames to sample per video.")
         lp_data_group.add_argument('--stride', type=int, help="Stride between sampled frames.")
+        
+        # ------------------------------------------------------------------
+        # Multi-Instance / Multi-Video parameters (MIL)
+        # ------------------------------------------------------------------
+        lp_data_group.add_argument('--multi_video', type=str2bool, help="Whether to load multiple videos per sample.")
+        lp_data_group.add_argument('--num_videos', type=int, help="Number of videos per sample if multi_video is True.")
+        lp_data_group.add_argument('--groupby_column', type=str, help="Column to group data by (e.g., patient ID).")
+        lp_data_group.add_argument('--shuffle_videos', type=str2bool, help="Shuffle videos within a group if multi_video is True.")
+        lp_data_group.add_argument('--pooling_mode', type=str, help="Pooling mode to aggregate segment embeddings ('mean', 'max', 'attention').")
+        lp_data_group.add_argument('--attention_hidden', type=int, help="Hidden dimension for attention pooling.")
+        lp_data_group.add_argument('--dropout_attention', type=float, help="Dropout rate for attention pooling block.")
+        lp_data_group.add_argument('--attention_lr', type=float, help="Learning rate for attention pooling parameters.")
+        lp_data_group.add_argument('--attention_weight_decay', type=float, help="Weight decay for attention pooling parameters.")
         
         lp_model_group = self.parser.add_argument_group('Linear Probing Video Encoder parameters')
         lp_model_group.add_argument('--model_name', type=str, help="Name of the video encoder model.")

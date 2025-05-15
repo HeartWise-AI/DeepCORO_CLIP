@@ -132,6 +132,7 @@ bash scripts/runner.sh --base_config config/linear_probing/base_config.yaml --se
 
 # Multi-GPU hyperparameters fine-tuning - RunMode and UseWandb are forced to train and true respectively (see scripts/run_sweep.sh)
 bash scripts/run_sweep.sh --base_config config/linear_probing/base_config.yaml --sweep_config config/linear_probing/sweep_config.yaml --selected_gpus 0,1 --count 5
+
 ```
 
 ## Model Architecture

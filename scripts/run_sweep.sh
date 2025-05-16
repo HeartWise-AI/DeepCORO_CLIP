@@ -141,9 +141,9 @@ fi
 
 # Extract configuration fields using yq
 mapfile -t COMMANDS < <(yq e '.command[]' "${SWEEP_CONFIG_PATH}")
-NAME=$(yq e '.parameters.name.values[]' "${SWEEP_CONFIG_PATH}" | tr -d "'")
-PROJECT=$(yq e '.parameters.project.values[]' "${SWEEP_CONFIG_PATH}" | tr -d "'")
-ENTITY=$(yq e '.parameters.entity.values[]' "${SWEEP_CONFIG_PATH}" | tr -d "'")
+NAME=$(yq e '.name' "${SWEEP_CONFIG_PATH}" | tr -d "'")
+PROJECT=$(yq e '.project' "${SWEEP_CONFIG_PATH}" | tr -d "'")
+ENTITY=$(yq e '.entity' "${SWEEP_CONFIG_PATH}" | tr -d "'")
 
 # Validate extracted values
 if [ -z "${NAME}" ] || [ -z "${PROJECT}" ] || [ -z "${ENTITY}" ]; then

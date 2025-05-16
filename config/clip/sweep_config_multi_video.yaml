@@ -1,14 +1,14 @@
 command:
   - torchrun
-  - "--nproc_per_node="
+  - "--nproc_per_node=3"
   - "--master_port=29500"
   - "scripts/main.py"
   - "--base_config"
-  - "config/base_config.yaml"
+  - "config/clip/base_config.yaml"
   - ${args}
 
-name: "dev_deep_coro_clip_single_video"
-project: "dev_deep_coro_clip_single_video"
+name: "dev_deep_coro_clip"
+project: "dev_deep_coro_clip"
 entity: "mhi_ai"
 
 method: bayes
@@ -22,6 +22,8 @@ parameters:
     distribution: log_uniform_values
     min: 5e-5
     max: 1e-3
+  multi_video:
+    values: [true]
 
   optimizer:
     values: ["RAdam", "AdamW"]
@@ -56,10 +58,10 @@ parameters:
     max: 0.95
 
   num_heads:
-    values: [2, 4, 6, 8, 10]
+    values: [2, 4, 6, 8]
 
   aggregator_depth:
-    values: [1, 2, 3, 4]
+    values: [1, 2, 4]
 
   temperature:
     distribution: uniform
@@ -76,19 +78,13 @@ parameters:
     max: 1e-6
 
   batch_size:
-    values: [4]
+    values: [8, 12, 16]
   num_videos:
-    values: [6, 7, 8]
+    values: [3,4,5]
   loss_name:
     values: ["contrastive"]
   tag:
     values: ["mvit_pretrained"]
-  name:
-    values: ["dev_deep_coro_clip"]
-  project:
-    values: ["dev_deep_coro_clip"]
-  entity:
-    values: ["mhi_ai"]
 
 early_terminate:
   type: hyperband

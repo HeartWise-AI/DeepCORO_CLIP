@@ -1,6 +1,6 @@
 command:
   - torchrun
-  - "--nproc_per_node=2"
+  - "--nproc_per_node=1"
   - "--master_port=29500"
   - "scripts/main.py"
   - "--base_config"

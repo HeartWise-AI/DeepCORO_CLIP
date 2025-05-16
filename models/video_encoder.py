@@ -3,6 +3,7 @@
 import torch
 import torch.nn as nn
 from torchvision.models.video import mvit_v2_s, r3d_18
+from torch.amp.autocast_mode import autocast
 
 from utils.registry import ModelRegistry
 from models.video_aggregator import EnhancedVideoAggregator
@@ -169,7 +170,15 @@ class VideoEncoder(nn.Module):
         
         if self._apply_aggregator:
             # Aggregate over the *N* dimension ➔ [B, D] for CLIP
-            out = self.aggregator(feats)
+            # We sometimes see NaNs when the aggregator is executed under AMP fp16.
+            # To improve numerical stability, always run the aggregator in fp32
+            # and cast the result back to the original dtype (usually fp16 when
+            # autocast is enabled). This has a negligible memory footprint
+            # because the tensor is [B, N, D] with small N (≲5).
+            orig_dtype = feats.dtype
+            with autocast('cuda', enabled=False):
+                out = self.aggregator(feats.float())  # fp32 safe path
+            out = out.to(orig_dtype)
             return out
 
         # Return per-instance embeddings  [B, N, D] for MIL

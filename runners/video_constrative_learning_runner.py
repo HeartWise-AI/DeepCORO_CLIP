@@ -819,6 +819,10 @@ class VideoContrastiveLearningRunner:
                 self.scaler.update()
             else:
                 self.optimizer.step()
+            
+            # Step the learning rate scheduler after optimizer step
+            if self.lr_scheduler and self.scheduler_per_iteration:
+                self.lr_scheduler.step()
 
         # Increment step counter
         self.step += 1

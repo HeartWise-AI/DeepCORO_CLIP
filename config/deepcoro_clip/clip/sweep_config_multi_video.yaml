@@ -63,8 +63,8 @@ parameters:
 
   temperature:
     distribution: uniform
-    min: 0.05
-    max: 0.1
+    min: 0.07
+    max: 0.15
 
   video_weight_decay:
     distribution: log_uniform_values
@@ -80,7 +80,7 @@ parameters:
   num_videos:
     values: [6, 7, 8]
   loss_name:
-    values: ["contrastive"]
+    values: ["siglip_ddp "]
   tag:
     values: ["mvit_pretrained"]
   name:

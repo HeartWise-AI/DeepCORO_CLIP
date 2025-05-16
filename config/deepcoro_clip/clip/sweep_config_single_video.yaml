@@ -67,7 +67,7 @@ parameters:
     values: [1, 2]
 
   batch_size:
-    values: [64, 96, 128]
+    values: [64, 96]
 
   max_grad_norm:
     values: [1.0, 2.0]

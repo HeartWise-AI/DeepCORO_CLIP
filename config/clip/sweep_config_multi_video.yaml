@@ -1,6 +1,6 @@
 command:
   - torchrun
-  - "--nproc_per_node=3"
+  - "--nproc_per_node=1"
   - "--master_port=29500"
   - "scripts/main.py"
   - "--base_config"
@@ -22,6 +22,7 @@ parameters:
     distribution: log_uniform_values
     min: 5e-5
     max: 1e-3
+    
   multi_video:
     values: [true]
 
@@ -51,6 +52,9 @@ parameters:
 
   stride:
     values: [1, 2, 3]
+  
+  frames:
+    values: [32, 64]
 
   text_freeze_ratio:
     distribution: uniform
@@ -83,8 +87,6 @@ parameters:
     values: [3,4,5]
   loss_name:
     values: ["contrastive"]
-  tag:
-    values: ["mvit_pretrained"]
 
 early_terminate:
   type: hyperband

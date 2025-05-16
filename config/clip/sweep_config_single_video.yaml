@@ -1,6 +1,6 @@
 command:
   - torchrun
-  - "--nproc_per_node=3"
+  - "--nproc_per_node=1"
   - "--master_port=29500"
   - "scripts/main.py"
   - "--base_config"
@@ -55,6 +55,9 @@ parameters:
     distribution: uniform
     min: 0.8
     max: 0.95
+  
+  multi_video:
+    values: [false]
 
   text_freeze_ratio:
     distribution: uniform
@@ -85,8 +88,6 @@ parameters:
     values: [4]
   loss_name:
     values: ["contrastive"]
-  tag:
-    values: ["mvit_pretrained"]
   name:
     values: ["dev_deep_coro_clip_single_video"]
   project:

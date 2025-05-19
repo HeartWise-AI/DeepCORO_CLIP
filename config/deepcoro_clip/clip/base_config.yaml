@@ -60,7 +60,6 @@ ndcg_k: [5]
 # Data augmentation
 rand_augment: !!bool true
 resize: !!int 224
-view_count: !!null null
 apply_mask: !!bool false
 # wandb parameters
 tag: !!str x3d_m_pretrained

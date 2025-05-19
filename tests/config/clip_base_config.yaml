@@ -57,9 +57,8 @@ recall_k: [1, 5]
 # NDCG @k
 ndcg_k: [5]
 # Data augmentation
-rand_augment: !!bool false
+rand_augment: !!bool true
 resize: !!int 224
-view_count: !!null null
 apply_mask: !!bool false
 # wandb parameters
 tag: !!str dummy_tag

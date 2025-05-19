@@ -113,7 +113,6 @@ class ClipParser(BaseParser):
         clip_augment_group.add_argument('--rand_augment', type=str2bool, help="Enable RandAugment.")
         clip_augment_group.add_argument('--resize', type=int, help="Resize dimension for input frames.")
         clip_augment_group.add_argument('--apply_mask', type=str2bool, help="Apply masking augmentation.")
-        clip_augment_group.add_argument('--view_count', type=parse_optional_int, help="Number of views for multi-view augmentation.")
         
         clip_checkpoint_group = self.parser.add_argument_group('CLIP Checkpointing parameters')
         clip_checkpoint_group.add_argument('--save_best', type=str, help="Metric to monitor for saving the best checkpoint.")

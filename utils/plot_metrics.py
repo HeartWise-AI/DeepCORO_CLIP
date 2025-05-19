@@ -438,6 +438,79 @@ def plot_stenosis_predictions_for_file(agg_df_single_epoch, file_name_to_plot, v
             if pd.notna(height) and height != 0: ax_single_file.annotate(f'{height:.0f}', xy=(bar.get_x() + bar.get_width() / 2, height), xytext=(0, 3), textcoords="offset points", ha='center', va='bottom', fontsize=8)
     add_labels_to_bars(bars_gt); add_labels_to_bars(bars_pred); fig_single_file.tight_layout(); plt.show()
 
+def display_row_at_index(df, index, columns_to_display=None):
+    """
+    Display a specific row from a DataFrame at the given index.
+    
+    Args:
+        df (pd.DataFrame): The DataFrame to display from
+        index (int): The index of the row to display
+        columns_to_display (list, optional): List of column names to display. If None, displays all columns.
+    """
+    if index < 0 or index >= len(df):
+        print(f"Error: Index {index} is out of range. DataFrame has {len(df)} rows.")
+        return
+    
+    # Get the row at the specified index
+    row = df.iloc[index]
+    
+    # If specific columns are requested, filter them
+    if columns_to_display:
+        # Verify all requested columns exist
+        missing_cols = [col for col in columns_to_display if col not in df.columns]
+        if missing_cols:
+            print(f"Warning: Columns not found in DataFrame: {missing_cols}")
+            columns_to_display = [col for col in columns_to_display if col in df.columns]
+        row = row[columns_to_display]
+    
+    # Convert to DataFrame for better display
+    row_df = pd.DataFrame([row])
+    
+    # Display with all columns
+    pd.set_option('display.max_columns', None)
+    pd.set_option('display.width', None)
+    print(f"\nRow at index {index}:")
+    print(row_df.to_string(index=False))
+    
+    return row_df
+
+def display_row_values(df, iloc, columns_to_display=None):
+    """
+    Display values for a specific row or rows in the DataFrame.
+    
+    Args:
+        df (pd.DataFrame): The DataFrame to display from
+        iloc (int or list): The index or indices of the row(s) to display
+        columns_to_display (list, optional): List of column names to display. If None, displays all columns.
+    """
+    try:
+        # Handle both single index and multiple indices
+        if isinstance(iloc, (int, np.integer)):
+            rows = df.iloc[[iloc]]
+        else:
+            rows = df.iloc[iloc]
+            
+        # If specific columns are requested, filter them
+        if columns_to_display:
+            # Verify all requested columns exist
+            missing_cols = [col for col in columns_to_display if col not in df.columns]
+            if missing_cols:
+                print(f"Warning: Columns not found in DataFrame: {missing_cols}")
+                columns_to_display = [col for col in columns_to_display if col in df.columns]
+            rows = rows[columns_to_display]
+        
+        # Display with all columns
+        pd.set_option('display.max_columns', None)
+        pd.set_option('display.width', None)
+        print(f"\nRow(s) at index {iloc}:")
+        print(rows.to_string())
+        
+        return rows
+        
+    except Exception as e:
+        print(f"Error displaying row values: {e}")
+        return None
+
 # --- Data Loading and Preparation Function ---
 def load_and_prepare_main_dataset(
     dataset_csv_path, 

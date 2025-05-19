@@ -1,7 +1,7 @@
 pipeline_project: !!str "DeepCORO_clip"
 # Training parameters
-epochs: !!int 10
-num_workers: !!int 48
+epochs: !!int 30
+num_workers: !!int 20
 debug: !!bool false
 use_amp: !!bool true
 period: !!int 1

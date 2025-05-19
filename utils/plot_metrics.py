@@ -578,8 +578,8 @@ if __name__ == '__main__':
     print("Running plot_metrics.py as a standalone script...")
     MAIN_DATASET_CSV = "data/reports/reports_with_alpha_separator_with_Calcifc_Stenosis_IFR_20250507_STUDYLEVEL.csv"
     PREDICTIONS_CSV_DIR = "outputs/DeepCORO_clip/dev_deep_coro_clip_single_video/k0ohoagn_20250518-173722/outputs/DeepCORO_clip/dev_deep_coro_clip_single_video/k0ohoagn_20250518-173942"
-    REFERENCE_EPOCH_BASENAME = "val_epoch5.csv" 
-    EPOCH_TO_SAVE_AGG_DF = "val_epoch5.csv" 
+    REFERENCE_EPOCH_BASENAME = "val_epoch15.csv" 
+    EPOCH_TO_SAVE_AGG_DF = "val_epoch15.csv" 
     OUTPUT_SAVE_DIR = "analysis_outputs_script" 
     CUSTOM_LABELS = None 
 

@@ -58,6 +58,12 @@ class VideoClipDataset(torch.utils.data.Dataset):
         self.seed = seed
         self.multi_video_mode = kwargs.pop("multi_video", False)
 
+        # Early validation for multi-video mode
+        if self.multi_video_mode and (self.groupby_column is None or not self.groupby_column):
+            raise ValueError(
+                "groupby_column must be specified when multi_video is True. "
+                "This is required to group videos by study instance."
+            )
 
         self.video_transforms = kwargs.pop("video_transforms", None)
         self.rand_augment = kwargs.pop("rand_augment", False)

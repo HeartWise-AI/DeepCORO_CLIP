@@ -1,6 +1,6 @@
 pipeline_project: !!str "DeepCORO_clip"
 # Training parameters
-epochs: !!int 10
+epochs: !!int 50
 num_workers: !!int 48
 debug: !!bool false
 use_amp: !!bool true
@@ -13,13 +13,13 @@ data_filename: !!str data/reports/report_sampled_200.csv
 root: !!str "."
 target_label: !!str Report
 datapoint_loc_label: !!str FileName
-frames: !!int 32
+frames: !!int 64
 stride: !!int 1
 multi_video: !!bool true
-num_videos: !!int 4
+num_videos: !!int 5
 groupby_column: !!str StudyInstanceUID
 shuffle_videos: !!bool true
-batch_size: !!int 96
+batch_size: !!int 16
 # Seed
 seed: !!int 42
 # Model parameters

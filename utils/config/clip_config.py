@@ -64,7 +64,6 @@ class ClipConfig(HeartWiseConfig):
     rand_augment: bool
     resize: int
     apply_mask: bool
-    view_count: Optional[int]
 
     # Checkpointing parameters
     save_best: str
@@ -76,6 +75,9 @@ class ClipConfig(HeartWiseConfig):
     text_embeddings_path: str
     metadata_path: str
     inference_results_path: str
+
+    # Optional parameters
+    view_count: Optional[int] = None
 
     # Device and distributed info are now inherited from HeartWiseConfig
     # No local definition of device, world_size, is_ref_device, 

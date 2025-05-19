@@ -224,3 +224,29 @@ else
     echo -e "${BLUE}========================================${NC}"
     exit 1
 fi
+
+# Activate virtual environment
+source .venv/bin/activate
+
+# Set NCCL environment variables for better stability with H200s
+export NCCL_DEBUG=INFO
+export NCCL_IB_TIMEOUT=3600  # Increased to 1 hour
+export NCCL_SOCKET_TIMEOUT=3600  # Increased to 1 hour
+export NCCL_P2P_DISABLE=0
+export NCCL_IB_DISABLE=0
+export NCCL_SOCKET_IFNAME=eth0
+export NCCL_IB_GID_INDEX=3  # Optimize for H200
+export NCCL_IB_HCA=mlx5  # Use Mellanox HCA
+export NCCL_IB_TC=106  # Traffic class for H200
+export NCCL_IB_SL=0  # Service level
+export NCCL_IB_AR_THRESHOLD=8192  # Adaptive routing threshold
+export NCCL_IB_CUDA_SUPPORT=1  # Enable CUDA support
+export NCCL_IB_TIMEOUT_MS=3600000  # 1 hour in milliseconds
+export NCCL_SOCKET_NTHREADS=4  # Number of threads for socket operations
+export NCCL_NSOCKS_PERTHREAD=4  # Number of sockets per thread
+export NCCL_BUFFSIZE=2097152  # Buffer size (2MB)
+export NCCL_IB_RETRY_CNT=7  # Number of retries for IB operations
+export NCCL_IB_QUEUE_LEN=4096  # Queue length for IB operations
+
+# Run the sweep
+wandb sweep config/clip/sweep_config_multi_video.yaml

@@ -1,6 +1,6 @@
 command:
   - torchrun
-  - "--nproc_per_node=1"
+  - "--nproc_per_node=2"
   - "--master_port=29500"
   - "scripts/main.py"
   - "--base_config"
@@ -62,7 +62,7 @@ parameters:
     max: 0.95
 
   num_heads:
-    values: [2, 4, 6, 8]
+    values: [2, 4, 8, 16]
 
   aggregator_depth:
     values: [1, 2, 4]
@@ -82,14 +82,14 @@ parameters:
     max: 1e-6
 
   batch_size:
-    values: [8, 12, 16]
+    values: [16, 24]
   num_videos:
-    values: [3,4,5]
-  loss_name:
-    values: ["contrastive"]
+    values: [2, 3, 4]
+  loss_name:  
+    values: ["contrastive_ddp","siglip_ddp"]
 
 early_terminate:
   type: hyperband
-  min_iter: 3
-  eta: 2
-  s: 2
+  min_iter: 5
+  eta: 3
+  s: 3

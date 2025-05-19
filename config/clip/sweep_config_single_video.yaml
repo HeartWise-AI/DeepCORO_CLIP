@@ -87,7 +87,7 @@ parameters:
   batch_size:
     values: [4]
   loss_name:
-    values: ["contrastive"]
+    values: ["contrastive_ddp"]
   name:
     values: ["dev_deep_coro_clip_single_video"]
   project:

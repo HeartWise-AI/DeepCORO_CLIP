@@ -282,7 +282,6 @@ class VideoEncoder(nn.Module):
             print("Per-patch pooling")
             feats = token_feats.reshape(B, N * L, D_out)  # [B, N_tokens, D]
             print(f"feats.shape: {feats.shape}")
-            368
 
         return feats
 

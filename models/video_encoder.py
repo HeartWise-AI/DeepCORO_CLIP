@@ -165,7 +165,11 @@ class VideoEncoder(nn.Module):
     def embedding_dim(self) -> int:
         """Get the embedding dimension."""
         return self._embedding_dim
-
+    def get_tokens(self, x: torch.Tensor, mode: str = "patch"):
+        self._apply_aggregator = False
+        self._per_video_pool = (mode == "video")
+        return self.forward(x)
+    
     def _extract_backbone_features(self, x: torch.Tensor) -> torch.Tensor:
         """Return token-level features from the underlying video backbone.
 

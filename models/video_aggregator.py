@@ -1,4 +1,3 @@
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -64,7 +63,7 @@ class EnhancedVideoAggregator(nn.Module):
         dropout: float = 0.1,
         use_positional_encoding: bool = True,
         aggregator_depth: int = 2,
-        max_segments: int = 512
+        max_segments: int = 1024
     ):
         super().__init__()
         self.embedding_dim = embedding_dim

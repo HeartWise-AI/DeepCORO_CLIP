@@ -393,8 +393,8 @@ def custom_collate_fn(batch: list[tuple[np.ndarray, dict, Union[str, List[str]]]
     # Single video: videos[0] is np.ndarray [F, H, W, C]
     elif isinstance(videos[0], np.ndarray) and videos[0].ndim == 4:
         B = len(videos)
+        videos_tensor = torch.stack([torch.from_numpy(v) for v in videos])  # [B, F, H, W, C]
         N = 1
-        videos_tensor = torch.stack([torch.from_numpy(v[np.newaxis, ...]) for v in videos])  # [B, 1, F, H, W, C]
     else:
         raise ValueError(f"Unexpected video format or shape: type {type(videos[0])}, ndim {videos[0].ndim if isinstance(videos[0], np.ndarray) else 'N/A'}")
     # Permute to [B, N, C, F, H, W]

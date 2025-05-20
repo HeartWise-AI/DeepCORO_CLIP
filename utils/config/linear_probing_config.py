@@ -74,3 +74,7 @@ class LinearProbingConfig(HeartWiseConfig):
     dropout_attention: float = 0.0 # Dropout for attention pooling block
     attention_lr: float = 1e-4 # Learning rate for attention pooling parameters
     attention_weight_decay: float = 0.0 # Weight decay for attention pooling parameters
+
+    # Aggregation parameters
+    aggregate_videos_tokens: bool = True # Whether to apply internal aggregator in VideoEncoder
+    per_video_pool: bool = False # Whether to mean-pool patch tokens inside each video when aggregator disabled

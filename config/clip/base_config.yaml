@@ -8,13 +8,15 @@ use_amp: !!bool true
 period: !!int 1
 run_mode: !!str train
 # Dataset parameters
-data_filename: !!str data/reports/reports_with_alpha_separator_with_Calcifc_Stenosis_IFR_20250507_STUDYLEVEL.csv
+data_filename: !!str data/reports/report_sampled_200.csv
 root: !!str "."
 target_label: !!str Report
 datapoint_loc_label: !!str FileName
-frames: !!int 32
+frames: !!int 16
 stride: !!int 1
-multi_video: !!bool false
+per_video_pool: !!bool false
+aggregate_videos_tokens: !!bool false
+multi_video: !!bool true
 num_videos: !!int 4
 groupby_column: !!str StudyInstanceUID
 shuffle_videos: !!bool true
@@ -22,7 +24,7 @@ batch_size: !!int 24
 # Seed
 seed: !!int 42
 # Model parameters
-model_name: !!str x3d_m
+model_name: !!str mvit
 pretrained: !!bool true
 # Optimizer parameters
 optimizer: !!str RAdam

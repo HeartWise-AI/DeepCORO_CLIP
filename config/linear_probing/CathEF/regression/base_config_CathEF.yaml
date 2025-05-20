@@ -35,7 +35,7 @@ resize: !!int 224
 frames: !!int 32
 stride: !!int 1
 # Video Encoder parameters
-model_name: !!str x3d_m
+model_name: !!str mvit
 aggregator_depth: !!int 2
 num_heads: !!int 4
 video_freeze_ratio: !!float 0.8
@@ -44,6 +44,8 @@ pretrained: !!bool true
 video_encoder_lr: !!float 1e-5
 video_encoder_checkpoint_path: !!str outputs/checkpoints/DeepCORO_clip/DeepCORO_Clip_Sweep_Multi_Video/cvlag76n_20250511-204014/outputs/checkpoints/DeepCORO_clip/DeepCORO_Clip_Sweep_Multi_Video/cvlag76n_20250511-204547/checkpoints/best_model_epoch_24.pt
 video_encoder_weight_decay: !!float 0.00000387825282805052
+per_video_pool: !!bool false
+aggregate_videos_tokens: !!bool false
 attention_lr: !!float 1e-4
 attention_weight_decay: !!float 0.0
 output_dir: !!str outputs/

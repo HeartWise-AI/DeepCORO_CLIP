@@ -86,6 +86,8 @@ class ClipParser(BaseParser):
         clip_model_group.add_argument('--dropout', type=float, help="Dropout rate.")
         clip_model_group.add_argument('--num_heads', type=int, help="Number of output units in the classification head.")
         clip_model_group.add_argument('--aggregator_depth', type=int, help="Depth of the aggregation/classification head.")
+        clip_model_group.add_argument('--aggregate_videos_tokens', type=str2bool, help="Whether to run the encoder's internal transformer aggregator (default: True).")
+        clip_model_group.add_argument('--per_video_pool', type=str2bool, help="When aggregate_videos_tokens=False, mean-pool patch tokens inside each video before returning.")
 
         clip_optim_group = self.parser.add_argument_group('CLIP Optimization parameters')
         clip_optim_group.add_argument('--max_grad_norm', type=float, help="Maximum gradient norm.")
@@ -202,7 +204,9 @@ class LinearProbingParser(BaseParser):
         lp_model_group.add_argument('--pretrained', type=str2bool, help="Whether to use a pretrained video encoder.")
         lp_model_group.add_argument('--video_encoder_checkpoint_path', type=str, help="Path to the video encoder checkpoint file.")
         lp_model_group.add_argument('--video_encoder_lr', type=float, help="Learning rate for the video encoder.")
-        
+        lp_model_group.add_argument('--aggregate_videos_tokens', type=str2bool, help="Whether to run the encoder's internal aggregator (default: True).")
+        lp_model_group.add_argument('--per_video_pool', type=str2bool, help="Mean-pool patch tokens in each video when aggregate_videos_tokens=False.")
+
         lp_linear_probing_group = self.parser.add_argument_group('Linear Probing Linear Probing parameters')
         lp_linear_probing_group.add_argument('--head_structure', type=str, help="Output dimension of each head (e.g., JSON string).") # Example: If passed as string
         lp_linear_probing_group.add_argument('--loss_structure', type=str, help="Loss function for each head (e.g., JSON string).") # Example: If passed as string

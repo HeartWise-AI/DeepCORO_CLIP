@@ -110,6 +110,9 @@ class VideoClipDataset(torch.utils.data.Dataset):
         elif not self.multi_video_mode:
             print("Initializing single-video mode")
             self.valid_indices = list(range(len(self.fnames)))
+            # For compatibility with unit tests that access `study_ids` even
+            # in single-video mode, expose it as the list of file names.
+            self.study_ids = [str(f) for f in self.fnames]
 
     def _init_multi_video(self):
         import collections
@@ -362,9 +365,8 @@ def custom_collate_fn(batch):
         # Multi-video mode: (N, F, H, W, C)
         videos = torch.from_numpy(np.stack(videos, axis=0))  # (B, N, F, H, W, C)
     else:
-        # Single-video mode: (F, H, W, C)
-        # Stack to (B, F, H, W, C) and then unsqueeze to (B, 1, F, H, W, C) for consistent N dimension
-        videos = torch.stack([torch.from_numpy(v) for v in videos]).unsqueeze(1)
+        # Single-video mode: produce shape (B, F, H, W, C)
+        videos = torch.stack([torch.from_numpy(v) for v in videos])
     if encoded_texts[0] is not None:
         combined_texts = {
             "input_ids": torch.stack([text["input_ids"] for text in encoded_texts]),

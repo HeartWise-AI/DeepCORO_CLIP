@@ -34,17 +34,54 @@ class VideoMILWrapper(torch.nn.Module):
         self.mil_model = mil_model
 
     def forward(self, x: torch.Tensor, video_indices: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
-        if video_indices is None:
-            # Single video: [B, 1, C, F, H, W]
-            embeddings = self.video_encoder(x)  # [B, D] or [B, 1, D]
-            if embeddings.ndim == 2:
-                embeddings = embeddings.unsqueeze(1)  # [B, 1, D]
-            return self.mil_model(embeddings)
-        else:
-            B, N = x.shape[0], x.shape[1]
-            embeddings = self.video_encoder(x)  # [B, N, D]
-            attention_mask = torch.ones([B, N], dtype=torch.bool, device=x.device)
-            return self.mil_model(embeddings, mask=attention_mask)
+        """Wrapper forward pass.
+
+        This helper guarantees that the **MultiInstanceLinearProbing** module
+        always receives a 3-D tensor of shape ``[B, N, D]`` where *N* is the
+        number of video segments associated with each sample.
+
+        In the typical *single-video* case, ``video_indices`` will be ``None``
+        and the underlying ``VideoEncoder`` already returns a tensor of shape
+        ``[B, D]`` (aggregated representation).  We therefore unsqueeze a
+        singleton *N* dimension so that it becomes ``[B, 1, D]``.
+
+        When ``multi_video=True`` the dataloader supplies inputs of shape
+        ``[B, N, C, F, H, W]``.  If the encoder is configured with
+        ``aggregate_videos_tokens=False`` it will naturally produce the
+        expected ``[B, N, D]`` tensor.  However, if
+        ``aggregate_videos_tokens=True`` the encoder will *already* pool over
+        the *N* dimension and output ``[B, D]``.  In this scenario we again
+        expand the aggregated vector so that downstream MIL logic continues
+        to work (with ``N = 1``).
+        """
+
+        # ------------------------------------------------------------------
+        # 1) Run the backbone / encoder
+        # ------------------------------------------------------------------
+        embeddings: torch.Tensor = self.video_encoder(x)  # [B, D] or [B, N, D]
+
+        # ------------------------------------------------------------------
+        # 2) Ensure a 3-D [B, N, D] representation
+        # ------------------------------------------------------------------
+        if embeddings.ndim == 2:
+            # Encoder returned a pooled representation → add singleton N=1
+            embeddings = embeddings.unsqueeze(1)  # [B, 1, D]
+
+        # At this point ``embeddings`` is guaranteed to be 3-D.
+        B, N, _ = embeddings.shape  # noqa: N806 – obtain mask size
+
+        # ------------------------------------------------------------------
+        # 3) Build / update attention mask.  If the caller supplied an explicit
+        #    ``video_indices`` tensor we currently ignore it and assume all
+        #    instances are valid.  This can be revisited later if selective
+        #    masking is required.
+        # ------------------------------------------------------------------
+        attention_mask = torch.ones((B, N), dtype=torch.bool, device=embeddings.device)
+
+        # ------------------------------------------------------------------
+        # 4) Forward through the MIL head(s)
+        # ------------------------------------------------------------------
+        return self.mil_model(embeddings, mask=attention_mask)
 
 @ProjectRegistry.register("DeepCORO_video_linear_probing")
 class LinearProbingProject(BaseProject):
@@ -104,7 +141,8 @@ class LinearProbingProject(BaseProject):
             dropout=self.config.dropout,
             num_heads=self.config.num_heads,
             aggregator_depth=self.config.aggregator_depth,
-            aggregate=not self.config.multi_video,
+            aggregate_videos_tokens=self.config.aggregate_videos_tokens,
+            per_video_pool=self.config.per_video_pool,
         )        
 
         # Get embedding dimension from encoder
@@ -209,6 +247,24 @@ class LinearProbingProject(BaseProject):
                 head_weights=self.config.head_weights,
             )
         )
+
+        # --------------------------------------------------------------
+        # Linear-probing *must* receive per-video (or per-patch) tokens so
+        # that the downstream MIL module can do its own aggregation.  If the
+        # YAML accidentally sets ``aggregate_videos_tokens=True`` we disable
+        # it and emit a warning instead of failing later with shape errors.
+        # --------------------------------------------------------------
+        if getattr(self.config, "aggregate_videos_tokens", False):
+            if self.config.is_ref_device:
+                print(
+                    "[WARNING] aggregate_videos_tokens=True detected but "
+                    "should be False for linear-probing. This is only used for CLIP.  Overriding to "
+                    "False so that the VideoEncoder preserves per-instance "
+                    "tokens."
+                )
+            # Mutate in-place so every subsequent consumer (e.g. VideoEncoder)
+            # sees the corrected value.
+            self.config.aggregate_videos_tokens = False
 
         return {
             "train_loader": train_loader,

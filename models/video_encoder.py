@@ -25,7 +25,8 @@ class VideoEncoder(nn.Module):
         num_heads: int = 4,
         freeze_ratio: float = 0.8,
         aggregator_depth: int = 2,
-        aggregate: bool = True,
+        aggregate_videos_tokens: bool = True,
+        per_video_pool: bool = False,
     ):
         """Initialize the video encoder.
 
@@ -35,7 +36,7 @@ class VideoEncoder(nn.Module):
             num_frames (int): Number of frames in the input video
             pretrained (bool): Whether to use pretrained weights
             output_dim (int): Output dimension of the encoder
-            aggregate (bool): If False, the transformer-based aggregator is skipped and the
+            aggregate_videos_tokens (bool): If False, the transformer-based aggregator is skipped and the
                 per-segment embeddings ``[B, N, D]`` are returned. This is useful in multi-
                 instance learning settings where another model is responsible for aggregating
                 over the *N* dimension.
@@ -55,23 +56,27 @@ class VideoEncoder(nn.Module):
         if backbone == "mvit":
             # Load the pretrained MViT v2 S
             self.model: nn.Module = mvit_v2_s(weights="KINETICS400_V1" if pretrained else None)
-            # self.model.head is a Sequential. We find the final nn.Linear layer:
-            in_features = None
+            # Start with a sane default. We will try to infer the real value
+            # from the last ``nn.Linear`` layer in ``self.model.head``.
+            in_features = 768
             for layer in reversed(self.model.head):
                 if isinstance(layer, nn.Linear):
                     in_features = layer.in_features
                     break
-            # If we didn't find a linear, default to a known dimension (e.g., 768)
-            if in_features is None:
-                in_features = 768
 
-            # Replace classification head with Identity
-            self.model.head = nn.Identity()
+            # Replace classification head with an identity mapping so that the
+            # original `forward()` no longer collapses tokens.  We will also
+            # monkey-patch a new `forward_features()` method that exposes the
+            # full token sequence produced **after** the transformer blocks
+            # but **before** the classification logic.
+            self.model.head = nn.Identity()  # type: ignore[assignment]
         
         elif backbone == "r3d":
             self.model: nn.Module = r3d_18(pretrained=pretrained)
             in_features: int = self.model.fc.in_features
-            self.model.fc = nn.Identity()
+            # Replace the classifier with identity. Annotate with *ignore* for
+            # static type checkers that assume ``fc`` is always ``nn.Linear``.
+            self.model.fc = nn.Identity()  # type: ignore[assignment]
             
         elif backbone in ["x3d_s", "x3d_m"]:
             # Load X3D model from torch.hub
@@ -108,7 +113,39 @@ class VideoEncoder(nn.Module):
         self._freeze_partial_layers()
 
         # Whether to apply the internal aggregator in the forward pass.
-        self._apply_aggregator: bool = aggregate
+        self._apply_aggregator: bool = aggregate_videos_tokens
+        self._per_video_pool: bool = per_video_pool
+
+        # ------------------------------------------------------------------
+        # Monkey-patch `forward_features` on the instance *once*.
+        # TorchVision's MViT does not expose such a helper; we recreate
+        # the internal steps from its `forward()` implementation.
+        # ------------------------------------------------------------------
+        from types import MethodType
+        from torchvision.models.video.mvit import _unsqueeze  # type: ignore
+
+        def _forward_features_mvit(self_mvit, x: torch.Tensor) -> torch.Tensor:  # noqa: D401
+            """Return the token sequence [B, L, C] without pooling."""
+            # (B, C, T, H, W) ➀ ensure temporal dim present
+            x = _unsqueeze(x, 5, 2)[0]
+            # ➁ Patchify then flatten spatial+temporal dims
+            x = self_mvit.conv_proj(x)  # [B, C', T', H', W']
+            x = x.flatten(2).transpose(1, 2)  # [B, L, C'] where L = T'·H'·W'
+
+            # ➂ Add positional encoding
+            x = self_mvit.pos_encoding(x)
+
+            # ➃ Pass through transformer blocks
+            thw = (self_mvit.pos_encoding.temporal_size,) + self_mvit.pos_encoding.spatial_size
+            for blk in self_mvit.blocks:
+                x, thw = blk(x, thw)
+
+            # ➄ Final layer norm; *no* class-token selection / pooling
+            x = self_mvit.norm(x)  # [B, L, C_final]
+            return x
+
+        # Attach to the specific instance so it does not affect other MViT objects.
+        self.model.forward_features = MethodType(_forward_features_mvit, self.model)  # type: ignore[attr-defined]
 
     def _freeze_partial_layers(self):
         """
@@ -129,6 +166,47 @@ class VideoEncoder(nn.Module):
         """Get the embedding dimension."""
         return self._embedding_dim
 
+    def _extract_backbone_features(self, x: torch.Tensor) -> torch.Tensor:
+        """Return token-level features from the underlying video backbone.
+
+        The output shape is always ``[B*N, L, F]`` where
+          • ``B`` – batch size in the original mini-batch,
+          • ``N`` – number of video segments per study (flattened in the caller),
+          • ``L`` – number of tokens / patch features. For models that do not
+                     expose patch-tokens (e.g. ResNets, X3D, …) we treat the
+                     single global feature vector as *one* token (so L = 1).
+          • ``F`` – backbone feature dimension (*in_features*).
+        """
+        # ------------------------------------------------------------------
+        # Mixed-precision safety: Certain backbone operations (especially large
+        # Transformer attentions) are prone to numerical overflow when run in
+        # fp16.  We therefore *always* execute the backbone forward in full
+        # precision regardless of the surrounding autocast context.  This
+        # incurs only a modest memory overhead yet eliminates NaN/Inf issues
+        # observed when training with AMP.
+        # ------------------------------------------------------------------
+        with autocast("cuda", enabled=False):
+            if self.backbone == "mvit" and hasattr(self.model, "forward_features"):
+                # TorchVision's Multi-Scale ViT exposes forward_features that
+                # returns the token sequence **before** classification pooling.
+                feats = self.model.forward_features(x.float())  # type: ignore[attr-defined]
+                # Typical return shape: [B*N, L, F] (no CLS token).
+                if feats.ndim == 2:
+                    # Edge-case: some versions may still pool -> make it a token.
+                    feats = feats.unsqueeze(1)  # [B*N, 1, F]
+            else:
+                # Fallback – call the regular forward() and treat the global
+                # pooled output as a single token so that downstream components
+                # (projection / aggregator) see a consistent shape.
+                feats = self.model(x.float())
+                if feats.ndim == 1:
+                    # In the unlikely event we get a 1-D tensor per sample.
+                    feats = feats.unsqueeze(0)
+                if feats.ndim == 2:
+                    feats = feats.unsqueeze(1)  # [B*N, 1, F]
+
+        return feats  # [B*N, L, F]
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Expects shape: [B, N, T, H, W, C]
@@ -142,10 +220,13 @@ class VideoEncoder(nn.Module):
         pass through the backbone, then aggregator => [B, output_dim].
         """
 
+        if x.ndim == 5:
+            # Received [B, T, H, W, C] => treat as single video per study.
+            x = x.unsqueeze(1)  # -> [B, 1, T, H, W, C]
+
         if x.ndim == 7:
             # Workaround for unexpected 7D input.
-            # The method expects 6D [B, N, T, H, W, C].
-            # Assuming 7D is [B, D1, D2, T_actual, H_actual, W_actual, C_actual]
+            # The method expects 6D [B, D1, D2, T_actual, H_actual, W_actual, C_actual]
             # and D1, D2 should be combined into the 'N' dimension.
             s = x.shape
             x = x.view(s[0], s[1] * s[2], s[3], s[4], s[5], s[6])
@@ -158,30 +239,49 @@ class VideoEncoder(nn.Module):
 
         # Flatten => [B*N, 3, T, H, W]
         x = x.view(B*N, C, T, H, W)
-      
-        # Pass through backbone => [B*N, in_features]
-        feats = self.model(x)
-        # Then projection => [B*N, output_dim]
-        feats = self.proj(feats)
-        
-        # Reshape => [B, N, output_dim]
-        feats = feats.view(B, N, self.output_dim)
 
-        
+        # ------------------------------------------------------------------
+        # 1) Backbone ⇨ token sequences (before projection)
+        # ------------------------------------------------------------------
+        token_feats = self._extract_backbone_features(x)  # [B*N, L, in_features]
+
+        # ------------------------------------------------------------------
+        # 2) Linear projection (shared across all tokens)
+        # ------------------------------------------------------------------
+        # ``nn.Sequential`` modules in ``self.proj`` operate on the last dim, so
+        # we can call them directly on a 3-D tensor.
+        token_feats = self.proj(token_feats)  # [B*N, L, output_dim]
+
+        # ------------------------------------------------------------------
+        # 3) Reshape → [B, N*L, output_dim] so that the aggregator treats every
+        #    patch token from every segment as an element in the sequence.
+        # ------------------------------------------------------------------
+        BNL, L, D_out = token_feats.shape  # BNL = B * N
+        token_feats = token_feats.view(B, N, L, D_out)
+#         print(f"token_feats.shape: {token_feats.shape}")
         if self._apply_aggregator:
-            # Aggregate over the *N* dimension ➔ [B, D] for CLIP
-            # We sometimes see NaNs when the aggregator is executed under AMP fp16.
-            # To improve numerical stability, always run the aggregator in fp32
-            # and cast the result back to the original dtype (usually fp16 when
-            # autocast is enabled). This has a negligible memory footprint
-            # because the tensor is [B, N, D] with small N (≲5).
+            # Before passing to aggregator, convert to exactly N tokens. This
+            # preserves backward-compatibility with existing training code &
+            # tests that expect a study-level pooling over videos rather than
+            # patches.
+            feats = token_feats.mean(dim=2)  # [B, N, D_out]
+
             orig_dtype = feats.dtype
             with autocast('cuda', enabled=False):
-                out = self.aggregator(feats.float())  # fp32 safe path
-            out = out.to(orig_dtype)
-            return out
+                out = self.aggregator(feats.float())
+            return out.to(orig_dtype)
 
-        # Return per-instance embeddings  [B, N, D] for MIL
+        # Aggregator disabled → return either per-video or per-patch tokens
+        if self._per_video_pool:
+            print("Per-video pooling") 
+            print(f"token_feats.shape: {token_feats.shape}")
+            feats = token_feats.mean(dim=2)  # [B, N, D_out]
+            print(f"feats.shape: {feats.shape}")
+        else:
+            print("Per-patch pooling")
+            feats = token_feats.reshape(B, N * L, D_out)  # [B, N_tokens, D]
+            print(f"feats.shape: {feats.shape}")
+
         return feats
 
 

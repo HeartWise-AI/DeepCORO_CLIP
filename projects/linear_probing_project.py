@@ -258,13 +258,15 @@ class LinearProbingProject(BaseProject):
             if self.config.is_ref_device:
                 print(
                     "[WARNING] aggregate_videos_tokens=True detected but "
-                    "should be False for linear-probing. This is only used for CLIP.  Overriding to "
+                    "should be False for linear-probing. This is only used for CLIP. Overriding to "
                     "False so that the VideoEncoder preserves per-instance "
-                    "tokens."
+                    "tokens. This override is logged to wandb."
                 )
             # Mutate in-place so every subsequent consumer (e.g. VideoEncoder)
             # sees the corrected value.
             self.config.aggregate_videos_tokens = False
+            if self.wandb_wrapper.is_initialized():
+                self.wandb_wrapper.log({"config/aggregate_videos_tokens_override": True})
 
         return {
             "train_loader": train_loader,

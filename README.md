@@ -149,8 +149,10 @@ bash scripts/run_sweep.sh --base_config config/linear_probing/base_config.yaml -
   * `aggregate=True` (default) – returns **one** study-level vector `[B, D]`.
   * `aggregate=False, per_video_pool=True` – returns one token **per video**
     `[B, N, D]`, ready for MIL / linear probing heads.
-  * `aggregate=False, per_video_pool=False` – returns **all patch tokens - ONLY Setting that preeservs all teh tokens**
+  * `aggregate=False, per_video_pool=False` – returns **all patch tokens - ONLY Setting that preeservs all the tokens**
     `[B, N·L, D]` for the most detailed downstream reasoning.
+    
+
 
 Example (video-level MIL):
 

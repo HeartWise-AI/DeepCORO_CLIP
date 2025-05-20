@@ -2,25 +2,25 @@ pipeline_project: !!str "DeepCORO_clip"
 base_checkpoint_path: !!str outputs
 # Training parameters
 epochs: !!int 20
-num_workers: !!int 12
+num_workers: !!int 20
 debug: !!bool false
 use_amp: !!bool true
 period: !!int 1
 run_mode: !!str train
 # Dataset parameters
-data_filename: !!str data/reports/report_sampled_200.csv
+data_filename: !!str data/reports/reports_with_alpha_separator_with_Calcifc_Stenosis_IFR_20250507_STUDYLEVEL.csv
 root: !!str "."
 target_label: !!str Report
 datapoint_loc_label: !!str FileName
 frames: !!int 16
-stride: !!int 1
+stride: !!int 2
 per_video_pool: !!bool false
 aggregate_videos_tokens: !!bool false
 multi_video: !!bool true
 num_videos: !!int 4
 groupby_column: !!str StudyInstanceUID
 shuffle_videos: !!bool true
-batch_size: !!int 24
+batch_size: !!int 16
 # Seed
 seed: !!int 42
 # Model parameters
@@ -41,7 +41,7 @@ num_hard_restarts_cycles: !!float 1.0
 warm_restart_tmult: !!int 2
 max_grad_norm: !!float 1.0
 # Model architecture parameters
-num_heads: !!int 2
+num_heads: !!int 8
 aggregator_depth: !!int 2
 temperature: !!float 0.08944473130286856
 dropout: !!float 0.21500802783103076

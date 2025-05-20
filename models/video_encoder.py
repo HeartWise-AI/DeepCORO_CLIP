@@ -258,7 +258,8 @@ class VideoEncoder(nn.Module):
         # ------------------------------------------------------------------
         BNL, L, D_out = token_feats.shape  # BNL = B * N
         token_feats = token_feats.view(B, N, L, D_out)
-#         print(f"token_feats.shape: {token_feats.shape}")
+
+#       print(f"token_feats.shape: {token_feats.shape}")
         if self._apply_aggregator:
             # Before passing to aggregator, convert to exactly N tokens. This
             # preserves backward-compatibility with existing training code &
@@ -281,6 +282,7 @@ class VideoEncoder(nn.Module):
             print("Per-patch pooling")
             feats = token_feats.reshape(B, N * L, D_out)  # [B, N_tokens, D]
             print(f"feats.shape: {feats.shape}")
+            368
 
         return feats
 

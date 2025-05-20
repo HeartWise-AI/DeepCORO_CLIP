@@ -518,24 +518,86 @@ def create_logger(config: HeartWiseConfig):
     """
     # Create config dictionary from args
     wandb_config = {
-        "batch_size": config.batch_size,
-        "learning_rate": config.lr,
+        # Training parameters
         "epochs": config.epochs,
         "num_workers": config.num_workers,
-        "device": config.device,
-        "model_name": config.model_name,
-        "optimizer": config.optimizer,
-        "weight_decay": config.weight_decay,
-        "scheduler_name": config.scheduler_name,
-        "lr_step_period": config.lr_step_period,
-        "factor": config.factor,
+        "debug": config.debug,
+        "use_amp": config.use_amp,
+        "period": config.period,
+        "run_mode": config.run_mode,
+        
+        # Dataset parameters
+        "data_filename": config.data_filename,
+        "root": config.root,
+        "target_label": config.target_label,
+        "datapoint_loc_label": config.datapoint_loc_label,
         "frames": config.frames,
-        "pretrained": config.pretrained,
-        "loss_name": config.loss_name,
-        "num_videos": config.num_videos,
+        "stride": config.stride,
+        "per_video_pool": config.per_video_pool,
+        "aggregate_videos_tokens": config.aggregate_videos_tokens,
         "multi_video": config.multi_video,
+        "num_videos": config.num_videos,
         "groupby_column": config.groupby_column,
         "shuffle_videos": config.shuffle_videos,
+        "batch_size": config.batch_size,
+        
+        # Seed
+        "seed": config.seed,
+        
+        # Model parameters
+        "model_name": config.model_name,
+        "pretrained": config.pretrained,
+        
+        # Optimizer parameters
+        "optimizer": config.optimizer,
+        "scheduler_name": config.scheduler_name,
+        "lr": config.lr,
+        "lr_step_period": config.lr_step_period,
+        "factor": config.factor,
+        "loss_name": config.loss_name,
+        "video_weight_decay": config.video_weight_decay,
+        "text_weight_decay": config.text_weight_decay,
+        "gradient_accumulation_steps": config.gradient_accumulation_steps,
+        "num_warmup_percent": config.num_warmup_percent,
+        "num_hard_restarts_cycles": config.num_hard_restarts_cycles,
+        "warm_restart_tmult": config.warm_restart_tmult,
+        "max_grad_norm": config.max_grad_norm,
+        
+        # Model architecture parameters
+        "num_heads": config.num_heads,
+        "aggregator_depth": config.aggregator_depth,
+        "temperature": config.temperature,
+        "dropout": config.dropout,
+        "video_freeze_ratio": config.video_freeze_ratio,
+        "text_freeze_ratio": config.text_freeze_ratio,
+        
+        # Checkpointing
+        "resume_training": config.resume_training,
+        "checkpoint": config.checkpoint,
+        "output_dir": config.output_dir,
+        "save_best": config.save_best,
+        
+        # Metrics
+        "recall_k": config.recall_k,
+        "ndcg_k": config.ndcg_k,
+        
+        # Data augmentation
+        "rand_augment": config.rand_augment,
+        "resize": config.resize,
+        "apply_mask": config.apply_mask,
+        
+        # wandb parameters
+        "tag": config.tag,
+        "name": config.name,
+        "project": config.project,
+        "entity": config.entity,
+        "use_wandb": config.use_wandb,
+        
+        # Inference parameters
+        "topk": config.topk,
+        "text_embeddings_path": config.text_embeddings_path,
+        "metadata_path": config.metadata_path,
+        "inference_results_path": config.inference_results_path,
     }
 
     print(f"Project: {config.project}, Entity: {config.entity}, Tag: {config.tag}")

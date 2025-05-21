@@ -1,12 +1,14 @@
 import os
-import pathlib
-from typing import Any, List, Optional
-
 import cv2
-import pandas as pd
-import numpy as np
-
 import torch
+import random
+import pathlib
+import collections
+
+import numpy as np
+import pandas as pd
+
+from typing import Any, List, Optional
 from torch.utils.data import DataLoader
 
 from utils.seed import seed_worker
@@ -71,7 +73,6 @@ class VideoClipDataset(torch.utils.data.Dataset):
         self.max_length = kwargs.pop("max_length", 250)
 
         if self.seed is not None:
-            import random
             random.seed(self.seed)
             print(f"[VideoClipDataset] seed={self.seed} for random video sampling")
         else:
@@ -115,7 +116,6 @@ class VideoClipDataset(torch.utils.data.Dataset):
             self.study_ids = [str(f) for f in self.fnames]
 
     def _init_multi_video(self):
-        import collections
         self.study_to_videos = collections.defaultdict(list)
         self.study_to_text = {}
         csv_path = self.folder / self.filename
@@ -237,7 +237,6 @@ class VideoClipDataset(torch.utils.data.Dataset):
             assert isinstance(sid, str), f"sid must be a string, got {type(sid)}"
             vid_paths = self.study_to_videos[sid]
             text_report = self.study_to_text[sid]
-            import random
             if self.shuffle_videos:
                 vid_paths = random.sample(vid_paths, len(vid_paths))
             if len(vid_paths) > self.num_videos:

@@ -1,3 +1,0 @@
-# DEPRECATED: Use VideoClipDataset instead of VideoDataset. This will be removed in a future release.
-from dataloaders.video_dataset import VideoDataset  # Deprecated, use VideoClipDataset
-# ... existing code ... 

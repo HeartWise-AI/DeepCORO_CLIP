@@ -6,8 +6,7 @@ from typing import Any
 from torch.utils.data import DataLoader
 
 from models.video_encoder import VideoEncoder
-# DEPRECATED: Use VideoClipDataset instead of VideoDataset. This will be removed in a future release.
-from dataloaders.video_dataset import VideoDataset, custom_collate_fn  # Deprecated, use VideoClipDataset
+from dataloaders.video_dataset import VideoDataset, custom_collate_fn
 
 import argparse
 
@@ -34,7 +33,6 @@ def load_checkpoint(
     return torch.load(checkpoint_path, map_location='cpu', weights_only=True)
 
 def generate_video_embeddings():
-    # DEPRECATED: The following instantiation uses VideoDataset, which is deprecated. Use VideoClipDataset instead.
     video_dataset: VideoDataset = VideoDataset(
         data_filename='data/CathEF_MHI_UCSF_2016-to-july-2022-and-2023-08-30-post-CathEF_alpha.csv',
         split=split,

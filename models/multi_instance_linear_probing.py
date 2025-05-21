@@ -150,7 +150,7 @@ class MultiInstanceLinearProbing(nn.Module):
             raise ValueError(
                 f"Mask shape {mask.shape} does not match input shape {x.shape[:2]}"
             )
-        if not mask.dtype == torch.bool:
+        if mask.dtype != torch.bool:
             mask = mask.bool()
             
         # Handle empty sequences (no valid instances)

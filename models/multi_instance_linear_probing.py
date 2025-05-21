@@ -98,10 +98,21 @@ class MultiInstanceLinearProbing(nn.Module):
             ``head_name -> logits`` with shape ``[B, n_classes]`` for each
             registered head.
         """
-        B, N, D = x.shape  # noqa: N806 (torch.Tensor)! pylint: disable=invalid-name
-        if D != self.embedding_dim:
+        if x.ndim == 4:  # [B, N, L, D]
+            B, N, L, D = x.shape  # noqa: N806
+            if D != self.embedding_dim:
+                raise ValueError(
+                    f"Expected embedding_dim={self.embedding_dim} but got {D}"
+                )
+        elif x.ndim == 3:  # [B, N, D]
+            B, N, D = x.shape  # noqa: N806
+            if D != self.embedding_dim:
+                raise ValueError(
+                    f"Expected embedding_dim={self.embedding_dim} but got {D}"
+                )
+        else:
             raise ValueError(
-                f"Expected embedding_dim={self.embedding_dim} but got {D}"
+                f"Unsupported input shape {x.shape}; expected 3-D or 4-D tensor."
             )
 
         pooled = self._pool_instances(x, mask)  # [B, D]
@@ -156,10 +167,50 @@ class MultiInstanceLinearProbing(nn.Module):
             return x_masked.max(dim=1)[0]  # [B, D]
             
         elif self.pooling_mode == "attention":
-            # Gated attention mechanism with masking
-            A_V = torch.tanh(self.attention_V(x))  # [B, N, H]
+            # --------------------------------------------------------------
+            # If *hierarchical* inputs ([B, N, L, D]) are supplied we first
+            # compute attention over the patch dimension (L) in each video and
+            # produce per-video embeddings.  We then reuse the same (shared)
+            # linear layers to perform a second round of attention across the
+            # N video embeddings.  This keeps the implementation lightweight
+            # while still capturing intra- and inter-video relationships.
+            # --------------------------------------------------------------
+
+            if x.ndim == 4:  # [B, N, L, D]
+                print(f"x.shape: {x.shape}")
+                ### Patch-level attention (within each video) ------------
+                ## 	Level 1: Patch attention computes which parts of each video are important.
+                B, N, L, D_ = x.shape  # noqa: N806 – for readability
+
+                # ---- Patch-level attention (within each video) ------------
+                x_patch = x.view(B * N, L, D_)
+                A_V_p = torch.tanh(self.attention_V(x_patch))  # [B*N, L, H] (16*4, 1532, 512)
+                A_U_p = torch.sigmoid(self.attention_U(x_patch))  # [B*N, L, H] (16*4, 1532, 512)
+                A_p = self.attention_w(A_V_p * A_U_p)  # [B*N, L, 1] (16*4, 1532, 1)
+                A_p = F.softmax(A_p, dim=1)  # [B*N, L, 1]
+                A_p = self.attn_dropout(A_p)
+                # Aggregate to per-video embedding
+                video_emb = (A_p * x_patch).sum(dim=1)  # [B*N, D]
+                video_emb = video_emb.view(B, N, D_)  # [B, N, D]
+
+                # ---- Video-level attention (across videos) ----------------
+                A_V = torch.tanh(self.attention_V(video_emb))  # [B, N, H] (16, 4, 512)
+                A_U = torch.sigmoid(self.attention_U(video_emb))  # [B, N, H] (16, 4, 512)
+                A = self.attention_w(A_V * A_U)  # [B, N, 1] (16, 4, 1)
+
+                # Apply mask if provided (expects [B, N])
+                if mask is not None:
+                    A = A.masked_fill(~mask.unsqueeze(-1), float("-inf"))
+
+                A = F.softmax(A, dim=1)  # [B, N, 1]
+                A = self.attn_dropout(A)
+
+                return (A * video_emb).sum(dim=1)  # [B, D]
+            
+            ## Level 2: Video attention computes which videos (segments) matter most for a prediction.
+            A_V = torch.tanh(self.attention_V(x))  # [B, N, H]  w
             A_U = torch.sigmoid(self.attention_U(x))  # [B, N, H]
-            A = self.attention_w(A_V * A_U)  # [B, N, 1]
+            A = self.attention_w(A_V * A_U)  # [B, N, 1] 
             
             # Apply mask to attention scores
             A = A.masked_fill(~mask.unsqueeze(-1), float('-inf'))

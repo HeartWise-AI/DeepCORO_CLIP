@@ -28,10 +28,24 @@ from utils.config.linear_probing_config import LinearProbingConfig
 from dataloaders.video_dataset import get_distributed_video_dataloader
 
 class VideoMILWrapper(torch.nn.Module):
-    def __init__(self, video_encoder, mil_model):
+    def __init__(self, video_encoder, mil_model, num_videos: int):
+        """Wrapper around *VideoEncoder* and *MultiInstanceLinearProbing*.
+
+        Args
+        ----
+        video_encoder: Backbone that outputs either per-video embeddings
+            ``[B, N, D]`` or per-patch embeddings ``[B, N_tokens, D]`` where
+            tokens are ordered consecutively for each video.
+        mil_model:  Multi-Instance head (e.g. *MultiInstanceLinearProbing*).
+        num_videos: Expected number of videos/segments per sample (*N*).
+            This is needed to reshape flat per-patch tokens into
+            ``[B, N, L, D]`` so that the downstream MIL model can perform
+            hierarchical pooling.
+        """
         super().__init__()
         self.video_encoder = video_encoder
         self.mil_model = mil_model
+        self.num_videos: int = num_videos
 
     def forward(self, x: torch.Tensor, video_indices: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
         """Wrapper forward pass.
@@ -58,24 +72,45 @@ class VideoMILWrapper(torch.nn.Module):
         # ------------------------------------------------------------------
         # 1) Run the backbone / encoder
         # ------------------------------------------------------------------
-        embeddings: torch.Tensor = self.video_encoder(x)  # [B, D] or [B, N, D]
+        embeddings: torch.Tensor = self.video_encoder(x)
 
         # ------------------------------------------------------------------
-        # 2) Ensure a 3-D [B, N, D] representation
+        # 2) Reshape so that the MIL module always sees *either*:
+        #    • 3-D tensor  [B, N, D]  (per-video embeddings)
+        #    • 4-D tensor  [B, N, L, D] (per-patch tokens, hierarchical)
         # ------------------------------------------------------------------
+
         if embeddings.ndim == 2:
-            # Encoder returned a pooled representation → add singleton N=1
+            # Encoder returned [B, D] → add singleton video dimension
             embeddings = embeddings.unsqueeze(1)  # [B, 1, D]
 
-        # At this point ``embeddings`` is guaranteed to be 3-D.
-        B, N, _ = embeddings.shape  # noqa: N806 – obtain mask size
+        elif embeddings.ndim == 3 and embeddings.shape[1] > self.num_videos:
+            #print(f"Received flat patch tokens [B, N*L, D]. Reshaping into [B, N, L, D]")
+            # Received flat patch tokens [B, N*L, D].  Reshape into
+            # hierarchical layout [B, N, L, D] so that the MIL head can
+            # perform two-level attention.
+            B, NL, D = embeddings.shape  # noqa: N806
+            #print(f"embeddings.shape: {embeddings.shape}")
+            if NL % self.num_videos != 0:
+                raise ValueError(
+                    f"Number of tokens (NL={NL}) is not divisible by the "
+                    f"expected num_videos={self.num_videos}. Cannot "
+                    "infer tokens per video for hierarchical pooling."
+                )
+            L = NL // self.num_videos
+            embeddings = embeddings.view(B, self.num_videos, L, D)  # [B,N,L,D]
 
         # ------------------------------------------------------------------
-        # 3) Build / update attention mask.  If the caller supplied an explicit
-        #    ``video_indices`` tensor we currently ignore it and assume all
-        #    instances are valid.  This can be revisited later if selective
-        #    masking is required.
+        # 3) Build attention mask (video-level only for now)
         # ------------------------------------------------------------------
+        if embeddings.ndim == 4:
+            B, N, _, _ = embeddings.shape
+        else:
+            B, N, _ = embeddings.shape  # type: ignore[misc]
+
+        # Build a simple boolean mask that marks every video as valid.  In the
+        # future we could incorporate ``video_indices`` to create selective
+        # masks, e.g. when some videos are padded.
         attention_mask = torch.ones((B, N), dtype=torch.bool, device=embeddings.device)
 
         # ------------------------------------------------------------------
@@ -179,7 +214,7 @@ class LinearProbingProject(BaseProject):
         )
         
         # Wrap both models
-        linear_probing = VideoMILWrapper(video_encoder, mil_model)
+        linear_probing = VideoMILWrapper(video_encoder, mil_model, self.config.num_videos)
         
         # Initialize optimizer with separate learning rates
         param_groups = []

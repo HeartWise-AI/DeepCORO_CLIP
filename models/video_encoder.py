@@ -278,14 +278,14 @@ class VideoEncoder(nn.Module):
 
         # Aggregator disabled → return either per-video or per-patch tokens
         if self._per_video_pool:
-            print("Per-video pooling") 
-            print(f"token_feats.shape: {token_feats.shape}")
+            #print("Per-video pooling") 
+            #print(f"token_feats.shape: {token_feats.shape}")
             feats = token_feats.mean(dim=2)  # [B, N, D_out]
-            print(f"feats.shape: {feats.shape}")
+            #print(f"feats.shape: {feats.shape}")
         else:
-            print("Per-patch pooling")
+            #print("Per-patch pooling")
             feats = token_feats.reshape(B, N * L, D_out)  # [B, N_tokens, D]
-            print(f"feats.shape: {feats.shape}")
+            #print(f"feats.shape: {feats.shape}")
 
         return feats
 

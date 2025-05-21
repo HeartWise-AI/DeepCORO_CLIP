@@ -1,9 +1,0 @@
-# Training parameters
-epochs: !!int 25
-num_workers: !!int 24
-debug: !!bool false
-use_amp: !!bool true
-period: !!int 1
-device: !!str cuda
-run_mode: !!str train
-max_grad_norm: !!float 5.0 

@@ -104,6 +104,14 @@ class MultiInstanceLinearProbing(nn.Module):
                 raise ValueError(
                     f"Expected embedding_dim={self.embedding_dim} but got {D}"
                 )
+            if self.pooling_mode in {"mean", "max"}:
+                import warnings
+                warnings.warn(
+                    f"[MultiInstanceLinearProbing] Received 4D input [B, N, L, D] with pooling_mode='{self.pooling_mode}'. "
+                    "Automatically mean-pooling over patch tokens (L) to produce [B, N, D]. "
+                    "If you want patch-level attention, use pooling_mode='attention'."
+                )
+                x = x.mean(dim=2)  # [B, N, D]
         elif x.ndim == 3:  # [B, N, D]
             B, N, D = x.shape  # noqa: N806
             if D != self.embedding_dim:

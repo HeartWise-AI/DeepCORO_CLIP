@@ -288,24 +288,22 @@ class HeartWiseParser:
 
         # Load the base config YAML
         yaml_config = HeartWiseConfig.from_yaml(known_args.base_config)
-
-        # Determine the pipeline project name from the config
-        if not hasattr(yaml_config, 'pipeline_project'):
+        
+        # Get the pipeline project name from the config
+        project_name: str = getattr(yaml_config, 'pipeline_project', None)
+        if not project_name:
             raise ValueError(f"'pipeline_project' key not found in the base configuration file: {known_args.base_config}")
 
-        project_name: str = getattr(yaml_config, 'pipeline_project')
-
-        # Get the appropriate parser class from the registry
+        # Check if the project name is registered
         if project_name not in ParserRegistry.list_registered():
             raise ValueError(f"Unknown pipeline_project '{project_name}' specified in config {known_args.base_config}. Registered parsers: {ParserRegistry.list_registered()}")
 
+        # Get the appropriate parser class from the registry
         parser_cls = ParserRegistry.get(project_name)
-        if parser_cls is None: # Should not happen if check above passes, but good practice
-            raise ValueError(f"No parser found for pipeline_project '{project_name}' despite being registered.")
-
+        
         # Instantiate the specific parser (e.g., ClipParser, LinearProbingParser)
         pipeline_parser_instance = parser_cls()
-
+        
         return pipeline_parser_instance, yaml_config
 
     @staticmethod

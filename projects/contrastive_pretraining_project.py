@@ -1,4 +1,5 @@
-import os
+
+from typing import Any
 
 import torch
 import torch.nn as nn
@@ -6,7 +7,6 @@ from torch.amp.grad_scaler import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
 
-from typing import Any
 from models.text_encoder import TextEncoder
 from models.video_encoder import VideoEncoder
 from projects.base_project import BaseProject
@@ -23,7 +23,6 @@ from utils.registry import (
     LossRegistry
 )
 from utils.wandb_wrapper import WandbWrapper
-from utils.files_handler import generate_output_dir_name
 from utils.video_project import calculate_dataset_statistics_ddp
 from dataloaders.video_clip_dataset import get_distributed_video_clip_dataloader
 

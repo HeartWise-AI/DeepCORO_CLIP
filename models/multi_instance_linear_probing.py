@@ -185,7 +185,6 @@ class MultiInstanceLinearProbing(nn.Module):
             # --------------------------------------------------------------
 
             if x.ndim == 4:  # [B, N, L, D]
-                print(f"x.shape: {x.shape}")
                 ### Patch-level attention (within each video) ------------
                 ## 	Level 1: Patch attention computes which parts of each video are important.
                 B, N, L, D_ = x.shape  # noqa: N806 – for readability

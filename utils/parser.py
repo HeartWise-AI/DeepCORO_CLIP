@@ -1,13 +1,14 @@
 import sys
 import argparse
+from typing import Any
 
-from utils.registry import ParserRegistry
 from utils.parser_typing import (
     str2bool, 
     parse_list, 
     parse_optional_int,
     parse_optional_str
 )
+from utils.registry import ParserRegistry
 from utils.config.heartwise_config import HeartWiseConfig
 
 
@@ -125,10 +126,10 @@ class ClipParser(BaseParser):
         self, 
         config: HeartWiseConfig, 
         args_list = None
-    ):
+    ) -> HeartWiseConfig:
         """Parses all args and updates config."""
-        args = self.parser.parse_args(args_list)
-        config = HeartWiseConfig.update_config_with_args(config, args)
+        args: Any = self.parser.parse_args(args_list)
+        config: HeartWiseConfig = HeartWiseConfig.update_config_with_args(config, args)
         return config
 
 
@@ -318,10 +319,9 @@ class HeartWiseParser:
         pipeline_parser, config = HeartWiseParser._get_pipeline_parser()
 
         # 2. Let the specific parser handle all arguments (known and unknown)
-        updated_config = pipeline_parser.parse_args_and_update(config)
+        updated_config: HeartWiseConfig = pipeline_parser.parse_args_and_update(config)
 
         # 3. Perform any final updates or checks (e.g., setting GPU info)
-        if hasattr(type(updated_config), 'set_gpu_info_in_place'):
-            type(updated_config).set_gpu_info_in_place(updated_config)
+        HeartWiseConfig.set_gpu_info_in_place(updated_config)
 
         return updated_config

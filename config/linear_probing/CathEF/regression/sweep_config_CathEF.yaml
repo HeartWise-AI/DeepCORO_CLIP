@@ -14,6 +14,34 @@ metric:
   name: best_val_loss
   goal: minimize
 parameters:
+  aggregate_videos_tokens:
+    values: [false]
+  attention_hidden:
+    values: [64, 128, 256]
+  attention_lr:
+    distribution: uniform
+    min: 0.001
+    max: 0.005
+  attention_weight_decay:
+    distribution: uniform
+    min: 0.0
+    max: 0.0001
+  batch_size:
+    values: [24, 32]
+  dropout:
+    distribution: uniform
+    min: 0.05
+    max: 0.2
+  dropout_attention:
+    distribution: uniform
+    min: 0.15
+    max: 0.3
+  entity:
+    values: ["mhi_ai"]
+  factor:
+    distribution: uniform
+    min: 0.2
+    max: 0.5
   head_lr.Value:
     distribution: uniform
     min: 1e-5
@@ -22,48 +50,6 @@ parameters:
     distribution: uniform
     min: 1e-5
     max: 1e-4
-  optimizer:
-    values: [RAdam, AdamW]
-  scheduler_name:
-    values: ["linear_warmup", "cosine_with_warmup", "cosine_with_hard_restarts_with_warmup"]
-  num_warmup_percent:
-    values: [0.1]
-  lr_step_period:
-    values: [1, 2, 3]
-  factor:
-    distribution: uniform
-    min: 0.2
-    max: 0.5
-  stride:
-    values: [1, 2]
-  pooling_mode:
-    values: ["attention", "mean", "max"]
-  dropout:
-    distribution: uniform
-    min: 0.05
-    max: 0.2
-  num_videos:
-    values: [2, 3, 4]
-  attention_lr:
-    distribution: uniform
-    min: 1e-4
-    max: 1e-3
-  attention_weight_decay:
-    distribution: uniform
-    min: 0.0
-    max: 0.0001
-  video_freeze_ratio:
-    distribution: uniform
-    min: 0.8
-    max: 1.0
-  video_encoder_lr:
-    distribution: uniform
-    min: 1e-5
-    max: 1e-4
-  video_encoder_weight_decay:
-    distribution: uniform
-    min: 1e-7
-    max: 1e-6
   head_weight_decay.Value:
     distribution: uniform
     min: 1e-7
@@ -72,14 +58,38 @@ parameters:
     distribution: uniform
     min: 1e-7
     max: 1e-6
-  batch_size:
-    values: [16, 20, 24]
+  lr_step_period:
+    values: [1, 2, 3]
   name:
     values: ["DeepCORO_video_linear_probing_cathEF"]
+  num_videos:
+    values: [2, 3, 4]
+  num_warmup_percent:
+    values: [0.02, 0.05, 0.1]
+  optimizer:
+    values: [RAdam, AdamW]
+  per_video_pool:
+    values: [false]
+  pooling_mode:
+    values: ["attention"]
   project:
     values: ["DeepCORO_video_linear_probing_cathEF"]
-  entity:
-    values: ["mhi_ai"]
+  scheduler_name:
+    values: ["linear_warmup", "cosine_with_warmup", "cosine_with_hard_restarts_with_warmup"]
+  stride:
+    values: [1, 2, 3]
+  video_encoder_lr:
+    distribution: uniform
+    min: 1e-5
+    max: 1e-4
+  video_encoder_weight_decay:
+    distribution: uniform
+    min: 1e-7
+    max: 1e-6
+  video_freeze_ratio:
+    distribution: uniform
+    min: 0.8
+    max: 1.0
 early_terminate:
   type: hyperband
   min_iter: 3

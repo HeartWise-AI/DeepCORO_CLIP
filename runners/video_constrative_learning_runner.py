@@ -404,9 +404,6 @@ class VideoContrastiveLearningRunner:
                     print(f"\nERROR: {error_msg}")
                 raise RuntimeError(error_msg)
 
-            if self.lr_scheduler and self.scheduler_per_iteration and (mode == RunMode.TRAIN):
-                self.lr_scheduler.step()
-
             # Store embeddings on CPU
             all_video_embeddings_local.append(embeddings["video_embeddings"].cpu())
             all_text_embeddings_local.append(embeddings["text_embeddings"].cpu())

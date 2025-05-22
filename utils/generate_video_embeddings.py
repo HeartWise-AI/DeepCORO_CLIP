@@ -13,7 +13,7 @@ import argparse
 args: argparse.Namespace = argparse.ArgumentParser()
 args.add_argument("--cuda_idx", type=int, default=2)
 args.add_argument("--multi_video", type=bool, default=False)
-args.add_argument("--split", type=str, default='test')
+args.add_argument("--split", type=str, default='train')
 args = args.parse_args()
 
 cuda_idx: int = args.cuda_idx
@@ -34,9 +34,9 @@ def load_checkpoint(
 
 def generate_video_embeddings():
     video_dataset: VideoDataset = VideoDataset(
-        data_filename='data/CathEF_MHI_UCSF_2016-to-july-2022-and-2023-08-30-post-CathEF_alpha.csv',
+        data_filename='data/reports_with_alpha_separator_with_Calcifc_Stenosis_IFR_20250108_RCA_LCA.csv',
         split=split,
-        target_label=['y_true_cat'],
+        target_label=None,
         datapoint_loc_label='FileName',
         num_frames=16,
         mean=[99.54182434082031, 99.54182434082031, 99.54182434082031],
@@ -45,7 +45,7 @@ def generate_video_embeddings():
     
     video_dataloader: DataLoader = DataLoader(
         video_dataset,
-        batch_size=16,
+        batch_size=4,
         shuffle=False,
         num_workers=16,
         collate_fn=custom_collate_fn,
@@ -71,7 +71,7 @@ def generate_video_embeddings():
     output_dir_embeddings: str = 'video_embeddings/xvwwv5ar'
     if not os.path.exists(output_dir_embeddings):
         os.makedirs(output_dir_embeddings)
-    
+
     for video_data in tqdm(video_dataloader, total=len(video_dataloader)):
         if not multi_video:
             video_data['videos'] = video_data['videos'].unsqueeze(1)

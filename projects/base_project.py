@@ -37,14 +37,15 @@ class BaseProject(ABC):
         
         print(f"Output directory: {self.config.output_dir}")        
         
-        # Create the output directory
-        os.makedirs(self.config.output_dir, exist_ok=True)
-        
-        # Backup the configuration file
-        backup_config(
-            config=self.config,
-            output_dir=self.config.output_dir
-        )
+        if self.config.is_ref_device:
+            # Create the output directory
+            os.makedirs(self.config.output_dir, exist_ok=True)
+            
+            # Backup the configuration file
+            backup_config(
+                config=self.config,
+                output_dir=self.config.output_dir
+            )
     
     def _load_checkpoint(
         self, 

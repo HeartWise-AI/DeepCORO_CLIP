@@ -170,14 +170,6 @@ class ContrastivePretrainingProject(BaseProject):
             loss_type=LossRegistry.get(self.config.loss_name)()
         )
 
-        # Setup output directory (fix for NameError)
-        full_output_path = None
-        if self.config.is_ref_device:
-            run_id = self.wandb_wrapper.get_run_id() if self.wandb_wrapper.is_initialized() else None
-            output_subdir = generate_output_dir_name(self.config, run_id)
-            full_output_path = os.path.join(self.config.output_dir, output_subdir) if hasattr(self.config, 'output_dir') else output_subdir
-            os.makedirs(full_output_path, exist_ok=True)
-
         if self.config.is_ref_device:
             if self.wandb_wrapper.is_initialized():
                 self.wandb_wrapper.config_update(
@@ -205,7 +197,6 @@ class ContrastivePretrainingProject(BaseProject):
             "val_loader": val_loader,
             "scaler": scaler,
             "log_temp": log_temperature,
-            "output_dir": full_output_path,
             "loss_fn": loss_fn,
         }    
 
@@ -273,8 +264,7 @@ class ContrastivePretrainingProject(BaseProject):
         return training_setup
         
     def run(self):
-        if self.config.is_ref_device:
-            self._setup_project()
+        self._setup_project()
         
         if self.config.run_mode == RunMode.TRAIN:
             training_setup: dict[str, Any] = self._setup_training_objects()

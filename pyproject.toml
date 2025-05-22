@@ -43,6 +43,7 @@ dependencies = [
     "scikit-learn>=1.6.1",
     "seaborn>=0.13.2",
     "pyarrow>=19.0.1",
+    "fvcore>=0.1.5.post20221221",
 ]
 
 [project.optional-dependencies]

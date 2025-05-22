@@ -347,7 +347,7 @@ class LinearProbingProject(BaseProject):
         device = self.config.device
         if isinstance(device, int):
             device = f"cuda:{device}"
-        checkpoint: dict[str, Any] = torch.load(path, map_location=device)
+        checkpoint: dict[str, Any] = torch.load(path, map_location=device, weights_only=True)
         return checkpoint
 
     def _load_runner_checkpoint(self, runner: Runner, path: str) -> int:

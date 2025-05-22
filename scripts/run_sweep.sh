@@ -31,6 +31,29 @@ BASE_CONFIG_PATH="config/clip/base_config.yaml"
 SWEEP_CONFIG_PATH="config/clip/sweep_config_single_video.yaml"
 COUNT="5" # Number of runs to execute
 
+# Activate virtual environment
+source .venv/bin/activate
+
+# Set NCCL environment variables for better stability with H200s
+export NCCL_DEBUG=INFO
+export NCCL_IB_TIMEOUT=3600  # Increased to 1 hour
+export NCCL_SOCKET_TIMEOUT=3600  # Increased to 1 hour
+export NCCL_P2P_DISABLE=0
+export NCCL_IB_DISABLE=0
+export NCCL_SOCKET_IFNAME=eth0
+export NCCL_IB_GID_INDEX=3  # Optimize for H200
+export NCCL_IB_HCA=mlx5  # Use Mellanox HCA
+export NCCL_IB_TC=106  # Traffic class for H200
+export NCCL_IB_SL=0  # Service level
+export NCCL_IB_AR_THRESHOLD=8192  # Adaptive routing threshold
+export NCCL_IB_CUDA_SUPPORT=1  # Enable CUDA support
+export NCCL_IB_TIMEOUT_MS=3600000  # 1 hour in milliseconds
+export NCCL_SOCKET_NTHREADS=4  # Number of threads for socket operations
+export NCCL_NSOCKS_PERTHREAD=4  # Number of sockets per thread
+export NCCL_BUFFSIZE=2097152  # Buffer size (2MB)
+export NCCL_IB_RETRY_CNT=7  # Number of retries for IB operations
+export NCCL_IB_QUEUE_LEN=4096  # Queue length for IB operations
+
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -141,9 +164,9 @@ fi
 
 # Extract configuration fields using yq
 mapfile -t COMMANDS < <(yq e '.command[]' "${SWEEP_CONFIG_PATH}")
-NAME=$(yq e '.parameters.name.values[]' "${SWEEP_CONFIG_PATH}" | tr -d "'")
-PROJECT=$(yq e '.parameters.project.values[]' "${SWEEP_CONFIG_PATH}" | tr -d "'")
-ENTITY=$(yq e '.parameters.entity.values[]' "${SWEEP_CONFIG_PATH}" | tr -d "'")
+NAME=$(yq e '.name' "${SWEEP_CONFIG_PATH}" | tr -d "'")
+PROJECT=$(yq e '.project' "${SWEEP_CONFIG_PATH}" | tr -d "'")
+ENTITY=$(yq e '.entity' "${SWEEP_CONFIG_PATH}" | tr -d "'")
 
 # Validate extracted values
 if [ -z "${NAME}" ] || [ -z "${PROJECT}" ] || [ -z "${ENTITY}" ]; then

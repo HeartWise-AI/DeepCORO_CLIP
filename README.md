@@ -12,6 +12,9 @@ DeepCORO_CLIP is a deep learning model for echocardiography video interpretation
 - **Hyperparameter Optimization**: Built-in support for Weights & Biases sweeps
 - **Automatic Mixed Precision**: Optimized training with AMP
 - **Distributed Data Parallel**: Efficient multi-GPU training
+- **Patch- vs. Video-level Reasoning**: Expose *all* patch tokens, a single
+  token per video, or a single token per study with two simple flags
+  (`aggregate` and `per_video_pool`) in the `VideoEncoder`.
 
 ## 🛠️ Environment Setup
 
@@ -132,6 +135,7 @@ bash scripts/runner.sh --base_config config/linear_probing/base_config.yaml --se
 
 # Multi-GPU hyperparameters fine-tuning - RunMode and UseWandb are forced to train and true respectively (see scripts/run_sweep.sh)
 bash scripts/run_sweep.sh --base_config config/linear_probing/base_config.yaml --sweep_config config/linear_probing/sweep_config.yaml --selected_gpus 0,1 --count 5
+
 ```
 
 ## Model Architecture
@@ -141,6 +145,37 @@ bash scripts/run_sweep.sh --base_config config/linear_probing/base_config.yaml -
 - Configurable number of heads and layers
 - Support for pretrained weights
 - Optional backbone freezing
+- New flags for fine-grained control over the output:
+  * `aggregate=True` (default) – returns **one** study-level vector `[B, D]`.
+  * `aggregate=False, per_video_pool=True` – returns one token **per video**
+    `[B, N, D]`, ready for MIL / linear probing heads.
+  * `aggregate=False, per_video_pool=False` – returns **all patch tokens - ONLY Setting that preeservs all the tokens**
+    `[B, N·L, D]` for the most detailed downstream reasoning.
+    
+
+
+Example (video-level MIL):
+
+```python
+from models.video_encoder import VideoEncoder
+from models.multi_instance_linear_probing import MultiInstanceLinearProbing
+
+encoder = VideoEncoder(
+    backbone="mvit",
+    aggregate=False,        # skip internal aggregator
+    aggregate_videos_tokens=True,    # one token per video
+)
+
+probe = MultiInstanceLinearProbing(
+    embedding_dim=encoder.embedding_dim,
+    head_structure={"severity": 4},
+    pooling_mode="attention",
+)
+
+video_batch = ...                  # [B, N, T, H, W, C]
+feats = encoder(video_batch)       # [B, N, D]
+logits = probe(feats)              # dict with head output
+```
 
 ### Text Encoder
 - BioMedBERT for medical text encoding

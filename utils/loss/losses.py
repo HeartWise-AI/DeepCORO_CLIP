@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
+from torch.amp.autocast_mode import autocast
 
 from typing import Any
 from utils.enums import LossType
@@ -36,24 +37,31 @@ class ContrastiveLoss(nn.Module):
         Returns:
             torch.Tensor: Scalar loss value
         """        
-        # Normalize embeddings.
-        video_features = F.normalize(video_features, dim=1)
-        text_features = F.normalize(text_features, dim=1)
-        
-        # Compute similarity matrix of shape [B, B].
-        similarity_matrix = torch.matmul(video_features, text_features.t())
-        
-        # Apply temperature scaling.
-        temp = torch.exp(log_temp)
-        logits = similarity_matrix / temp
+        # Perform the entire loss computation in full precision to avoid
+        # overflow/underflow issues when AMP is enabled. This has negligible
+        # memory overhead because the tensors involved are only of size [B, D]
+        # and [B, B].
+        with autocast('cuda', enabled=False):
+            # Normalize embeddings in fp32 for numerical stability.
+            video_features_fp32 = F.normalize(video_features.float(), dim=1)
+            text_features_fp32 = F.normalize(text_features.float(), dim=1)
 
-        # Create targets: assume the i-th video corresponds to the i-th text.
-        targets = torch.arange(logits.size(0), device=logits.device)
+            # Compute similarity matrix of shape [B, B].
+            similarity_matrix = torch.matmul(video_features_fp32, text_features_fp32.t())
 
-        # Compute cross-entropy loss in both directions.
-        loss_v2t = F.cross_entropy(logits, targets)
-        loss_t2v = F.cross_entropy(logits.t(), targets)
-        return 0.5 * (loss_v2t + loss_t2v)
+            # Apply temperature scaling.
+            temp = torch.exp(log_temp.float())
+            logits = similarity_matrix / temp
+
+            # Targets: assume the i-th video corresponds to the i-th text.
+            targets = torch.arange(logits.size(0), device=logits.device)
+
+            # Cross-entropy loss in both directions.
+            loss_v2t = F.cross_entropy(logits, targets)
+            loss_t2v = F.cross_entropy(logits.t(), targets)
+            loss = 0.5 * (loss_v2t + loss_t2v)
+
+        return loss
 
 ###############################################################################
 # DDP-aware version: uses a custom autograd gather to preserve gradients.
@@ -121,30 +129,33 @@ class ContrastiveLossDDP(nn.Module):
         Returns:
             torch.Tensor: Scalar loss value
         """        
-        # 1) Gather features from all GPUs.
-        video_features_all = gather_all(video_features)
-        text_features_all  = gather_all(text_features)
+        with autocast('cuda', enabled=False):
+            # 1) Gather features from all GPUs.
+            video_features_all = gather_all(video_features)
+            text_features_all  = gather_all(text_features)
 
-        # 2) Normalize the gathered features.
-        video_features_all = F.normalize(video_features_all, dim=1)
-        text_features_all  = F.normalize(text_features_all, dim=1)
+            # 2) Normalize the gathered features.
+            video_features_all = F.normalize(video_features_all.float(), dim=1)
+            text_features_all  = F.normalize(text_features_all.float(), dim=1)
 
-        # 3) Compute global similarity matrix of shape [N, N],
-        # where N is the total global batch size.
-        similarity_matrix = torch.matmul(video_features_all, text_features_all.t())
+            # 3) Compute global similarity matrix of shape [N, N],
+            # where N is the total global batch size.
+            similarity_matrix = torch.matmul(video_features_all, text_features_all.t())
 
-        # 4) Apply temperature scaling.
-        temp = torch.exp(log_temp)
-        logits = similarity_matrix / temp
+            # 4) Apply temperature scaling.
+            temp = torch.exp(log_temp.float())
+            logits = similarity_matrix / temp
 
-        # 5) Create targets: assume that the matching pairs lie along the diagonal.
-        n = logits.size(0)  # global batch size
-        targets = torch.arange(n, device=logits.device)
+            # 5) Targets: assume matching pairs lie along the diagonal.
+            n = logits.size(0)
+            targets = torch.arange(n, device=logits.device)
 
-        # Compute cross-entropy losses in both directions.
-        loss_i2t = F.cross_entropy(logits, targets)
-        loss_t2i = F.cross_entropy(logits.t(), targets)
-        return 0.5 * (loss_i2t + loss_t2i)
+            # Cross-entropy losses.
+            loss_i2t = F.cross_entropy(logits, targets)
+            loss_t2i = F.cross_entropy(logits.t(), targets)
+            loss = 0.5 * (loss_i2t + loss_t2i)
+
+        return loss
 
 @LossRegistry.register(LossType.SIGLIP)
 class SiglipLoss(nn.Module):
@@ -227,33 +238,35 @@ class SiglipLossDDP(nn.Module):
         Returns:
             torch.Tensor: Scalar loss value
         """        
-        # 1) Gather features from all GPUs.
-        video_features_all = gather_all(video_features)
-        text_features_all  = gather_all(text_features)
+        with autocast('cuda', enabled=False):
+            # 1) Gather features from all GPUs.
+            video_features_all = gather_all(video_features)
+            text_features_all  = gather_all(text_features)
 
-        # 2) Normalize the gathered features.
-        video_features_all = F.normalize(video_features_all, dim=1)
-        text_features_all  = F.normalize(text_features_all, dim=1)
+            # 2) Normalize the gathered features.
+            video_features_all = F.normalize(video_features_all.float(), dim=1)
+            text_features_all  = F.normalize(text_features_all.float(), dim=1)
 
-        # 3) Compute global similarity matrix of shape [N, N],
-        # where N is the total global batch size.
-        similarity_matrix = torch.matmul(video_features_all, text_features_all.t())
+            # 3) Compute global similarity matrix of shape [N, N],
+            # where N is the total global batch size.
+            similarity_matrix = torch.matmul(video_features_all, text_features_all.t())
 
-        # 4) Apply SIGLIP gating function: g(x) = x * sigmoid(x)
-        gated_similarity = similarity_matrix * torch.sigmoid(similarity_matrix)
-        
-        # 5) Apply temperature scaling.
-        temp = torch.exp(log_temp)
-        logits = gated_similarity / temp
+            # 4) Apply SIGLIP gating function: g(x) = x * sigmoid(x)
+            gated_similarity = similarity_matrix * torch.sigmoid(similarity_matrix)
+            
+            # 5) Apply temperature scaling.
+            temp = torch.exp(log_temp.float())
+            logits = gated_similarity / temp
 
-        # 6) Create targets: assume that the matching pairs lie along the diagonal.
-        n = logits.size(0)  # global batch size
-        targets = torch.arange(n, device=logits.device)
+            # 6) Targets along the diagonal.
+            n = logits.size(0)
+            targets = torch.arange(n, device=logits.device)
 
-        # Compute cross-entropy losses in both directions.
-        loss_i2t = F.cross_entropy(logits, targets)
-        loss_t2i = F.cross_entropy(logits.t(), targets)
-        loss = 0.5 * (loss_i2t + loss_t2i)
+            # Cross-entropy losses.
+            loss_i2t = F.cross_entropy(logits, targets)
+            loss_t2i = F.cross_entropy(logits.t(), targets)
+            loss = 0.5 * (loss_i2t + loss_t2i)
+
         return loss
 
 @LossRegistry.register(LossType.INFO_NCE)

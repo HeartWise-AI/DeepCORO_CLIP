@@ -1,13 +1,14 @@
 import sys
 import argparse
+from typing import Any
 
-from utils.registry import ParserRegistry
 from utils.parser_typing import (
     str2bool, 
     parse_list, 
     parse_optional_int,
     parse_optional_str
 )
+from utils.registry import ParserRegistry
 from utils.config.heartwise_config import HeartWiseConfig
 
 
@@ -37,6 +38,15 @@ class BaseParser:
         common_group.add_argument('--device', type=str, help="Device to use (e.g., 'cuda', 'cpu').")
         common_group.add_argument('--world_size', type=int, help="Number of processes for distributed training.")
     
+    # ------------------------------------------------------------------
+    # Provide a stub for parse_args_and_update so that static type checkers
+    # recognize the method on BaseParser references. Sub-classes are expected
+    # to override this.
+    # ------------------------------------------------------------------
+    def parse_args_and_update(self, config: 'HeartWiseConfig', args_list=None):  # type: ignore[override]
+        """Stub to satisfy static type checkers. Should be overridden by subclasses."""
+        raise NotImplementedError("Subclasses must implement parse_args_and_update().")
+
 @ParserRegistry.register("DeepCORO_clip")
 @ParserRegistry.register("DeepCORO_clip_test")
 class ClipParser(BaseParser):
@@ -77,6 +87,8 @@ class ClipParser(BaseParser):
         clip_model_group.add_argument('--dropout', type=float, help="Dropout rate.")
         clip_model_group.add_argument('--num_heads', type=int, help="Number of output units in the classification head.")
         clip_model_group.add_argument('--aggregator_depth', type=int, help="Depth of the aggregation/classification head.")
+        clip_model_group.add_argument('--aggregate_videos_tokens', type=str2bool, help="Whether to run the encoder's internal transformer aggregator (default: True).")
+        clip_model_group.add_argument('--per_video_pool', type=str2bool, help="When aggregate_videos_tokens=False, mean-pool patch tokens inside each video before returning.")
 
         clip_optim_group = self.parser.add_argument_group('CLIP Optimization parameters')
         clip_optim_group.add_argument('--max_grad_norm', type=float, help="Maximum gradient norm.")
@@ -104,7 +116,6 @@ class ClipParser(BaseParser):
         clip_augment_group.add_argument('--rand_augment', type=str2bool, help="Enable RandAugment.")
         clip_augment_group.add_argument('--resize', type=int, help="Resize dimension for input frames.")
         clip_augment_group.add_argument('--apply_mask', type=str2bool, help="Apply masking augmentation.")
-        clip_augment_group.add_argument('--view_count', type=parse_optional_int, help="Number of views for multi-view augmentation.")
         
         clip_checkpoint_group = self.parser.add_argument_group('CLIP Checkpointing parameters')
         clip_checkpoint_group.add_argument('--save_best', type=str, help="Metric to monitor for saving the best checkpoint.")
@@ -115,10 +126,10 @@ class ClipParser(BaseParser):
         self, 
         config: HeartWiseConfig, 
         args_list = None
-    ):
+    ) -> HeartWiseConfig:
         """Parses all args and updates config."""
-        args = self.parser.parse_args(args_list)
-        config = HeartWiseConfig.update_config_with_args(config, args)
+        args: Any = self.parser.parse_args(args_list)
+        config: HeartWiseConfig = HeartWiseConfig.update_config_with_args(config, args)
         return config
 
 
@@ -172,6 +183,19 @@ class LinearProbingParser(BaseParser):
         lp_data_group.add_argument('--frames', type=int, help="Number of frames to sample per video.")
         lp_data_group.add_argument('--stride', type=int, help="Stride between sampled frames.")
         
+        # ------------------------------------------------------------------
+        # Multi-Instance / Multi-Video parameters (MIL)
+        # ------------------------------------------------------------------
+        lp_data_group.add_argument('--multi_video', type=str2bool, help="Whether to load multiple videos per sample.")
+        lp_data_group.add_argument('--num_videos', type=int, help="Number of videos per sample if multi_video is True.")
+        lp_data_group.add_argument('--groupby_column', type=str, help="Column to group data by (e.g., patient ID).")
+        lp_data_group.add_argument('--shuffle_videos', type=str2bool, help="Shuffle videos within a group if multi_video is True.")
+        lp_data_group.add_argument('--pooling_mode', type=str, help="Pooling mode to aggregate segment embeddings ('mean', 'max', 'attention').")
+        lp_data_group.add_argument('--attention_hidden', type=int, help="Hidden dimension for attention pooling.")
+        lp_data_group.add_argument('--dropout_attention', type=float, help="Dropout rate for attention pooling block.")
+        lp_data_group.add_argument('--attention_lr', type=float, help="Learning rate for attention pooling parameters.")
+        lp_data_group.add_argument('--attention_weight_decay', type=float, help="Weight decay for attention pooling parameters.")
+        
         lp_model_group = self.parser.add_argument_group('Linear Probing Video Encoder parameters')
         lp_model_group.add_argument('--model_name', type=str, help="Name of the video encoder model.")
         lp_model_group.add_argument('--aggregator_depth', type=int, help="Depth of the aggregation/classification head.")
@@ -181,7 +205,9 @@ class LinearProbingParser(BaseParser):
         lp_model_group.add_argument('--pretrained', type=str2bool, help="Whether to use a pretrained video encoder.")
         lp_model_group.add_argument('--video_encoder_checkpoint_path', type=str, help="Path to the video encoder checkpoint file.")
         lp_model_group.add_argument('--video_encoder_lr', type=float, help="Learning rate for the video encoder.")
-        
+        lp_model_group.add_argument('--aggregate_videos_tokens', type=str2bool, help="Whether to run the encoder's internal aggregator (default: True).")
+        lp_model_group.add_argument('--per_video_pool', type=str2bool, help="Mean-pool patch tokens in each video when aggregate_videos_tokens=False.")
+
         lp_linear_probing_group = self.parser.add_argument_group('Linear Probing Linear Probing parameters')
         lp_linear_probing_group.add_argument('--head_structure', type=str, help="Output dimension of each head (e.g., JSON string).") # Example: If passed as string
         lp_linear_probing_group.add_argument('--loss_structure', type=str, help="Loss function for each head (e.g., JSON string).") # Example: If passed as string
@@ -263,24 +289,22 @@ class HeartWiseParser:
 
         # Load the base config YAML
         yaml_config = HeartWiseConfig.from_yaml(known_args.base_config)
-
-        # Determine the pipeline project name from the config
-        if not hasattr(yaml_config, 'pipeline_project'):
+        
+        # Get the pipeline project name from the config
+        project_name: str = getattr(yaml_config, 'pipeline_project', None)
+        if not project_name:
             raise ValueError(f"'pipeline_project' key not found in the base configuration file: {known_args.base_config}")
 
-        project_name: str = getattr(yaml_config, 'pipeline_project')
-
-        # Get the appropriate parser class from the registry
+        # Check if the project name is registered
         if project_name not in ParserRegistry.list_registered():
             raise ValueError(f"Unknown pipeline_project '{project_name}' specified in config {known_args.base_config}. Registered parsers: {ParserRegistry.list_registered()}")
 
+        # Get the appropriate parser class from the registry
         parser_cls = ParserRegistry.get(project_name)
-        if parser_cls is None: # Should not happen if check above passes, but good practice
-            raise ValueError(f"No parser found for pipeline_project '{project_name}' despite being registered.")
-
+        
         # Instantiate the specific parser (e.g., ClipParser, LinearProbingParser)
         pipeline_parser_instance = parser_cls()
-
+        
         return pipeline_parser_instance, yaml_config
 
     @staticmethod
@@ -295,9 +319,9 @@ class HeartWiseParser:
         pipeline_parser, config = HeartWiseParser._get_pipeline_parser()
 
         # 2. Let the specific parser handle all arguments (known and unknown)
-        updated_config = pipeline_parser.parse_args_and_update(config)
+        updated_config: HeartWiseConfig = pipeline_parser.parse_args_and_update(config)
 
         # 3. Perform any final updates or checks (e.g., setting GPU info)
-        HeartWiseConfig.set_gpu_info_in_place(updated_config) # Example if needed
+        HeartWiseConfig.set_gpu_info_in_place(updated_config)
 
         return updated_config

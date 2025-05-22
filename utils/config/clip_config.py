@@ -1,5 +1,6 @@
 from typing import List, Optional
 from dataclasses import dataclass
+import os # Keep os import if used elsewhere, or remove if only for set_gpu_info_in_place
 
 from utils.registry import ConfigRegistry
 from utils.config.heartwise_config import HeartWiseConfig
@@ -63,7 +64,6 @@ class ClipConfig(HeartWiseConfig):
     rand_augment: bool
     resize: int
     apply_mask: bool
-    view_count: Optional[int]
 
     # Checkpointing parameters
     save_best: str
@@ -76,3 +76,9 @@ class ClipConfig(HeartWiseConfig):
     metadata_path: str
     inference_results_path: str
 
+    # Optional parameters
+    view_count: Optional[int] = None
+
+    # Device and distributed info are now inherited from HeartWiseConfig
+    # No local definition of device, world_size, is_ref_device, 
+    # __post_init__ for device setup, or set_gpu_info_in_place needed here.

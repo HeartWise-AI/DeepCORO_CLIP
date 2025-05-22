@@ -1,12 +1,12 @@
-import os
+
+from typing import Any
 
 import torch
 import torch.nn as nn
-from torch.amp import GradScaler
+from torch.amp.grad_scaler import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
 
-from typing import Any
 from models.text_encoder import TextEncoder
 from models.video_encoder import VideoEncoder
 from projects.base_project import BaseProject
@@ -23,10 +23,8 @@ from utils.registry import (
     LossRegistry
 )
 from utils.wandb_wrapper import WandbWrapper
-from utils.files_handler import generate_output_dir_name
 from utils.video_project import calculate_dataset_statistics_ddp
 from dataloaders.video_clip_dataset import get_distributed_video_clip_dataloader
-from dataloaders.multi_video_dataset import get_distributed_multi_video_dataloader
 
 @ProjectRegistry.register('DeepCORO_clip')
 class ContrastivePretrainingProject(BaseProject):
@@ -49,54 +47,29 @@ class ContrastivePretrainingProject(BaseProject):
         Returns:
             dict: Dictionary containing training objects
         """
-        if self.config.is_ref_device:
-            self._setup_project()
-                        
         # Calculate dataset statistics
         mean, std = calculate_dataset_statistics_ddp(self.config)
 
-        if self.config.multi_video:
-            train_loader: DataLoader = get_distributed_multi_video_dataloader(
-                self.config, 
-                split="train",
-                mean=mean.tolist(),
-                std=std.tolist(),
-                shuffle=True,
-                num_replicas=self.config.world_size,
-                rank=self.config.device,
-                drop_last=True,
-            )
-            val_loader: DataLoader = get_distributed_multi_video_dataloader(
-                self.config, 
-                split="val", 
-                mean=mean.tolist(),
-                std=std.tolist(),
-                shuffle=False,
-                num_replicas=self.config.world_size,
-                rank=self.config.device,
-                drop_last=False,
-            )
-        else:
-            train_loader: DataLoader = get_distributed_video_clip_dataloader(
-                self.config, 
-                split="train", 
-                mean=mean.tolist(),
-                std=std.tolist(),
-                shuffle=True,
-                num_replicas=self.config.world_size,
-                rank=self.config.device,
-                drop_last=True,
-            )
-            val_loader: DataLoader = get_distributed_video_clip_dataloader(
-                self.config, 
-                split="val", 
-                mean=mean.tolist(),
-                std=std.tolist(),
-                shuffle=False,
-                num_replicas=self.config.world_size,
-                rank=self.config.device,
-                drop_last=False,
-            )
+        train_loader: DataLoader = get_distributed_video_clip_dataloader(
+            self.config, 
+            split="train", 
+            mean=mean.tolist(),
+            std=std.tolist(),
+            shuffle=True,
+            num_replicas=self.config.world_size,
+            rank=self.config.device,
+            drop_last=True,
+        )
+        val_loader: DataLoader = get_distributed_video_clip_dataloader(
+            self.config, 
+            split="val", 
+            mean=mean.tolist(),
+            std=std.tolist(),
+            shuffle=False,
+            num_replicas=self.config.world_size,
+            rank=self.config.device,
+            drop_last=False,
+        )
 
         # Create models
         video_encoder: VideoEncoder = ModelRegistry.get(
@@ -223,8 +196,8 @@ class ContrastivePretrainingProject(BaseProject):
             "val_loader": val_loader,
             "scaler": scaler,
             "log_temp": log_temperature,
-            "output_dir": full_output_path,
             "loss_fn": loss_fn,
+            "output_dir": self.config.output_dir if self.config.is_ref_device else None,
         }    
 
     def _setup_inference_objects(
@@ -233,7 +206,7 @@ class ContrastivePretrainingProject(BaseProject):
         # Calculate dataset statistics
         mean, std = calculate_dataset_statistics_ddp(self.config)
         
-        val_loader: DataLoader = get_distributed_multi_video_dataloader(
+        val_loader: DataLoader = get_distributed_video_clip_dataloader(
             self.config, 
             split="inference", 
             mean=mean.tolist(),
@@ -266,7 +239,7 @@ class ContrastivePretrainingProject(BaseProject):
         )
         
         checkpoint: dict[str, Any] = self._load_checkpoint(self.config.checkpoint)
-        video_encoder.module.load_state_dict(checkpoint["video_encoder"])
+        video_encoder.module.load_state_dict(checkpoint["video_encoder"], weight_only=True)
         log_temp: float = checkpoint["train/temperature"]
 
         return {
@@ -275,20 +248,6 @@ class ContrastivePretrainingProject(BaseProject):
             "log_temp": log_temp,
             "output_dir": self.config.inference_results_path,
         }
-
-    def _save_texts_csv(
-        self, 
-        output_dir: str, 
-        texts: list[str]
-    ):
-        import csv
-        csv_path = os.path.join(output_dir, "val_texts.csv")
-        with open(csv_path, mode="w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(["Index", "Text"])
-            for idx, txt in enumerate(texts):
-                writer.writerow([idx, txt])
-        print(f"Saved {len(texts)} val texts to {csv_path}")    
 
     def _update_training_setup_with_checkpoint(
         self, 
@@ -305,6 +264,8 @@ class ContrastivePretrainingProject(BaseProject):
         return training_setup
         
     def run(self):
+        self._setup_project()
+        
         if self.config.run_mode == RunMode.TRAIN:
             training_setup: dict[str, Any] = self._setup_training_objects()
             start_epoch = 0

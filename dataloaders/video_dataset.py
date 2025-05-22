@@ -1,6 +1,7 @@
 import os
 import cv2
 import torch
+import random
 import numpy as np
 import pandas as pd
 from torch.utils.data import DataLoader
@@ -10,7 +11,8 @@ from typing import (
     Dict,
     List, 
     Optional, 
-    Tuple
+    Tuple,
+    Union
 )
 
 from utils.seed import seed_worker
@@ -19,9 +21,7 @@ from utils.video import load_video, format_mean_std
 from utils.config.heartwise_config import HeartWiseConfig
 
 class VideoDataset(torch.utils.data.Dataset):
-    """
-    Single-video dataset class for video-text pairs.
-    """
+    """Single or multi-video dataset class for video-text pairs.""" 
 
     def __init__(
         self,
@@ -37,6 +37,11 @@ class VideoDataset(torch.utils.data.Dataset):
         std: Optional[Any] = None,
         rand_augment: bool = False,
         stride: int = 1,
+        resize: int = 224,
+        multi_video: bool = False,
+        groupby_column: str = "StudyInstanceUID",
+        num_videos: int = 1,
+        shuffle_videos: bool = True,
         **kwargs,
     ):
         self.filename: str = data_filename
@@ -44,44 +49,42 @@ class VideoDataset(torch.utils.data.Dataset):
         self.datapoint_loc_label: str = datapoint_loc_label
         self.debug_mode: bool = debug_mode
         self.backbone: str = backbone
+        
+        # Multi-video parameters
+        self.multi_video: bool = multi_video
+        self.groupby_column: str = groupby_column
+        self.num_videos: int = num_videos
+        self.shuffle_videos: bool = shuffle_videos
+        
+        # Initialize general versions first, potentially overridden by backbone specifics
         self.num_frames: int = num_frames
-        self.mean: List[float] = format_mean_std(mean)
-        self.std: List[float] = format_mean_std(std)
+        self.resize: int = resize 
+
+        self.mean: List[float] = format_mean_std(mean) if mean is not None else [0.485, 0.456, 0.406]
+        self.std: List[float] = format_mean_std(std) if std is not None else [0.229, 0.224, 0.225]
         self.normalize: bool = normalize
         self.rand_augment: bool = rand_augment
-        
         self.stride: int = stride
         
-        # Define X3D model parameters
-        self.x3d_params = {
-            "x3d_s": {
-                "side_size": 182,
-                "crop_size": 182,
-                "num_frames": 13,
-                "sampling_rate": 6,
-            },
-            "x3d_m": {
-                "side_size": 256,
-                "crop_size": 256,
-                "num_frames": 16,
-                "sampling_rate": 5,
-            }
+        # Define X3D model specific parameters (requirements)
+        self.x3d_default_params = {
+            "x3d_s": {"side_size": 182, "crop_size": 182, "num_frames": self.num_frames, "sampling_rate": 6},
+            "x3d_m": {"side_size": self.resize, "crop_size": self.resize, "num_frames": self.num_frames, "sampling_rate": 5},
         }
         
-        # Set specific parameters based on backbone
+        # Adjust num_frames and resize based on backbone requirements
         if self.backbone.lower() == "mvit":
-            self.num_frames = 16
-            print(f"Using MViT backbone - forcing exactly {self.num_frames} frames with stride {self.stride}")
-            if "length" in kwargs:
-                kwargs["length"] = 16
+            self.num_frames = 16 # MViT specific requirement
+            print(f"Using MViT backbone - forcing {self.num_frames} frames.")
+        elif self.backbone.lower() in self.x3d_default_params:
+            params = self.x3d_default_params[self.backbone.lower()]
+            self.resize = params["side_size"]    # X3D specific resize
+            self.num_frames = params["num_frames"] # X3D specific num_frames
+            print(f"Using {self.backbone} backbone - forcing resize to {self.resize} and {self.num_frames} frames.")
 
+        # video_transforms are applied after backbone-specific adjustments
         self.video_transforms: Optional[Any] = kwargs.pop("video_transforms", None)
-        self.resize: int = kwargs.pop("resize", 224)
         
-        # For X3D models, override resize with their specific side_size
-        if self.backbone.lower() in ["x3d_s", "x3d_m"]:
-            self.resize = self.x3d_params[self.backbone.lower()]["side_size"]
-
         self.target_label: Optional[List[str]] = target_label
         self.external_test_location: Optional[str] = kwargs.pop("external_test_location", None)
 
@@ -100,6 +103,7 @@ class VideoDataset(torch.utils.data.Dataset):
     def load_data(self, split, target_labels):
         """
         Load data from the CSV file and extract filenames and outcomes.
+        For multi-video mode, groups videos by groupby_column.
 
         Args:
             split (str): Dataset split ('train', 'val', 'test', 'all')
@@ -107,13 +111,16 @@ class VideoDataset(torch.utils.data.Dataset):
 
         Returns:
             tuple: (filenames, outcomes, target_indices)
+            For multi-video: filenames is a list of lists of filenames per group
+            For single-video: filenames is a list of filenames
         """
         # Read the "α" separated file using pandas
         file_path = os.path.join(self.filename)
         data = pd.read_csv(file_path, sep="α", engine="python")
 
-        filename_index = data.columns.get_loc(self.datapoint_loc_label)
-        split_index = data.columns.get_loc("Split")
+        # Get column indices
+        filename_col = self.datapoint_loc_label
+        split_col = "Split"
 
         # Handle target indices for multi-head case
         if target_labels is None:
@@ -126,60 +133,125 @@ class VideoDataset(torch.utils.data.Dataset):
                 except KeyError:
                     raise ValueError(f"Target label '{label}' not found in data columns")
 
-        fnames = []
-        outcomes = None if target_indices is None else []
+        if self.multi_video:
+            # Group by specified column
+            print("Loading multi-video data... grouping by ", self.groupby_column)
+            grouped_data = data.groupby(self.groupby_column)
+            group_fnames = []
+            group_outcomes = []
 
-        # Iterate through rows using iterrows
-        for _, row in data.iterrows():
-            file_name = row.iloc[filename_index]
-            file_mode = row.iloc[split_index].lower()
+            for _, group in grouped_data:
+                group_videos = []
+                group_outcome = None
 
-            # Only process rows matching the split
-            if split not in ["all", file_mode]:
-                continue
+                for _, row in group.iterrows():
+                    file_name = row[filename_col]
+                    file_mode = row[split_col].lower()
 
-            # Check if the video file exists
-            if not os.path.exists(file_name):
-                print(f"Skipping video {file_name} because file does not exist.")
-                continue
+                    # Only process rows matching the split
+                    if split not in ["all", file_mode]:
+                        continue
 
-            # If target labels are provided, ensure they are valid
-            if target_indices is not None:
-                skip_row = False
-                row_outcomes = {}
-                for label, idx in target_indices.items():
-                    value = row.iloc[idx]
-                    if pd.isna(value):
-                        print(f"Skipping video {file_name} because target '{label}' is missing.")
-                        skip_row = True
-                        break
-                    else:
-                        row_outcomes[label] = value
-                if skip_row:
+                    # Check if the video file exists
+                    if not os.path.exists(file_name):
+                        print(f"Skipping video {file_name} because file does not exist.")
+                        continue
+
+                    # If target labels are provided, ensure they are valid
+                    if target_indices is not None:
+                        if group_outcome is None:  # Only get outcome once per group
+                            row_outcomes = {}
+                            skip_row = False
+                            for label in target_labels:
+                                value = row[label]
+                                if pd.isna(value):
+                                    print(f"Skipping group with video {file_name} because target '{label}' is missing.")
+                                    skip_row = True
+                                    break
+                                else:
+                                    row_outcomes[label] = value
+                            if skip_row:
+                                continue
+                            group_outcome = row_outcomes
+
+                    group_videos.append(file_name)
+
+                if group_videos and group_outcome is not None:
+                    group_fnames.append(group_videos)
+                    group_outcomes.append(group_outcome)
+
+            return group_fnames, group_outcomes, target_indices
+        else:
+            # Original single-video logic
+            fnames = []
+            outcomes = []
+
+            for _, row in data.iterrows():
+                file_name = row[filename_col]
+                file_mode = row[split_col].lower()
+
+                if split not in ["all", file_mode]:
                     continue
-                outcomes.append(row_outcomes)
-            
-            fnames.append(file_name)
 
-        return fnames, outcomes, target_indices
+                if not os.path.exists(file_name):
+                    print(f"Skipping video {file_name} because file does not exist.")
+                    continue
+
+                if target_indices is not None:
+                    skip_row = False
+                    row_outcomes = {}
+                    for label in target_labels:
+                        value = row[label]
+                        if pd.isna(value):
+                            print(f"Skipping video {file_name} because target '{label}' is missing.")
+                            skip_row = True
+                            break
+                        else:
+                            row_outcomes[label] = value
+                    if skip_row:
+                        continue
+                    outcomes.append(row_outcomes)
+                else:
+                    outcomes.append(None)
+
+                fnames.append(file_name)
+
+            return fnames, outcomes, target_indices
 
     def _validate_all_videos(self):
         print("Validating all videos in dataset...")
         valid_indices = []
         self.failed_videos = []
 
-        for idx, fname in enumerate(self.fnames):
-            try:
-                cap = cv2.VideoCapture(fname)
-                if not cap.isOpened():
-                    raise ValueError(f"Unable to open video {fname}")
-                cap.release()
-                valid_indices.append(idx)
-            except Exception as e:
-                print(f"Warning: Failed to load video {fname}: {str(e)}")
-                self.failed_videos.append((fname, str(e)))
+        if self.multi_video:
+            for idx, group_fnames in enumerate(self.fnames):
+                valid_group = True
+                for fname in group_fnames:
+                    try:
+                        cap = cv2.VideoCapture(fname)
+                        if not cap.isOpened():
+                            raise ValueError(f"Unable to open video {fname}")
+                        cap.release()
+                    except Exception as e:
+                        print(f"Warning: Failed to load video {fname}: {str(e)}")
+                        self.failed_videos.append((fname, str(e)))
+                        valid_group = False
+                        break
+                if valid_group:
+                    valid_indices.append(idx)
+        else:
+            for idx, fname in enumerate(self.fnames):
+                try:
+                    cap = cv2.VideoCapture(fname)
+                    if not cap.isOpened():
+                        raise ValueError(f"Unable to open video {fname}")
+                    cap.release()
+                    valid_indices.append(idx)
+                except Exception as e:
+                    print(f"Warning: Failed to load video {fname}: {str(e)}")
+                    self.failed_videos.append((fname, str(e)))
 
-        print(f"Found {len(valid_indices)} valid videos out of {len(self.fnames)}")
+        print(f"Found {len(valid_indices)} valid videos/groups out of {len(self.fnames)}")
         if self.failed_videos:
             print(f"Failed to load {len(self.failed_videos)} videos")
 
@@ -187,66 +259,163 @@ class VideoDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, index: int) -> tuple:
         actual_idx: int = self.valid_indices[index]
-        video_fname: str = self.fnames[actual_idx]
-
-        try:
-            video: np.ndarray = load_video(
-                video_fname,
-                n_frames=self.num_frames,
-                resize=self.resize,
-                normalize=self.normalize,
-                mean=self.mean,
-                std=self.std,
-                video_transforms=self.video_transforms,
-                rand_augment=self.rand_augment,
-                backbone=self.backbone,
-                stride=self.stride,
-            )
-
-            # Validate frame count for specific backbone models
-            if self.backbone.lower() == "mvit" and video.shape[0] != 16:
-                raise ValueError(f"Expected 16 frames for MViT, got {video.shape[0]}")
-            elif self.backbone.lower() in ["x3d_s", "x3d_m"] and video.shape[0] != self.x3d_params[self.backbone.lower()]["num_frames"]:
-                raise ValueError(f"Expected {self.x3d_params[self.backbone.lower()]['num_frames']} frames for {self.backbone}, got {video.shape[0]}")
-
-        except Exception as e:
-            raise RuntimeError(f"Failed to load video {video_fname}: {str(e)}") from e   
         
-        return video, self.outcomes[actual_idx] if self.outcomes is not None else None, video_fname
-    
-def custom_collate_fn(batch: List[Tuple[np.ndarray, Dict[str, torch.Tensor], str]]) -> Dict[str, Any]:
-    """Custom collate function to handle video, targets, and video_fname data.
+        if self.multi_video:
+            group_fnames_in_item = self.fnames[actual_idx] # List of all video paths for this item's group
+            outcome_for_item = self.outcomes[actual_idx]
+            
+            current_selected_fnames: List[str]
+            # Select video fnames to load, based on self.num_videos and shuffle_videos
+            if self.shuffle_videos:
+                if len(group_fnames_in_item) > self.num_videos:
+                    current_selected_fnames = random.sample(group_fnames_in_item, self.num_videos)
+                else:
+                    # Take all available videos from the group; they are not further shuffled among themselves here.
+                    # If self.num_videos is larger, padding will occur later.
+                    current_selected_fnames = list(group_fnames_in_item) # Make a copy if shuffle_videos implies modification later (not the case here but good practice)
+                    random.shuffle(current_selected_fnames) # Shuffle the selected videos if shuffle_videos is true
+            else: # Not self.shuffle_videos
+                current_selected_fnames = group_fnames_in_item[:self.num_videos]
+            
+            loaded_video_numpy_arrays: List[np.ndarray] = []
+            processed_fnames: List[str] = [] # Stores actual fnames or "PAD"
 
-    Args:
-        batch: List of tuples (video, targets, video_fname)
-        Each video has shape [F, H, W, C]
-    Returns:
-        videos: Tensor of shape (batch_size, C, F, H, W) for MViT compatibility
-        targets: Dictionaries with labels as keys and values as tensors of targets
-        video_fname: List of file paths
-    """
+            first_video_shape_info: Optional[Tuple[int, ...]] = None
+            first_video_dtype_info: Optional[Any] = None # Using Any for np.dtype
+
+            # Load selected videos
+            for video_fname in current_selected_fnames:
+                try:
+                    video_np = load_video(
+                        video_fname,
+                        n_frames=self.num_frames,
+                        resize=self.resize,
+                        normalize=self.normalize,
+                        mean=self.mean[0], # Note: uses only the first element of the mean list
+                        std=self.std[0],   # Note: uses only the first element of the std list
+                        video_transforms=self.video_transforms,
+                        rand_augment=self.rand_augment,
+                        backbone=self.backbone,
+                        stride=self.stride,
+                    )
+                    loaded_video_numpy_arrays.append(video_np)
+                    processed_fnames.append(video_fname)
+                    if first_video_shape_info is None: # Capture shape and dtype from first successfully loaded video
+                        first_video_shape_info = video_np.shape
+                        first_video_dtype_info = video_np.dtype
+                except Exception as e:
+                    # If a specific video fails to load, propagate the error.
+                    # The original __getitem__ raised RuntimeError here.
+                    raise RuntimeError(f"Failed to load video {video_fname}: {str(e)}") from e
+            
+            # Pad with zero-videos if fewer than self.num_videos were loaded/selected
+            num_actually_loaded = len(loaded_video_numpy_arrays)
+            num_to_pad = self.num_videos - num_actually_loaded
+
+            if num_to_pad > 0:
+                pad_shape: Tuple[int, ...]
+                pad_dtype: Any # Using Any for np.dtype
+
+                if first_video_shape_info is not None and first_video_dtype_info is not None:
+                    pad_shape = first_video_shape_info
+                    pad_dtype = first_video_dtype_info
+                else:
+                    # Fallback if no videos were loaded (e.g., current_selected_fnames was empty initially)
+                    # Default to 3 channels (RGB)
+                    channels = 3
+                    pad_shape = (self.num_frames, self.resize, self.resize, channels)
+                    pad_dtype = np.dtype(np.float32) if self.normalize else np.dtype(np.uint8)
+                
+                for _ in range(num_to_pad):
+                    padding_video_np = np.zeros(pad_shape, dtype=pad_dtype)
+                    loaded_video_numpy_arrays.append(padding_video_np)
+                    processed_fnames.append("PAD") # Mark filename for padded slots
+
+            # Stack all video arrays (actual + padded) into a single numpy array
+            final_stacked_videos_np: np.ndarray
+            if not loaded_video_numpy_arrays:
+                # This case occurs if self.num_videos is 0.
+                # For self.num_videos > 0, padding ensures the list is not empty.
+                channels = 3 # Default assumption
+                dtype_for_empty = np.dtype(np.float32) if self.normalize else np.dtype(np.uint8)
+                final_stacked_videos_np = np.empty(
+                    (0, self.num_frames, self.resize, self.resize, channels), 
+                    dtype=dtype_for_empty
+                )
+            else:
+                # All arrays in loaded_video_numpy_arrays should now have the same shape,
+                # and there should be self.num_videos of them.
+                final_stacked_videos_np = np.stack(loaded_video_numpy_arrays, axis=0)
+            
+            # Ensure the number of processed fnames and the first dimension of the stacked videos match self.num_videos
+            # This helps catch errors if self.num_videos is positive.
+            if self.num_videos > 0:
+                if len(processed_fnames) != self.num_videos:
+                     raise AssertionError(f"Internal logic error: Mismatch in length of processed_fnames ({len(processed_fnames)}) and self.num_videos ({self.num_videos})")
+                if final_stacked_videos_np.shape[0] != self.num_videos:
+                     raise AssertionError(f"Internal logic error: Mismatch in final_stacked_videos_np.shape[0] ({final_stacked_videos_np.shape[0]}) and self.num_videos ({self.num_videos})")
+            elif self.num_videos == 0: # If num_videos is 0, expect empty lists/arrays
+                if len(processed_fnames) != 0:
+                    raise AssertionError(f"Internal logic error: processed_fnames should be empty when self.num_videos is 0, but got {len(processed_fnames)}")
+                if final_stacked_videos_np.shape[0] != 0:
+                    raise AssertionError(f"Internal logic error: final_stacked_videos_np.shape[0] should be 0 when self.num_videos is 0, but got {final_stacked_videos_np.shape[0]}")
+                
+            return final_stacked_videos_np, outcome_for_item, processed_fnames
+        
+        else: # Single video logic (remains unchanged from original)
+            video_fname: str = self.fnames[actual_idx]
+            try:
+                video = load_video(
+                    video_fname,
+                    n_frames=self.num_frames,
+                    resize=self.resize,
+                    normalize=self.normalize,
+                    mean=self.mean[0],
+                    std=self.std[0],
+                    video_transforms=self.video_transforms,
+                    rand_augment=self.rand_augment,
+                    backbone=self.backbone,
+                    stride=self.stride,
+                )
+            except Exception as e:
+                raise RuntimeError(f"Failed to load video {video_fname}: {str(e)}") from e   
+            
+            return video, self.outcomes[actual_idx], video_fname
+    
+def custom_collate_fn(batch: list[tuple[np.ndarray, dict, Union[str, List[str]]]]) -> dict: # Adjusted type hint for paths
     videos, targets, paths = zip(*batch)
+    # Multi-video: videos[0] is np.ndarray [num_videos, F, H, W, C]
+    if isinstance(videos[0], np.ndarray) and videos[0].ndim == 5:
+        # All videos in the batch now have the same shape[0] due to padding in __getitem__
+        videos_tensor = torch.stack([torch.from_numpy(v) for v in videos])  # [B, num_videos, F, H, W, C]
+        B = videos_tensor.shape[0]
+        N = videos_tensor.shape[1] # num_videos
+    # Single video: videos[0] is np.ndarray [F, H, W, C]
+    elif isinstance(videos[0], np.ndarray) and videos[0].ndim == 4:
+        B = len(videos)
+        videos_tensor = torch.stack([torch.from_numpy(v) for v in videos])  # [B, F, H, W, C]
+        N = 1
+    else:
+        raise ValueError(f"Unexpected video format or shape: type {type(videos[0])}, ndim {videos[0].ndim if isinstance(videos[0], np.ndarray) else 'N/A'}")
+    # Permute to [B, N, C, F, H, W]
 
-    # Stack videos - handle both tensor and numpy inputs
-    videos = torch.stack([torch.from_numpy(v) for v in videos])  # Shape: [B, F, H, W, C]
-    
-    # Convert targets to tensor - handle tuple of dictionaries
-    targets_dict: dict[str, torch.Tensor] = defaultdict(list)
+    video_indices = torch.arange(B).repeat_interleave(N) if N > 1 else None
+    # Convert targets to tensor
+    temp_targets_dict: dict = defaultdict(list)
     for target in targets:
         if target is not None:
             for k, v in target.items():
-                targets_dict[k].append(v)
-
-        targets_dict = {k: torch.tensor(v, dtype=torch.bfloat16) for k, v in targets_dict.items()}
-    
+                temp_targets_dict[k].append(v)
+    final_targets_dict = {k: torch.tensor(v, dtype=torch.float32) for k, v in temp_targets_dict.items()}
     return {
-        "videos": videos,
-        "targets": targets_dict,
+        "videos": videos_tensor,
+        "targets": final_targets_dict,
+        "video_indices": video_indices,
         "video_fname": paths
     }
 
 def get_distributed_video_dataloader(
-    config: HeartWiseConfig,
+    config: Any,
     split: str,
     mean: List[float],
     std: List[float],
@@ -254,8 +423,12 @@ def get_distributed_video_dataloader(
     num_replicas: Optional[int] = None,
     rank: Optional[int] = None,
     drop_last: bool = True,
+    multi_video: Optional[bool] = None,
+    groupby_column: Optional[str] = None,
+    num_videos: Optional[int] = None,
+    shuffle_videos: Optional[bool] = None,
 ) -> DataLoader:
-    # Create the video dataset
+    # Create the video dataset with multi-video parameters
     video_dataset = VideoDataset(
         data_filename=config.data_filename,
         split=split,
@@ -267,6 +440,11 @@ def get_distributed_video_dataloader(
         std=std,
         rand_augment=config.rand_augment,
         stride=config.stride,
+        resize=config.resize,
+        multi_video=multi_video if multi_video is not None else getattr(config, 'multi_video', False),
+        groupby_column=groupby_column if groupby_column is not None else getattr(config, 'groupby_column', 'StudyInstanceUID'),
+        num_videos=num_videos if num_videos is not None else getattr(config, 'num_videos', 1),
+        shuffle_videos=shuffle_videos if shuffle_videos is not None else getattr(config, 'shuffle_videos', True),
     )
 
     # Create a sampler for distributed training

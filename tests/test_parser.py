@@ -187,16 +187,14 @@ class TestClipParser(unittest.TestCase):
         # Test augmentation parameters
         args, _ = self.clip_parser.parser.parse_known_args([
             '--base_config', 'test.yaml',
-            '--rand_augment', 'True',
+            '--rand_augment', 'true',
             '--resize', '224',
-            '--apply_mask', 'True',
-            '--view_count', '2'
+            '--apply_mask', 'false'
         ])
         
-        self.assertTrue(args.rand_augment)
+        self.assertEqual(args.rand_augment, True)
         self.assertEqual(args.resize, 224)
-        self.assertTrue(args.apply_mask)
-        self.assertEqual(args.view_count, 2)
+        self.assertEqual(args.apply_mask, False)
         
         # Test checkpoint parameters
         args, _ = self.clip_parser.parser.parse_known_args([

@@ -28,7 +28,7 @@ class BaseRegistry:
         """Get a registered class by name."""
         if name not in cls._registry:
             raise ValueError(
-                f"{cls._registry_type} {name} not found in registry. "
+                f"{cls._registry_type} {name} not found in registry {cls._registry_type}. "
                 f"Available {cls._registry_type}s: {list(cls._registry.keys())}"
             )
         return cls._registry[name]
@@ -43,7 +43,7 @@ class BaseRegistry:
         """Create an instance of a registered class by name."""
         if name not in cls._registry:
             raise ValueError(
-                f"{cls._registry_type} {name} not found in registry. "
+                f"{cls._registry_type} {name} not found in registry {cls._registry_type}. "
                 f"Available {cls._registry_type}s: {list(cls._registry.keys())}"
             )
         return cls._registry[name](**kwargs)

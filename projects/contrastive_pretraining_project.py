@@ -48,9 +48,6 @@ class ContrastivePretrainingProject(BaseProject):
         Returns:
             dict: Dictionary containing training objects
         """
-        if self.config.is_ref_device:
-            self._setup_project()
-                        
         # Calculate dataset statistics
         mean, std = calculate_dataset_statistics_ddp(self.config)
 
@@ -276,6 +273,9 @@ class ContrastivePretrainingProject(BaseProject):
         return training_setup
         
     def run(self):
+        if self.config.is_ref_device:
+            self._setup_project()
+        
         if self.config.run_mode == RunMode.TRAIN:
             training_setup: dict[str, Any] = self._setup_training_objects()
             start_epoch = 0

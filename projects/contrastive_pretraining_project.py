@@ -251,7 +251,7 @@ class ContrastivePretrainingProject(BaseProject):
         )
         
         checkpoint: dict[str, Any] = self._load_checkpoint(self.config.checkpoint)
-        video_encoder.module.load_state_dict(checkpoint["video_encoder"])
+        video_encoder.module.load_state_dict(checkpoint["video_encoder"], weight_only=True)
         log_temp: float = checkpoint["train/temperature"]
 
         return {
@@ -260,20 +260,6 @@ class ContrastivePretrainingProject(BaseProject):
             "log_temp": log_temp,
             "output_dir": self.config.inference_results_path,
         }
-
-    def _save_texts_csv(
-        self, 
-        output_dir: str, 
-        texts: list[str]
-    ):
-        import csv
-        csv_path = os.path.join(output_dir, "val_texts.csv")
-        with open(csv_path, mode="w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(["Index", "Text"])
-            for idx, txt in enumerate(texts):
-                writer.writerow([idx, txt])
-        print(f"Saved {len(texts)} val texts to {csv_path}")    
 
     def _update_training_setup_with_checkpoint(
         self, 

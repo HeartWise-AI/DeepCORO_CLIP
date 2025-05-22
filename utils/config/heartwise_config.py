@@ -60,7 +60,7 @@ class HeartWiseConfig:
     def from_yaml(cls, yaml_path: str) -> 'HeartWiseConfig':
         """Create a HeartWiseConfig instance from a YAML file."""
         yaml_data: Dict[str, Any] = load_yaml(yaml_path)
-        pipeline_project = yaml_data.get('pipeline_project', None)
+        pipeline_project = yaml_data.get('pipeline_project')
         
         if pipeline_project is None:
             raise ValueError("pipeline_project is not set in the yaml file")

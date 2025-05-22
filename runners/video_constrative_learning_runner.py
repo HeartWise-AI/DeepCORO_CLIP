@@ -246,6 +246,23 @@ class VideoContrastiveLearningRunner:
                     device_ids=self.device
                 )
 
+                # ------------------------------------------------------------------
+                # Memory cleanup to avoid GPU OOM across epochs
+                # ------------------------------------------------------------------
+                # Use locals() checks to prevent NameError in static analysis
+                for _var in [
+                    'similarity_matrix',
+                    'global_video_feats_norm',
+                    'unique_text_embeddings_norm',
+                    'unique_text_embeddings_tensor',
+                    'global_video_feats',
+                ]:
+                    if _var in locals():
+                        del locals()[_var]
+                torch.cuda.empty_cache()
+                import gc
+                gc.collect()
+
         except RuntimeError as e:
             if "NaN loss" in str(e):
                 if self.config.is_ref_device:

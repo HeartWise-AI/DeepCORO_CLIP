@@ -178,6 +178,13 @@ class LinearProbingRunner:
                 device_ids=self.device
             )                                 
 
+            # ------------------------------------------------------------------
+            # Memory cleanup to avoid GPU OOM across epochs
+            # ------------------------------------------------------------------
+            torch.cuda.empty_cache()
+            import gc
+            gc.collect()
+
     def _run_epoch(
         self, 
         mode: str, 
@@ -341,6 +348,23 @@ class LinearProbingRunner:
                 accumulated_targets=accumulated_targets,
                 epoch=epoch
             )
+
+        # ------------------------------------------------------------------
+        # Memory cleanup: delete large local variables & free GPU cache
+        # ------------------------------------------------------------------
+        for _var in [
+            'accumulated_preds',
+            'accumulated_targets',
+            'preds',
+            'targets',
+            'outputs',
+            'losses',
+        ]:
+            if _var in locals():
+                del locals()[_var]
+        torch.cuda.empty_cache()
+        import gc
+        gc.collect()
 
         return epoch_metrics
 

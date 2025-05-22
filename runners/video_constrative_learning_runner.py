@@ -1004,7 +1004,7 @@ class VideoContrastiveLearningRunner:
                         # For string columns, get most frequent value
                         # Ensure there's at least one mode, otherwise, handle appropriately
                         modes = topk_metadata[column].mode()
-                        averaged_row[column] = modes.iloc[0] if not modes.empty else None
+                        averaged_row[column] = None if modes.empty else modes.iloc[0]
                     else:
                         # If not numeric or string, try to get the first value or handle as error
                         # This part might need adjustment based on expected non-numeric/non-string data

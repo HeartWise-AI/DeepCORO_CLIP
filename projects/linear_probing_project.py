@@ -130,10 +130,7 @@ class LinearProbingProject(BaseProject):
     def _setup_training_objects(
         self
     )->dict[str, Any]:
-        
-        if self.config.is_ref_device:
-            self._setup_project()
-        
+                
         # Calculate dataset statistics
         mean, std = calculate_dataset_statistics_ddp(self.config)        
         
@@ -321,6 +318,10 @@ class LinearProbingProject(BaseProject):
         raise NotImplementedError("Inference is not implemented for this project")
 
     def run(self):
+        
+        if self.config.is_ref_device:
+            self._setup_project()
+        
         training_setup: dict[str, Any] = self._setup_training_objects()
         
         # Create runner instance

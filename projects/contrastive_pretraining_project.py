@@ -197,6 +197,7 @@ class ContrastivePretrainingProject(BaseProject):
             "scaler": scaler,
             "log_temp": log_temperature,
             "loss_fn": loss_fn,
+            "output_dir": self.config.output_dir if self.config.is_ref_device else None,
         }    
 
     def _setup_inference_objects(

@@ -60,6 +60,7 @@ class VideoContrastiveLearningRunner:
         log_temp: torch.Tensor = None,
         lr_scheduler: LRScheduler = None,
         loss_fn: Loss = None,
+        output_dir: str = None,
     ):
         """
         Initialize the runner with provided configurations, data loaders, and modules.
@@ -100,7 +101,7 @@ class VideoContrastiveLearningRunner:
         self.scaler: GradScaler = scaler
         self.lr_scheduler: LRScheduler = lr_scheduler
         self.loss_fn: Loss = loss_fn
-        self.output_dir: str = config.output_dir
+        self.output_dir: str = output_dir
         self.best_val_loss: float = float("inf")
         self.best_epoch: int = -1
         self.highest_alignment_score: float = float("-inf")
@@ -782,8 +783,8 @@ class VideoContrastiveLearningRunner:
         if self.step % self.config.gradient_accumulation_steps == 0:
             self.optimizer.zero_grad(set_to_none=True)
 
-        amp_enabled = self.scaler is not None
-        autocast_ctx = torch.amp.autocast(device_type="cuda", enabled=amp_enabled)
+        amp_enabled: bool = self.scaler is not None
+        autocast_ctx: torch.amp.autocast = torch.amp.autocast(device_type="cuda", enabled=amp_enabled)
 
         # ------------------------------------------------------------------
         # 1. forward

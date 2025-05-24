@@ -21,7 +21,7 @@ num_hard_restarts_cycles: !!float 1.0
 warm_restart_tmult: !!int 2
 # Dataset parameters
 data_filename: !!str data/reports/CathEF_MHI_UCSF_2016-to-july-2022-and-2023-08-30-post-CathEF_alpha_StudyInstanceUID_updated.csv
-num_workers: !!int 16
+num_workers: !!int 10
 batch_size: !!int 16
 multi_video: !!bool true
 groupby_column: !!str 'StudyInstanceUID'

@@ -190,11 +190,24 @@ class LinearProbingParser(BaseParser):
         lp_data_group.add_argument('--num_videos', type=int, help="Number of videos per sample if multi_video is True.")
         lp_data_group.add_argument('--groupby_column', type=str, help="Column to group data by (e.g., patient ID).")
         lp_data_group.add_argument('--shuffle_videos', type=str2bool, help="Shuffle videos within a group if multi_video is True.")
-        lp_data_group.add_argument('--pooling_mode', type=str, help="Pooling mode to aggregate segment embeddings ('mean', 'max', 'attention').")
+        lp_data_group.add_argument('--pooling_mode', type=str, help="Pooling mode to aggregate segment embeddings ('mean', 'max', 'attention', 'cls_token', 'mean+cls_token', 'attention+cls_token').")
         lp_data_group.add_argument('--attention_hidden', type=int, help="Hidden dimension for attention pooling.")
         lp_data_group.add_argument('--dropout_attention', type=float, help="Dropout rate for attention pooling block.")
         lp_data_group.add_argument('--attention_lr', type=float, help="Learning rate for attention pooling parameters.")
         lp_data_group.add_argument('--attention_weight_decay', type=float, help="Weight decay for attention pooling parameters.")
+        
+        # ------------------------------------------------------------------
+        # CLS Token specific parameters
+        # ------------------------------------------------------------------
+        lp_cls_token_group = self.parser.add_argument_group('CLS Token parameters')
+        lp_cls_token_group.add_argument('--use_cls_token', type=str2bool, help="Whether to use learnable cls_token for aggregation.")
+        lp_cls_token_group.add_argument('--num_attention_heads', type=int, help="Number of attention heads for cls_token processing.")
+        lp_cls_token_group.add_argument('--separate_video_attention', type=str2bool, help="Whether to use separate attention layers for within-video and across-video attention.")
+        lp_cls_token_group.add_argument('--normalization_strategy', type=str, help="Normalization strategy: 'pre_norm' or 'post_norm'.")
+        lp_cls_token_group.add_argument('--attention_within_lr', type=float, help="Learning rate for within-video attention parameters.")
+        lp_cls_token_group.add_argument('--attention_across_lr', type=float, help="Learning rate for across-video attention parameters.")
+        lp_cls_token_group.add_argument('--attention_within_weight_decay', type=float, help="Weight decay for within-video attention parameters.")
+        lp_cls_token_group.add_argument('--attention_across_weight_decay', type=float, help="Weight decay for across-video attention parameters.")
         
         lp_model_group = self.parser.add_argument_group('Linear Probing Video Encoder parameters')
         lp_model_group.add_argument('--model_name', type=str, help="Name of the video encoder model.")

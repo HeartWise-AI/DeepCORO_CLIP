@@ -69,11 +69,21 @@ class LinearProbingConfig(HeartWiseConfig):
     groupby_column: str = "StudyInstanceUID" # Column to group videos by
     num_videos: int = 1 # Number of videos to load per sample/group
     shuffle_videos: bool = True # Whether to shuffle videos within a group
-    pooling_mode: str = "mean" # Pooling mode ("mean", "max", "attention")
+    pooling_mode: str = "mean" # Pooling mode ("mean", "max", "attention", "cls_token", "mean+cls_token", "attention+cls_token")
     attention_hidden: int = 128 # Hidden size for attention pooling
     dropout_attention: float = 0.0 # Dropout for attention pooling block
     attention_lr: float = 1e-4 # Learning rate for attention pooling parameters
     attention_weight_decay: float = 0.0 # Weight decay for attention pooling parameters
+
+    # CLS Token parameters
+    use_cls_token: bool = False # Whether to use learnable cls_token for aggregation
+    num_attention_heads: int = 8 # Number of attention heads for cls_token processing
+    separate_video_attention: bool = True # Whether to use separate attention layers for within/across-video attention
+    normalization_strategy: str = "post_norm" # Normalization strategy: "pre_norm" or "post_norm"
+    attention_within_lr: float = 1e-3 # Learning rate for within-video attention parameters
+    attention_across_lr: float = 1e-3 # Learning rate for across-video attention parameters
+    attention_within_weight_decay: float = 1e-5 # Weight decay for within-video attention parameters
+    attention_across_weight_decay: float = 1e-5 # Weight decay for across-video attention parameters
 
     # Aggregation parameters
     aggregate_videos_tokens: bool = True # Whether to apply internal aggregator in VideoEncoder

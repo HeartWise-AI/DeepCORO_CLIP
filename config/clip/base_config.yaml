@@ -8,7 +8,7 @@ use_amp: !!bool true
 period: !!int 1
 run_mode: !!str train
 # Dataset parameters
-data_filename: !!str data/reports/reports_with_alpha_separator_with_Calcifc_Stenosis_IFR_20250507_STUDYLEVEL.csv
+data_filename: !!str data/reports/reports_with_alpha_separator_with_Calcifc_Stenosis_IFR_20250601_RCA_LCA_merged_with_left_dominance_dependent_vessels.csv
 root: !!str "."
 target_label: !!str Report
 datapoint_loc_label: !!str FileName
@@ -16,11 +16,11 @@ frames: !!int 16
 stride: !!int 2
 aggregate_videos_tokens: !!bool true
 per_video_pool: !!bool false
-multi_video: !!bool true
-num_videos: !!int 4
+multi_video: !!bool false
+num_videos: !!int 1
 groupby_column: !!str StudyInstanceUID
 shuffle_videos: !!bool true
-batch_size: !!int 16
+batch_size: !!int 64
 # Seed
 seed: !!int 42
 # Model parameters

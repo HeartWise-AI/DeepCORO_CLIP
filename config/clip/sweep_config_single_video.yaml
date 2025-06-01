@@ -44,7 +44,13 @@ parameters:
     max: 0.30
     
   stride:
-    values: [1, 2]
+    values: [1, 2, 3]
+    
+  batch_size:
+    values: [64, 96]
+
+  aggregate_videos_tokens:
+    values: [true, false]
 
   dropout:
     distribution: uniform
@@ -68,7 +74,7 @@ parameters:
     values: [2, 4, 8, 16]
 
   aggregator_depth:
-    values: [1, 2, 3, 4]
+    values: [1, 2, 4]
 
   temperature:
     distribution: uniform
@@ -84,8 +90,6 @@ parameters:
     min: 1e-7
     max: 1e-6
 
-  batch_size:
-    values: [4]
   loss_name:
     values: ["contrastive_ddp"]
   name:

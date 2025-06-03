@@ -90,8 +90,9 @@ parameters:
     min: 1e-7
     max: 1e-6
 
-  loss_name:
-    values: ["contrastive_ddp"]
+  loss_name:  
+    values: ["siglip_ddp"]
+
   name:
     values: ["dev_deep_coro_clip_single_video"]
   project:

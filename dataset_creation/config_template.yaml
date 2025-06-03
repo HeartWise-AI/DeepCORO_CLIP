@@ -1,0 +1,63 @@
+# Dataset Generation Configuration Template
+# This file contains all available configuration options for generate_dataset.py
+
+# Filter settings for data preprocessing
+filters:
+  # Status filter - only include records with this status
+  # Available values: "diagnostic", "PCI", "POST_PCI"
+  status: "diagnostic"
+  
+  # Main structures to include in the dataset
+  main_structures:
+    - "Left Coronary"
+    - "Right Coronary"
+  
+  # Contrast agent class filter (1 = positive, 0 = negative)
+  contrast_agent_class: 1
+
+# Report generation settings
+report_settings:
+  # Whether to generate coronary-specific reports (True/False)
+  # If True, reports will be tailored to the specific coronary side
+  # If False, comprehensive reports will be generated for all vessels
+  coronary_specific: true
+
+# Sampling settings for creating balanced datasets
+sampling:
+  # Whether to enable sampling (True/False)
+  enabled: true
+  
+  # Number of samples to take per group
+  n_per_group: 9
+  
+  # Column to group by for sampling
+  label_column: "status"
+
+# Data mapping settings
+# Whether to apply predefined mappings to categorical variables
+apply_mappings: true
+
+# Optional: Custom mappings (if different from defaults)
+# custom_mappings:
+#   main_structure_map:
+#     0: "Left Coronary"
+#     1: "Right Coronary"
+#     # ... additional mappings
+#   
+#   dominance_map:
+#     0: "right_dominant"
+#     1: "left_dominant"
+
+# Optional: Additional processing settings
+# processing:
+#   # Remove rows with missing critical data
+#   remove_missing_critical: true
+#   
+#   # Critical columns that must have values
+#   critical_columns:
+#     - "FileName"
+#     - "main_structure_name"
+#     - "status"
+#   
+#   # Validation settings
+#   validate_reports: true 

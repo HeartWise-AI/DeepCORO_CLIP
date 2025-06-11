@@ -1,5 +1,5 @@
 import os
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Union
 from dataclasses import dataclass, asdict
 
 from utils.files_handler import load_yaml
@@ -22,7 +22,13 @@ class HeartWiseConfig:
     name: str
     project: str
     entity: str
+    tag: str
     use_wandb: bool
+    
+    # Device parameters (set at runtime) - moved to end with default values
+    device: int
+    world_size: int
+    is_ref_device: bool
     
     @classmethod
     def update_config_with_args(
@@ -60,6 +66,14 @@ class HeartWiseConfig:
         for field_name in registered_config.__dataclass_fields__:
             if field_name in yaml_data:
                 data_parameters[field_name] = yaml_data[field_name]
+        
+        # Provide default values for device-related fields if not in YAML
+        if 'device' not in data_parameters:
+            data_parameters['device'] = 0
+        if 'world_size' not in data_parameters:
+            data_parameters['world_size'] = 1
+        if 'is_ref_device' not in data_parameters:
+            data_parameters['is_ref_device'] = True
 
         return registered_config(**data_parameters)
 

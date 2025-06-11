@@ -511,102 +511,109 @@ def create_logger(config: HeartWiseConfig):
     """Create logger with proper WandB configuration.
 
     Args:
-        args: Parsed command line arguments with config values
+        config: HeartWiseConfig instance with all configuration parameters
 
     Returns:
         WandbLogger instance
     """
-    # Create config dictionary from args
+    # Manually create config dictionary based on base_config.yaml parameters
+    # This ensures all parameters from the config file are logged to wandb
     wandb_config = {
+        # Pipeline parameters
+        "pipeline_project": getattr(config, 'pipeline_project', None),
+        "base_checkpoint_path": getattr(config, 'base_checkpoint_path', None),
+        "run_mode": getattr(config, 'run_mode', None),
+        "epochs": getattr(config, 'epochs', None),
+        "seed": getattr(config, 'seed', None),
+        
         # Training parameters
-        "epochs": config.epochs,
-        "num_workers": config.num_workers,
-        "debug": config.debug,
-        "use_amp": config.use_amp,
-        "period": config.period,
-        "run_mode": config.run_mode,
+        "num_workers": getattr(config, 'num_workers', None),
+        "debug": getattr(config, 'debug', None),
+        "use_amp": getattr(config, 'use_amp', None),
+        "period": getattr(config, 'period', None),
+        "max_grad_norm": getattr(config, 'max_grad_norm', None),
         
         # Dataset parameters
-        "data_filename": config.data_filename,
-        "root": config.root,
-        "target_label": config.target_label,
-        "datapoint_loc_label": config.datapoint_loc_label,
-        "frames": config.frames,
-        "stride": config.stride,
-        "per_video_pool": config.per_video_pool,
-        "aggregate_videos_tokens": config.aggregate_videos_tokens,
-        "multi_video": config.multi_video,
-        "num_videos": config.num_videos,
-        "groupby_column": config.groupby_column,
-        "shuffle_videos": config.shuffle_videos,
-        "batch_size": config.batch_size,
-        
-        # Seed
-        "seed": config.seed,
+        "data_filename": getattr(config, 'data_filename', None),
+        "root": getattr(config, 'root', None),
+        "target_label": getattr(config, 'target_label', None),
+        "datapoint_loc_label": getattr(config, 'datapoint_loc_label', None),
+        "frames": getattr(config, 'frames', None),
+        "stride": getattr(config, 'stride', None),
+        "aggregate_videos_tokens": getattr(config, 'aggregate_videos_tokens', None),
+        "per_video_pool": getattr(config, 'per_video_pool', None),
+        "multi_video": getattr(config, 'multi_video', None),
+        "num_videos": getattr(config, 'num_videos', None),
+        "groupby_column": getattr(config, 'groupby_column', None),
+        "shuffle_videos": getattr(config, 'shuffle_videos', None),
+        "batch_size": getattr(config, 'batch_size', None),
         
         # Model parameters
-        "model_name": config.model_name,
-        "pretrained": config.pretrained,
+        "model_name": getattr(config, 'model_name', None),
+        "pretrained": getattr(config, 'pretrained', None),
         
         # Optimizer parameters
-        "optimizer": config.optimizer,
-        "scheduler_name": config.scheduler_name,
-        "lr": config.lr,
-        "lr_step_period": config.lr_step_period,
-        "factor": config.factor,
-        "loss_name": config.loss_name,
-        "video_weight_decay": config.video_weight_decay,
-        "text_weight_decay": config.text_weight_decay,
-        "gradient_accumulation_steps": config.gradient_accumulation_steps,
-        "num_warmup_percent": config.num_warmup_percent,
-        "num_hard_restarts_cycles": config.num_hard_restarts_cycles,
-        "warm_restart_tmult": config.warm_restart_tmult,
-        "max_grad_norm": config.max_grad_norm,
+        "optimizer": getattr(config, 'optimizer', None),
+        "scheduler_name": getattr(config, 'scheduler_name', None),
+        "lr": getattr(config, 'lr', None),
+        "lr_step_period": getattr(config, 'lr_step_period', None),
+        "factor": getattr(config, 'factor', None),
+        "loss_name": getattr(config, 'loss_name', None),
+        "video_weight_decay": getattr(config, 'video_weight_decay', None),
+        "text_weight_decay": getattr(config, 'text_weight_decay', None),
+        "gradient_accumulation_steps": getattr(config, 'gradient_accumulation_steps', None),
+        "num_warmup_percent": getattr(config, 'num_warmup_percent', None),
+        "num_hard_restarts_cycles": getattr(config, 'num_hard_restarts_cycles', None),
+        "warm_restart_tmult": getattr(config, 'warm_restart_tmult', None),
         
         # Model architecture parameters
-        "num_heads": config.num_heads,
-        "aggregator_depth": config.aggregator_depth,
-        "temperature": config.temperature,
-        "dropout": config.dropout,
-        "video_freeze_ratio": config.video_freeze_ratio,
-        "text_freeze_ratio": config.text_freeze_ratio,
+        "num_heads": getattr(config, 'num_heads', None),
+        "aggregator_depth": getattr(config, 'aggregator_depth', None),
+        "temperature": getattr(config, 'temperature', None),
+        "dropout": getattr(config, 'dropout', None),
+        "video_freeze_ratio": getattr(config, 'video_freeze_ratio', None),
+        "text_freeze_ratio": getattr(config, 'text_freeze_ratio', None),
         
-        # Checkpointing
-        "resume_training": config.resume_training,
-        "checkpoint": config.checkpoint,
-        "output_dir": config.output_dir,
-        "save_best": config.save_best,
+        # Checkpointing parameters
+        "resume_training": getattr(config, 'resume_training', None),
+        "checkpoint": getattr(config, 'checkpoint', None),
+        "output_dir": getattr(config, 'output_dir', None),
+        "save_best": getattr(config, 'save_best', None),
         
-        # Metrics
-        "recall_k": config.recall_k,
-        "ndcg_k": config.ndcg_k,
+        # Metrics parameters
+        "recall_k": getattr(config, 'recall_k', None),
+        "ndcg_k": getattr(config, 'ndcg_k', None),
         
-        # Data augmentation
-        "rand_augment": config.rand_augment,
-        "resize": config.resize,
-        "apply_mask": config.apply_mask,
+        # Data augmentation parameters
+        "rand_augment": getattr(config, 'rand_augment', None),
+        "resize": getattr(config, 'resize', None),
+        "apply_mask": getattr(config, 'apply_mask', None),
         
         # wandb parameters
-        "tag": config.tag,
-        "name": config.name,
-        "project": config.project,
-        "entity": config.entity,
-        "use_wandb": config.use_wandb,
+        "tag": getattr(config, 'tag', None),
+        "name": getattr(config, 'name', None),
+        "project": getattr(config, 'project', None),
+        "entity": getattr(config, 'entity', None),
+        "use_wandb": getattr(config, 'use_wandb', None),
         
         # Inference parameters
-        "topk": config.topk,
-        "text_embeddings_path": config.text_embeddings_path,
-        "metadata_path": config.metadata_path,
-        "inference_results_path": config.inference_results_path,
+        "topk": getattr(config, 'topk', None),
+        "text_embeddings_path": getattr(config, 'text_embeddings_path', None),
+        "metadata_path": getattr(config, 'metadata_path', None),
+        "inference_results_path": getattr(config, 'inference_results_path', None),
     }
 
-    print(f"Project: {config.project}, Entity: {config.entity}, Tag: {config.tag}")
+    # Remove None values to keep wandb config clean
+    wandb_config = {k: v for k, v in wandb_config.items() if v is not None}
+
+    print(f"Project: {config.project}, Entity: {config.entity}, Tag: {getattr(config, 'tag', 'N/A')}")
+    print(f"Logging {len(wandb_config)} configuration parameters to WandB")
 
     # Initialize wandb with proper project and entity
     wandb.init(
         project=config.project,
         entity=config.entity,
-        name=config.tag,
+        name=getattr(config, 'tag', config.name),
         config=wandb_config,
     )
 

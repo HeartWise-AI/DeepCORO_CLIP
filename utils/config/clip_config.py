@@ -29,6 +29,8 @@ class ClipConfig(HeartWiseConfig):
     num_videos: int
     groupby_column: str
     shuffle_videos: bool
+    aggregate_videos_tokens: bool
+    per_video_pool: bool
     
     # Model parameters
     model_name: str

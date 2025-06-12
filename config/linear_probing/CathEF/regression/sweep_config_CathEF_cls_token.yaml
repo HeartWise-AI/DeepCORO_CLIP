@@ -1,6 +1,6 @@
 command:
   - torchrun
-  - "--nproc_per_node=2"
+  - "--nproc_per_node=1"
   - "--master_port=29500"
   - "scripts/main.py"
   - "--base_config"
@@ -16,7 +16,7 @@ metric:
 parameters:
   # CLS Token specific parameters
   pooling_mode:
-    values: ["cls_token", "mean+cls_token", "attention+cls_token"]
+    values: ["cls_token", "attention+cls_token"]
   use_cls_token:
     values: [true]
   num_attention_heads:
@@ -29,20 +29,20 @@ parameters:
   # Separate attention learning rates
   attention_within_lr:
     distribution: uniform
-    min: 5e-4
-    max: 5e-3
+    min: 0.0005
+    max: 0.005
   attention_across_lr:
     distribution: uniform
-    min: 5e-4
-    max: 3e-3
+    min: 0.0005
+    max: 0.003
   attention_within_weight_decay:
     distribution: uniform
-    min: 1e-6
-    max: 1e-4
+    min: 0.000001
+    max: 0.0001
   attention_across_weight_decay:
     distribution: uniform
-    min: 1e-6
-    max: 1e-4
+    min: 0.000001
+    max: 0.0001
   
   # Standard parameters
   aggregate_videos_tokens:
@@ -66,21 +66,21 @@ parameters:
   # Head learning rates - using dot notation for dictionary parameters
   head_lr.Value:
     distribution: uniform
-    min: 5e-5
-    max: 2e-4  # Lower for hybrid pooling
+    min: 0.00005
+    max: 0.0002  # Lower for hybrid pooling
   head_lr.y_true_cat:
     distribution: uniform
-    min: 5e-5
-    max: 2e-4  # Lower for hybrid pooling
+    min: 0.00005
+    max: 0.0002  # Lower for hybrid pooling
   # Head weight decay - using dot notation for dictionary parameters
   head_weight_decay.Value:
     distribution: uniform
-    min: 1e-7
-    max: 1e-5
+    min: 0.0000001
+    max: 0.00001
   head_weight_decay.y_true_cat:
     distribution: uniform
-    min: 1e-7
-    max: 1e-5
+    min: 0.0000001
+    max: 0.00001
   lr_step_period:
     values: [4, 6, 8]
   name:
@@ -103,12 +103,12 @@ parameters:
     values: [1, 2]
   video_encoder_lr:
     distribution: uniform
-    min: 5e-6
-    max: 2e-5  # Conservative for pretrained
+    min: 0.000005
+    max: 0.00002  # Conservative for pretrained
   video_encoder_weight_decay:
     distribution: uniform
-    min: 1e-7
-    max: 1e-5
+    min: 0.0000001
+    max: 0.00001
   video_freeze_ratio:
     distribution: uniform
     min: 0.75

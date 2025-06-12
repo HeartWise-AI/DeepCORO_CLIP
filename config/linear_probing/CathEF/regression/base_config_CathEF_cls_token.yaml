@@ -41,6 +41,7 @@ rand_augment: !!bool true
 resize: !!int 224
 frames: !!int 16
 stride: !!int 2
+tag: !!str 'CathEF_cls_token'
 
 # Improved CLS Token Configuration
 pooling_mode: !!str attention+cls_token  # Hybrid pooling for richer features
@@ -51,26 +52,27 @@ use_cls_token: !!bool true
 
 # Video Encoder parameters
 model_name: !!str mvit
-aggregator_depth: !!int 2
-num_heads: !!int 4
+aggregator_depth: !!int 1
+num_heads: !!int 16
 video_freeze_ratio: !!float 0.9179658719319556
 dropout: !!float 0.15
 pretrained: !!bool true
 
 # Learning rates - Optimized for improved architecture
-video_encoder_lr: !!float 8.795617632783049e-06  # Conservative for pretrained
-video_encoder_weight_decay: !!float 1.8160563690364244e-06
+video_encoder_lr: !!float 0.000008795617632783049  # Conservative for pretrained
+video_encoder_weight_decay: !!float 0.0000018160563690364244
 
 # Attention learning rates - separate for within/across attention
-attention_within_lr: !!float 2e-3        # Within-video attention
-attention_across_lr: !!float 1.5e-3      # Across-video attention  
-attention_weight_decay: !!float 5e-5
+attention_within_lr: !!float 0.002        # Within-video attention
+attention_across_lr: !!float 0.0015      # Across-video attention  
+attention_weight_decay: !!float 0.00005
 
 # Hybrid pooling means 2x feature dimension, so lower LR
-head_lr: !!float 3e-4                    # Lower due to 2x input features
-head_weight_decay: !!float 1e-5
+head_lr: !!float 0.0003                    # Lower due to 2x input features
+head_weight_decay: !!float 0.00001
 
-video_encoder_checkpoint_path: !!str outputs/DeepCORO_clip/DeepCORO_Clip_Sweep_Multi_Video/mhduqrk9_20250520-160616/outputs/DeepCORO_clip/DeepCORO_Clip_Sweep_Multi_Video/mhduqrk9_20250520-160846_best_MVIT/checkpoints/highest_alignment_epoch_24.pt
+
+video_encoder_checkpoint_path: !!str outputs/DeepCORO_clip/dev_deep_coro_clip_single_video/8av1xygm_20250605-083820_best_single_video/checkpoints/checkpoint.pt
 
 aggregate_videos_tokens: !!bool false   # Maintain 4D structure for hierarchical processing
 per_video_pool: !!bool false            # Let improved cls_token handle all pooling
@@ -94,12 +96,12 @@ loss_structure:
   y_true_cat: !!str bce_logit
 
 head_lr: # Lower LR for hybrid features
-  Value: !!float 3e-4
-  y_true_cat: !!float 3e-4
+  Value: !!float 0.0003
+  y_true_cat: !!float 0.0003
 
 head_weight_decay:
-  Value: !!float 1e-5
-  y_true_cat: !!float 1e-5
+  Value: !!float 0.00001
+  y_true_cat: !!float 0.00001
 
 head_weights:
   Value: !!float 1.0

@@ -41,6 +41,7 @@ ENV/
 
 # Project specific
 models/checkpoints/
+pretrained_models/
 wandb/
 data/
 *.pt

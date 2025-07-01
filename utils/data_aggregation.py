@@ -319,11 +319,21 @@ def aggregate_predictions_for_epoch(
     topk=5,
     vessel_labels=None,
     study_level_aggregation=False,
-    filename_to_study_map=None
+    filename_to_study_map=None,
+    debug_output_dir=None
 ):
     """
     UPDATED: Compare ground_truth_idx with predicted_idx_1 to predicted_idx_K (K=5)
     and aggregate based on main_structure_name and dominance.
+    
+    Args:
+        val_text_map: Dictionary mapping ground truth indices to data
+        predictions_df: DataFrame with predictions and ground truth indices
+        topk: Number of top predictions to consider (default: 5)
+        vessel_labels: List of vessel labels to analyze
+        study_level_aggregation: Whether to aggregate at study level
+        filename_to_study_map: Optional mapping from filenames to studies
+        debug_output_dir: Optional directory for debug files (if None, no debug files written)
     """
 
     if vessel_labels is None:
@@ -365,7 +375,6 @@ def aggregate_predictions_for_epoch(
     valid_predictions = predictions_df.dropna(subset=['ground_truth_idx']).copy()
     valid_predictions['ground_truth_idx'] = valid_predictions['ground_truth_idx'].astype(int)
     print(f"   🔍 DEBUG: Valid predictions shape: {valid_predictions.shape}")
-    valid_predictions.to_csv('valid_predictions.csv', index=False)
     
     # Pre-compute prediction columns
     pred_cols = [f"predicted_idx_{k}" for k in range(1, topk + 1)]
@@ -376,11 +385,24 @@ def aggregate_predictions_for_epoch(
         return pd.DataFrame()
     print(f"Found prediction columns: {existing_pred_cols}")
     
-    # Save val_text_map for debugging
-    val_text_map_path = 'val_text_map.pkl'
-    with open(val_text_map_path, 'wb') as f:
-        pickle.dump(val_text_map, f)
-    print(f"Saved val_text_map to {val_text_map_path}")
+    # Optional debug file output with proper path management
+    if debug_output_dir is not None:
+        try:
+            os.makedirs(debug_output_dir, exist_ok=True)
+            
+            # Save valid predictions for debugging
+            debug_predictions_path = os.path.join(debug_output_dir, 'valid_predictions_debug.csv')
+            valid_predictions.to_csv(debug_predictions_path, index=False)
+            print(f"   🔍 DEBUG: Saved valid predictions to {debug_predictions_path}")
+            
+            # Save val_text_map for debugging
+            debug_val_text_map_path = os.path.join(debug_output_dir, 'val_text_map_debug.pkl')
+            with open(debug_val_text_map_path, 'wb') as f:
+                pickle.dump(val_text_map, f)
+            print(f"   🔍 DEBUG: Saved val_text_map to {debug_val_text_map_path}")
+            
+        except Exception as e:
+            print(f"   ⚠️ WARNING: Could not save debug files: {e}")
     
     # Filter predictions that exist in val_text_map
     valid_gt_mask = valid_predictions['ground_truth_idx'].isin(val_text_map.keys())

@@ -262,8 +262,8 @@ class LinearProbingRunner:
             except Exception as e:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in step_fn: {e}")
             
-            if self.lr_scheduler and self.scheduler_per_iteration and (mode == RunMode.TRAIN):
-                self.lr_scheduler.step()
+            # Note: lr_scheduler.step() for per_iteration schedulers is handled in _train_step()
+            # after optimizer.step() to maintain the correct PyTorch 1.1.0+ order
 
             # Update progress bar with gathered losses
             if self.config.is_ref_device:

@@ -1241,3 +1241,1183 @@ def plot_multi_epoch_metrics_comprehensive(epoch_results, title_suffix=""):
     if len(valid_mae) > 1:
         final_improvement = (valid_mae[0] - valid_mae[-1]) / valid_mae[0] * 100
         print(f"   🚀 Total MAE improvement: {final_improvement:.2f}%")
+
+# ============================================================================
+# MULTI-EPOCH ANALYSIS FUNCTIONS (FROM NOTEBOOK)
+# ============================================================================
+
+def extract_and_organize_multi_epoch_metrics(all_epoch_metrics, epoch_nums):
+    """
+    Extract and organize metrics from multi-epoch analysis results.
+    
+    Args:
+        all_epoch_metrics (dict): Dictionary of epoch metrics
+        epoch_nums (list): List of epoch numbers
+    
+    Returns:
+        tuple: (stenosis_metrics, calcification_metrics, ifr_metrics)
+    """
+    from collections import defaultdict
+    from .vessel_constants import RCA_VESSELS, NON_RCA_VESSELS
+    
+    print("🔍 Extracting metrics from all processed epochs...")
+    
+    # Initialize metric storage
+    stenosis_metrics = defaultdict(dict)
+    calcification_metrics = defaultdict(dict)
+    ifr_metrics = defaultdict(dict)
+    
+    # Extract vessel lists
+    all_vessels = RCA_VESSELS + NON_RCA_VESSELS
+    
+    # Organize metrics by epoch
+    for epoch_num in epoch_nums:
+        epoch_key = f"epoch_{epoch_num}"
+        metrics = all_epoch_metrics[epoch_key]
+        
+        # Stenosis metrics
+        stenosis_mae = metrics.get('stenosis', {}).get('mae', {})
+        stenosis_corr = metrics.get('stenosis', {}).get('corr', {})
+        
+        for vessel in all_vessels:
+            stenosis_metrics[vessel][epoch_num] = {
+                'mae': stenosis_mae.get(vessel, np.nan),
+                'corr': stenosis_corr.get(vessel, np.nan)
+            }
+        
+        # Calcification metrics
+        calcif_acc = metrics.get('calcification', {}).get('accuracy', {})
+        for vessel in all_vessels:
+            calcification_metrics[vessel][epoch_num] = {
+                'accuracy': calcif_acc.get(vessel, np.nan)
+            }
+        
+        # IFR metrics
+        ifr_mae = metrics.get('ifr', {}).get('mae', {})
+        ifr_corr = metrics.get('ifr', {}).get('corr', {})
+        for vessel in all_vessels:
+            ifr_metrics[vessel][epoch_num] = {
+                'mae': ifr_mae.get(vessel, np.nan),
+                'corr': ifr_corr.get(vessel, np.nan)
+            }
+    
+    print(f"✅ Metrics extraction completed!")
+    print(f"   🫀 Stenosis metrics for {len(stenosis_metrics)} vessels")
+    print(f"   🦴 Calcification metrics for {len(calcification_metrics)} vessels")
+    print(f"   💉 IFR metrics for {len(ifr_metrics)} vessels")
+    
+    return stenosis_metrics, calcification_metrics, ifr_metrics
+
+def plot_stenosis_trends(stenosis_metrics, epoch_nums):
+    """
+    Create stenosis performance trend visualizations.
+    
+    Args:
+        stenosis_metrics (dict): Stenosis metrics organized by vessel
+        epoch_nums (list): List of epoch numbers
+    """
+    if not stenosis_metrics or not epoch_nums:
+        print("❌ No stenosis metrics available for plotting")
+        return
+    
+    print("🩺 Creating stenosis performance trend visualizations...")
+    
+    # Create comprehensive stenosis plots
+    fig = plt.subplots(figsize=(20, 16))
+    
+    # Plot 1: MAE trends by vessel (top vessels only)
+    plt.subplot(3, 2, 1)
+    vessel_importance = []  # Calculate vessel importance by data availability
+    for vessel in stenosis_metrics.keys():
+        mae_values = [stenosis_metrics[vessel][epoch].get('mae', np.nan) for epoch in epoch_nums]
+        valid_count = sum(1 for v in mae_values if not np.isnan(v))
+        vessel_importance.append((vessel, valid_count))
+    
+    # Plot top 8 vessels by data availability
+    top_vessels = sorted(vessel_importance, key=lambda x: x[1], reverse=True)[:8]
+    colors = plt.cm.Set3(np.linspace(0, 1, 8))
+    
+    for i, (vessel, _) in enumerate(top_vessels):
+        mae_values = [stenosis_metrics[vessel][epoch].get('mae', np.nan) for epoch in epoch_nums]
+        valid_epochs = [epoch_nums[j] for j, v in enumerate(mae_values) if not np.isnan(v)]
+        valid_maes = [v for v in mae_values if not np.isnan(v)]
+        
+        if valid_maes:
+            plt.plot(valid_epochs, valid_maes, 'o-', label=vessel.replace('_stenosis', ''), 
+                    color=colors[i], linewidth=2, markersize=4)
+    
+    plt.title('Stenosis MAE Trends by Vessel (Top 8)', fontweight='bold', fontsize=14)
+    plt.xlabel('Epoch')
+    plt.ylabel('MAE (%)')
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.grid(True, alpha=0.3)
+    
+    # Plot 2: Correlation trends by vessel
+    plt.subplot(3, 2, 2)
+    for i, (vessel, _) in enumerate(top_vessels):
+        corr_values = [stenosis_metrics[vessel][epoch].get('corr', np.nan) for epoch in epoch_nums]
+        valid_epochs = [epoch_nums[j] for j, v in enumerate(corr_values) if not np.isnan(v)]
+        valid_corrs = [v for v in corr_values if not np.isnan(v)]
+        
+        if valid_corrs:
+            plt.plot(valid_epochs, valid_corrs, 'o-', label=vessel.replace('_stenosis', ''), 
+                    color=colors[i], linewidth=2, markersize=4)
+    
+    plt.title('Stenosis Correlation Trends by Vessel (Top 8)', fontweight='bold', fontsize=14)
+    plt.xlabel('Epoch')
+    plt.ylabel('Pearson Correlation')
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
+    plt.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    print("✅ Stenosis trend plots created successfully!")
+
+def debug_calcification_by_severity(all_epoch_metrics, epoch_nums):
+    """
+    Debug and analyze calcification metrics by severity levels, now with visualization.
+    
+    Args:
+        all_epoch_metrics (dict): Dictionary of epoch metrics  
+        epoch_nums (list): List of epoch numbers
+    
+    Returns:
+        dict: Results of severity analysis
+    """
+    print("\n" + "="*60)
+    print("🔍 DEBUGGING CALCIFICATION BY SEVERITY ANALYSIS")
+    print("="*60)
+
+    if not all_epoch_metrics or not epoch_nums:
+        print("❌ No calcification data available for analysis")
+        return {}
+
+    print("🔍 Step 1: Examining actual calcification metric names...")
+    
+    # Get a sample of calcification metrics from first epoch
+    epoch_key = f"epoch_{epoch_nums[0]}"
+    if epoch_key in all_epoch_metrics:
+        calcif_metrics = all_epoch_metrics[epoch_key].get('calcification', {}).get('accuracy', {})
+        
+        print(f"\n📋 Found {len(calcif_metrics)} calcification metrics in epoch {epoch_nums[0]}:")
+        for i, (metric, value) in enumerate(sorted(calcif_metrics.items())):
+            print(f"   {i+1:2d}. {metric}: {value:.3f}")
+    
+    print(f"\n🔍 Step 2: Searching for severity patterns in ALL epochs...")
+    
+    # Collect all unique calcification metrics across all epochs
+    all_calcif_metrics = set()
+    sample_values = {}
+    
+    for epoch in epoch_nums:
+        epoch_key = f"epoch_{epoch}"
+        if epoch_key in all_epoch_metrics:
+            calcif_metrics = all_epoch_metrics[epoch_key].get('calcification', {}).get('accuracy', {})
+            all_calcif_metrics.update(calcif_metrics.keys())
+            # Store sample values for later
+            for metric, value in calcif_metrics.items():
+                if metric not in sample_values and not np.isnan(value):
+                    sample_values[metric] = value
+    
+    print(f"\n📊 Total unique calcification metrics across all epochs: {len(all_calcif_metrics)}")
+    
+    # Define comprehensive severity patterns
+    severity_patterns = {
+        'no': ['no_calcif', '_no_', '_none_', 'absent', 'zero', '0_calcif'],
+        'mild': ['mild', 'light', 'minimal', '1_calcif', 'low'],
+        'moderate': ['moderate', 'mod_', '2_calcif', 'medium'],
+        'severe': ['severe', 'heavy', 'extensive', '3_calcif', 'high', 'max']
+    }
+    
+    print(f"\n🔍 Step 3: Detailed pattern matching analysis...")
+    found_severity_metrics = {level: [] for level in severity_patterns.keys()}
+    
+    # Test each metric against all patterns
+    for metric in sorted(all_calcif_metrics):
+        metric_lower = metric.lower()
+        print(f"\n🔍 Analyzing: '{metric}'")
+        
+        matched = False
+        for severity, patterns in severity_patterns.items():
+            for pattern in patterns:
+                if pattern in metric_lower:
+                    found_severity_metrics[severity].append(metric)
+                    print(f"   ✅ MATCH: {severity.upper()} (pattern: '{pattern}')")
+                    matched = True
+                    break
+            if matched:
+                break
+        
+        if not matched:
+            print(f"   ❌ No severity pattern found")
+    
+    print(f"\n📊 Step 4: Summary of severity matches:")
+    total_matched = 0
+    severity_data = {}
+    for severity, metrics in found_severity_metrics.items():
+        count = len(metrics)
+        total_matched += count
+        if metrics:
+            print(f"   {severity.upper()}: {count} metrics")
+            for metric in metrics:
+                print(f"      • {metric} (sample value: {sample_values.get(metric, 'N/A')})")
+            severity_data[severity] = metrics
+        else:
+            print(f"   {severity.upper()}: 0 metrics")
+    
+    print(f"\n📈 Matched {total_matched}/{len(all_calcif_metrics)} metrics to severity patterns")
+    
+    # CREATE VISUALIZATIONS
+    if total_matched > 0 and severity_data:
+        print(f"\n🎨 Creating calcification severity visualizations...")
+        plot_calcification_by_severity_trends(all_epoch_metrics, epoch_nums, severity_data)
+    
+    if total_matched == 0:
+        print(f"\n❌ No severity patterns found in metric names!")
+        print(f"   💡 The calcification metrics are organized by vessel/anatomical location")
+        
+        # Show vessel-based analysis instead
+        print(f"\n🔍 Alternative: Showing vessel-based calcification accuracy...")
+        epoch_key = f"epoch_{epoch_nums[-1]}"  # Use last epoch
+        if epoch_key in all_epoch_metrics:
+            calcif_metrics = all_epoch_metrics[epoch_key].get('calcification', {}).get('accuracy', {})
+            
+            print(f"\n📊 Calcification accuracy by vessel (Epoch {epoch_nums[-1]}):")
+            for metric, value in sorted(calcif_metrics.items()):
+                if not np.isnan(value):
+                    vessel_name = metric.replace('_calcif', '').replace('_', ' ').title()
+                    print(f"   • {vessel_name}: {value:.3f}")
+    
+    print("\n✅ Debug analysis completed!")
+    return {
+        'found_severity_metrics': found_severity_metrics,
+        'all_calcif_metrics': all_calcif_metrics,
+        'sample_values': sample_values,
+        'total_matched': total_matched,
+        'severity_data': severity_data
+    }
+
+
+def plot_calcification_by_severity_trends(all_epoch_metrics, epoch_nums, severity_data):
+    """
+    Create visualization plots for calcification metrics organized by severity levels.
+    
+    Args:
+        all_epoch_metrics (dict): Dictionary of epoch metrics
+        epoch_nums (list): List of epoch numbers
+        severity_data (dict): Dictionary mapping severity levels to metric names
+    """
+    print("🎨 Creating calcification by severity visualizations...")
+    
+    # Create figure with subplots
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    fig.suptitle('Calcification Accuracy by Severity Level', fontsize=16, fontweight='bold')
+    
+    # Define colors for each severity level
+    severity_colors = {
+        'no': '#2E8B57',      # Sea Green
+        'mild': '#FFD700',    # Gold  
+        'moderate': '#FF8C00', # Dark Orange
+        'severe': '#DC143C'   # Crimson
+    }
+    
+    # Plot 1: Severity trends over epochs
+    ax1 = axes[0, 0]
+    
+    for severity, metrics in severity_data.items():
+        if not metrics:
+            continue
+            
+        severity_means = []
+        valid_epochs = []
+        
+        for epoch in epoch_nums:
+            epoch_key = f"epoch_{epoch}"
+            if epoch_key in all_epoch_metrics:
+                calcif_metrics = all_epoch_metrics[epoch_key].get('calcification', {}).get('accuracy', {})
+                
+                # Calculate mean for this severity level at this epoch
+                severity_values = []
+                for metric in metrics:
+                    if metric in calcif_metrics:
+                        value = calcif_metrics[metric]
+                        if not np.isnan(value):
+                            severity_values.append(value)
+                
+                if severity_values:
+                    severity_means.append(np.mean(severity_values))
+                    valid_epochs.append(epoch)
+        
+        if severity_means:
+            ax1.plot(valid_epochs, severity_means, 'o-', 
+                    label=f'{severity.title()} ({len(metrics)} metrics)', 
+                    color=severity_colors.get(severity, 'gray'),
+                    linewidth=2, markersize=6)
+    
+    ax1.set_title('Average Accuracy by Severity Level', fontweight='bold')
+    ax1.set_xlabel('Epoch')
+    ax1.set_ylabel('Average Accuracy')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # Plot 2: Box plot of latest epoch values by severity
+    ax2 = axes[0, 1]
+    
+    latest_epoch_key = f"epoch_{epoch_nums[-1]}"
+    if latest_epoch_key in all_epoch_metrics:
+        calcif_metrics = all_epoch_metrics[latest_epoch_key].get('calcification', {}).get('accuracy', {})
+        
+        box_data = []
+        box_labels = []
+        
+        for severity, metrics in severity_data.items():
+            if not metrics:
+                continue
+                
+            severity_values = []
+            for metric in metrics:
+                if metric in calcif_metrics:
+                    value = calcif_metrics[metric]
+                    if not np.isnan(value):
+                        severity_values.append(value)
+            
+            if severity_values:
+                box_data.append(severity_values)
+                box_labels.append(f'{severity.title()}\n({len(severity_values)} metrics)')
+        
+        if box_data:
+            bp = ax2.boxplot(box_data, labels=box_labels, patch_artist=True)
+            
+            # Color the boxes
+            for patch, severity in zip(bp['boxes'], severity_data.keys()):
+                if severity_data[severity]:  # Only color if there are metrics
+                    patch.set_facecolor(severity_colors.get(severity, 'gray'))
+                    patch.set_alpha(0.7)
+    
+    ax2.set_title(f'Accuracy Distribution by Severity (Epoch {epoch_nums[-1]})', fontweight='bold')
+    ax2.set_ylabel('Accuracy')
+    ax2.grid(True, alpha=0.3)
+    
+    # Plot 3: Individual metric trends for each severity level
+    ax3 = axes[1, 0]
+    
+    # Show individual metrics for the severity level with most metrics
+    max_severity = max(severity_data.keys(), key=lambda x: len(severity_data[x])) if severity_data else None
+    
+    if max_severity and severity_data[max_severity]:
+        for metric in severity_data[max_severity][:5]:  # Show top 5 metrics to avoid clutter
+            metric_values = []
+            valid_epochs = []
+            
+            for epoch in epoch_nums:
+                epoch_key = f"epoch_{epoch}"
+                if epoch_key in all_epoch_metrics:
+                    calcif_metrics = all_epoch_metrics[epoch_key].get('calcification', {}).get('accuracy', {})
+                    
+                    if metric in calcif_metrics:
+                        value = calcif_metrics[metric]
+                        if not np.isnan(value):
+                            metric_values.append(value)
+                            valid_epochs.append(epoch)
+            
+            if metric_values:
+                ax3.plot(valid_epochs, metric_values, 'o-', 
+                        label=metric.replace('_calcif', '').replace('_', ' ').title(),
+                        linewidth=1.5, markersize=4)
+    
+    ax3.set_title(f'Individual {max_severity.title() if max_severity else "N/A"} Severity Metrics', fontweight='bold')
+    ax3.set_xlabel('Epoch')
+    ax3.set_ylabel('Accuracy') 
+    ax3.legend()
+    ax3.grid(True, alpha=0.3)
+    
+    # Plot 4: Summary statistics table
+    ax4 = axes[1, 1]
+    ax4.axis('off')
+    
+    # Create summary statistics
+    latest_epoch_key = f"epoch_{epoch_nums[-1]}"
+    if latest_epoch_key in all_epoch_metrics:
+        calcif_metrics = all_epoch_metrics[latest_epoch_key].get('calcification', {}).get('accuracy', {})
+        
+        summary_data = []
+        for severity, metrics in severity_data.items():
+            if not metrics:
+                continue
+                
+            severity_values = []
+            for metric in metrics:
+                if metric in calcif_metrics:
+                    value = calcif_metrics[metric]
+                    if not np.isnan(value):
+                        severity_values.append(value)
+            
+            if severity_values:
+                summary_data.append([
+                    severity.title(),
+                    len(severity_values),
+                    f"{np.mean(severity_values):.3f}",
+                    f"{np.std(severity_values):.3f}",
+                    f"{np.min(severity_values):.3f}",
+                    f"{np.max(severity_values):.3f}"
+                ])
+        
+        if summary_data:
+            table = ax4.table(cellText=summary_data,
+                            colLabels=['Severity', 'Count', 'Mean', 'Std', 'Min', 'Max'],
+                            cellLoc='center',
+                            loc='center')
+            table.auto_set_font_size(False)
+            table.set_fontsize(10)
+            table.scale(1, 1.5)
+            
+            # Color the rows based on severity
+            for i, (severity, _) in enumerate([(row[0].lower(), row) for row in summary_data]):
+                if severity in severity_colors:
+                    for j in range(6):
+                        table[(i+1, j)].set_facecolor(severity_colors[severity])
+                        table[(i+1, j)].set_alpha(0.3)
+    
+    ax4.set_title('Summary Statistics (Latest Epoch)', fontweight='bold', pad=20)
+    
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    
+    # Save the plot instead of showing it
+    import matplotlib
+    if matplotlib.get_backend() == 'Agg':
+        # We're in non-interactive mode, don't try to show
+        pass
+    else:
+        plt.show()
+    
+    print("✅ Calcification by severity visualizations created!")
+
+def plot_calcification_trends(calcification_metrics, epoch_nums):
+    """
+    Create calcification accuracy visualization plots.
+    
+    Args:
+        calcification_metrics (dict): Calcification metrics organized by vessel
+        epoch_nums (list): List of epoch numbers
+    """
+    if not calcification_metrics or not epoch_nums:
+        print("❌ No calcification data available for plotting")
+        return
+    
+    print("🦴 Creating calcification accuracy visualizations...")
+    
+    # Calculate overall accuracy means for each epoch
+    all_acc_means = []
+    for epoch in epoch_nums:
+        epoch_accs = []
+        for vessel_metrics in calcification_metrics.values():
+            if epoch in vessel_metrics:
+                acc = vessel_metrics[epoch].get('accuracy', np.nan)
+                if not np.isnan(acc):
+                    epoch_accs.append(acc)
+        
+        if epoch_accs:
+            all_acc_means.append(np.mean(epoch_accs))
+        else:
+            all_acc_means.append(np.nan)
+    
+    # Create calcification plots
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    fig.suptitle('Calcification Accuracy Analysis', fontsize=16, fontweight='bold')
+    
+    # Plot 1: Overall accuracy trend
+    valid_indices = ~np.isnan(all_acc_means)
+    valid_epochs = np.array(epoch_nums)[valid_indices]
+    valid_accs = np.array(all_acc_means)[valid_indices]
+    
+    if len(valid_accs) > 0:
+        axes[0,0].plot(valid_epochs, valid_accs, 'o-', linewidth=3, markersize=8, color='green')
+        
+        # Add trend line
+        if len(valid_epochs) > 1:
+            z = np.polyfit(valid_epochs, valid_accs, 1)
+            p = np.poly1d(z)
+            axes[0,0].plot(valid_epochs, p(valid_epochs), "--", color='darkgreen', alpha=0.7, 
+                          label=f'Trend (slope: {z[0]:.4f})')
+    
+    axes[0,0].set_title('Overall Calcification Accuracy', fontweight='bold', fontsize=14)
+    axes[0,0].set_xlabel('Epoch')
+    axes[0,0].set_ylabel('Accuracy')
+    axes[0,0].grid(True, alpha=0.3)
+    axes[0,0].legend()
+    
+    # Plot 2: Individual vessel trends (top 6 vessels)
+    vessel_importance = []
+    for vessel in calcification_metrics.keys():
+        acc_values = [calcification_metrics[vessel][epoch].get('accuracy', np.nan) for epoch in epoch_nums if epoch in calcification_metrics[vessel]]
+        valid_count = sum(1 for v in acc_values if not np.isnan(v))
+        if valid_count > 0:
+            vessel_importance.append((vessel, valid_count))
+    
+    top_vessels = sorted(vessel_importance, key=lambda x: x[1], reverse=True)[:6]
+    colors = plt.cm.tab10(np.linspace(0, 1, 6))
+    
+    for i, (vessel, _) in enumerate(top_vessels):
+        vessel_accs = []
+        vessel_epochs = []
+        for epoch in epoch_nums:
+            if epoch in calcification_metrics[vessel]:
+                acc = calcification_metrics[vessel][epoch].get('accuracy', np.nan)
+                if not np.isnan(acc):
+                    vessel_accs.append(acc)
+                    vessel_epochs.append(epoch)
+        
+        if vessel_accs:
+            axes[0,1].plot(vessel_epochs, vessel_accs, 'o-', 
+                          label=vessel.replace('_calcif', '').replace('_', ' ').title(), 
+                          color=colors[i], linewidth=2, markersize=4)
+    
+    axes[0,1].set_title('Calcification Accuracy by Vessel', fontweight='bold', fontsize=14)
+    axes[0,1].set_xlabel('Epoch')
+    axes[0,1].set_ylabel('Accuracy')
+    axes[0,1].legend()
+    axes[0,1].grid(True, alpha=0.3)
+    
+    # Plot 3: Distribution of accuracies
+    final_epoch_accs = []
+    if epoch_nums:
+        final_epoch = epoch_nums[-1]
+        for vessel_metrics in calcification_metrics.values():
+            if final_epoch in vessel_metrics:
+                acc = vessel_metrics[final_epoch].get('accuracy', np.nan)
+                if not np.isnan(acc):
+                    final_epoch_accs.append(acc)
+    
+    if final_epoch_accs:
+        axes[1,0].hist(final_epoch_accs, bins=20, alpha=0.7, color='lightblue', edgecolor='black')
+        axes[1,0].axvline(np.mean(final_epoch_accs), color='red', linestyle='--', 
+                         label=f'Mean: {np.mean(final_epoch_accs):.3f}')
+        axes[1,0].set_title(f'Accuracy Distribution (Epoch {epoch_nums[-1]})', fontweight='bold', fontsize=14)
+        axes[1,0].set_xlabel('Accuracy')
+        axes[1,0].set_ylabel('Frequency')
+        axes[1,0].legend()
+        axes[1,0].grid(True, alpha=0.3)
+    
+    # Plot 4: Summary statistics
+    axes[1,1].axis('off')
+    if valid_accs.size > 0:
+        summary_text = f"""CALCIFICATION ACCURACY SUMMARY
+        
+📊 Epochs Analyzed: {len(epoch_nums)}
+📈 Best Accuracy: {np.max(valid_accs):.3f} (Epoch {valid_epochs[np.argmax(valid_accs)]})
+📉 Worst Accuracy: {np.min(valid_accs):.3f} (Epoch {valid_epochs[np.argmin(valid_accs)]})
+📊 Average: {np.mean(valid_accs):.3f} ± {np.std(valid_accs):.3f}
+📈 Improvement: {(np.max(valid_accs) - np.min(valid_accs)):.3f}
+📊 Vessels: {len([v for v in calcification_metrics.keys() if any(not np.isnan(calcification_metrics[v][e].get('accuracy', np.nan)) for e in epoch_nums if e in calcification_metrics[v])])}
+        """
+        
+        axes[1,1].text(0.05, 0.95, summary_text, transform=axes[1,1].transAxes, fontsize=12, 
+                      verticalalignment='top', fontfamily='monospace',
+                      bbox=dict(boxstyle="round,pad=0.5", facecolor="lightgreen", alpha=0.8))
+    
+    plt.tight_layout()
+    plt.show()
+    
+    print("✅ Calcification plots created successfully!")
+
+def plot_ifr_trends(ifr_metrics, epoch_nums):
+    """
+    Create IFR performance trend visualizations.
+    
+    Args:
+        ifr_metrics (dict): IFR metrics organized by vessel
+        epoch_nums (list): List of epoch numbers
+    """
+    if not ifr_metrics or not epoch_nums:
+        print("❌ No IFR data available for plotting")
+        return
+    
+    print("💉 Creating IFR performance visualizations...")
+    
+    # Calculate overall MAE means for each epoch
+    all_mae_means = []
+    for epoch in epoch_nums:
+        epoch_maes = []
+        for vessel_metrics in ifr_metrics.values():
+            if epoch in vessel_metrics:
+                mae = vessel_metrics[epoch].get('mae', np.nan)
+                if not np.isnan(mae):
+                    epoch_maes.append(mae)
+        
+        if epoch_maes:
+            all_mae_means.append(np.mean(epoch_maes))
+        else:
+            all_mae_means.append(np.nan)
+    
+    # Filter valid values for plotting
+    valid_mae_indices = ~np.isnan(all_mae_means)
+    valid_mae_means = np.array(all_mae_means)[valid_mae_indices]
+    valid_epoch_nums = np.array(epoch_nums)[valid_mae_indices]
+    
+    if len(valid_mae_means) > 0:
+        plt.figure(figsize=(12, 6))
+        
+        # Plot the MAE values
+        plt.plot(valid_epoch_nums, valid_mae_means, 'o-', linewidth=2, markersize=6, 
+                color='blue', label='IFR MAE')
+        
+        # Add error bars if we have standard deviations
+        mae_stds = []
+        for epoch in valid_epoch_nums:
+            epoch_maes = []
+            for vessel_metrics in ifr_metrics.values():
+                if epoch in vessel_metrics:
+                    mae = vessel_metrics[epoch].get('mae', np.nan)
+                    if not np.isnan(mae):
+                        epoch_maes.append(mae)
+            
+            if len(epoch_maes) > 1:
+                mae_stds.append(np.std(epoch_maes))
+            else:
+                mae_stds.append(0)
+        
+        plt.errorbar(valid_epoch_nums, valid_mae_means, yerr=mae_stds, 
+                    fmt='none', ecolor='lightblue', alpha=0.7, capsize=3)
+        
+        # Add trend line
+        if len(valid_epoch_nums) > 1:
+            z = np.polyfit(valid_epoch_nums, valid_mae_means, 1)
+            p = np.poly1d(z)
+            plt.plot(valid_epoch_nums, p(valid_epoch_nums), "--", 
+                    color='orange', alpha=0.7, 
+                    label=f'Trend (slope: {z[0]:.6f})')
+        
+        plt.title('IFR Mean Absolute Error (MAE) Across Epochs', fontsize=14, fontweight='bold')
+        plt.xlabel('Epoch', fontsize=12)
+        plt.ylabel('MAE', fontsize=12)
+        plt.grid(True, alpha=0.3)
+        plt.legend()
+        
+        # Add statistics text box
+        stats_text = f"""Statistics:
+Best: {np.min(valid_mae_means):.4f} (Epoch {valid_epoch_nums[np.argmin(valid_mae_means)]})
+Worst: {np.max(valid_mae_means):.4f} (Epoch {valid_epoch_nums[np.argmax(valid_mae_means)]})
+Mean: {np.mean(valid_mae_means):.4f} ± {np.std(valid_mae_means):.4f}
+Range: {(np.max(valid_mae_means) - np.min(valid_mae_means)):.4f}"""
+        
+        plt.text(0.02, 0.98, stats_text, transform=plt.gca().transAxes, 
+                fontsize=10, verticalalignment='top',
+                bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.8))
+        
+        plt.tight_layout()
+        plt.show()
+        
+        print(f"✅ IFR MAE plot created successfully!")
+        print(f"   📊 Plotted {len(valid_mae_means)} valid epochs")
+    else:
+        print("❌ No valid IFR MAE values to plot")
+
+def create_combined_performance_analysis(all_epoch_metrics, epoch_nums):
+    """
+    Create comprehensive combined performance analysis and visualization.
+    
+    Args:
+        all_epoch_metrics (dict): Dictionary of epoch metrics
+        epoch_nums (list): List of epoch numbers
+    
+    Returns:
+        dict: Combined performance results
+    """
+    if not all_epoch_metrics or not epoch_nums:
+        print("❌ No epoch metrics available for combined analysis!")
+        return {}
+
+    print("📊 Creating combined performance analysis...")
+    
+    # Calculate overall metrics for each epoch
+    overall_metrics = {}
+    
+    for epoch in epoch_nums:
+        epoch_key = f"epoch_{epoch}"
+        metrics = all_epoch_metrics[epoch_key]
+        
+        # Stenosis metrics
+        stenosis_mae = metrics.get('stenosis', {}).get('mae', {})
+        stenosis_corr = metrics.get('stenosis', {}).get('corr', {})
+        
+        # Calcification metrics
+        calcif_acc = metrics.get('calcification', {}).get('accuracy', {})
+        
+        # IFR metrics
+        ifr_mae = metrics.get('ifr', {}).get('mae', {})
+        ifr_corr = metrics.get('ifr', {}).get('corr', {})
+        
+        # Calculate averages
+        overall_metrics[epoch] = {
+            'stenosis_mae': np.nanmean(list(stenosis_mae.values())),
+            'stenosis_corr': np.nanmean(list(stenosis_corr.values())),
+            'calcification_acc': np.nanmean(list(calcif_acc.values())),
+            'ifr_mae': np.nanmean(list(ifr_mae.values())),
+            'ifr_corr': np.nanmean(list(ifr_corr.values()))
+        }
+    
+    # Create combined visualization
+    fig = plt.figure(figsize=(20, 12))
+    
+    # Extract data arrays
+    stenosis_maes = [overall_metrics[e]['stenosis_mae'] for e in epoch_nums]
+    stenosis_corrs = [overall_metrics[e]['stenosis_corr'] for e in epoch_nums]
+    calcif_accs = [overall_metrics[e]['calcification_acc'] for e in epoch_nums]
+    ifr_maes = [overall_metrics[e]['ifr_mae'] for e in epoch_nums]
+    ifr_corrs = [overall_metrics[e]['ifr_corr'] for e in epoch_nums]
+    
+    # Plot 1: Combined MAE trends
+    plt.subplot(2, 3, 1)
+    plt.plot(epoch_nums, stenosis_maes, 'o-', label='Stenosis MAE', color='red', linewidth=3, markersize=6)
+    plt.plot(epoch_nums, ifr_maes, 's-', label='IFR MAE', color='orange', linewidth=3, markersize=6)
+    plt.title('Combined MAE Trends', fontweight='bold', fontsize=14)
+    plt.xlabel('Epoch')
+    plt.ylabel('MAE')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    # Plot 2: Combined correlation trends
+    plt.subplot(2, 3, 2)
+    plt.plot(epoch_nums, stenosis_corrs, 'o-', label='Stenosis Correlation', color='blue', linewidth=3, markersize=6)
+    plt.plot(epoch_nums, ifr_corrs, 's-', label='IFR Correlation', color='cyan', linewidth=3, markersize=6)
+    plt.title('Combined Correlation Trends', fontweight='bold', fontsize=14)
+    plt.xlabel('Epoch')
+    plt.ylabel('Correlation')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    # Plot 3: Calcification accuracy trend
+    plt.subplot(2, 3, 3)
+    plt.plot(epoch_nums, calcif_accs, 'o-', label='Calcification Accuracy', color='green', linewidth=3, markersize=6)
+    
+    # Add trend line
+    valid_epochs = [epoch_nums[i] for i, v in enumerate(calcif_accs) if not np.isnan(v)]
+    valid_accs = [v for v in calcif_accs if not np.isnan(v)]
+    
+    if len(valid_epochs) > 1:
+        z = np.polyfit(valid_epochs, valid_accs, 1)
+        p = np.poly1d(z)
+        plt.plot(valid_epochs, p(valid_epochs), "--", color='darkgreen', alpha=0.7, label=f'Trend (slope: {z[0]:.4f})')
+    
+    plt.title('Calcification Accuracy Trend', fontweight='bold', fontsize=14)
+    plt.xlabel('Epoch')
+    plt.ylabel('Accuracy')
+    plt.ylim(0, 1)
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    # Calculate composite scores for best epoch identification
+    composite_scores = []
+    stenosis_weight = 0.4
+    calcif_weight = 0.3
+    ifr_weight = 0.3
+    
+    # Normalize metrics
+    norm_stenosis_mae = 1 - (np.array(stenosis_maes) - np.nanmin(stenosis_maes)) / (np.nanmax(stenosis_maes) - np.nanmin(stenosis_maes))
+    norm_stenosis_corr = (np.array(stenosis_corrs) - np.nanmin(stenosis_corrs)) / (np.nanmax(stenosis_corrs) - np.nanmin(stenosis_corrs))
+    norm_calcif_acc = np.array(calcif_accs)
+    
+    for i, epoch in enumerate(epoch_nums):
+        score = (norm_stenosis_mae[i] * stenosis_weight + 
+                norm_stenosis_corr[i] * stenosis_weight + 
+                norm_calcif_acc[i] * calcif_weight)
+        composite_scores.append(score)
+    
+    # Plot 4: Best epoch identification
+    plt.subplot(2, 3, 4)
+    plt.plot(epoch_nums, composite_scores, 'o-', color='purple', linewidth=3, markersize=6)
+    
+    # Mark best epoch
+    best_epoch_idx = np.nanargmax(composite_scores)
+    best_epoch = epoch_nums[best_epoch_idx]
+    plt.scatter(best_epoch, composite_scores[best_epoch_idx], color='gold', s=200, marker='*', 
+               label=f'Best Epoch: {best_epoch}', zorder=5)
+    
+    plt.title('Composite Performance Score', fontweight='bold', fontsize=14)
+    plt.xlabel('Epoch')
+    plt.ylabel('Composite Score')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Print comprehensive summary
+    print(f"\n📊 COMPREHENSIVE SUMMARY:")
+    print(f"   🏆 Best Overall Epoch: {best_epoch} (Score: {composite_scores[best_epoch_idx]:.3f})")
+    print(f"   📈 Stenosis: MAE {overall_metrics[best_epoch]['stenosis_mae']:.2f}%, Corr {overall_metrics[best_epoch]['stenosis_corr']:.3f}")
+    print(f"   🦴 Calcification: Accuracy {overall_metrics[best_epoch]['calcification_acc']:.3f}")
+    print(f"   💉 IFR: MAE {overall_metrics[best_epoch]['ifr_mae']:.4f}, Corr {overall_metrics[best_epoch]['ifr_corr']:.3f}")
+    
+    return {
+        'overall_metrics': overall_metrics,
+        'composite_scores': composite_scores,
+        'best_epoch': best_epoch,
+        'best_epoch_idx': best_epoch_idx
+    }
+
+def analyze_trends_over_epochs(severity_results, all_epoch_metrics, epoch_nums):
+    """
+    Analyze and display trends over epochs for each severity level.
+    
+    Args:
+        severity_results (dict): Results from debug_calcification_by_severity
+        all_epoch_metrics (dict): Dictionary of epoch metrics
+        epoch_nums (list): List of epoch numbers
+    """
+    if not severity_results:
+        return
+    
+    print("\n" + "="*80)
+    print("📈 DETAILED TRENDS OVER EPOCHS")
+    print("="*80)
+    
+    severity_data = severity_results.get('severity_data', {})
+    
+    for severity, metrics in severity_data.items():
+        if not metrics:
+            continue
+            
+        print(f"\n🎯 {severity.upper()} SEVERITY TRENDS:")
+        print(f"   Metrics: {', '.join(metrics)}")
+        
+        # Calculate trends over epochs
+        severity_trends = []
+        epoch_values = []
+        
+        for epoch in epoch_nums:
+            epoch_key = f"epoch_{epoch}"
+            if epoch_key in all_epoch_metrics:
+                calcif_metrics = all_epoch_metrics[epoch_key].get('calcification', {}).get('accuracy', {})
+                
+                # Get values for this severity level at this epoch
+                epoch_severity_values = []
+                for metric in metrics:
+                    if metric in calcif_metrics:
+                        value = calcif_metrics[metric]
+                        if not np.isnan(value):
+                            epoch_severity_values.append(value)
+                
+                if epoch_severity_values:
+                    mean_val = np.mean(epoch_severity_values)
+                    severity_trends.append(mean_val)
+                    epoch_values.append(epoch)
+        
+        if severity_trends:
+            # Show key statistics
+            print(f"   📊 Epochs analyzed: {len(epoch_values)} ({min(epoch_values)}-{max(epoch_values)})")
+            print(f"   📊 Starting accuracy: {severity_trends[0]:.4f} (Epoch {epoch_values[0]})")
+            print(f"   📊 Final accuracy: {severity_trends[-1]:.4f} (Epoch {epoch_values[-1]})")
+            print(f"   📊 Best accuracy: {max(severity_trends):.4f} (Epoch {epoch_values[severity_trends.index(max(severity_trends))]})")
+            print(f"   📊 Improvement: {severity_trends[-1] - severity_trends[0]:+.4f}")
+            
+            # Show trend every 5 epochs
+            print(f"   📈 Trend every 5 epochs:")
+            for i in range(0, len(epoch_values), 5):
+                if i < len(severity_trends):
+                    print(f"      Epoch {epoch_values[i]:2d}: {severity_trends[i]:.4f}")
+            
+            # Calculate correlation with epoch (trend direction)
+            if len(epoch_values) > 1:
+                correlation = np.corrcoef(epoch_values, severity_trends)[0, 1]
+                trend_direction = "📈 Improving" if correlation > 0.1 else "📉 Declining" if correlation < -0.1 else "➡️  Stable"
+                print(f"   🎯 Overall trend: {trend_direction} (r={correlation:.3f})")
+
+def save_plots_to_files(output_dir, plots_subdir="plots"):
+    """
+    Save the visualization plots to files.
+    
+    Args:
+        output_dir (str): Output directory path
+        plots_subdir (str): Subdirectory name for plots
+    """
+    plots_dir = os.path.join(output_dir, plots_subdir)
+    os.makedirs(plots_dir, exist_ok=True)
+    
+    print(f"\n🎨 Saving plots to: {plots_dir}")
+    
+    # The plots were already created by debug_calcification_by_severity
+    # We need to explicitly save them
+    if plt.get_fignums():  # Check if there are figures
+        for i, fig_num in enumerate(plt.get_fignums()):
+            fig = plt.figure(fig_num)
+            plot_file = os.path.join(plots_dir, f'calcification_severity_analysis_{i+1}.png')
+            fig.savefig(plot_file, dpi=300, bbox_inches='tight')
+            print(f"   💾 Saved plot {i+1}: {plot_file}")
+        
+        plt.close('all')  # Close all figures to free memory
+        print("   ✅ All plots saved and closed")
+    else:
+        print("   ⚠️  No plots found to save")
+
+def analyze_calcification_by_vessel_location(all_epoch_metrics, epoch_nums):
+    """
+    Analyze calcification metrics by anatomical vessel location.
+    
+    Args:
+        all_epoch_metrics (dict): Dictionary of epoch metrics
+        epoch_nums (list): List of epoch numbers
+    
+    Returns:
+        dict: Results of vessel location analysis
+    """
+    print("\n" + "="*80)
+    print("🫀 CALCIFICATION ANALYSIS BY VESSEL LOCATION")
+    print("="*80)
+    
+    if not all_epoch_metrics or not epoch_nums:
+        print("❌ No calcification data available for vessel analysis")
+        return {}
+    
+    # Get all calcification metrics from first epoch
+    epoch_key = f"epoch_{epoch_nums[0]}"
+    if epoch_key not in all_epoch_metrics:
+        print("❌ No metrics found for first epoch")
+        return {}
+    
+    calcif_metrics = all_epoch_metrics[epoch_key].get('calcification', {}).get('accuracy', {})
+    all_calcif_metrics = set(calcif_metrics.keys())
+    
+    # Define vessel location groups
+    vessel_groups = {
+        'Left Main': ['left_main_calcif'],
+        'LAD System': ['prox_lad_calcif', 'mid_lad_calcif', 'dist_lad_calcif', 'D1_calcif', 'D2_calcif'],
+        'LCX System': ['prox_lcx_calcif', 'dist_lcx_calcif', 'lvp_calcif', 'om1_calcif', 'om2_calcif'],
+        'RCA System': ['prox_rca_calcif', 'mid_rca_calcif', 'dist_rca_calcif', 'pda_calcif', 'posterolateral_calcif'],
+        'Other': ['bx_calcif']
+    }
+    
+    # Organize metrics by vessel groups
+    grouped_metrics = {group: [] for group in vessel_groups}
+    unmatched_metrics = []
+    
+    for metric in all_calcif_metrics:
+        matched = False
+        for group, patterns in vessel_groups.items():
+            if metric in patterns:
+                grouped_metrics[group].append(metric)
+                matched = True
+                break
+        
+        if not matched:
+            unmatched_metrics.append(metric)
+    
+    print(f"\n📊 Vessel Location Analysis:")
+    total_matched = 0
+    for group, metrics in grouped_metrics.items():
+        if metrics:
+            print(f"   {group}: {len(metrics)} metrics")
+            for metric in metrics:
+                print(f"      • {metric}")
+            total_matched += len(metrics)
+    
+    if unmatched_metrics:
+        print(f"   Unmatched: {len(unmatched_metrics)} metrics")
+        for metric in unmatched_metrics:
+            print(f"      • {metric}")
+    
+    print(f"\n📈 Matched {total_matched}/{len(all_calcif_metrics)} metrics to vessel locations")
+    
+    # Create vessel location visualization
+    if total_matched > 0:
+        plot_calcification_by_vessel_location_trends(all_epoch_metrics, epoch_nums, grouped_metrics)
+    
+    return {
+        'grouped_metrics': grouped_metrics,
+        'unmatched_metrics': unmatched_metrics,
+        'total_matched': total_matched,
+        'all_calcif_metrics': all_calcif_metrics
+    }
+
+def plot_calcification_by_vessel_location_trends(all_epoch_metrics, epoch_nums, grouped_metrics):
+    """
+    Create visualization plots for calcification metrics organized by vessel location.
+    
+    Args:
+        all_epoch_metrics (dict): Dictionary of epoch metrics
+        epoch_nums (list): List of epoch numbers
+        grouped_metrics (dict): Dictionary mapping vessel groups to metric names
+    """
+    print("🎨 Creating calcification by vessel location visualizations...")
+    
+    # Create figure with subplots
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    fig.suptitle('Calcification Accuracy by Vessel Location', fontsize=16, fontweight='bold')
+    
+    # Define colors for each vessel group
+    group_colors = {
+        'Left Main': '#8B0000',     # Dark Red
+        'LAD System': '#FF6347',    # Tomato  
+        'LCX System': '#32CD32',    # Lime Green
+        'RCA System': '#4169E1',    # Royal Blue
+        'Other': '#9370DB'          # Medium Purple
+    }
+    
+    # Plot 1: Vessel group trends over epochs
+    ax1 = axes[0, 0]
+    
+    for group, metrics in grouped_metrics.items():
+        if not metrics:
+            continue
+            
+        group_means = []
+        valid_epochs = []
+        
+        for epoch in epoch_nums:
+            epoch_key = f"epoch_{epoch}"
+            if epoch_key in all_epoch_metrics:
+                calcif_metrics = all_epoch_metrics[epoch_key].get('calcification', {}).get('accuracy', {})
+                
+                # Calculate mean for this vessel group at this epoch
+                group_values = []
+                for metric in metrics:
+                    if metric in calcif_metrics:
+                        value = calcif_metrics[metric]
+                        if not np.isnan(value):
+                            group_values.append(value)
+                
+                if group_values:
+                    group_means.append(np.mean(group_values))
+                    valid_epochs.append(epoch)
+        
+        if group_means:
+            ax1.plot(valid_epochs, group_means, 'o-', 
+                    label=f'{group} ({len(metrics)} vessels)', 
+                    color=group_colors.get(group, 'gray'),
+                    linewidth=2, markersize=6)
+    
+    ax1.set_title('Average Accuracy by Vessel Location', fontweight='bold')
+    ax1.set_xlabel('Epoch')
+    ax1.set_ylabel('Average Accuracy')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # Plot 2: Box plot of latest epoch values by vessel group
+    ax2 = axes[0, 1]
+    
+    latest_epoch_key = f"epoch_{epoch_nums[-1]}"
+    if latest_epoch_key in all_epoch_metrics:
+        calcif_metrics = all_epoch_metrics[latest_epoch_key].get('calcification', {}).get('accuracy', {})
+        
+        box_data = []
+        box_labels = []
+        
+        for group, metrics in grouped_metrics.items():
+            if not metrics:
+                continue
+                
+            group_values = []
+            for metric in metrics:
+                if metric in calcif_metrics:
+                    value = calcif_metrics[metric]
+                    if not np.isnan(value):
+                        group_values.append(value)
+            
+            if group_values:
+                box_data.append(group_values)
+                box_labels.append(f'{group}\n({len(group_values)} vessels)')
+        
+        if box_data:
+            bp = ax2.boxplot(box_data, labels=box_labels, patch_artist=True)
+            
+            # Color the boxes
+            for patch, group in zip(bp['boxes'], [g for g in grouped_metrics.keys() if grouped_metrics[g]]):
+                patch.set_facecolor(group_colors.get(group, 'gray'))
+                patch.set_alpha(0.7)
+    
+    ax2.set_title(f'Accuracy Distribution by Vessel Location (Epoch {epoch_nums[-1]})', fontweight='bold')
+    ax2.set_ylabel('Accuracy')
+    ax2.grid(True, alpha=0.3)
+    
+    # Plot 3: Individual vessel trends for LAD system (usually has most vessels)
+    ax3 = axes[1, 0]
+    
+    lad_metrics = grouped_metrics.get('LAD System', [])
+    if lad_metrics:
+        for metric in lad_metrics[:5]:  # Show top 5 metrics to avoid clutter
+            metric_values = []
+            valid_epochs = []
+            
+            for epoch in epoch_nums:
+                epoch_key = f"epoch_{epoch}"
+                if epoch_key in all_epoch_metrics:
+                    calcif_metrics = all_epoch_metrics[epoch_key].get('calcification', {}).get('accuracy', {})
+                    
+                    if metric in calcif_metrics:
+                        value = calcif_metrics[metric]
+                        if not np.isnan(value):
+                            metric_values.append(value)
+                            valid_epochs.append(epoch)
+            
+            if metric_values:
+                ax3.plot(valid_epochs, metric_values, 'o-', 
+                        label=metric.replace('_calcif', '').replace('_', ' ').title(),
+                        linewidth=1.5, markersize=4)
+    
+    ax3.set_title('Individual LAD System Vessel Metrics', fontweight='bold')
+    ax3.set_xlabel('Epoch')
+    ax3.set_ylabel('Accuracy') 
+    ax3.legend()
+    ax3.grid(True, alpha=0.3)
+    
+    # Plot 4: Summary statistics table
+    ax4 = axes[1, 1]
+    ax4.axis('off')
+    
+    # Create summary statistics
+    latest_epoch_key = f"epoch_{epoch_nums[-1]}"
+    if latest_epoch_key in all_epoch_metrics:
+        calcif_metrics = all_epoch_metrics[latest_epoch_key].get('calcification', {}).get('accuracy', {})
+        
+        summary_data = []
+        for group, metrics in grouped_metrics.items():
+            if not metrics:
+                continue
+                
+            group_values = []
+            for metric in metrics:
+                if metric in calcif_metrics:
+                    value = calcif_metrics[metric]
+                    if not np.isnan(value):
+                        group_values.append(value)
+            
+            if group_values:
+                summary_data.append([
+                    group,
+                    len(group_values),
+                    f"{np.mean(group_values):.3f}",
+                    f"{np.std(group_values):.3f}",
+                    f"{np.min(group_values):.3f}",
+                    f"{np.max(group_values):.3f}"
+                ])
+        
+        if summary_data:
+            table = ax4.table(cellText=summary_data,
+                            colLabels=['Vessel Group', 'Count', 'Mean', 'Std', 'Min', 'Max'],
+                            cellLoc='center',
+                            loc='center')
+            table.auto_set_font_size(False)
+            table.set_fontsize(10)
+            table.scale(1, 1.5)
+            
+            # Color the rows based on vessel group
+            for i, (group, _) in enumerate([(row[0], row) for row in summary_data]):
+                if group in group_colors:
+                    for j in range(6):
+                        table[(i+1, j)].set_facecolor(group_colors[group])
+                        table[(i+1, j)].set_alpha(0.3)
+    
+    ax4.set_title('Summary Statistics (Latest Epoch)', fontweight='bold', pad=20)
+    
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    
+    # Save the plot instead of showing it
+    import matplotlib
+    if matplotlib.get_backend() == 'Agg':
+        # We're in non-interactive mode, don't try to show
+        pass
+    else:
+        plt.show()
+    
+    print("✅ Calcification by vessel location visualizations created!")

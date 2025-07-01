@@ -309,16 +309,17 @@ class LinearProbingProject(BaseProject):
             "output_dir": self.config.output_dir if self.config.is_ref_device else None,
         }            
         
-
-    def _setup_inference_objects(
-        self
-    ) -> dict[str, Any]:
+    def _setup_inference_objects(self) -> dict[str, Any]:
+        raise NotImplementedError("Inference mode is not implemented for linear probing")
+    
+    def _setup_validation_objects(self) -> dict[str, Any]:
+        """Setup objects for model validation/evaluation."""
         # Calculate dataset statistics
         mean, std = calculate_dataset_statistics_ddp(self.config)        
         
         val_loader: DataLoader = get_distributed_video_dataloader(
             config=self.config, 
-            split="val", 
+            split=self.config.run_mode, 
             mean=mean.tolist(),
             std=std.tolist(),
             shuffle=False,
@@ -330,6 +331,8 @@ class LinearProbingProject(BaseProject):
             num_videos=self.config.num_videos,
             shuffle_videos=False,  # Don't shuffle validation videos
         )   
+        
+        print(f"len(val_loader): {len(val_loader)}")
         
         # Initialize video encoder backbone for linear probing
         video_encoder: VideoEncoder = ModelRegistry.get("video_encoder")(
@@ -402,8 +405,8 @@ class LinearProbingProject(BaseProject):
         
         if self.config.run_mode == RunMode.TRAIN:
             runner_args.update(self._setup_training_objects())
-        elif self.config.run_mode == RunMode.INFERENCE:
-            runner_args.update(self._setup_inference_objects())
+        elif self.config.run_mode == RunMode.VALIDATE:
+            runner_args.update(self._setup_validation_objects())
         
         # Create runner instance
         runner: Runner = RunnerRegistry.get(
@@ -413,6 +416,8 @@ class LinearProbingProject(BaseProject):
         # Train the model
         if self.config.run_mode == RunMode.TRAIN:
             runner.train(start_epoch=0, end_epoch=self.config.epochs)
+        elif self.config.run_mode == RunMode.VALIDATE:
+            runner.validate()
         elif self.config.run_mode == RunMode.INFERENCE:
             runner.inference()
 

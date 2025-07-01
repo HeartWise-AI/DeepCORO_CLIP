@@ -91,3 +91,7 @@ class LinearProbingConfig(HeartWiseConfig):
     
     # Inference path
     inference_model_path: str = ""
+
+    # Confidence interval settings
+    ci_confidence_level: float = 0.95  # 95% confidence interval
+    ci_n_bootstrap: int = 1000  # Number of bootstrap samples

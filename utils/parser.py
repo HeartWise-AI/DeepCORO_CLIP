@@ -243,8 +243,8 @@ class LinearProbingParser(BaseParser):
         # Update config with known arguments provided via command line
         config = HeartWiseConfig.update_config_with_args(config, args)
 
-        print(f"Initial config after known args: {config}")
-        print(f"Unknown arguments received: {unknown}")
+        # print(f"Initial config after known args: {config}")
+        # print(f"Unknown arguments received: {unknown}")
 
         # Handle unknown arguments
         unsupported_unknown_args = []

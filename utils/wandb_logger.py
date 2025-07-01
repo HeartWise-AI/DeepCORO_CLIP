@@ -907,9 +907,11 @@ def save_retrieval_results(
         writer.writerow(header_prefix + header_base)
 
         for i, identifier in enumerate(all_identifiers):
-            top_5_sim_scores, top_5_text_indices = torch.topk(similarity_matrix[i], k=5)
-            predicted_indices = [idx.item() for idx in top_5_text_indices]
-            predicted_sims = [score.item() for score in top_5_sim_scores]
+            # Use the minimum of 5 and the actual number of samples available
+            k = min(5, similarity_matrix.shape[1])
+            top_k_sim_scores, top_k_text_indices = torch.topk(similarity_matrix[i], k=k)
+            predicted_indices = [idx.item() for idx in top_k_text_indices]
+            predicted_sims = [score.item() for score in top_k_sim_scores]
 
             gt_text = all_ground_truth_reports[i]
 

@@ -419,8 +419,7 @@ class LinearProbingRunner:
         with torch.amp.autocast('cuda', enabled=self.config.use_amp):
             try:
                 outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
-                    batch_video, 
-                    video_indices=video_indices
+                    batch_video
                 )
             except Exception as e:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")
@@ -486,8 +485,7 @@ class LinearProbingRunner:
         with torch.no_grad():
             try:
                 outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
-                    batch_video,
-                    video_indices=video_indices
+                    batch_video
                 )
             except Exception as e:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")

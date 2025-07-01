@@ -87,7 +87,12 @@ class TestLinearProbing(unittest.TestCase):
             name="test_run",
             project="test_project",
             entity="test_entity",
+            tag="test_tag",
             use_wandb=False,
+            device=0,
+            world_size=1,
+            is_ref_device=True,
+            output_dir=self.temp_dir,
             
             # Training parameters
             head_lr={
@@ -111,6 +116,8 @@ class TestLinearProbing(unittest.TestCase):
             num_warmup_percent=0.1,
             num_hard_restarts_cycles=1.0,
             warm_restart_tmult=2,
+            video_encoder_weight_decay=0.0,
+            video_encoder_lr=0.0005,
             
             # Dataset parameters
             data_filename="test_data.csv",
@@ -129,7 +136,6 @@ class TestLinearProbing(unittest.TestCase):
             stride=1,
             
             # Video Encoder parameters
-            video_encoder_weight_decay=0.0,
             model_name="resnet50",
             aggregator_depth=1,
             num_heads=1,
@@ -137,7 +143,6 @@ class TestLinearProbing(unittest.TestCase):
             dropout=0.1,
             pretrained=True,
             video_encoder_checkpoint_path="",
-            video_encoder_lr=0.0005,
             
             # Linear Probing parameters
             head_linear_probing={
@@ -189,11 +194,33 @@ class TestLinearProbing(unittest.TestCase):
                 },
                 "stent_presence": {"no": 0, "yes": 1},
                 "ejection_fraction": {"absent": 0, "present": 1}
-            }
+            },
+            
+            # Multi-Instance Learning parameters
+            multi_video=False,
+            groupby_column="StudyInstanceUID",
+            num_videos=1,
+            shuffle_videos=True,
+            pooling_mode="mean",
+            attention_hidden=128,
+            dropout_attention=0.0,
+            attention_lr=1e-4,
+            attention_weight_decay=0.0,
+            
+            # CLS Token parameters
+            use_cls_token=False,
+            num_attention_heads=8,
+            separate_video_attention=True,
+            normalization_strategy="post_norm",
+            attention_within_lr=1e-3,
+            attention_across_lr=1e-3,
+            attention_within_weight_decay=1e-5,
+            attention_across_weight_decay=1e-5,
+            
+            # Aggregation parameters
+            aggregate_videos_tokens=True,
+            per_video_pool=False
         )
-        
-        # Set GPU info after initialization
-        HeartWiseConfig.set_gpu_info_in_place(self.config)
         
         # Create mock wandb wrapper
         self.wandb_wrapper = MockWandbWrapper()
@@ -207,6 +234,11 @@ class TestLinearProbing(unittest.TestCase):
             dropout=0.1,
             freeze_backbone_ratio=0.0
         )
+        
+        # Move models to the correct device
+        if self.config.device != "cpu":
+            self.video_encoder = self.video_encoder.to(self.config.device)
+            self.linear_probing = self.linear_probing.to(self.config.device)
         
         # Create dummy datasets
         self.train_dataset = DummyDataset(num_samples=10)
@@ -261,8 +293,8 @@ class TestLinearProbing(unittest.TestCase):
     def test_val_step(self):
         """Test if validation step runs without errors."""
         batch = next(iter(self.val_loader))
-        batch_video = batch["videos"].unsqueeze(1)
-        batch_targets = batch["targets"]
+        batch_video = batch["videos"].unsqueeze(1).to(self.config.device)  # Move to device
+        batch_targets = {k: v.to(self.config.device) for k, v in batch["targets"].items()}  # Move targets to device
         outputs = self.runner._val_step(
             batch_video=batch_video, 
             batch_targets=batch_targets
@@ -376,7 +408,7 @@ class TestLinearProbing(unittest.TestCase):
         processed = self.runner._preprocess_inputs(batch)
         self.assertIn("batch_video", processed)
         self.assertIn("batch_targets", processed)
-        self.assertEqual(processed["batch_video"].shape, (2, 1, 16, 224, 224, 3))
+        self.assertEqual(processed["batch_video"].shape, (2, 16, 224, 224, 3))
                 
     def test_validation_with_scheduler(self):
         """Test validation with scheduler."""

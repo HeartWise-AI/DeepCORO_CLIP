@@ -17,7 +17,7 @@ print_usage() {
     echo "Arguments:"
     echo "  --selected_gpus  Comma-separated list of GPU IDs to use"
     echo "  --base_config    Path to the base configuration file"
-    echo "  --run_mode       Run mode to use (supported: train, inference)"
+    echo "  --run_mode       Run mode to use (supported: train, val, inference)"
     echo "  --use_wandb      Use W&B for logging (true/false)"
     echo "  --help, -h       Display this help message"
     exit 1
@@ -71,7 +71,7 @@ if [ ! -f "$CONFIG_PATH" ]; then
 fi
 
 # Check if run_mode is supported
-if [ "$RUN_MODE" != "train" ] && [ "$RUN_MODE" != "inference" ]; then
+if [ "$RUN_MODE" != "train" ] && [ "$RUN_MODE" != "val" ] && [ "$RUN_MODE" != "inference" ]; then
     echo -e "${RED}Error: Unsupported run mode: $RUN_MODE${NC}"
     print_usage
 fi

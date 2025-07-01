@@ -39,16 +39,16 @@ class LinearProbingRunner:
 
     def __init__(
         self,
-        config: LinearProbingConfig,
-        wandb_wrapper: WandbWrapper,
-        train_loader: DataLoader,
-        val_loader: DataLoader,
-        linear_probing: LinearProbing,
-        optimizer: Optimizer,
-        scaler: GradScaler,
-        lr_scheduler: LRScheduler,
         loss_fn: Loss,
         output_dir: str,
+        val_loader: DataLoader,
+        config: LinearProbingConfig,
+        wandb_wrapper: WandbWrapper,
+        linear_probing: LinearProbing,
+        scaler: Optional[GradScaler] = None,
+        optimizer: Optional[Optimizer] = None,
+        train_loader: Optional[DataLoader] = None,
+        lr_scheduler: Optional[LRScheduler] = None
     ):
         """
         Initialize the runner with provided configurations, data loaders, and modules.

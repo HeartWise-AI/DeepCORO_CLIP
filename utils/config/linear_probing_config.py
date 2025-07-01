@@ -88,3 +88,6 @@ class LinearProbingConfig(HeartWiseConfig):
     # Aggregation parameters
     aggregate_videos_tokens: bool = True # Whether to apply internal aggregator in VideoEncoder
     per_video_pool: bool = False # Whether to mean-pool patch tokens inside each video when aggregator disabled
+    
+    # Inference path
+    inference_model_path: str = ""

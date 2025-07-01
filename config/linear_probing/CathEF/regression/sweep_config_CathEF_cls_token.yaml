@@ -48,7 +48,7 @@ parameters:
   aggregate_videos_tokens:
     values: [false]
   batch_size:
-    values: [4, 6, 8]  # Smaller batches for hybrid pooling
+    values: [6, 8, 10]  # Smaller batches for hybrid pooling
   dropout:
     distribution: uniform
     min: 0.05

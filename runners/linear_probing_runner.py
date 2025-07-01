@@ -309,11 +309,17 @@ class LinearProbingRunner:
                 epoch_metrics[f"{mode}/{k}"] = v
 
         # Compute AUC metrics for each head
+        final_preds = {}
+        final_targets = {}
         if mode == RunMode.TRAIN or mode == RunMode.VALIDATION:
             for head in accumulated_preds.keys():
                 # Gather accumulated predictions and targets for each head
                 preds = torch.cat(accumulated_preds[head], dim=0)
                 targets = torch.cat(accumulated_targets[head], dim=0)
+                
+                # Store final predictions and targets for saving later
+                final_preds[head] = preds
+                final_targets[head] = targets
                 
                 if self.config.head_task[head] == MetricTask.CLASSIFICATION:                
                     # Compute metrics using the helper function
@@ -353,11 +359,15 @@ class LinearProbingRunner:
 
         # Save predictions for validation mode
         if mode == RunMode.VALIDATION and self.config.is_ref_device:
+            # Use final_preds and final_targets if available, otherwise use accumulated
+            preds_to_save = final_preds if 'final_preds' in locals() and final_preds else accumulated_preds
+            targets_to_save = final_targets if 'final_targets' in locals() and final_targets else accumulated_targets
+            
             self._save_predictions(
                 mode=mode,
                 accumulated_names=accumulated_names,
-                accumulated_preds=accumulated_preds,
-                accumulated_targets=accumulated_targets,
+                accumulated_preds=preds_to_save,
+                accumulated_targets=targets_to_save,
                 epoch=epoch
             )
 
@@ -617,7 +627,13 @@ class LinearProbingRunner:
             # Debug array lengths
             print(f"[DEBUG] rank={self.device} => Number of accumulated names: {len(accumulated_names)}")
             for head in accumulated_preds.keys():
-                print(f"[DEBUG] rank={self.device} => Head {head} - Predictions shape: {accumulated_preds[head][0].shape}, Targets shape: {accumulated_targets[head][0].shape}")
+                if isinstance(accumulated_preds[head], list):
+                    pred_shape = accumulated_preds[head][0].shape
+                    target_shape = accumulated_targets[head][0].shape
+                else:
+                    pred_shape = accumulated_preds[head].shape
+                    target_shape = accumulated_targets[head].shape
+                print(f"[DEBUG] rank={self.device} => Head {head} - Predictions shape: {pred_shape}, Targets shape: {target_shape}")
 
             # Create predictions dictionary with epoch column
             predictions_dict: dict[str, list] = {
@@ -627,8 +643,16 @@ class LinearProbingRunner:
             
             # Add predictions and ground truth for each head
             for head in accumulated_preds.keys():
-                preds: np.ndarray = accumulated_preds[head][0].squeeze().detach().cpu().float().numpy()
-                targets: np.ndarray = accumulated_targets[head][0].squeeze().detach().cpu().float().numpy()
+                # Handle both tensor and list of tensors format
+                if isinstance(accumulated_preds[head], list):
+                    preds_tensor = accumulated_preds[head][0]
+                    targets_tensor = accumulated_targets[head][0]
+                else:
+                    preds_tensor = accumulated_preds[head]
+                    targets_tensor = accumulated_targets[head]
+                    
+                preds: np.ndarray = preds_tensor.squeeze().detach().cpu().float().numpy()
+                targets: np.ndarray = targets_tensor.squeeze().detach().cpu().float().numpy()
                 
                 # Debug shapes after conversion
                 print(f"[DEBUG] rank={self.device} => Head {head} - After conversion - Preds shape: {preds.shape}, Targets shape: {targets.shape}")
@@ -694,8 +718,12 @@ class LinearProbingRunner:
             print(f"[DEBUG] rank={self.device} => Accumulated names length: {len(accumulated_names)}")
             for head in accumulated_preds.keys():
                 print(f"[DEBUG] rank={self.device} => Head {head} - Final shapes:")
-                print(f"[DEBUG] rank={self.device} =>   Predictions: {accumulated_preds[head][0].shape}")
-                print(f"[DEBUG] rank={self.device} =>   Targets: {accumulated_targets[head][0].shape}")
+                if isinstance(accumulated_preds[head], list):
+                    print(f"[DEBUG] rank={self.device} =>   Predictions: {accumulated_preds[head][0].shape}")
+                    print(f"[DEBUG] rank={self.device} =>   Targets: {accumulated_targets[head][0].shape}")
+                else:
+                    print(f"[DEBUG] rank={self.device} =>   Predictions: {accumulated_preds[head].shape}")
+                    print(f"[DEBUG] rank={self.device} =>   Targets: {accumulated_targets[head].shape}")
             if 'predictions_dict' in locals():
                 print(f"[DEBUG] rank={self.device} => Predictions dictionary keys and lengths:")
                 for k, v in predictions_dict.items():

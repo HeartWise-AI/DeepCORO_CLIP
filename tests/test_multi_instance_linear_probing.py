@@ -415,6 +415,90 @@ class TestMultiInstanceLinearProbing(unittest.TestCase):
         for head_name in self.head_structure.keys():
             self.assertTrue(torch.allclose(outputs1[head_name], outputs2[head_name]))
 
+    def test_hierarchical_cls_token_all_videos_masked(self):
+        """Test hierarchical CLS token pooling when all videos are masked."""
+        model = MultiInstanceLinearProbing(
+            embedding_dim=self.embedding_dim,
+            head_structure={"test_head": 1},
+            pooling_mode="cls_token",
+            separate_video_attention=True
+        )
+        
+        # Create 4D input to trigger hierarchical processing
+        x = torch.randn(self.batch_size, self.num_instances, self.num_patches, self.embedding_dim)
+        
+        # Create mask where all videos are masked (False)
+        mask = torch.zeros(self.batch_size, self.num_instances, dtype=torch.bool)
+        
+        with torch.no_grad():
+            # Test the _hierarchical_cls_token_pooling method directly to cover the fallback code
+            pooled = model._hierarchical_cls_token_pooling(x, mask)
+            
+        # Should return zero tensors when all videos are masked
+        self.assertEqual(pooled.shape, (self.batch_size, self.embedding_dim))
+        self.assertTrue(torch.allclose(pooled, torch.zeros_like(pooled)))
+    
+    def test_standard_cls_token_all_instances_masked(self):
+        """Test standard CLS token pooling when all instances are masked."""
+        model = MultiInstanceLinearProbing(
+            embedding_dim=self.embedding_dim,
+            head_structure={"test_head": 1},
+            pooling_mode="cls_token",
+            separate_video_attention=True
+        )
+        
+        # Create 3D input
+        x = torch.randn(self.batch_size, self.num_instances, self.embedding_dim)
+        
+        # Create mask where all instances are masked (False)
+        mask = torch.zeros(self.batch_size, self.num_instances, dtype=torch.bool)
+        
+        with torch.no_grad():
+            # Test the _standard_cls_token_pooling method directly to cover the fallback code
+            pooled = model._standard_cls_token_pooling(x, mask)
+            
+        # Should return zero tensors when all instances are masked
+        self.assertEqual(pooled.shape, (self.batch_size, self.embedding_dim))
+        self.assertTrue(torch.allclose(pooled, torch.zeros_like(pooled)))
+
+    def test_hierarchical_attention_pooling_4d(self):
+        """Test hierarchical attention pooling with 4D inputs."""
+        model = MultiInstanceLinearProbing(
+            embedding_dim=self.embedding_dim,
+            head_structure={"test_head": 1},
+            pooling_mode="attention"
+        )
+        
+        # Create 4D input to trigger hierarchical attention pooling
+        x = torch.randn(self.batch_size, self.num_instances, self.num_patches, self.embedding_dim)
+        mask = torch.ones(self.batch_size, self.num_instances, dtype=torch.bool)
+        
+        with torch.no_grad():
+            outputs = model(x, mask)
+            
+        self.assertEqual(outputs["test_head"].shape, (self.batch_size, 1))
+        
+    def test_hybrid_pooling_modes_comprehensive(self):
+        """Test hybrid pooling modes comprehensively."""
+        # Test valid hybrid modes
+        hybrid_modes = ["mean+cls_token", "attention+cls_token"]
+        
+        for mode in hybrid_modes:
+            with self.subTest(pooling_mode=mode):
+                model = MultiInstanceLinearProbing(
+                    embedding_dim=self.embedding_dim,
+                    head_structure={"test_head": 1},
+                    pooling_mode=mode
+                )
+                
+                x = torch.randn(self.batch_size, self.num_instances, self.embedding_dim)
+                mask = torch.ones(self.batch_size, self.num_instances, dtype=torch.bool)
+                
+                with torch.no_grad():
+                    outputs = model(x, mask)
+                    
+                self.assertEqual(outputs["test_head"].shape, (self.batch_size, 1))
+
 
 if __name__ == '__main__':
     unittest.main() 

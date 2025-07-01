@@ -1,23 +1,36 @@
 import os
 import torch
+import torch.nn as nn
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-from typing import Optional
+from typing import Optional, Union, Dict, Tuple, Any
 
 from tqdm import tqdm
 from scipy.stats import pearsonr
 from torch.optim import Optimizer
-from torch.cuda.amp import GradScaler
+from torch.amp.grad_scaler import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
+from torch.nn.parallel import DistributedDataParallel as DDP
 from collections import defaultdict
 from sklearn.metrics import (
     roc_auc_score, 
     average_precision_score, 
-    confusion_matrix
+    confusion_matrix,
+    precision_recall_fscore_support,
+    accuracy_score,
+    mean_squared_error,
+    r2_score,
+    mean_absolute_error
 )
+from sklearn.preprocessing import label_binarize
+from sklearn.metrics import roc_curve, auc
+import wandb
+import warnings
+import torch.nn.functional as F
+
 from utils.loss.typing import Loss
 from utils.ddp import DistributedUtils
 from utils.registry import RunnerRegistry
@@ -26,7 +39,6 @@ from utils.wandb_wrapper import WandbWrapper
 from utils.metrics import compute_best_threshold
 from utils.loss.losses import LossRegistry, LossType
 from utils.config.linear_probing_config import LinearProbingConfig
-from models.linear_probing import LinearProbing
 
 
 @RunnerRegistry.register("DeepCORO_video_linear_probing")
@@ -43,7 +55,7 @@ class LinearProbingRunner:
         wandb_wrapper: WandbWrapper,
         train_loader: DataLoader,
         val_loader: DataLoader,
-        linear_probing: LinearProbing,
+        linear_probing,  # VideoMILWrapper - avoiding circular import
         optimizer: Optimizer,
         scaler: GradScaler,
         lr_scheduler: LRScheduler,
@@ -70,7 +82,7 @@ class LinearProbingRunner:
         self.device: int = config.device
         self.train_loader: DataLoader = train_loader
         self.val_loader: DataLoader = val_loader
-        self.linear_probing: LinearProbing = linear_probing
+        self.linear_probing = linear_probing  # VideoMILWrapper
         self.optimizer: Optimizer = optimizer
         self.scaler: GradScaler = scaler
         self.lr_scheduler: LRScheduler = lr_scheduler

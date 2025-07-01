@@ -432,8 +432,13 @@ class MultiInstanceLinearProbing(nn.Module):
                 
         key_padding_mask = ~extended_mask
         
-        attention_layer = self.cls_attention
-        norm_layer = self.cls_norm
+        # Choose the appropriate attention layer based on configuration
+        if self.separate_video_attention:
+            attention_layer = self.cls_attention_across  # Use across-video attention for standard case
+            norm_layer = self.cls_norm_across
+        else:
+            attention_layer = self.cls_attention
+            norm_layer = self.cls_norm
         
         if self.normalization_strategy == "pre_norm":
             x_with_cls = norm_layer(x_with_cls)

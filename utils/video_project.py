@@ -25,6 +25,9 @@ def calculate_dataset_statistics_ddp(config: HeartWiseConfig) -> Tuple[torch.Ten
         stats_loader: DataLoader = get_stats_dataloader(config)
         
         print(f"Frame count per video: {config.frames}")
+        print(f"Number of videos: {len(stats_loader)}")
+        
+        assert len(stats_loader) > 0, f"No videos found in the dataset for mode {config.run_mode}"
         
         mean_sum, squared_sum, pixel_count = 0.0, 0.0, 0
         for batch in tqdm(stats_loader, desc="Calculating statistics"):

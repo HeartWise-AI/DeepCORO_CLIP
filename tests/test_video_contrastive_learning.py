@@ -246,7 +246,7 @@ class TestVideoContrastiveLearning(unittest.TestCase):
     def test_full_epoch(self, mock_log):
         """Test if full training epoch runs without errors."""
         train_metrics = self.runner._run_epoch(mode=RunMode.TRAIN, epoch=0)
-        val_metrics = self.runner._run_epoch(mode=RunMode.VALIDATION, epoch=0)
+        val_metrics = self.runner._run_epoch(mode=RunMode.VALIDATE, epoch=0)
         
         # Check that both return dictionaries with expected metrics
         self.assertIsInstance(train_metrics, dict)

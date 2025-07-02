@@ -16,6 +16,7 @@ class TestVideoProject(unittest.TestCase):
         self.mock_config.is_ref_device = True
         self.mock_config.frames = 16
         self.mock_config.device = 0
+        self.mock_config.run_mode = 'test'
         
         # Create sample data for testing
         self.sample_batch = torch.ones((2, 16, 224, 224, 3), dtype=torch.float32)
@@ -36,6 +37,9 @@ class TestVideoProject(unittest.TestCase):
         batch1 = torch.ones((2, 16, 224, 224, 3)) * 0.5  # Mean = 0.5
         batch2 = torch.ones((2, 16, 224, 224, 3))        # Mean = 1.0
         mock_dataloader.__iter__.return_value = [batch1, batch2]
+        
+        # Mock the length of the dataloader to return 2 (number of batches)
+        mock_dataloader.__len__.return_value = 2
         
         # Mock tqdm to pass through the iterable
         mock_tqdm.return_value = [batch1, batch2]
@@ -92,6 +96,10 @@ class TestVideoProject(unittest.TestCase):
         batch2 = torch.ones((2, 16, 224, 224, 3))
         mock_dataloader = MagicMock()
         mock_dataloader.__iter__.return_value = [batch1, batch2]
+        
+        # Mock the length of the dataloader to return 2 (number of batches)
+        mock_dataloader.__len__.return_value = 2
+        
         mock_get_stats_dataloader.return_value = mock_dataloader
         
         # Mock tqdm to pass through the iterable

@@ -84,3 +84,10 @@ class ClipConfig(HeartWiseConfig):
     # Device and distributed info are now inherited from HeartWiseConfig
     # No local definition of device, world_size, is_ref_device, 
     # __post_init__ for device setup, or set_gpu_info_in_place needed here.
+
+    def __post_init__(self):
+        # Set default values for list fields
+        if self.recall_k is None:
+            self.recall_k = [1, 5]
+        if self.ndcg_k is None:
+            self.ndcg_k = [5]

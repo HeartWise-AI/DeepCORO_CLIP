@@ -8,7 +8,6 @@ import itertools
 
 from runners.typing import Runner
 from models.video_encoder import VideoEncoder
-from models.linear_probing import LinearProbing
 from models.multi_instance_linear_probing import MultiInstanceLinearProbing
 from projects.base_project import BaseProject
 from utils.registry import (
@@ -192,6 +191,7 @@ class LinearProbingProject(BaseProject):
             video_encoder.eval() # Set to eval mode if fully frozen
 
         # Initialize Multi-Instance Linear Probing model
+        print(f"Initializing Multi-Instance Linear Probing model with pooling mode: {self.config.pooling_mode}")
         mil_model: MultiInstanceLinearProbing = ModelRegistry.get("multi_instance_linear_probing")(
             embedding_dim=embedding_dim, 
             head_structure=self.config.head_structure,

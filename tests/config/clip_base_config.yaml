@@ -20,6 +20,8 @@ num_videos: !!int 2
 groupby_column: !!str group_id
 shuffle_videos: !!bool true
 batch_size: !!int 2
+aggregate_videos_tokens: !!bool true
+per_video_pool: !!bool false
 # Seed
 seed: !!int 42
 # Model parameters

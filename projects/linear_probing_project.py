@@ -136,7 +136,7 @@ class LinearProbingProject(BaseProject):
         # Get dataloaders with multi-video parameters
         train_loader: DataLoader = get_distributed_video_dataloader(
             config=self.config, 
-            split="train", 
+            split=RunMode.TRAIN, 
             mean=mean.tolist(),
             std=std.tolist(),
             shuffle=True,
@@ -150,7 +150,7 @@ class LinearProbingProject(BaseProject):
         )
         val_loader: DataLoader = get_distributed_video_dataloader(
             config=self.config, 
-            split="val", 
+            split=RunMode.VALIDATE, 
             mean=mean.tolist(),
             std=std.tolist(),
             shuffle=False,
@@ -175,12 +175,12 @@ class LinearProbingProject(BaseProject):
             aggregate_videos_tokens=self.config.aggregate_videos_tokens,
             per_video_pool=self.config.per_video_pool,
         )        
-
+        
         # Get embedding dimension from encoder
         embedding_dim = video_encoder.embedding_dim
 
-        # Load video encoder checkpoint
-        video_encoder = video_encoder.to(self.config.device).float()        
+        # Load video encoder checkpoint 
+        video_encoder = video_encoder.to(self.config.device).float()
         checkpoint: Dict[str, Any] = self._load_checkpoint(self.config.video_encoder_checkpoint_path)       
         video_encoder.load_state_dict(checkpoint["video_encoder"])
 
@@ -189,9 +189,6 @@ class LinearProbingProject(BaseProject):
             for param in video_encoder.parameters():
                 param.requires_grad = False
             video_encoder.eval() # Set to eval mode if fully frozen
-        elif self.config.video_freeze_ratio > 0:
-             # Partial freezing logic might be needed here if supported by VideoEncoder
-             pass # Assuming freeze_ratio in VideoEncoder init handles partial freezing
 
         # Initialize Multi-Instance Linear Probing model
         print(f"Initializing Multi-Instance Linear Probing model with pooling mode: {self.config.pooling_mode}")
@@ -203,7 +200,7 @@ class LinearProbingProject(BaseProject):
             dropout=self.config.dropout_attention, 
         )
         mil_model = mil_model.to(self.config.device).float()
-
+        
         # Distribute MIL model
         mil_model = DistributedUtils.DDP(
             mil_model, 
@@ -212,7 +209,7 @@ class LinearProbingProject(BaseProject):
         
         # Wrap both models
         linear_probing = VideoMILWrapper(video_encoder, mil_model, self.config.num_videos)
-        
+                
         # Initialize optimizer with separate learning rates
         param_groups = []
 
@@ -250,6 +247,7 @@ class LinearProbingProject(BaseProject):
                 'weight_decay': self.config.attention_weight_decay,
             })
 
+        # Initialize optimizer
         optimizer_class = getattr(torch.optim, self.config.optimizer)
         optimizer = optimizer_class(param_groups)
 
@@ -311,30 +309,117 @@ class LinearProbingProject(BaseProject):
             "output_dir": self.config.output_dir if self.config.is_ref_device else None,
         }            
         
+    def _setup_inference_objects(self) -> dict[str, Any]:
+        raise NotImplementedError("Inference mode is not implemented for linear probing")
+    
+    def _setup_validation_objects(self) -> dict[str, Any]:
+        """Setup objects for model validation/evaluation."""
+        # Calculate dataset statistics
+        mean, std = calculate_dataset_statistics_ddp(self.config)        
+        
+        val_loader: DataLoader = get_distributed_video_dataloader(
+            config=self.config, 
+            split=RunMode.VALIDATE, 
+            mean=mean.tolist(),
+            std=std.tolist(),
+            shuffle=False,
+            num_replicas=self.config.world_size,
+            rank=self.config.device,
+            drop_last=False,
+            multi_video=self.config.multi_video,
+            groupby_column=self.config.groupby_column,
+            num_videos=self.config.num_videos,
+            shuffle_videos=False,  # Don't shuffle validation videos
+        )   
+        
+        print(f"len(val_loader): {len(val_loader)}")
+        
+        # Initialize video encoder backbone for linear probing
+        video_encoder: VideoEncoder = ModelRegistry.get("video_encoder")(
+            backbone=self.config.model_name,
+            num_frames=self.config.frames,
+            pretrained=self.config.pretrained,
+            freeze_ratio=self.config.video_freeze_ratio,
+            dropout=self.config.dropout,
+            num_heads=self.config.num_heads,
+            aggregator_depth=self.config.aggregator_depth,
+            aggregate_videos_tokens=self.config.aggregate_videos_tokens,
+            per_video_pool=self.config.per_video_pool,
+        )        
+        video_encoder = video_encoder.to(self.config.device)
+        
+        # Get embedding dimension from encoder  
+        embedding_dim = video_encoder.embedding_dim
+        
+        # Initialize Multi-Instance Linear Probing model
+        mil_model: MultiInstanceLinearProbing = ModelRegistry.get("multi_instance_linear_probing")(
+            embedding_dim=embedding_dim, 
+            head_structure=self.config.head_structure,
+            pooling_mode=self.config.pooling_mode, 
+            attention_hidden=self.config.attention_hidden, 
+            dropout=self.config.dropout_attention, 
+        )
+        mil_model = mil_model.to(self.config.device)
 
-    def _setup_inference_objects(
-        self
-    )->dict[str, Any]:
-        raise NotImplementedError("Inference is not implemented for this project")
+        # Wrap both models
+        linear_probing = VideoMILWrapper(video_encoder, mil_model, self.config.num_videos)
+                
+        # Distribute linear probing model
+        linear_probing = DistributedUtils.DDP(
+            linear_probing,
+            device_ids=[self.config.device]
+        )
+        
+        # Load checkpoint with fixed keys
+        checkpoint: dict[str, Any] = self._load_and_fix_checkpoint(self.config.inference_model_path)
+        linear_probing.load_state_dict(checkpoint["linear_probing"])
+        
+        # Set to eval mode
+        linear_probing.eval()
+                
+        # Create loss function
+        loss_fn = Loss(
+            loss_type=LossRegistry.get(LossType.MULTI_HEAD)(
+                head_structure=self.config.head_structure,
+                loss_structure=self.config.loss_structure,
+                head_weights=self.config.head_weights,
+            )
+        )                
+                
+        return {
+            "loss_fn": loss_fn,
+            "val_loader": val_loader,
+            "linear_probing": linear_probing,
+            "output_dir": self.config.output_dir if self.config.is_ref_device else None,
+        }
 
     def run(self):
         
         if self.config.is_ref_device:
             self._setup_project()
         
-        training_setup: dict[str, Any] = self._setup_training_objects()
+        runner_args = {
+            "config": self.config,
+            "wandb_wrapper": self.wandb_wrapper
+        }
+        
+        if self.config.run_mode == RunMode.TRAIN:
+            runner_args.update(self._setup_training_objects())
+        elif self.config.run_mode == RunMode.VALIDATE:
+            runner_args.update(self._setup_validation_objects())
         
         # Create runner instance
         runner: Runner = RunnerRegistry.get(
             name=self.config.pipeline_project
-        )(
-            config=self.config,
-            wandb_wrapper=self.wandb_wrapper,
-            **training_setup
-        )
+        )(**runner_args)
 
         # Train the model
-        runner.train(start_epoch=0, end_epoch=self.config.epochs)
+        if self.config.run_mode == RunMode.TRAIN:
+            runner.train(start_epoch=0, end_epoch=self.config.epochs)
+        elif self.config.run_mode == RunMode.VALIDATE:
+            runner.validate()
+        elif self.config.run_mode == RunMode.INFERENCE:
+            runner.inference()
 
         # Final cleanup
         if self.config.is_ref_device:
@@ -350,17 +435,32 @@ class LinearProbingProject(BaseProject):
         checkpoint: dict[str, Any] = torch.load(path, map_location=device, weights_only=True)
         return checkpoint
 
-    def _load_runner_checkpoint(self, runner: Runner, path: str) -> int:
-        """Load checkpoint for the entire runner."""
-        checkpoint: dict[str, Any] = self._load_checkpoint(path)
-        # Load state for the wrapper model (video_encoder + mil_model)
-        runner.linear_probing.video_encoder.load_state_dict(checkpoint["video_encoder"])
-        runner.linear_probing.mil_model.module.load_state_dict(checkpoint["mil_model"])
-        # Load optimizer, scaler, and scheduler states
-        runner.optimizer.load_state_dict(checkpoint["optimizer"])
-        if runner.scaler and checkpoint["scaler"]:
-            runner.scaler.load_state_dict(checkpoint["scaler"])
-        if runner.lr_scheduler and checkpoint["scheduler"]:
-            runner.lr_scheduler.load_state_dict(checkpoint["scheduler"])
-        # Return the epoch to resume from
-        return checkpoint.get("epoch", 0) + 1 # Start from next epoch
+    def _load_and_fix_checkpoint(self, path: str) -> dict[str, Any]:
+        """Load checkpoint and fix DDP key mismatches."""
+        checkpoint = self._load_checkpoint(path)
+        
+        if "linear_probing" not in checkpoint:
+            return checkpoint
+        
+        state_dict = checkpoint["linear_probing"]
+        fixed_state_dict = {}
+        
+        for key, value in state_dict.items():
+            # Fix video_encoder keys: add missing "module." prefix
+            if key.startswith("video_encoder."):
+                new_key = f"module.{key}"
+                fixed_state_dict[new_key] = value
+            
+            # Fix mil_model keys: remove extra "module." and add top-level "module."
+            elif key.startswith("mil_model.module."):
+                # Remove the middle "module." and add top-level "module."
+                inner_key = key.replace("mil_model.module.", "mil_model.")
+                new_key = f"module.{inner_key}"
+                fixed_state_dict[new_key] = value
+            
+            # Handle any other keys normally
+            else:
+                fixed_state_dict[key] = value
+        
+        checkpoint["linear_probing"] = fixed_state_dict
+        return checkpoint

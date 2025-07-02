@@ -26,6 +26,9 @@ class Runner:
     def inference(self):
         self.runner_type.inference()
         
+    def validate(self):
+        self.runner_type.validate()
+        
     def _run_epoch(
         self, 
         mode: str, 

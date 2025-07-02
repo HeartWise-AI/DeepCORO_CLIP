@@ -1,43 +1,29 @@
 import os
+import json
 import torch
-import torch.nn as nn
 import numpy as np
 import pandas as pd
-import seaborn as sns
-import matplotlib.pyplot as plt
-from typing import Optional, Union, Dict, Tuple, Any
+from typing import Optional
+from datetime import datetime
 
 from tqdm import tqdm
-from scipy.stats import pearsonr
 from torch.optim import Optimizer
 from torch.amp.grad_scaler import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
-from torch.nn.parallel import DistributedDataParallel as DDP
 from collections import defaultdict
-from sklearn.metrics import (
-    roc_auc_score, 
-    average_precision_score, 
-    confusion_matrix,
-    precision_recall_fscore_support,
-    accuracy_score,
-    mean_squared_error,
-    r2_score,
-    mean_absolute_error
-)
-from sklearn.preprocessing import label_binarize
-from sklearn.metrics import roc_curve, auc
-import wandb
-import warnings
-import torch.nn.functional as F
 
+from utils.metrics import (
+    compute_regression_metrics,
+    compute_classification_metrics,
+    compute_regression_metrics_with_ci,
+    compute_classification_metrics_with_ci,
+)
 from utils.loss.typing import Loss
 from utils.ddp import DistributedUtils
 from utils.registry import RunnerRegistry
 from utils.enums import RunMode, MetricTask
 from utils.wandb_wrapper import WandbWrapper
-from utils.metrics import compute_best_threshold
-from utils.loss.losses import LossRegistry, LossType
 from utils.config.linear_probing_config import LinearProbingConfig
 
 
@@ -48,19 +34,18 @@ class LinearProbingRunner:
     This class runs a linear probing pipeline using a VideoEncoder and TextEncoder.
     It handles both training and validation loops in a distributed data-parallel setting.
     """
-
     def __init__(
         self,
-        config: LinearProbingConfig,
-        wandb_wrapper: WandbWrapper,
-        train_loader: DataLoader,
-        val_loader: DataLoader,
-        linear_probing,  # VideoMILWrapper - avoiding circular import
-        optimizer: Optimizer,
-        scaler: GradScaler,
-        lr_scheduler: LRScheduler,
         loss_fn: Loss,
         output_dir: str,
+        val_loader: DataLoader,
+        config: LinearProbingConfig,
+        wandb_wrapper: WandbWrapper,
+        linear_probing,
+        scaler: Optional[GradScaler] = None,
+        optimizer: Optional[Optimizer] = None,
+        train_loader: Optional[DataLoader] = None,
+        lr_scheduler: Optional[LRScheduler] = None
     ):
         """
         Initialize the runner with provided configurations, data loaders, and modules.
@@ -202,7 +187,7 @@ class LinearProbingRunner:
         mode: str, 
         epoch: int
     ) -> dict[str, float]:
-        assert mode in [RunMode.TRAIN, RunMode.VALIDATION]
+        assert mode in [RunMode.TRAIN, RunMode.VALIDATE]
         
         self.linear_probing.train(mode == RunMode.TRAIN)
 
@@ -311,7 +296,7 @@ class LinearProbingRunner:
         # Compute AUC metrics for each head
         final_preds = {}
         final_targets = {}
-        if mode == RunMode.TRAIN or mode == RunMode.VALIDATION:
+        if mode == RunMode.TRAIN or mode == RunMode.VALIDATE:
             for head in accumulated_preds.keys():
                 # Gather accumulated predictions and targets for each head
                 preds = torch.cat(accumulated_preds[head], dim=0)
@@ -322,7 +307,7 @@ class LinearProbingRunner:
                 final_targets[head] = targets
                 
                 if self.config.head_task[head] == MetricTask.CLASSIFICATION:                
-                    # Compute metrics using the helper function
+                    # Compute metrics using the helper function (NO CI)
                     head_metrics = compute_classification_metrics(
                         preds=preds,
                         targets=targets,
@@ -335,7 +320,7 @@ class LinearProbingRunner:
                     )
                     
                 elif self.config.head_task[head] == MetricTask.REGRESSION:
-                    # Compute metrics using the helper function
+                    # Compute metrics using the helper function (NO CI)
                     head_metrics = compute_regression_metrics(
                         preds=preds,
                         targets=targets,
@@ -358,7 +343,7 @@ class LinearProbingRunner:
         print(f"[DEBUG] rank={self.device} => {mode} epoch metrics: {epoch_metrics}")
 
         # Save predictions for validation mode
-        if mode == RunMode.VALIDATION and self.config.is_ref_device:
+        if mode == RunMode.VALIDATE and self.config.is_ref_device:
             # Use final_preds and final_targets if available, otherwise use accumulated
             preds_to_save = final_preds if 'final_preds' in locals() and final_preds else accumulated_preds
             targets_to_save = final_targets if 'final_targets' in locals() and final_targets else accumulated_targets
@@ -416,29 +401,23 @@ class LinearProbingRunner:
         for k, v in batch_targets.items():
             batch_targets[k] = v.to(self.config.device)
             
-        # Move video indices to device if present
-        video_indices = batch.get('video_indices')
-        if video_indices is not None:
-            video_indices = video_indices.to(self.config.device)
-            
         return {
             "batch_video": batch_video,
             "batch_targets": batch_targets,
-            "video_indices": video_indices
         }
         
     def _train_step(
         self, 
         batch_video: torch.Tensor,
-        batch_targets: dict[str, torch.Tensor],
-        video_indices: Optional[torch.Tensor] = None,
+        batch_targets: dict[str, torch.Tensor]
     ) -> dict[str, dict[str, torch.Tensor]]:
         # Clear gradients only if this is the first step in accumulation
         if self.step % self.config.gradient_accumulation_steps == 0:
-            self.optimizer.zero_grad()
+            if self.optimizer is not None:
+                self.optimizer.zero_grad()
                 
         # Forward pass with autocast for mixed precision
-        with torch.amp.autocast('cuda', enabled=self.config.use_amp):
+        with torch.amp.autocast('cuda', enabled=self.config.use_amp, dtype=torch.float16):
             try:
                 outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
                     batch_video
@@ -471,7 +450,7 @@ class LinearProbingRunner:
         
         # Only step optimizer and update scaler if this is the last step in accumulation
         if (self.step + 1) % self.config.gradient_accumulation_steps == 0:
-            if self.scaler:
+            if self.scaler and self.optimizer is not None:
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             
@@ -484,8 +463,9 @@ class LinearProbingRunner:
 
         # Get learning rate metrics
         lr_metrics = {}
-        for pg in self.optimizer.param_groups:
-            lr_metrics[f"lr/{pg['name']}"] = pg["lr"]
+        if self.optimizer is not None:
+            for pg in self.optimizer.param_groups:
+                lr_metrics[f"lr/{pg['name']}"] = pg["lr"]
 
         # Convert losses to scalar values
         scalar_losses = {k: v.item() for k, v in losses.items()}
@@ -528,8 +508,9 @@ class LinearProbingRunner:
 
         # Get learning rate metrics
         lr_metrics = {}
-        for pg in self.optimizer.param_groups:
-            lr_metrics[f"lr/{pg['name']}"] = pg["lr"]
+        if self.optimizer is not None:
+            for pg in self.optimizer.param_groups:
+                lr_metrics[f"lr/{pg['name']}"] = pg["lr"]
 
         # Convert losses to scalar values
         scalar_losses = {k: v.item() for k, v in losses.items()}
@@ -541,9 +522,206 @@ class LinearProbingRunner:
             **lr_metrics
         }
 
+    def validate(self) -> None:
+        """
+        Run validation on the validation dataset and return metrics with confidence intervals.
+        
+        Returns:
+            Dictionary containing computed metrics for all heads with CIs
+        """
+        # Set model to evaluation mode
+        assert len(self.val_loader) > 0, "Validation loader is empty"
+        
+        self.linear_probing.train(False)
+        
+        # Synchronize before inference starts
+        DistributedUtils.sync_process_group(
+            world_size=self.world_size,
+            device_ids=self.device
+        )
+        
+        # Initialize metrics and accumulation containers
+        validation_metrics: dict[str, float] = {}
+        accumulated_preds: dict[str, list[torch.Tensor]] = defaultdict(list)
+        accumulated_targets: dict[str, list[torch.Tensor]] = defaultdict(list)
+        accumulated_names: list[str] = []
+        gathered_metrics: dict[str, float] = {}
+        
+        # Set up progress bar
+        tqdm_desc: str = f"[GPU {self.device}] Running Validation"
+        if self.config.is_ref_device:
+            data_iter: tqdm = tqdm(self.val_loader, desc=tqdm_desc, total=len(self.val_loader))
+        else:
+            data_iter = self.val_loader
+            
+        # Process all batches
+        with torch.no_grad():
+            for batch_idx, batch in enumerate(data_iter):
+                try:
+                    # Preprocess inputs
+                    processed_batch: dict[str, torch.Tensor] = self._preprocess_inputs(batch)
+                    
+                    # Forward pass
+                    outputs: dict[str, dict[str, torch.Tensor]] = self._val_step(**processed_batch)
+                    
+                    # Accumulate metrics
+                    for k, v in outputs.items():
+                        if k == 'losses':
+                            # Accumulate losses
+                            for loss_name, loss_val in v.items():
+                                gathered_metrics[f"{loss_name}"] = loss_val
+                                gathered_metrics[f'mean_{loss_name}'] = gathered_metrics.get(f"mean_{loss_name}", 0.0) + loss_val
+                        elif k == 'logits':
+                            # Handle logits for classification/regression metrics
+                            for head_name, logits in v.items():
+                                if self.config.head_task[head_name] == MetricTask.CLASSIFICATION:
+                                    preds = torch.sigmoid(logits.float())
+                                    targets = processed_batch['batch_targets'][head_name].long()
+                                    if preds.ndim > 1 and preds.shape[1] > 1:
+                                        one_hot_targets = torch.zeros_like(preds)
+                                        one_hot_targets.scatter_(1, targets.unsqueeze(1), 1)
+                                        targets = one_hot_targets
+                                    accumulated_preds[head_name].append(preds)
+                                    accumulated_targets[head_name].append(targets)
+                                elif self.config.head_task[head_name] == MetricTask.REGRESSION:
+                                    accumulated_preds[head_name].append(logits)
+                                    accumulated_targets[head_name].append(processed_batch['batch_targets'][head_name].float())
+                                else:
+                                    raise ValueError(
+                                        f"[DEBUG] rank={self.device} => Unknown head task: {self.config.head_task[head_name]} "
+                                        f"Supported tasks: {MetricTask.CLASSIFICATION}, {MetricTask.REGRESSION}"
+                                    )
+                    
+                    # Accumulate video names
+                    accumulated_names.extend(batch['video_fname'])
+                    
+                except Exception as e:
+                    raise Exception(f"[DEBUG] rank={self.device} => Error in validation step: {e}")
+                
+                # Update progress bar with gathered losses
+                if self.config.is_ref_device:
+                    data_iter.set_postfix({
+                        f"{k}": f'{(v / (batch_idx + 1)):.4f}' if 'mean' in k else f'{v:.4f}' 
+                        for k, v in gathered_metrics.items()
+                    })
+                
+                # Sync after each batch
+                DistributedUtils.sync_process_group(
+                    world_size=self.world_size,
+                    device_ids=self.device
+                )
+        
+        # Gather all predictions and targets across GPUs if using distributed training
+        # Gather video names
+        gathered_names = DistributedUtils.gather_object(accumulated_names, self.config.world_size)
+        accumulated_names = [name for sublist in gathered_names for name in sublist]
+        
+        # Gather predictions and targets for each head
+        for head in accumulated_preds.keys():
+            # Convert lists to tensors
+            local_preds: torch.Tensor = torch.cat(accumulated_preds[head], dim=0)
+            local_targets: torch.Tensor = torch.cat(accumulated_targets[head], dim=0)
+            
+            # Gather tensors
+            gathered_preds: torch.Tensor = DistributedUtils.gather_tensor(local_preds, self.config.world_size)
+            gathered_targets: torch.Tensor = DistributedUtils.gather_tensor(local_targets, self.config.world_size)
+            
+            # Update accumulated tensors
+            accumulated_preds[head] = [gathered_preds]
+            accumulated_targets[head] = [gathered_targets]
+        
+        # Compute mean losses
+        total_batches = batch_idx + 1
+        for k, v in gathered_metrics.items():
+            if 'mean' in k:
+                validation_metrics[f"validation/{k.replace('mean_', '')}_loss"] = v / total_batches
+        
+        # Compute metrics for each head WITH CONFIDENCE INTERVALS
+        if self.config.is_ref_device:
+            print(f"[DEBUG] rank={self.device} => Computing metrics with CI - This might take a while...")
+            for head in tqdm(accumulated_preds.keys(), desc="Computing metrics with CI", total=len(accumulated_preds)):
+                # Gather accumulated predictions and targets for each head
+                preds = torch.cat(accumulated_preds[head], dim=0)
+                targets = torch.cat(accumulated_targets[head], dim=0)
+                
+                if self.config.head_task[head] == MetricTask.CLASSIFICATION:
+                    # Compute classification metrics WITH CI
+                    head_metrics = compute_classification_metrics_with_ci(
+                        preds=preds,
+                        targets=targets,
+                        head_name=head,
+                        head_structure=self.config.head_structure,
+                        labels_map=self.config.labels_map,
+                        mode=self.config.run_mode, 
+                        wandb_wrapper=self.wandb_wrapper,
+                        is_ref_device=self.config.is_ref_device,
+                        confidence_level=getattr(self.config, 'ci_confidence_level', 0.95),
+                        n_bootstrap=getattr(self.config, 'ci_n_bootstrap', 1000)
+                    )
+                elif self.config.head_task[head] == MetricTask.REGRESSION:
+                    # Compute regression metrics WITH CI
+                    head_metrics = compute_regression_metrics_with_ci(
+                        preds=preds,
+                        targets=targets,
+                        head_name=head,
+                        mode=self.config.run_mode, 
+                        wandb_wrapper=self.wandb_wrapper,
+                        is_ref_device=self.config.is_ref_device,
+                        confidence_level=getattr(self.config, 'ci_confidence_level', 0.95),
+                        n_bootstrap=getattr(self.config, 'ci_n_bootstrap', 1000)
+                    )
+                else:
+                    raise ValueError(
+                        f"[DEBUG] rank={self.device} => Unknown head task: {self.config.head_task[head]} "
+                        f"Supported tasks: {MetricTask.CLASSIFICATION}, {MetricTask.REGRESSION}"
+                    )
+                
+                # Update inference metrics with computed metrics for the current head
+                for k, v in head_metrics.items():
+                    validation_metrics[k] = v
+        
+        # Sync after computing metrics
+        DistributedUtils.sync_process_group(
+            world_size=self.world_size,
+            device_ids=self.device
+        )
+        
+        # Save predictions if on reference device
+        if self.config.is_ref_device:
+            self._save_predictions(
+                mode=self.config.run_mode,
+                accumulated_names=accumulated_names,
+                accumulated_preds=accumulated_preds,
+                accumulated_targets=accumulated_targets,
+                epoch=-1  # Use -1 to indicate inference mode
+            )
+        
+        # Log metrics to wandb if available
+        if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
+            self.wandb_wrapper.log(validation_metrics)
+            print(f"[DEBUG] rank={self.device} => Logged validation metrics to W&B")
+        
+        print(f"[DEBUG] rank={self.device} => Validation metrics: {validation_metrics}")
+        
+        # Final sync
+        DistributedUtils.sync_process_group(
+            world_size=self.world_size,
+            device_ids=self.device
+        )
+        
+        # Save validation metrics with CI to JSON file
+        if self.config.is_ref_device:                
+            self._save_validation_metrics_to_json(validation_metrics)
+        
+        # Memory cleanup for GPU tensors
+        torch.cuda.empty_cache()
+       
     def inference(self) -> None:
-        raise NotImplementedError("Linear probing inference not implemented")
-    
+        """
+        Run inference on the test dataset and return metrics.
+        """
+        raise NotImplementedError("Inference mode is not implemented for linear probing")
+            
     def _save_checkpoint(
         self, 
         epoch: int, 
@@ -564,7 +742,7 @@ class LinearProbingRunner:
             "linear_probing": self.linear_probing.module.state_dict()
             if hasattr(self.linear_probing, "module")
             else self.linear_probing.state_dict(),
-            "optimizer": self.optimizer.state_dict(),
+            "optimizer": self.optimizer.state_dict() if self.optimizer is not None else None,
             "scheduler": self.lr_scheduler.state_dict() if self.lr_scheduler else None,
             "epoch": epoch,
             "scaler": self.scaler.state_dict() if self.scaler else None,
@@ -619,10 +797,6 @@ class LinearProbingRunner:
             accumulated_targets: Dictionary of ground truth values for each head
             epoch: Current epoch number
         """
-        # Only save for validation mode
-        if mode != RunMode.VALIDATION:
-            return
-
         try:
             # Debug array lengths
             print(f"[DEBUG] rank={self.device} => Number of accumulated names: {len(accumulated_names)}")
@@ -729,181 +903,79 @@ class LinearProbingRunner:
                 for k, v in predictions_dict.items():
                     print(f"[DEBUG] rank={self.device} =>   {k}: {len(v)}")
 
-def compute_regression_metrics(
-    preds: torch.Tensor,
-    targets: torch.Tensor,
-    head_name: str,
-    mode: str = "val",
-    wandb_wrapper = None,
-    is_ref_device: bool = False
-) -> dict:
-    """
-    Compute regression metrics for the given predictions and targets,
-    and log a regression plot if on the reference device and W&B is initialized.
-    """
-    metrics = {}
-
-    with torch.no_grad():
-        # Compute MAE
-        metrics[f"{mode}/{head_name}_mae"] = LossRegistry.get(LossType.MAE)()(
-            outputs=preds,
-            targets=targets
-        ).item()
-
-        # Compute MSE
-        metrics[f"{mode}/{head_name}_mse"] = LossRegistry.get(LossType.MSE)()(
-            outputs=preds,
-            targets=targets
-        ).item()
-
-        # Compute RMSE
-        metrics[f"{mode}/{head_name}_rmse"] = LossRegistry.get(LossType.RMSE)()(
-            outputs=preds,
-            targets=targets
-        ).item()
-
-    # Convert tensors to numpy arrays
-    preds_np = preds.detach().cpu().float().numpy().squeeze()
-    targets_np = targets.detach().cpu().float().numpy().squeeze()
-
-    # Calculate Pearson correlation using numpy arrays
-    try:
-        r, _ = pearsonr(preds_np, targets_np)
-        metrics[f"{mode}/{head_name}_pearson_r"] = r
-    except ValueError as e:
-        print(f"Could not compute Pearson correlation for {head_name}: {e}")
-        r, p_value = np.nan, np.nan # Assign NaN if calculation fails
-
-    # Generate and log regression plot if wandb is initialized and on ref device
-    if is_ref_device and wandb_wrapper and wandb_wrapper.is_initialized():
-        try:
-            plt.figure(figsize=(10, 8))
-            sns.regplot(x=targets_np, y=preds_np, line_kws={'color': 'red'})
-            plt.xlabel('True Values')
-            plt.ylabel('Predicted Values')
-            plot_title = (
-                f'{mode.capitalize()} Regression Plot - {head_name}\n'
-                f'Pearson r: {r:.3f}'
-            )
-            plt.title(plot_title)
-            plt.grid(True)
-
-            # Log to wandb
-            wandb_wrapper.log_plot({
-                f"regression_plot/{mode}/{head_name}": plt
-            })
-            plt.close() # Close the plot to free memory
-
-        except Exception as e:
-            print(f"Error generating/logging regression plot for {head_name}: {e}")
-            plt.close() # Ensure plot is closed even if error occurs
-
-    return metrics
-
-def compute_classification_metrics(
-    preds: torch.Tensor,
-    targets: torch.Tensor,
-    head_name: str,
-    head_structure: dict,
-    labels_map: dict = None,
-    mode: str = "val",
-    wandb_wrapper = None,
-    is_ref_device: bool = False
-) -> dict:
-    """
-    Compute classification metrics for the given predictions and targets.
-    
-    Args:
-        preds: Tensor of model predictions
-        targets: Tensor of ground truth labels
-        head_name: Name of the model head being evaluated
-        head_structure: Dictionary containing output dimensions for each head
-        labels_map: Dictionary mapping class names to indices
-        mode: Current mode (train or validation)
-        device: Current device ID
-        wandb_wrapper: WandbWrapper instance for logging
-        is_ref_device: Whether this device is the reference device for logging
+    def _save_validation_metrics_to_json(self, validation_metrics: dict[str, float]) -> None:
+        """
+        Save validation metrics with confidence intervals to a JSON file.
         
-    Returns:
-        Dictionary of computed metrics
-    """
-    
-    metrics = {}
-    
-    # Convert to numpy for sklearn metrics
-    all_preds = preds.detach().cpu().numpy()
-    all_targets = targets.detach().cpu().numpy()
-    
-    # Compute AUC and AUPRC
-    try:
-        auc = roc_auc_score(all_targets.tolist(), all_preds.tolist(), average="micro")
-        metrics[f"{mode}/{head_name}_auc"] = auc
-    except Exception as e:
-        print(f"Error computing AUC: {e}")
-    
-    try:
-        auprc = average_precision_score(all_targets.tolist(), all_preds.tolist(), average="micro")
-        metrics[f"{mode}/{head_name}_auprc"] = auprc
-    except Exception as e:
-        print(f"Error computing AUPRC: {e}")
-    
-    # Compute and log confusion matrix if wandb is initialized
-    if is_ref_device and wandb_wrapper and wandb_wrapper.is_initialized():
-        try:
-            # For binary classification
-            if head_structure[head_name] == 1:
-                try:
-                    # Compute best threshold using Youden's J statistic
-                    best_threshold = compute_best_threshold(
-                        all_targets.tolist(), 
-                        all_preds.tolist()
-                    )
-                except Exception:
-                    # If error, use default threshold 0.5
-                    best_threshold = 0.5
-                
-                # Binarize predictions
-                pred_labels = (all_preds > best_threshold).astype(int)
-                
-                # Log best threshold
-                metrics[f"{mode}/{head_name}_best_threshold"] = best_threshold
-            
-            # For multi-class classification
+        Args:
+            validation_metrics: Dictionary containing all validation metrics including CIs
+        """
+        def convert_to_serializable(obj):
+            """Convert numpy/torch types to Python native types for JSON serialization."""
+            if isinstance(obj, (np.integer, np.floating)):
+                return obj.item()
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif torch.is_tensor(obj):
+                return obj.detach().cpu().numpy().tolist() if obj.numel() > 1 else obj.item()
+            elif isinstance(obj, dict):
+                return {k: convert_to_serializable(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_to_serializable(v) for v in obj]
             else:
-                pred_labels = all_preds.argmax(axis=1)
-                all_targets = all_targets.argmax(axis=1)
-            
-            # Create confusion matrix if labels_map is provided
-            if labels_map:
-                # Create labels list
-                labels = [''] * len(labels_map[head_name])
-                for k, v in labels_map[head_name].items():
-                    labels[v] = k
-                
-                # Compute confusion matrix
-                cm = confusion_matrix(y_true=all_targets, y_pred=pred_labels)
-                
-                # Create confusion matrix plot
-                plt.figure(figsize=(10, 8))
-                sns.heatmap(
-                    cm, 
-                    annot=True, 
-                    fmt='d', 
-                    cmap='Blues', 
-                    xticklabels=labels, 
-                    yticklabels=labels
-                )
-                plt.title(f'{mode.capitalize()} Confusion Matrix - {head_name}')
-                plt.ylabel('True Label')
-                plt.xlabel('Predicted Label')
-                
-                # Log to wandb
-                wandb_wrapper.log_plot({
-                    f"confusion_matrix/{mode}/{head_name}": plt
-                })
-                plt.close()
+                return obj
         
+        def organize_metrics_by_head(metrics: dict) -> dict:
+            """Organize flat metrics dictionary by head."""
+            organized = {}
+            
+            for head in self.config.head_structure.keys():
+                metric_values = {}
+                for metric_name, metric_value in metrics.items():  
+                    # More precise matching to avoid partial matches
+                    if f"/{head}_" in metric_name: 
+                        metric_name_filtered = metric_name.split("/")[-1].replace(f"{head}_", "")
+                        metric_values[metric_name_filtered] = metric_value  
+            
+                organized[head] = metric_values            
+            return organized
+        
+        try:
+            # Convert all metrics to JSON-serializable format
+            serializable_metrics = convert_to_serializable(validation_metrics)
+            
+            # Organize metrics by head
+            organized_metrics = organize_metrics_by_head(serializable_metrics)
+            
+            # Add metadata
+            metrics_with_metadata = {
+                "model_config": {
+                    "head_task": dict(self.config.head_task) if hasattr(self.config, 'head_task') else {},
+                    "ci_confidence_level": getattr(self.config, 'ci_confidence_level', 0.95),
+                    "ci_n_bootstrap": getattr(self.config, 'ci_n_bootstrap', 1000),
+                },
+                "metrics_by_head": organized_metrics,
+            }
+            
+            # Create metrics directory
+            metrics_dir = os.path.join(self.output_dir, "metrics")
+            os.makedirs(metrics_dir, exist_ok=True)
+            
+            # Save with timestamp
+            timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            json_file = os.path.join(metrics_dir, f"validation_metrics_with_ci_{timestamp_str}.json")
+            
+            with open(json_file, 'w') as f:
+                json.dump(metrics_with_metadata, f, indent=2, ensure_ascii=False)
+            
+            print(f"[DEBUG] rank={self.device} => Saved validation metrics with CI to {json_file}")
+            
+            # Also save as latest (overwrites previous)
+            latest_json_file = os.path.join(metrics_dir, "validation_metrics_with_ci_latest.json")
+            with open(latest_json_file, 'w') as f:
+                json.dump(metrics_with_metadata, f, indent=2, ensure_ascii=False)
+            
+            print(f"[DEBUG] rank={self.device} => Saved latest validation metrics with CI to {latest_json_file}")
+                        
         except Exception as e:
-            print(f"Error computing confusion matrix: {e}")
-    
-    return metrics
+            print(f"[DEBUG] rank={self.device} => Error saving validation metrics to JSON: {e}")

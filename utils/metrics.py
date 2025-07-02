@@ -919,6 +919,11 @@ def compute_regression_metrics_with_ci(
                     f'[{metrics[f"{mode}/{head_name}_pearson_r_ci_lower"]:.3f}, '
                     f'{metrics[f"{mode}/{head_name}_pearson_r_ci_upper"]:.3f}]'
                 )
+            else:
+                plot_title = (
+                    f'{mode.capitalize()} Regression Plot - {head_name}\n'
+                    f'Pearson r: {metrics[f"{mode}/{head_name}_pearson_r"]:.3f}'
+                )
 
             
             plt.title(plot_title)

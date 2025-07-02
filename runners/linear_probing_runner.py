@@ -190,7 +190,7 @@ class LinearProbingRunner:
         mode: str, 
         epoch: int
     ) -> dict[str, float]:
-        assert mode in [RunMode.TRAIN, RunMode.VALIDATION]
+        assert mode in [RunMode.TRAIN, RunMode.VALIDATE]
         
         self.linear_probing.train(mode == RunMode.TRAIN)
 
@@ -297,7 +297,7 @@ class LinearProbingRunner:
                 epoch_metrics[f"{mode}/{k}"] = v
 
         # Compute AUC metrics for each head
-        if mode == RunMode.TRAIN or mode == RunMode.VALIDATION:
+        if mode == RunMode.TRAIN or mode == RunMode.VALIDATE:
             for head in accumulated_preds.keys():
                 # Gather accumulated predictions and targets for each head
                 preds = torch.cat(accumulated_preds[head], dim=0)
@@ -340,7 +340,7 @@ class LinearProbingRunner:
         print(f"[DEBUG] rank={self.device} => {mode} epoch metrics: {epoch_metrics}")
 
         # Save predictions for validation mode
-        if mode == RunMode.VALIDATION and self.config.is_ref_device:
+        if mode == RunMode.VALIDATE and self.config.is_ref_device:
             self._save_predictions(
                 mode=mode,
                 accumulated_names=accumulated_names,

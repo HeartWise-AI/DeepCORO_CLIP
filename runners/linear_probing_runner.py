@@ -344,6 +344,10 @@ class LinearProbingRunner:
 
         # Save predictions for validation mode
         if mode == RunMode.VALIDATE and self.config.is_ref_device:
+            # Use final_preds and final_targets if available, otherwise use accumulated
+            preds_to_save = final_preds if 'final_preds' in locals() and final_preds else accumulated_preds
+            targets_to_save = final_targets if 'final_targets' in locals() and final_targets else accumulated_targets
+            
             self._save_predictions(
                 mode=mode,
                 accumulated_names=accumulated_names,
@@ -397,22 +401,15 @@ class LinearProbingRunner:
         for k, v in batch_targets.items():
             batch_targets[k] = v.to(self.config.device)
             
-        # Move video indices to device if present
-        video_indices = batch.get('video_indices')
-        if video_indices is not None:
-            video_indices = video_indices.to(self.config.device)
-            
         return {
             "batch_video": batch_video,
             "batch_targets": batch_targets,
-            "video_indices": video_indices
         }
         
     def _train_step(
         self, 
         batch_video: torch.Tensor,
-        batch_targets: dict[str, torch.Tensor],
-        video_indices: Optional[torch.Tensor] = None,
+        batch_targets: dict[str, torch.Tensor]
     ) -> dict[str, dict[str, torch.Tensor]]:
         # Clear gradients only if this is the first step in accumulation
         if self.step % self.config.gradient_accumulation_steps == 0:
@@ -420,7 +417,7 @@ class LinearProbingRunner:
                 self.optimizer.zero_grad()
                 
         # Forward pass with autocast for mixed precision
-        with torch.amp.autocast('cuda', enabled=self.config.use_amp):
+        with torch.amp.autocast('cuda', enabled=self.config.use_amp, dtype=torch.float16):
             try:
                 outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
                     batch_video

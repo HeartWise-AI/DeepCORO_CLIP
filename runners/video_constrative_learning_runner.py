@@ -46,7 +46,6 @@ class VideoContrastiveLearningRunner:
     This class runs a video contrastive learning pipeline using a VideoEncoder and TextEncoder.
     It handles both training and validation loops in a distributed data-parallel setting.
     """
-
     def __init__(
         self,
         config: ClipConfig = None,
@@ -166,7 +165,7 @@ class VideoContrastiveLearningRunner:
 
                 # Validation phase
                 val_metrics: dict[str, float] = self._run_epoch(
-                    mode=RunMode.VALIDATION, 
+                    mode=RunMode.VALIDATE, 
                     epoch=epoch
                 )
                 
@@ -376,7 +375,7 @@ class VideoContrastiveLearningRunner:
         :return: Dictionary of metrics, averaged over all batches and reduced across ranks.
         :raises RuntimeError: If NaN loss is detected during training.
         """
-        assert mode in [RunMode.TRAIN, RunMode.VALIDATION]
+        assert mode in [RunMode.TRAIN, RunMode.VALIDATE]
 
         self.video_encoder.train(mode == RunMode.TRAIN)
         self.text_encoder.train(mode == RunMode.TRAIN)

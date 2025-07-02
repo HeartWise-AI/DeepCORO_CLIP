@@ -1,23 +1,36 @@
 import os
 import torch
+import torch.nn as nn
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-from typing import Optional
+from typing import Optional, Union, Dict, Tuple, Any
 
 from tqdm import tqdm
 from scipy.stats import pearsonr
 from torch.optim import Optimizer
-from torch.cuda.amp import GradScaler
+from torch.amp.grad_scaler import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
+from torch.nn.parallel import DistributedDataParallel as DDP
 from collections import defaultdict
 from sklearn.metrics import (
     roc_auc_score, 
     average_precision_score, 
-    confusion_matrix
+    confusion_matrix,
+    precision_recall_fscore_support,
+    accuracy_score,
+    mean_squared_error,
+    r2_score,
+    mean_absolute_error
 )
+from sklearn.preprocessing import label_binarize
+from sklearn.metrics import roc_curve, auc
+import wandb
+import warnings
+import torch.nn.functional as F
+
 from utils.loss.typing import Loss
 from utils.ddp import DistributedUtils
 from utils.registry import RunnerRegistry
@@ -26,7 +39,6 @@ from utils.wandb_wrapper import WandbWrapper
 from utils.metrics import compute_best_threshold
 from utils.loss.losses import LossRegistry, LossType
 from utils.config.linear_probing_config import LinearProbingConfig
-from models.linear_probing import LinearProbing
 
 
 @RunnerRegistry.register("DeepCORO_video_linear_probing")
@@ -43,7 +55,7 @@ class LinearProbingRunner:
         wandb_wrapper: WandbWrapper,
         train_loader: DataLoader,
         val_loader: DataLoader,
-        linear_probing: LinearProbing,
+        linear_probing,  # VideoMILWrapper - avoiding circular import
         optimizer: Optimizer,
         scaler: GradScaler,
         lr_scheduler: LRScheduler,
@@ -70,7 +82,7 @@ class LinearProbingRunner:
         self.device: int = config.device
         self.train_loader: DataLoader = train_loader
         self.val_loader: DataLoader = val_loader
-        self.linear_probing: LinearProbing = linear_probing
+        self.linear_probing = linear_probing  # VideoMILWrapper
         self.optimizer: Optimizer = optimizer
         self.scaler: GradScaler = scaler
         self.lr_scheduler: LRScheduler = lr_scheduler
@@ -250,8 +262,8 @@ class LinearProbingRunner:
             except Exception as e:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in step_fn: {e}")
             
-            if self.lr_scheduler and self.scheduler_per_iteration and (mode == RunMode.TRAIN):
-                self.lr_scheduler.step()
+            # Note: lr_scheduler.step() for per_iteration schedulers is handled in _train_step()
+            # after optimizer.step() to maintain the correct PyTorch 1.1.0+ order
 
             # Update progress bar with gathered losses
             if self.config.is_ref_device:
@@ -297,11 +309,17 @@ class LinearProbingRunner:
                 epoch_metrics[f"{mode}/{k}"] = v
 
         # Compute AUC metrics for each head
+        final_preds = {}
+        final_targets = {}
         if mode == RunMode.TRAIN or mode == RunMode.VALIDATION:
             for head in accumulated_preds.keys():
                 # Gather accumulated predictions and targets for each head
                 preds = torch.cat(accumulated_preds[head], dim=0)
                 targets = torch.cat(accumulated_targets[head], dim=0)
+                
+                # Store final predictions and targets for saving later
+                final_preds[head] = preds
+                final_targets[head] = targets
                 
                 if self.config.head_task[head] == MetricTask.CLASSIFICATION:                
                     # Compute metrics using the helper function
@@ -341,11 +359,15 @@ class LinearProbingRunner:
 
         # Save predictions for validation mode
         if mode == RunMode.VALIDATION and self.config.is_ref_device:
+            # Use final_preds and final_targets if available, otherwise use accumulated
+            preds_to_save = final_preds if 'final_preds' in locals() and final_preds else accumulated_preds
+            targets_to_save = final_targets if 'final_targets' in locals() and final_targets else accumulated_targets
+            
             self._save_predictions(
                 mode=mode,
                 accumulated_names=accumulated_names,
-                accumulated_preds=accumulated_preds,
-                accumulated_targets=accumulated_targets,
+                accumulated_preds=preds_to_save,
+                accumulated_targets=targets_to_save,
                 epoch=epoch
             )
 
@@ -419,8 +441,7 @@ class LinearProbingRunner:
         with torch.amp.autocast('cuda', enabled=self.config.use_amp):
             try:
                 outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
-                    batch_video, 
-                    video_indices=video_indices
+                    batch_video
                 )
             except Exception as e:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")
@@ -486,8 +507,7 @@ class LinearProbingRunner:
         with torch.no_grad():
             try:
                 outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
-                    batch_video,
-                    video_indices=video_indices
+                    batch_video
                 )
             except Exception as e:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")
@@ -607,7 +627,13 @@ class LinearProbingRunner:
             # Debug array lengths
             print(f"[DEBUG] rank={self.device} => Number of accumulated names: {len(accumulated_names)}")
             for head in accumulated_preds.keys():
-                print(f"[DEBUG] rank={self.device} => Head {head} - Predictions shape: {accumulated_preds[head][0].shape}, Targets shape: {accumulated_targets[head][0].shape}")
+                if isinstance(accumulated_preds[head], list):
+                    pred_shape = accumulated_preds[head][0].shape
+                    target_shape = accumulated_targets[head][0].shape
+                else:
+                    pred_shape = accumulated_preds[head].shape
+                    target_shape = accumulated_targets[head].shape
+                print(f"[DEBUG] rank={self.device} => Head {head} - Predictions shape: {pred_shape}, Targets shape: {target_shape}")
 
             # Create predictions dictionary with epoch column
             predictions_dict: dict[str, list] = {
@@ -617,8 +643,16 @@ class LinearProbingRunner:
             
             # Add predictions and ground truth for each head
             for head in accumulated_preds.keys():
-                preds: np.ndarray = accumulated_preds[head][0].squeeze().detach().cpu().float().numpy()
-                targets: np.ndarray = accumulated_targets[head][0].squeeze().detach().cpu().float().numpy()
+                # Handle both tensor and list of tensors format
+                if isinstance(accumulated_preds[head], list):
+                    preds_tensor = accumulated_preds[head][0]
+                    targets_tensor = accumulated_targets[head][0]
+                else:
+                    preds_tensor = accumulated_preds[head]
+                    targets_tensor = accumulated_targets[head]
+                    
+                preds: np.ndarray = preds_tensor.squeeze().detach().cpu().float().numpy()
+                targets: np.ndarray = targets_tensor.squeeze().detach().cpu().float().numpy()
                 
                 # Debug shapes after conversion
                 print(f"[DEBUG] rank={self.device} => Head {head} - After conversion - Preds shape: {preds.shape}, Targets shape: {targets.shape}")
@@ -684,8 +718,12 @@ class LinearProbingRunner:
             print(f"[DEBUG] rank={self.device} => Accumulated names length: {len(accumulated_names)}")
             for head in accumulated_preds.keys():
                 print(f"[DEBUG] rank={self.device} => Head {head} - Final shapes:")
-                print(f"[DEBUG] rank={self.device} =>   Predictions: {accumulated_preds[head][0].shape}")
-                print(f"[DEBUG] rank={self.device} =>   Targets: {accumulated_targets[head][0].shape}")
+                if isinstance(accumulated_preds[head], list):
+                    print(f"[DEBUG] rank={self.device} =>   Predictions: {accumulated_preds[head][0].shape}")
+                    print(f"[DEBUG] rank={self.device} =>   Targets: {accumulated_targets[head][0].shape}")
+                else:
+                    print(f"[DEBUG] rank={self.device} =>   Predictions: {accumulated_preds[head].shape}")
+                    print(f"[DEBUG] rank={self.device} =>   Targets: {accumulated_targets[head].shape}")
             if 'predictions_dict' in locals():
                 print(f"[DEBUG] rank={self.device} => Predictions dictionary keys and lengths:")
                 for k, v in predictions_dict.items():

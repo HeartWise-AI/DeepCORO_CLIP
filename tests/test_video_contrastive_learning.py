@@ -43,6 +43,8 @@ class DummyDataset(Dataset):
         self.video_frames = video_frames
         self.height = height
         self.width = width
+        self.multi_video_mode = False  # Add this attribute to match VideoClipDataset
+        self.groupby_column = None  # Add this attribute to match VideoClipDataset
         
         # Create temporary directory for dummy videos
         self.temp_dir = tempfile.mkdtemp()

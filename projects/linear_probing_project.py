@@ -136,7 +136,7 @@ class LinearProbingProject(BaseProject):
         # Get dataloaders with multi-video parameters
         train_loader: DataLoader = get_distributed_video_dataloader(
             config=self.config, 
-            split="train", 
+            split=RunMode.TRAIN, 
             mean=mean.tolist(),
             std=std.tolist(),
             shuffle=True,
@@ -150,7 +150,7 @@ class LinearProbingProject(BaseProject):
         )
         val_loader: DataLoader = get_distributed_video_dataloader(
             config=self.config, 
-            split="val", 
+            split=RunMode.VALIDATE, 
             mean=mean.tolist(),
             std=std.tolist(),
             shuffle=False,
@@ -175,12 +175,12 @@ class LinearProbingProject(BaseProject):
             aggregate_videos_tokens=self.config.aggregate_videos_tokens,
             per_video_pool=self.config.per_video_pool,
         )        
-        video_encoder = video_encoder.to(self.config.device).float()
         
         # Get embedding dimension from encoder
         embedding_dim = video_encoder.embedding_dim
 
         # Load video encoder checkpoint 
+        video_encoder = video_encoder.to(self.config.device)
         checkpoint: Dict[str, Any] = self._load_checkpoint(self.config.video_encoder_checkpoint_path)       
         video_encoder.load_state_dict(checkpoint["video_encoder"])
 
@@ -251,12 +251,6 @@ class LinearProbingProject(BaseProject):
         optimizer_class = getattr(torch.optim, self.config.optimizer)
         optimizer = optimizer_class(param_groups)
 
-        # # Distribute linear probing model
-        # linear_probing = DistributedUtils.DDP(
-        #     linear_probing,
-        #     device_ids=[self.config.device]
-        # )
-
         # Initialize scheduler
         scheduler = get_scheduler(
             scheduler_name=self.config.scheduler_name,
@@ -325,7 +319,7 @@ class LinearProbingProject(BaseProject):
         
         val_loader: DataLoader = get_distributed_video_dataloader(
             config=self.config, 
-            split=self.config.run_mode, 
+            split=RunMode.VALIDATE, 
             mean=mean.tolist(),
             std=std.tolist(),
             shuffle=False,

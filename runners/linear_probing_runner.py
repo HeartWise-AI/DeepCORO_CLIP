@@ -1,10 +1,12 @@
 import os
+import json
 import torch
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 from typing import Optional
+from datetime import datetime
 
 from tqdm import tqdm
 from torch.optim import Optimizer
@@ -637,41 +639,48 @@ class LinearProbingRunner:
                 validation_metrics[f"validation/{k.replace('mean_', '')}_loss"] = v / total_batches
         
         # Compute metrics for each head WITH CONFIDENCE INTERVALS
-        for head in accumulated_preds.keys():
-            # Gather accumulated predictions and targets for each head
-            preds = torch.cat(accumulated_preds[head], dim=0)
-            targets = torch.cat(accumulated_targets[head], dim=0)
-            
-            if self.config.head_task[head] == MetricTask.CLASSIFICATION:
-                # Compute classification metrics WITH CI
-                head_metrics = compute_classification_metrics_with_ci(
-                    preds=preds,
-                    targets=targets,
-                    head_name=head,
-                    head_structure=self.config.head_structure,
-                    labels_map=self.config.labels_map,
-                    mode=self.config.run_mode, 
-                    wandb_wrapper=self.wandb_wrapper,
-                    is_ref_device=self.config.is_ref_device,
-                    confidence_level=getattr(self.config, 'ci_confidence_level', 0.95),
-                    n_bootstrap=getattr(self.config, 'ci_n_bootstrap', 1000)
-                )
-            elif self.config.head_task[head] == MetricTask.REGRESSION:
-                # Compute regression metrics WITH CI
-                head_metrics = compute_regression_metrics_with_ci(
-                    preds=preds,
-                    targets=targets,
-                    head_name=head,
-                    mode=self.config.run_mode, 
-                    wandb_wrapper=self.wandb_wrapper,
-                    is_ref_device=self.config.is_ref_device,
-                    confidence_level=getattr(self.config, 'ci_confidence_level', 0.95),
-                    n_bootstrap=getattr(self.config, 'ci_n_bootstrap', 1000)
-                )
-            
-            # Update inference metrics with computed metrics for the current head
-            for k, v in head_metrics.items():
-                validation_metrics[k] = v
+        if self.config.is_ref_device:
+            print(f"[DEBUG] rank={self.device} => Computing metrics with CI - This might take a while...")
+            for head in tqdm(accumulated_preds.keys(), desc="Computing metrics with CI", total=len(accumulated_preds)):
+                # Gather accumulated predictions and targets for each head
+                preds = torch.cat(accumulated_preds[head], dim=0)
+                targets = torch.cat(accumulated_targets[head], dim=0)
+                
+                if self.config.head_task[head] == MetricTask.CLASSIFICATION:
+                    # Compute classification metrics WITH CI
+                    head_metrics = compute_classification_metrics_with_ci(
+                        preds=preds,
+                        targets=targets,
+                        head_name=head,
+                        head_structure=self.config.head_structure,
+                        labels_map=self.config.labels_map,
+                        mode=self.config.run_mode, 
+                        wandb_wrapper=self.wandb_wrapper,
+                        is_ref_device=self.config.is_ref_device,
+                        confidence_level=getattr(self.config, 'ci_confidence_level', 0.95),
+                        n_bootstrap=getattr(self.config, 'ci_n_bootstrap', 1000)
+                    )
+                elif self.config.head_task[head] == MetricTask.REGRESSION:
+                    # Compute regression metrics WITH CI
+                    head_metrics = compute_regression_metrics_with_ci(
+                        preds=preds,
+                        targets=targets,
+                        head_name=head,
+                        mode=self.config.run_mode, 
+                        wandb_wrapper=self.wandb_wrapper,
+                        is_ref_device=self.config.is_ref_device,
+                        confidence_level=getattr(self.config, 'ci_confidence_level', 0.95),
+                        n_bootstrap=getattr(self.config, 'ci_n_bootstrap', 1000)
+                    )
+                else:
+                    raise ValueError(
+                        f"[DEBUG] rank={self.device} => Unknown head task: {self.config.head_task[head]} "
+                        f"Supported tasks: {MetricTask.CLASSIFICATION}, {MetricTask.REGRESSION}"
+                    )
+                
+                # Update inference metrics with computed metrics for the current head
+                for k, v in head_metrics.items():
+                    validation_metrics[k] = v
         
         # Sync after computing metrics
         DistributedUtils.sync_process_group(
@@ -701,6 +710,10 @@ class LinearProbingRunner:
             world_size=self.world_size,
             device_ids=self.device
         )
+        
+        # Save validation metrics with CI to JSON file
+        if self.config.is_ref_device:                
+            self._save_validation_metrics_to_json(validation_metrics)
         
         # Memory cleanup for GPU tensors
         torch.cuda.empty_cache()
@@ -873,3 +886,80 @@ class LinearProbingRunner:
                 print(f"[DEBUG] rank={self.device} => Predictions dictionary keys and lengths:")
                 for k, v in predictions_dict.items():
                     print(f"[DEBUG] rank={self.device} =>   {k}: {len(v)}")
+
+    def _save_validation_metrics_to_json(self, validation_metrics: dict[str, float]) -> None:
+        """
+        Save validation metrics with confidence intervals to a JSON file.
+        
+        Args:
+            validation_metrics: Dictionary containing all validation metrics including CIs
+        """
+        def convert_to_serializable(obj):
+            """Convert numpy/torch types to Python native types for JSON serialization."""
+            if isinstance(obj, (np.integer, np.floating)):
+                return obj.item()
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif torch.is_tensor(obj):
+                return obj.detach().cpu().numpy().tolist() if obj.numel() > 1 else obj.item()
+            elif isinstance(obj, dict):
+                return {k: convert_to_serializable(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_to_serializable(v) for v in obj]
+            else:
+                return obj
+        
+        def organize_metrics_by_head(metrics: dict) -> dict:
+            """Organize flat metrics dictionary by head."""
+            organized = {}
+            
+            for head in self.config.head_structure.keys():
+                metric_values = {}
+                for metric_name, metric_value in metrics.items():  
+                    # More precise matching to avoid partial matches
+                    if f"/{head}_" in metric_name: 
+                        metric_name_filtered = metric_name.split("/")[-1].replace(f"{head}_", "")
+                        metric_values[metric_name_filtered] = metric_value  
+            
+                organized[head] = metric_values            
+            return organized
+        
+        try:
+            # Convert all metrics to JSON-serializable format
+            serializable_metrics = convert_to_serializable(validation_metrics)
+            
+            # Organize metrics by head
+            organized_metrics = organize_metrics_by_head(serializable_metrics)
+            
+            # Add metadata
+            metrics_with_metadata = {
+                "model_config": {
+                    "head_task": dict(self.config.head_task) if hasattr(self.config, 'head_task') else {},
+                    "ci_confidence_level": getattr(self.config, 'ci_confidence_level', 0.95),
+                    "ci_n_bootstrap": getattr(self.config, 'ci_n_bootstrap', 1000),
+                },
+                "metrics_by_head": organized_metrics,
+            }
+            
+            # Create metrics directory
+            metrics_dir = os.path.join(self.output_dir, "metrics")
+            os.makedirs(metrics_dir, exist_ok=True)
+            
+            # Save with timestamp
+            timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+            json_file = os.path.join(metrics_dir, f"validation_metrics_with_ci_{timestamp_str}.json")
+            
+            with open(json_file, 'w') as f:
+                json.dump(metrics_with_metadata, f, indent=2, ensure_ascii=False)
+            
+            print(f"[DEBUG] rank={self.device} => Saved validation metrics with CI to {json_file}")
+            
+            # Also save as latest (overwrites previous)
+            latest_json_file = os.path.join(metrics_dir, "validation_metrics_with_ci_latest.json")
+            with open(latest_json_file, 'w') as f:
+                json.dump(metrics_with_metadata, f, indent=2, ensure_ascii=False)
+            
+            print(f"[DEBUG] rank={self.device} => Saved latest validation metrics with CI to {latest_json_file}")
+                        
+        except Exception as e:
+            print(f"[DEBUG] rank={self.device} => Error saving validation metrics to JSON: {e}")

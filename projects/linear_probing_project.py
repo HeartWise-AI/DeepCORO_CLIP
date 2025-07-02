@@ -176,7 +176,7 @@ class LinearProbingProject(BaseProject):
             aggregate_videos_tokens=self.config.aggregate_videos_tokens,
             per_video_pool=self.config.per_video_pool,
         )        
-        video_encoder = video_encoder.to(self.config.device).float()  
+        video_encoder = video_encoder.to(self.config.device).float()
         
         # Get embedding dimension from encoder
         embedding_dim = video_encoder.embedding_dim
@@ -201,6 +201,12 @@ class LinearProbingProject(BaseProject):
         )
         mil_model = mil_model.to(self.config.device).float()
         
+        # Distribute MIL model
+        mil_model = DistributedUtils.DDP(
+            mil_model, 
+            device_ids=[self.config.device]
+        )
+        
         # Wrap both models
         linear_probing = VideoMILWrapper(video_encoder, mil_model, self.config.num_videos)
                 
@@ -210,7 +216,7 @@ class LinearProbingProject(BaseProject):
         # Add video encoder parameters if not fully frozen
         if self.config.video_freeze_ratio < 1.0:
              param_groups.append({
-                'params': linear_probing.video_encoder.parameters(), 
+                'params': video_encoder.parameters(), 
                 'lr': self.config.video_encoder_lr, 
                 'name': 'video_encoder',
                 'weight_decay': self.config.video_encoder_weight_decay
@@ -220,7 +226,7 @@ class LinearProbingProject(BaseProject):
         # Add head parameters
         for head_name in self.config.head_structure:
             param_groups.append({
-                'params': linear_probing.mil_model.heads[head_name].parameters(),
+                'params': mil_model.module.heads[head_name].parameters(),
                 'lr': self.config.head_lr[head_name],
                 'name': head_name,
                 'weight_decay': self.config.head_weight_decay[head_name]
@@ -230,9 +236,9 @@ class LinearProbingProject(BaseProject):
         if self.config.pooling_mode == "attention":
             # Combine all attention-specific parameters (V, U, w) into one group
             attention_params = itertools.chain(
-                linear_probing.mil_model.attention_V.parameters(),
-                linear_probing.mil_model.attention_U.parameters(),
-                linear_probing.mil_model.attention_w.parameters(),
+                mil_model.module.attention_V.parameters(),
+                mil_model.module.attention_U.parameters(),
+                mil_model.module.attention_w.parameters(),
             )
             param_groups.append({
                 'params': attention_params,
@@ -245,11 +251,11 @@ class LinearProbingProject(BaseProject):
         optimizer_class = getattr(torch.optim, self.config.optimizer)
         optimizer = optimizer_class(param_groups)
 
-        # Distribute linear probing model
-        linear_probing = DistributedUtils.DDP(
-            linear_probing,
-            device_ids=[self.config.device]
-        )
+        # # Distribute linear probing model
+        # linear_probing = DistributedUtils.DDP(
+        #     linear_probing,
+        #     device_ids=[self.config.device]
+        # )
 
         # Initialize scheduler
         scheduler = get_scheduler(
@@ -346,7 +352,7 @@ class LinearProbingProject(BaseProject):
             aggregate_videos_tokens=self.config.aggregate_videos_tokens,
             per_video_pool=self.config.per_video_pool,
         )        
-        video_encoder = video_encoder.to(self.config.device).float()
+        video_encoder = video_encoder.to(self.config.device)
         
         # Get embedding dimension from encoder  
         embedding_dim = video_encoder.embedding_dim
@@ -359,7 +365,7 @@ class LinearProbingProject(BaseProject):
             attention_hidden=self.config.attention_hidden, 
             dropout=self.config.dropout_attention, 
         )
-        mil_model = mil_model.to(self.config.device).float()
+        mil_model = mil_model.to(self.config.device)
 
         # Wrap both models
         linear_probing = VideoMILWrapper(video_encoder, mil_model, self.config.num_videos)

@@ -328,6 +328,56 @@ def compute_regression_metrics(
 
     return metrics
 
+def compute_threshold_based_metrics(
+    preds: np.ndarray, 
+    targets: np.ndarray, 
+    threshold: float
+) -> dict[str, float]:
+    """
+    Compute confusion matrix based metrics (F1, PPV, NPV, etc.) using a given threshold.
+    
+    Args:
+        preds: Array of prediction probabilities
+        targets: Array of binary ground truth labels  
+        threshold: Threshold for binarizing predictions
+        
+    Returns:
+        Dictionary containing confusion matrix metrics
+    """
+    # Binarize predictions using threshold
+    pred_binary = (preds > threshold).astype(int)
+    targets_binary = targets.astype(int)
+    
+    # Calculate confusion matrix elements
+    tp = np.sum((pred_binary == 1) & (targets_binary == 1))
+    tn = np.sum((pred_binary == 0) & (targets_binary == 0))
+    fp = np.sum((pred_binary == 1) & (targets_binary == 0))
+    fn = np.sum((pred_binary == 0) & (targets_binary == 1))
+    
+    # Calculate metrics
+    metrics = {}
+    
+    # Precision (PPV - Positive Predictive Value)
+    metrics['ppv'] = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    
+    # NPV (Negative Predictive Value) 
+    metrics['npv'] = tn / (tn + fn) if (tn + fn) > 0 else 0.0
+    
+    # Sensitivity (Recall/True Positive Rate)
+    sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    metrics['sensitivity'] = sensitivity
+    
+    # Specificity (True Negative Rate)
+    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+    metrics['specificity'] = specificity
+    
+    # F1-score
+    precision = metrics['ppv']
+    recall = sensitivity
+    metrics['f1_score'] = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
+    
+    return metrics
+
 def compute_classification_metrics(
     preds: torch.Tensor,
     targets: torch.Tensor,
@@ -587,6 +637,37 @@ def compute_classification_metrics_with_ci(
                 return np.mean(pred_labels == t.astype(int))
             return acc_fn
         
+        def f1_at_threshold_fn(threshold):
+            def f1_fn(p, t):
+                cm_metrics = compute_threshold_based_metrics(p, t, threshold)
+                return cm_metrics['f1_score']
+            return f1_fn
+        
+        def ppv_at_threshold_fn(threshold):
+            def ppv_fn(p, t):
+                cm_metrics = compute_threshold_based_metrics(p, t, threshold)
+                return cm_metrics['ppv']
+            return ppv_fn
+        
+        def npv_at_threshold_fn(threshold):
+            def npv_fn(p, t):
+                cm_metrics = compute_threshold_based_metrics(p, t, threshold)
+                return cm_metrics['npv']
+            return npv_fn
+        
+        def sensitivity_at_threshold_fn(threshold):
+            def sens_fn(p, t):
+                cm_metrics = compute_threshold_based_metrics(p, t, threshold)
+                return cm_metrics['sensitivity']
+            return sens_fn
+        
+        def specificity_at_threshold_fn(threshold):
+            def spec_fn(p, t):
+                cm_metrics = compute_threshold_based_metrics(p, t, threshold)
+                return cm_metrics['specificity']
+            return spec_fn
+    
+        
         # Compute best threshold with CI
         try:
             threshold_val, threshold_ci_lower, threshold_ci_upper = bootstrap_metric(
@@ -613,6 +694,71 @@ def compute_classification_metrics_with_ci(
             metrics[f"{mode}/{head_name}_accuracy_ci_upper"] = acc_ci_upper
             metrics[f"{mode}/{head_name}_accuracy_ci_width"] = acc_ci_upper - acc_ci_lower
             
+            # Compute F1 at best threshold with CI
+            f1_val, f1_ci_lower, f1_ci_upper = bootstrap_metric(
+                all_preds.flatten(), 
+                all_targets.flatten(), 
+                f1_at_threshold_fn(threshold_val),
+                n_bootstrap=n_bootstrap,
+                confidence_level=confidence_level
+            )
+            metrics[f"{mode}/{head_name}_f1_score"] = f1_val
+            metrics[f"{mode}/{head_name}_f1_score_ci_lower"] = f1_ci_lower
+            metrics[f"{mode}/{head_name}_f1_score_ci_upper"] = f1_ci_upper
+            metrics[f"{mode}/{head_name}_f1_score_ci_width"] = f1_ci_upper - f1_ci_lower
+            
+            # Compute PPV at best threshold with CI
+            ppv_val, ppv_ci_lower, ppv_ci_upper = bootstrap_metric(
+                all_preds.flatten(), 
+                all_targets.flatten(), 
+                ppv_at_threshold_fn(threshold_val),
+                n_bootstrap=n_bootstrap,
+                confidence_level=confidence_level
+            )
+            metrics[f"{mode}/{head_name}_ppv"] = ppv_val
+            metrics[f"{mode}/{head_name}_ppv_ci_lower"] = ppv_ci_lower
+            metrics[f"{mode}/{head_name}_ppv_ci_upper"] = ppv_ci_upper
+            metrics[f"{mode}/{head_name}_ppv_ci_width"] = ppv_ci_upper - ppv_ci_lower
+            
+            # Compute NPV at best threshold with CI
+            npv_val, npv_ci_lower, npv_ci_upper = bootstrap_metric(
+                all_preds.flatten(), 
+                all_targets.flatten(), 
+                npv_at_threshold_fn(threshold_val),
+                n_bootstrap=n_bootstrap,
+                confidence_level=confidence_level
+            )
+            metrics[f"{mode}/{head_name}_npv"] = npv_val
+            metrics[f"{mode}/{head_name}_npv_ci_lower"] = npv_ci_lower
+            metrics[f"{mode}/{head_name}_npv_ci_upper"] = npv_ci_upper
+            metrics[f"{mode}/{head_name}_npv_ci_width"] = npv_ci_upper - npv_ci_lower
+            
+            # Compute Sensitivity at best threshold with CI
+            sensitivity_val, sensitivity_ci_lower, sensitivity_ci_upper = bootstrap_metric(
+                all_preds.flatten(), 
+                all_targets.flatten(), 
+                sensitivity_at_threshold_fn(threshold_val),
+                n_bootstrap=n_bootstrap,
+                confidence_level=confidence_level
+            ) 
+            metrics[f"{mode}/{head_name}_sensitivity"] = sensitivity_val
+            metrics[f"{mode}/{head_name}_sensitivity_ci_lower"] = sensitivity_ci_lower
+            metrics[f"{mode}/{head_name}_sensitivity_ci_upper"] = sensitivity_ci_upper
+            metrics[f"{mode}/{head_name}_sensitivity_ci_width"] = sensitivity_ci_upper - sensitivity_ci_lower
+            
+            # Compute Specificity at best threshold with CI
+            specificity_val, specificity_ci_lower, specificity_ci_upper = bootstrap_metric(
+                all_preds.flatten(), 
+                all_targets.flatten(), 
+                specificity_at_threshold_fn(threshold_val),
+                n_bootstrap=n_bootstrap,
+                confidence_level=confidence_level
+            )   
+            metrics[f"{mode}/{head_name}_specificity"] = specificity_val
+            metrics[f"{mode}/{head_name}_specificity_ci_lower"] = specificity_ci_lower
+            metrics[f"{mode}/{head_name}_specificity_ci_upper"] = specificity_ci_upper
+            metrics[f"{mode}/{head_name}_specificity_ci_width"] = specificity_ci_upper - specificity_ci_lower
+                        
         except Exception as e:
             print(f"Error computing threshold/accuracy with CI: {e}")
             # Fallback

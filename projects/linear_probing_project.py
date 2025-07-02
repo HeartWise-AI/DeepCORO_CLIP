@@ -180,7 +180,7 @@ class LinearProbingProject(BaseProject):
         embedding_dim = video_encoder.embedding_dim
 
         # Load video encoder checkpoint 
-        video_encoder = video_encoder.to(self.config.device)
+        video_encoder = video_encoder.to(self.config.device).float()
         checkpoint: Dict[str, Any] = self._load_checkpoint(self.config.video_encoder_checkpoint_path)       
         video_encoder.load_state_dict(checkpoint["video_encoder"])
 

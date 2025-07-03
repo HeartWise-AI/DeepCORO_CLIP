@@ -414,7 +414,7 @@ class TestVideoUtils(unittest.TestCase):
         
         # Should handle grayscale and convert to appropriate shape
         self.assertEqual(video.shape[0], 5)  # 5 frames
-        self.assertEqual(video.shape[3], 1)  # 1 channel (grayscale)
+        self.assertEqual(video.shape[3], 3)  # 3 channels (RGB)
 
     @patch('cv2.VideoCapture')
     def test_load_video_invalid_shape(self, mock_cap):

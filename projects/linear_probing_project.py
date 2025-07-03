@@ -147,6 +147,7 @@ class LinearProbingProject(BaseProject):
             groupby_column=self.config.groupby_column,
             num_videos=self.config.num_videos,
             shuffle_videos=self.config.shuffle_videos,
+            labels_map=getattr(self.config, 'labels_map', None),
         )
         val_loader: DataLoader = get_distributed_video_dataloader(
             config=self.config, 
@@ -161,6 +162,7 @@ class LinearProbingProject(BaseProject):
             groupby_column=self.config.groupby_column,
             num_videos=self.config.num_videos,
             shuffle_videos=False,  # Don't shuffle validation videos
+            labels_map=getattr(self.config, 'labels_map', None),
         )        
         
         # Initialize video encoder backbone for linear probing
@@ -330,6 +332,7 @@ class LinearProbingProject(BaseProject):
             groupby_column=self.config.groupby_column,
             num_videos=self.config.num_videos,
             shuffle_videos=False,  # Don't shuffle validation videos
+            labels_map=getattr(self.config, 'labels_map', None),
         )   
         
         print(f"len(val_loader): {len(val_loader)}")

@@ -4,6 +4,7 @@ import torch
 import random
 import numpy as np
 import pandas as pd
+from functools import partial
 from torch.utils.data import DataLoader
 from collections import defaultdict
 from typing import (
@@ -382,7 +383,7 @@ class VideoDataset(torch.utils.data.Dataset):
             
             return video, self.outcomes[actual_idx], video_fname
     
-def custom_collate_fn(batch: list[tuple[np.ndarray, dict, Union[str, List[str]]]]) -> dict: # Adjusted type hint for paths
+def custom_collate_fn(batch: list[tuple[np.ndarray, dict, Union[str, List[str]]]], labels_map: dict = None) -> dict: # Adjusted type hint for paths
     videos, targets, paths = zip(*batch)
     # Multi-video: videos[0] is np.ndarray [num_videos, F, H, W, C]
     if isinstance(videos[0], np.ndarray) and videos[0].ndim == 5:
@@ -400,13 +401,34 @@ def custom_collate_fn(batch: list[tuple[np.ndarray, dict, Union[str, List[str]]]
     # Permute to [B, N, C, F, H, W]
 
     video_indices = torch.arange(B).repeat_interleave(N) if N > 1 else None
+    
     # Convert targets to tensor
     temp_targets_dict: dict = defaultdict(list)
     for target in targets:
         if target is not None:
             for k, v in target.items():
                 temp_targets_dict[k].append(v)
-    final_targets_dict = {k: torch.tensor(v, dtype=torch.float32) for k, v in temp_targets_dict.items()}
+    
+    # Apply labels_map to convert categorical strings to integers
+    final_targets_dict = {}
+    for k, v in temp_targets_dict.items():
+        if labels_map and k in labels_map:
+            # This is a categorical column - convert strings to integers
+            mapped_values = []
+            for value in v:
+                if isinstance(value, str):
+                    if value in labels_map[k]:
+                        mapped_values.append(labels_map[k][value])
+                    else:
+                        raise ValueError(f"Label '{value}' not found in labels_map for column '{k}'. Available labels: {list(labels_map[k].keys())}")
+                else:
+                    # Value is already numeric
+                    mapped_values.append(value)
+            final_targets_dict[k] = torch.tensor(mapped_values, dtype=torch.long)  # Use long for categorical
+        else:
+            # This is a numerical column - convert to float
+            final_targets_dict[k] = torch.tensor(v, dtype=torch.float32)
+    
     return {
         "videos": videos_tensor,
         "targets": final_targets_dict,
@@ -427,6 +449,7 @@ def get_distributed_video_dataloader(
     groupby_column: Optional[str] = None,
     num_videos: Optional[int] = None,
     shuffle_videos: Optional[bool] = None,
+    labels_map: Optional[dict] = None,
 ) -> DataLoader:
     # Create the video dataset with multi-video parameters
     video_dataset = VideoDataset(
@@ -455,6 +478,9 @@ def get_distributed_video_dataloader(
         rank=rank
     )
 
+    # Create a partial function to bind labels_map to the collate function
+    collate_fn_with_labels_map = partial(custom_collate_fn, labels_map=labels_map)
+
     # Create the dataloader
     return DataLoader(
         video_dataset,
@@ -463,6 +489,6 @@ def get_distributed_video_dataloader(
         num_workers=config.num_workers,
         pin_memory=True,
         drop_last=drop_last,
-        collate_fn=custom_collate_fn,
+        collate_fn=collate_fn_with_labels_map,
         worker_init_fn=seed_worker,
     )

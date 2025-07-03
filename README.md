@@ -98,7 +98,7 @@ The project uses configuration files located in the `config/` directory:
    - Hyperparameter optimization for linear probing tasks
    - Task-specific parameter ranges
 
-## 💻 Training Modes
+## 💻 Run Modes
 
 ### 1. Contrastive Learning (CLIP)
 
@@ -116,8 +116,11 @@ bash scripts/runner.sh --base_config config/clip/base_config.yaml --selected_gpu
 bash scripts/run_sweep.sh --base_config config/clip/base_config.yaml --sweep_config config/clip/sweep_config_single_video.yaml --selected_gpus 3 --count 5
 ```
 
+### Run validation
+**Not supported**
+
 #### Run inference
-Process data from input csv with for each row[Split] == 'inference' - **working on single GPU only**
+Process validation data from input CSV (rows where **Split == 'inference'**) - **working on single GPU only**
 ```bash
 bash scripts/runner.sh --selected_gpus 0 --base_config config/clip/base_config.yaml --run_mode inference --use_wandb false
 ```
@@ -137,6 +140,15 @@ bash scripts/runner.sh --base_config config/linear_probing/base_config.yaml --se
 bash scripts/run_sweep.sh --base_config config/linear_probing/base_config.yaml --sweep_config config/linear_probing/sweep_config.yaml --selected_gpus 0,1 --count 5
 
 ```
+
+#### Run validation
+Process validation data from input CSV (rows where **Split == 'val'**)
+``` bash
+bash scripts/runner.sh --use_wandb false --base_config config/linear_probing/stenosis/base_config_stenosis_2vue.yaml --run_mode val --selected_gpus 1,2,3
+```
+
+### Run inference
+**Not supported**
 
 ## Model Architecture
 

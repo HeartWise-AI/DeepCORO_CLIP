@@ -94,6 +94,10 @@ def load_video(
         video = np.load(video_path)
         if not isinstance(video, np.ndarray):
             raise ValueError(f"Le fichier npy ne contient pas un tableau numpy: {video_path}")
+        
+        # Pre-validate .npy dimensions to prevent crashes
+        if video.ndim < 3 or video.ndim > 4:
+            raise ValueError(f"Invalid .npy file: Expected 3D or 4D array, got {video.ndim}D: {video_path}")
     else:
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
@@ -118,12 +122,21 @@ def load_video(
         if not frames:
             raise ValueError(f"No frames could be read from video: {video_path}")
 
-        video = np.stack(frames, axis=0).astype(np.float32)
-        if video.ndim == 3:
-            video = np.expand_dims(video, axis=-1)  # [F,H,W] -> [F,H,W,1]
+        video = np.stack(frames, axis=0)
+    
+    video = video.astype(np.float32)
+    if video.ndim == 3:
+        video = np.expand_dims(video, axis=-1)  # [F,H,W] -> [F,H,W,1]
+        video = np.repeat(video, 3, axis=-1)  # [F,H,W,1] -> [F,H,W,3]
+    elif video.ndim == 4:
+        # Handle 4D arrays with different channel configurations
+        if video.shape[-1] == 1:
+            # Grayscale [F,H,W,1] -> RGB [F,H,W,3]
             video = np.repeat(video, 3, axis=-1)
-        elif video.ndim != 4:
-            raise ValueError(f"Invalid video shape after loading: {video.shape}")
+        elif video.shape[-1] != 3:
+            raise ValueError(f"Invalid video shape after loading: Expected 1 or 3 channels, got {video.shape[-1]} channels: {video.shape}")
+    else:
+        raise ValueError(f"Invalid video shape after loading: {video.shape}")
         
 
     # --- Étape 2 : Pipeline commun pour tous les formats ---

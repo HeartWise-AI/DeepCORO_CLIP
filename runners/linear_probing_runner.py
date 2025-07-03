@@ -120,7 +120,7 @@ class LinearProbingRunner:
             
             # Validation phase
             val_metrics = self._run_epoch(
-                mode=RunMode.VALIDATION, 
+                mode=RunMode.VALIDATE, 
                 epoch=epoch
             )
             DistributedUtils.sync_process_group(

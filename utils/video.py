@@ -94,21 +94,7 @@ def load_video(
         video = np.load(video_path)
         if not isinstance(video, np.ndarray):
             raise ValueError(f"Le fichier npy ne contient pas un tableau numpy: {video_path}")
-        if video.ndim == 3:
-            video = np.expand_dims(video, axis=-1)
-        elif video.ndim != 4:
-            raise ValueError(f"Shape inattendue pour le npy: {video.shape}")
-        # [F, H, W, C]
     else:
-        # Set appropriate frame count and resize value based on backbone
-        if backbone.lower() == "mvit":
-            n_frames = 16
-            model_resize = resize
-        elif backbone.lower() in ["x3d_s", "x3d_m"]:
-            model_resize = x3d_params[backbone.lower()]["side_size"]
-        else:
-            model_resize = resize
-
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             raise ValueError(f"Failed to open video file: {video_path}")
@@ -135,9 +121,10 @@ def load_video(
         video = np.stack(frames, axis=0).astype(np.float32)
         if video.ndim == 3:
             video = np.expand_dims(video, axis=-1)  # [F,H,W] -> [F,H,W,1]
+            video = np.repeat(video, 3, axis=-1)
         elif video.ndim != 4:
             raise ValueError(f"Invalid video shape after loading: {video.shape}")
-        # [F, H, W, C]
+        
 
     # --- Étape 2 : Pipeline commun pour tous les formats ---
     video = torch.from_numpy(video.astype(np.float32))
@@ -145,10 +132,6 @@ def load_video(
     # Permute to [F,C,H,W] si besoin
     if video.shape[-1] in [1, 3]:
         video = video.permute(0, 3, 1, 2)
-
-    # Conversion automatique 1 canal -> 3 canaux (pour modèles RGB)
-    if video.shape[1] == 1:
-        video = video.repeat(1, 3, 1, 1)
 
     # Détermination du resize et expected_frames
     if backbone.lower() == "mvit":

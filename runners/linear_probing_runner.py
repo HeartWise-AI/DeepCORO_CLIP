@@ -15,9 +15,7 @@ from collections import defaultdict
 
 from utils.metrics import (
     compute_regression_metrics,
-    compute_classification_metrics,
-    compute_regression_metrics_with_ci,
-    compute_classification_metrics_with_ci,
+    compute_classification_metrics
 )
 from utils.loss.typing import Loss
 from utils.ddp import DistributedUtils
@@ -271,58 +269,12 @@ class LinearProbingRunner:
         final_preds = {}
         final_targets = {}
         if mode == RunMode.TRAIN or mode == RunMode.VALIDATE:
-            for head in accumulated_preds.keys():
-                # Gather accumulated predictions and targets for each head
-                preds = torch.cat(accumulated_preds[head], dim=0)
-                targets = torch.cat(accumulated_targets[head], dim=0)
-                
-                # Store final predictions and targets for saving later
-                final_preds[head] = preds
-                final_targets[head] = targets
-                
-                if self.config.head_task[head] == MetricTask.BINARY_CLASSIFICATION:                
-                    # Compute metrics using the helper function (NO CI)
-                    head_metrics = compute_classification_metrics(
-                        preds=preds,
-                        targets=targets,
-                        head_name=head,
-                        head_structure=self.config.head_structure,
-                        labels_map=self.config.labels_map,
-                        mode=mode,
-                        wandb_wrapper=self.wandb_wrapper,
-                        is_ref_device=self.config.is_ref_device
-                    )
-                elif self.config.head_task[head] == MetricTask.MULTICLASS_CLASSIFICATION:
-                    # Compute metrics using the helper function (NO CI)
-                    head_metrics = compute_classification_metrics(
-                        preds=preds,
-                        targets=targets,
-                        head_name=head,
-                        head_structure=self.config.head_structure,
-                        labels_map=self.config.labels_map,
-                        mode=mode,
-                        wandb_wrapper=self.wandb_wrapper,
-                        is_ref_device=self.config.is_ref_device
-                    )
-                elif self.config.head_task[head] == MetricTask.REGRESSION:
-                    # Compute metrics using the helper function (NO CI)
-                    head_metrics = compute_regression_metrics(
-                        preds=preds,
-                        targets=targets,
-                        head_name=head,
-                        mode=mode,
-                        wandb_wrapper=self.wandb_wrapper,
-                        is_ref_device=self.config.is_ref_device
-                    )
-                else:
-                    raise ValueError(
-                        f"[DEBUG] rank={self.device} => Unknown head task: {self.config.head_task[head]} "
-                        f"Supported tasks: {', '.join([metric.value for metric in MetricTask])}"
-                    )
-                
-                # Update epoch metrics with the computed metrics for the current head
-                for k, v in head_metrics.items():
-                    epoch_metrics[f"{mode}/{head}_{k}"] = v
+            self._compute_heads_metrics(
+                accumulated_preds=accumulated_preds,
+                accumulated_targets=accumulated_targets,
+                validation_metrics=epoch_metrics,
+                compute_cli=False
+            )
                 
             # Sync after logging metrics and confusion matrix
             DistributedUtils.sync_process_group(
@@ -622,60 +574,12 @@ class LinearProbingRunner:
         # Compute metrics for each head WITH CONFIDENCE INTERVALS
         if self.config.is_ref_device:
             print(f"[DEBUG] rank={self.device} => Computing metrics with CI - This might take a while...")
-            for head in tqdm(accumulated_preds.keys(), desc="Computing metrics with CI", total=len(accumulated_preds)):
-                # Gather accumulated predictions and targets for each head
-                preds = torch.cat(accumulated_preds[head], dim=0)
-                targets = torch.cat(accumulated_targets[head], dim=0)
-                
-                if self.config.head_task[head] == MetricTask.BINARY_CLASSIFICATION:
-                    # Compute classification metrics WITH CI
-                    head_metrics = compute_classification_metrics_with_ci(
-                        preds=preds,
-                        targets=targets,
-                        head_name=head,
-                        head_structure=self.config.head_structure,
-                        labels_map=self.config.labels_map,
-                        mode=self.config.run_mode, 
-                        wandb_wrapper=self.wandb_wrapper,
-                        is_ref_device=self.config.is_ref_device,
-                        confidence_level=getattr(self.config, 'ci_confidence_level', 0.95),
-                        n_bootstrap=getattr(self.config, 'ci_n_bootstrap', 1000)
-                    )
-                elif self.config.head_task[head] == MetricTask.MULTICLASS_CLASSIFICATION:
-                    # Compute classification metrics WITH CI for multiclass
-                    head_metrics = compute_classification_metrics_with_ci(
-                        preds=preds,
-                        targets=targets,
-                        head_name=head,
-                        head_structure=self.config.head_structure,
-                        labels_map=self.config.labels_map,
-                        mode=self.config.run_mode, 
-                        wandb_wrapper=self.wandb_wrapper,
-                        is_ref_device=self.config.is_ref_device,
-                        confidence_level=getattr(self.config, 'ci_confidence_level', 0.95),
-                        n_bootstrap=getattr(self.config, 'ci_n_bootstrap', 1000)
-                    )
-                elif self.config.head_task[head] == MetricTask.REGRESSION:
-                    # Compute regression metrics WITH CI
-                    head_metrics = compute_regression_metrics_with_ci(
-                        preds=preds,
-                        targets=targets,
-                        head_name=head,
-                        mode=self.config.run_mode, 
-                        wandb_wrapper=self.wandb_wrapper,
-                        is_ref_device=self.config.is_ref_device,
-                        confidence_level=getattr(self.config, 'ci_confidence_level', 0.95),
-                        n_bootstrap=getattr(self.config, 'ci_n_bootstrap', 1000)
-                    )
-                else:
-                    raise ValueError(
-                        f"[DEBUG] rank={self.device} => Unknown head task: {self.config.head_task[head]} "
-                        f"Supported tasks: {', '.join([metric.value for metric in MetricTask])}"
-                    )
-                
-                # Update inference metrics with computed metrics for the current head
-                for k, v in head_metrics.items():
-                    validation_metrics[k] = v
+            self._compute_heads_metrics(
+                accumulated_preds=accumulated_preds,
+                accumulated_targets=accumulated_targets,
+                validation_metrics=validation_metrics,
+                compute_cli=True
+            )
         
         # Sync after computing metrics
         DistributedUtils.sync_process_group(
@@ -1103,3 +1007,79 @@ class LinearProbingRunner:
             accumulated_targets[head] = [gathered_targets]
         
         return accumulated_preds, accumulated_targets, accumulated_names
+    
+    def _compute_heads_metrics(
+        self,
+        accumulated_preds: Dict[str, list[torch.Tensor]],
+        accumulated_targets: Dict[str, list[torch.Tensor]],
+        validation_metrics: Dict[str, float], # leverage ref. ptr to avoid copying
+        compute_cli: bool = False
+    ) -> None:
+        """
+        Compute metrics for the given predictions and targets.
+        
+        Args:
+            accumulated_preds: Dictionary of predictions for each head
+            accumulated_targets: Dictionary of targets for each head
+            validation_metrics: Dictionary to accumulate validation metrics
+            
+        Note:
+            This function modifies the input validation_metrics dictionary in-place.
+        """
+        for head in tqdm(accumulated_preds.keys(), desc=f"Computing heads metrics {'with CI' if compute_cli else ''}", total=len(accumulated_preds)):
+            # Gather accumulated predictions and targets for each head
+            preds = torch.cat(accumulated_preds[head], dim=0)
+            targets = torch.cat(accumulated_targets[head], dim=0)
+            
+            if self.config.head_task[head] == MetricTask.BINARY_CLASSIFICATION:
+                # Compute classification metrics WITH CI
+                head_metrics = compute_classification_metrics(
+                    preds=preds,
+                    targets=targets,
+                    head_name=head,
+                    head_structure=self.config.head_structure,
+                    labels_map=self.config.labels_map,
+                    mode=self.config.run_mode, 
+                    wandb_wrapper=self.wandb_wrapper,
+                    is_ref_device=self.config.is_ref_device,
+                    confidence_level=getattr(self.config, 'ci_confidence_level', 0.95),
+                    n_bootstrap=getattr(self.config, 'ci_n_bootstrap', 1000),
+                    compute_cli=compute_cli
+                )
+            elif self.config.head_task[head] == MetricTask.MULTICLASS_CLASSIFICATION:
+                # Compute classification metrics WITH CI for multiclass
+                head_metrics = compute_classification_metrics(
+                    preds=preds,
+                    targets=targets,
+                    head_name=head,
+                    head_structure=self.config.head_structure,
+                    labels_map=self.config.labels_map,
+                    mode=self.config.run_mode, 
+                    wandb_wrapper=self.wandb_wrapper,
+                    is_ref_device=self.config.is_ref_device,
+                    confidence_level=getattr(self.config, 'ci_confidence_level', 0.95),
+                    n_bootstrap=getattr(self.config, 'ci_n_bootstrap', 1000),
+                    compute_cli=compute_cli
+                )
+            elif self.config.head_task[head] == MetricTask.REGRESSION:
+                # Compute regression metrics WITH CI
+                head_metrics = compute_regression_metrics(
+                    preds=preds,
+                    targets=targets,
+                    head_name=head,
+                    mode=self.config.run_mode, 
+                    wandb_wrapper=self.wandb_wrapper,
+                    is_ref_device=self.config.is_ref_device,
+                    confidence_level=getattr(self.config, 'ci_confidence_level', 0.95),
+                    n_bootstrap=getattr(self.config, 'ci_n_bootstrap', 1000),
+                    compute_cli=compute_cli
+                )
+            else:
+                raise ValueError(
+                    f"[DEBUG] rank={self.device} => Unknown head task: {self.config.head_task[head]} "
+                    f"Supported tasks: {', '.join([metric.value for metric in MetricTask])}"
+                )
+            
+            # Update inference metrics with computed metrics for the current head
+            for k, v in head_metrics.items():
+                validation_metrics[k] = v

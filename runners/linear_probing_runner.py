@@ -3,8 +3,8 @@ import json
 import torch
 import numpy as np
 import pandas as pd
-from typing import Optional
 from datetime import datetime
+from typing import Optional, Dict, Any, Callable
 
 from tqdm import tqdm
 from torch.optim import Optimizer
@@ -26,6 +26,10 @@ from utils.enums import RunMode, MetricTask
 from utils.wandb_wrapper import WandbWrapper
 from utils.config.linear_probing_config import LinearProbingConfig
 
+# Type aliases
+ProcessedBatch = Dict[str, torch.Tensor]
+Outputs = Dict[str, Dict[str, torch.Tensor]]
+RunBatch = Dict[str, Any]
 
 @RunnerRegistry.register("DeepCORO_video_linear_probing")
 @RunnerRegistry.register("DeepCORO_video_linear_probing_test")
@@ -208,8 +212,12 @@ class LinearProbingRunner:
         accumulated_names: list[str] = []
         for batch_idx, batch in enumerate(data_iter, start=1):
             try:
-                processed_batch: dict[str, torch.Tensor] = self._preprocess_inputs(batch)
-                outputs: dict[str, dict[str, torch.Tensor]] = step_fn(**processed_batch)
+                run_batch: RunBatch = self._run_batch(
+                    batch=batch,
+                    step_fn=step_fn
+                )
+                outputs: Outputs = run_batch['outputs']
+                processed_batch: ProcessedBatch = run_batch['processed_batch']
 
                 # Accumulate metrics
                 for k, v in outputs.items():
@@ -411,7 +419,7 @@ class LinearProbingRunner:
 
     def _preprocess_inputs(
         self, 
-        batch: dict[str, torch.Tensor]
+        batch: Dict[str, torch.Tensor]
     ) -> dict[str, torch.Tensor]:
         """
         Preprocess batch inputs for the model.
@@ -439,11 +447,24 @@ class LinearProbingRunner:
             "batch_video": batch_video,
             "batch_targets": batch_targets,
         }
+    
+    def _run_batch(
+        self,
+        batch: Dict[str, torch.Tensor],
+        step_fn: Callable[..., Outputs],
+    ) -> RunBatch:
+        processed_batch: ProcessedBatch = self._preprocess_inputs(batch)
+        outputs: Outputs = step_fn(**processed_batch)
         
+        return RunBatch(
+            outputs=outputs,
+            processed_batch=processed_batch
+        )
+    
     def _train_step(
         self, 
         batch_video: torch.Tensor,
-        batch_targets: dict[str, torch.Tensor]
+        batch_targets: Dict[str, torch.Tensor]
     ) -> dict[str, dict[str, torch.Tensor]]:
         # Clear gradients only if this is the first step in accumulation
         if self.step % self.config.gradient_accumulation_steps == 0:
@@ -518,7 +539,7 @@ class LinearProbingRunner:
     def _val_step(
         self, 
         batch_video: torch.Tensor,
-        batch_targets: dict[str, torch.Tensor],
+        batch_targets: Dict[str, torch.Tensor],
     ) -> dict[str, dict[str, torch.Tensor]]:                
         # Forward pass with autocast for mixed precision
         with torch.no_grad():
@@ -595,17 +616,21 @@ class LinearProbingRunner:
             data_iter: tqdm = tqdm(self.val_loader, desc=tqdm_desc, total=len(self.val_loader))
         else:
             data_iter = self.val_loader
-            
+        
+        step_fn: callable = self._val_step
+        
         # Process all batches
         with torch.no_grad():
             for batch_idx, batch in enumerate(data_iter):
                 try:
-                    # Preprocess inputs
-                    processed_batch: dict[str, torch.Tensor] = self._preprocess_inputs(batch)
-                    
                     # Forward pass
-                    outputs: dict[str, dict[str, torch.Tensor]] = self._val_step(**processed_batch)
-                    
+                    run_batch: RunBatch = self._run_batch(
+                        batch=batch,
+                        step_fn=step_fn
+                    )
+                    outputs: Outputs = run_batch['outputs']
+                    processed_batch: ProcessedBatch = run_batch['processed_batch']
+                        
                     # Accumulate metrics
                     for k, v in outputs.items():
                         if k == 'losses':

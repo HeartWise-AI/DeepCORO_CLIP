@@ -198,7 +198,7 @@ class LinearProbingRunner:
         epoch_metrics: dict[str, float] = {}
 
         dataloader: DataLoader = self.train_loader if mode == RunMode.TRAIN else self.val_loader
-        step_fn: callable = self._train_step if mode == RunMode.TRAIN else self._val_step
+        step_fn: Callable[..., Outputs] = self._train_step if mode == RunMode.TRAIN else self._val_step
 
         tqdm_desc: str = f"[GPU {self.device}] Running {mode} Epoch {epoch + 1}"
         if self.config.is_ref_device:
@@ -206,10 +206,11 @@ class LinearProbingRunner:
         else:
             data_iter: DataLoader = dataloader
         
-        gathered_metrics: dict[str, float] = {}
-        accumulated_preds: dict[str, list[torch.Tensor]] = defaultdict(list)
-        accumulated_targets: dict[str, list[torch.Tensor]] = defaultdict(list)
+        gathered_metrics: Dict[str, float] = {}
+        accumulated_preds: Dict[str, list[torch.Tensor]] = defaultdict(list)
+        accumulated_targets: Dict[str, list[torch.Tensor]] = defaultdict(list)
         accumulated_names: list[str] = []
+        
         for batch_idx, batch in enumerate(data_iter, start=1):
             try:
                 run_batch: RunBatch = self._run_batch(
@@ -219,56 +220,16 @@ class LinearProbingRunner:
                 outputs: Outputs = run_batch['outputs']
                 processed_batch: ProcessedBatch = run_batch['processed_batch']
 
-                # Accumulate metrics
-                for k, v in outputs.items():
-                    if k.startswith('lr/'):
-                        # Learning rate metrics are already scalar values
-                        gathered_metrics[k] = v
-                    elif k == 'losses':
-                        # Losses are already scalar values
-                        for loss_name, loss_val in v.items():
-                            gathered_metrics[f"{loss_name}"] = loss_val
-                            gathered_metrics[f'mean_{loss_name}'] = gathered_metrics.get(f"mean_{loss_name}", 0.0) + loss_val
-                    elif k == 'logits':
-                        # Handle logits for classification metrics
-                        for head_name, logits in v.items():
-                            # Get targets
-                            targets: torch.Tensor = processed_batch['batch_targets'][head_name]
-                            
-                            # Get predictions
-                            if self.config.head_task[head_name] == MetricTask.BINARY_CLASSIFICATION:
-                                if logits.ndim != 2 or logits.shape[1] != 1: # Expected shape: [B, 1]
-                                    raise ValueError(
-                                        f"[DEBUG] rank={self.device} => Binary classification head {head_name} "
-                                        f"should have logits of shape [B, 1], but got {logits.shape}"
-                                    )
-                                preds: torch.Tensor = torch.sigmoid(logits.float())
-                                targets: torch.Tensor = targets.long()
-                                
-                            elif self.config.head_task[head_name] == MetricTask.MULTICLASS_CLASSIFICATION:
-                                if logits.ndim != 2 or logits.shape[1] < 2: # Expected shape: [B, C] with C > 1 (Nb of classes)
-                                    raise ValueError(
-                                        f"[DEBUG] rank={self.device} => Multiclass classification head {head_name} "
-                                        f"should have logits of shape [B, C] where C > 1 (Nb of classes), but got {logits.shape}"
-                                    )
-                                preds: torch.Tensor = torch.softmax(logits.float(), dim=1)
-                                targets: torch.Tensor = targets.long()
-                                
-                            elif self.config.head_task[head_name] == MetricTask.REGRESSION:
-                                preds: torch.Tensor = logits
-                                targets: torch.Tensor = targets.float()
-                                
-                            else:
-                                raise ValueError(
-                                    f"[DEBUG] rank={self.device} => Unknown head task: {self.config.head_task[head_name]} "
-                                    f"Supported tasks: {', '.join([metric.value for metric in MetricTask])}"
-                                )
-                            
-                            # Accumulate predictions and targets
-                            accumulated_preds[head_name].append(preds)
-                            accumulated_targets[head_name].append(targets)
-                
-                accumulated_names.extend(batch['video_fname'])
+                # Use the new accumulation function
+                self._accumulate_batch_metrics(
+                    outputs=outputs,
+                    processed_batch=processed_batch,
+                    accumulated_preds=accumulated_preds,
+                    accumulated_targets=accumulated_targets,
+                    accumulated_names=accumulated_names,
+                    gathered_metrics=gathered_metrics,
+                    batch=batch
+                )
                 
             except Exception as e:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in step_fn: {e}")
@@ -604,11 +565,11 @@ class LinearProbingRunner:
         )
         
         # Initialize metrics and accumulation containers
-        validation_metrics: dict[str, float] = {}
-        accumulated_preds: dict[str, list[torch.Tensor]] = defaultdict(list)
-        accumulated_targets: dict[str, list[torch.Tensor]] = defaultdict(list)
+        validation_metrics: Dict[str, float] = {}
+        accumulated_preds: Dict[str, list[torch.Tensor]] = defaultdict(list)
+        accumulated_targets: Dict[str, list[torch.Tensor]] = defaultdict(list)
         accumulated_names: list[str] = []
-        gathered_metrics: dict[str, float] = {}
+        gathered_metrics: Dict[str, float] = {}
         
         # Set up progress bar
         tqdm_desc: str = f"[GPU {self.device}] Running Validation"
@@ -617,7 +578,7 @@ class LinearProbingRunner:
         else:
             data_iter = self.val_loader
         
-        step_fn: callable = self._val_step
+        step_fn: Callable[..., Outputs] = self._val_step
         
         # Process all batches
         with torch.no_grad():
@@ -630,43 +591,17 @@ class LinearProbingRunner:
                     )
                     outputs: Outputs = run_batch['outputs']
                     processed_batch: ProcessedBatch = run_batch['processed_batch']
-                        
-                    # Accumulate metrics
-                    for k, v in outputs.items():
-                        if k == 'losses':
-                            # Accumulate losses
-                            for loss_name, loss_val in v.items():
-                                gathered_metrics[f"{loss_name}"] = loss_val
-                                gathered_metrics[f'mean_{loss_name}'] = gathered_metrics.get(f"mean_{loss_name}", 0.0) + loss_val
-                        elif k == 'logits':
-                            # Handle logits for classification/regression metrics
-                            for head_name, logits in v.items():
-                                # Get targets
-                                targets: torch.Tensor = processed_batch['batch_targets'][head_name]
-                                
-                                # Get predictions
-                                if self.config.head_task[head_name] == MetricTask.BINARY_CLASSIFICATION:
-                                    preds: torch.Tensor = torch.sigmoid(logits.float())
-                                    targets: torch.Tensor = targets.long()
-                               
-                                elif self.config.head_task[head_name] == MetricTask.MULTICLASS_CLASSIFICATION:
-                                    preds: torch.Tensor = torch.softmax(logits.float(), dim=1)
-                                    targets: torch.Tensor = targets.long()
-                               
-                                elif self.config.head_task[head_name] == MetricTask.REGRESSION:
-                                    preds: torch.Tensor = logits
-                                    targets: torch.Tensor = targets.float()
-                                else:
-                                    raise ValueError(
-                                        f"[DEBUG] rank={self.device} => Unknown head task: {self.config.head_task[head_name]} " 
-                                        f"Supported tasks: {', '.join([metric.value for metric in MetricTask])}"
-                                    )
-                                # Accumulate predictions and targets
-                                accumulated_preds[head_name].append(preds)
-                                accumulated_targets[head_name].append(targets)
                     
-                    # Accumulate video names
-                    accumulated_names.extend(batch['video_fname'])
+                    # Use the new accumulation function
+                    self._accumulate_batch_metrics(
+                        outputs=outputs,
+                        processed_batch=processed_batch,
+                        accumulated_preds=accumulated_preds,
+                        accumulated_targets=accumulated_targets,
+                        accumulated_names=accumulated_names,
+                        gathered_metrics=gathered_metrics,
+                        batch=batch
+                    )
                     
                 except Exception as e:
                     raise Exception(f"[DEBUG] rank={self.device} => Error in validation step: {e}")
@@ -1066,3 +1001,80 @@ class LinearProbingRunner:
                         
         except Exception as e:
             print(f"[DEBUG] rank={self.device} => Error saving validation metrics to JSON: {e}")
+
+    def _accumulate_batch_metrics(
+        self,
+        outputs: Outputs,
+        processed_batch: ProcessedBatch,
+        accumulated_preds: Dict[str, list[torch.Tensor]], # leverage ref. ptr to avoid copying
+        accumulated_targets: Dict[str, list[torch.Tensor]], # leverage ref. ptr to avoid copying
+        accumulated_names: list[str], # leverage ref. ptr to avoid copying
+        gathered_metrics: Dict[str, float], # leverage ref. ptr to avoid copying
+        batch: Dict[str, torch.Tensor]
+    ) -> None:
+        """
+        Accumulate metrics from a single batch for later computation.
+        
+        Args:
+            outputs: Model outputs containing losses, logits, and lr metrics
+            processed_batch: Preprocessed batch data
+            accumulated_preds: Dictionary to accumulate predictions for each head
+            accumulated_targets: Dictionary to accumulate targets for each head
+            accumulated_names: List to accumulate video names
+            gathered_metrics: Dictionary to accumulate scalar metrics
+            batch: Original batch data containing video filenames
+            
+        Note:
+            This function modifies the input containers in-place and returns None.            
+        """
+        # Accumulate metrics
+        for k, v in outputs.items():
+            if k.startswith('lr/'):
+                # Learning rate metrics are already scalar values
+                gathered_metrics[k] = v
+            elif k == 'losses':
+                # Losses are already scalar values
+                for loss_name, loss_val in v.items():
+                    gathered_metrics[f"{loss_name}"] = loss_val
+                    gathered_metrics[f'mean_{loss_name}'] = gathered_metrics.get(f"mean_{loss_name}", 0.0) + loss_val
+            elif k == 'logits':
+                # Handle logits for classification/regression metrics
+                for head_name, logits in v.items():
+                    # Get targets
+                    targets: torch.Tensor = processed_batch['batch_targets'][head_name]
+                    
+                    # Get predictions based on task type
+                    if self.config.head_task[head_name] == MetricTask.BINARY_CLASSIFICATION:
+                        if logits.ndim != 2 or logits.shape[1] != 1:  # Expected shape: [B, 1]
+                            raise ValueError(
+                                f"[DEBUG] rank={self.device} => Binary classification head {head_name} "
+                                f"should have logits of shape [B, 1], but got {logits.shape}"
+                            )
+                        preds: torch.Tensor = torch.sigmoid(logits.float())
+                        targets: torch.Tensor = targets.long()
+                        
+                    elif self.config.head_task[head_name] == MetricTask.MULTICLASS_CLASSIFICATION:
+                        if logits.ndim != 2 or logits.shape[1] < 2:  # Expected shape: [B, C] with C > 1
+                            raise ValueError(
+                                f"[DEBUG] rank={self.device} => Multiclass classification head {head_name} "
+                                f"should have logits of shape [B, C] where C > 1 (Nb of classes), but got {logits.shape}"
+                            )
+                        preds: torch.Tensor = torch.softmax(logits.float(), dim=1)
+                        targets: torch.Tensor = targets.long()
+                        
+                    elif self.config.head_task[head_name] == MetricTask.REGRESSION:
+                        preds: torch.Tensor = logits
+                        targets: torch.Tensor = targets.float()
+                        
+                    else:
+                        raise ValueError(
+                            f"[DEBUG] rank={self.device} => Unknown head task: {self.config.head_task[head_name]} "
+                            f"Supported tasks: {', '.join([metric.value for metric in MetricTask])}"
+                        )
+                    
+                    # Accumulate predictions and targets
+                    accumulated_preds[head_name].append(preds)
+                    accumulated_targets[head_name].append(targets)
+        
+        # Accumulate video names
+        accumulated_names.extend(batch['video_fname'])

@@ -210,7 +210,7 @@ class LinearProbingRunner:
             try:
                 processed_batch: dict[str, torch.Tensor] = self._preprocess_inputs(batch)
                 outputs: dict[str, dict[str, torch.Tensor]] = step_fn(**processed_batch)
-                
+
                 # Accumulate metrics
                 for k, v in outputs.items():
                     if k.startswith('lr/'):
@@ -224,23 +224,41 @@ class LinearProbingRunner:
                     elif k == 'logits':
                         # Handle logits for classification metrics
                         for head_name, logits in v.items():
-                            if self.config.head_task[head_name] == MetricTask.CLASSIFICATION:
-                                preds = torch.sigmoid(logits.float())
-                                targets = processed_batch['batch_targets'][head_name].long()
-                                if preds.ndim > 1 and preds.shape[1] > 1:
-                                    one_hot_targets = torch.zeros_like(preds)
-                                    one_hot_targets.scatter_(1, targets.unsqueeze(1), 1)
-                                    targets = one_hot_targets
-                                accumulated_preds[head_name].append(preds)
-                                accumulated_targets[head_name].append(targets)
+                            # Get targets
+                            targets: torch.Tensor = processed_batch['batch_targets'][head_name]
+                            
+                            # Get predictions
+                            if self.config.head_task[head_name] == MetricTask.BINARY_CLASSIFICATION:
+                                if logits.ndim != 2 or logits.shape[1] != 1: # Expected shape: [B, 1]
+                                    raise ValueError(
+                                        f"[DEBUG] rank={self.device} => Binary classification head {head_name} "
+                                        f"should have logits of shape [B, 1], but got {logits.shape}"
+                                    )
+                                preds: torch.Tensor = torch.sigmoid(logits.float())
+                                targets: torch.Tensor = targets.long()
+                                
+                            elif self.config.head_task[head_name] == MetricTask.MULTICLASS_CLASSIFICATION:
+                                if logits.ndim != 2 or logits.shape[1] < 2: # Expected shape: [B, C] with C > 1 (Nb of classes)
+                                    raise ValueError(
+                                        f"[DEBUG] rank={self.device} => Multiclass classification head {head_name} "
+                                        f"should have logits of shape [B, C] where C > 1 (Nb of classes), but got {logits.shape}"
+                                    )
+                                preds: torch.Tensor = torch.softmax(logits.float(), dim=1)
+                                targets: torch.Tensor = targets.long()
+                                
                             elif self.config.head_task[head_name] == MetricTask.REGRESSION:
-                                accumulated_preds[head_name].append(logits)
-                                accumulated_targets[head_name].append(processed_batch['batch_targets'][head_name].float())
+                                preds: torch.Tensor = logits
+                                targets: torch.Tensor = targets.float()
+                                
                             else:
                                 raise ValueError(
                                     f"[DEBUG] rank={self.device} => Unknown head task: {self.config.head_task[head_name]} "
-                                    f"Supported tasks: {MetricTask.CLASSIFICATION}, {MetricTask.REGRESSION}"
+                                    f"Supported tasks: {', '.join([metric.value for metric in MetricTask])}"
                                 )
+                            
+                            # Accumulate predictions and targets
+                            accumulated_preds[head_name].append(preds)
+                            accumulated_targets[head_name].append(targets)
                 
                 accumulated_names.extend(batch['video_fname'])
                 
@@ -306,7 +324,7 @@ class LinearProbingRunner:
                 final_preds[head] = preds
                 final_targets[head] = targets
                 
-                if self.config.head_task[head] == MetricTask.CLASSIFICATION:                
+                if self.config.head_task[head] == MetricTask.BINARY_CLASSIFICATION:                
                     # Compute metrics using the helper function (NO CI)
                     head_metrics = compute_classification_metrics(
                         preds=preds,
@@ -318,7 +336,18 @@ class LinearProbingRunner:
                         wandb_wrapper=self.wandb_wrapper,
                         is_ref_device=self.config.is_ref_device
                     )
-                    
+                elif self.config.head_task[head] == MetricTask.MULTICLASS_CLASSIFICATION:
+                    # Compute metrics using the helper function (NO CI)
+                    head_metrics = compute_classification_metrics(
+                        preds=preds,
+                        targets=targets,
+                        head_name=head,
+                        head_structure=self.config.head_structure,
+                        labels_map=self.config.labels_map,
+                        mode=mode,
+                        wandb_wrapper=self.wandb_wrapper,
+                        is_ref_device=self.config.is_ref_device
+                    )
                 elif self.config.head_task[head] == MetricTask.REGRESSION:
                     # Compute metrics using the helper function (NO CI)
                     head_metrics = compute_regression_metrics(
@@ -329,7 +358,12 @@ class LinearProbingRunner:
                         wandb_wrapper=self.wandb_wrapper,
                         is_ref_device=self.config.is_ref_device
                     )
-                    
+                else:
+                    raise ValueError(
+                        f"[DEBUG] rank={self.device} => Unknown head task: {self.config.head_task[head]} "
+                        f"Supported tasks: {', '.join([metric.value for metric in MetricTask])}"
+                    )
+                
                 # Update epoch metrics with the computed metrics for the current head
                 for k, v in head_metrics.items():
                     epoch_metrics[f"{mode}/{head}_{k}"] = v
@@ -419,6 +453,10 @@ class LinearProbingRunner:
         # Forward pass with autocast for mixed precision
         with torch.amp.autocast('cuda', enabled=self.config.use_amp, dtype=torch.float16):
             try:
+                if self.config.use_amp:
+                    batch_video = batch_video.to(dtype=torch.float16)
+                    batch_targets = {k: v.to(dtype=torch.float16) for k, v in batch_targets.items()}
+                    
                 outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
                     batch_video
                 )
@@ -481,11 +519,15 @@ class LinearProbingRunner:
         self, 
         batch_video: torch.Tensor,
         batch_targets: dict[str, torch.Tensor],
-        video_indices: Optional[torch.Tensor] = None,
     ) -> dict[str, dict[str, torch.Tensor]]:                
         # Forward pass with autocast for mixed precision
         with torch.no_grad():
             try:
+                # Convert inputs to float16 if AMP is enabled
+                if self.config.use_amp:
+                    batch_video = batch_video.to(dtype=torch.float16)
+                    batch_targets = {k: v.to(dtype=torch.float16) for k, v in batch_targets.items()}
+                
                 outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
                     batch_video
                 )
@@ -574,23 +616,29 @@ class LinearProbingRunner:
                         elif k == 'logits':
                             # Handle logits for classification/regression metrics
                             for head_name, logits in v.items():
-                                if self.config.head_task[head_name] == MetricTask.CLASSIFICATION:
-                                    preds = torch.sigmoid(logits.float())
-                                    targets = processed_batch['batch_targets'][head_name].long()
-                                    if preds.ndim > 1 and preds.shape[1] > 1:
-                                        one_hot_targets = torch.zeros_like(preds)
-                                        one_hot_targets.scatter_(1, targets.unsqueeze(1), 1)
-                                        targets = one_hot_targets
-                                    accumulated_preds[head_name].append(preds)
-                                    accumulated_targets[head_name].append(targets)
+                                # Get targets
+                                targets: torch.Tensor = processed_batch['batch_targets'][head_name]
+                                
+                                # Get predictions
+                                if self.config.head_task[head_name] == MetricTask.BINARY_CLASSIFICATION:
+                                    preds: torch.Tensor = torch.sigmoid(logits.float())
+                                    targets: torch.Tensor = targets.long()
+                               
+                                elif self.config.head_task[head_name] == MetricTask.MULTICLASS_CLASSIFICATION:
+                                    preds: torch.Tensor = torch.softmax(logits.float(), dim=1)
+                                    targets: torch.Tensor = targets.long()
+                               
                                 elif self.config.head_task[head_name] == MetricTask.REGRESSION:
-                                    accumulated_preds[head_name].append(logits)
-                                    accumulated_targets[head_name].append(processed_batch['batch_targets'][head_name].float())
+                                    preds: torch.Tensor = logits
+                                    targets: torch.Tensor = targets.float()
                                 else:
                                     raise ValueError(
-                                        f"[DEBUG] rank={self.device} => Unknown head task: {self.config.head_task[head_name]} "
-                                        f"Supported tasks: {MetricTask.CLASSIFICATION}, {MetricTask.REGRESSION}"
+                                        f"[DEBUG] rank={self.device} => Unknown head task: {self.config.head_task[head_name]} " 
+                                        f"Supported tasks: {', '.join([metric.value for metric in MetricTask])}"
                                     )
+                                # Accumulate predictions and targets
+                                accumulated_preds[head_name].append(preds)
+                                accumulated_targets[head_name].append(targets)
                     
                     # Accumulate video names
                     accumulated_names.extend(batch['video_fname'])
@@ -644,8 +692,22 @@ class LinearProbingRunner:
                 preds = torch.cat(accumulated_preds[head], dim=0)
                 targets = torch.cat(accumulated_targets[head], dim=0)
                 
-                if self.config.head_task[head] == MetricTask.CLASSIFICATION:
+                if self.config.head_task[head] == MetricTask.BINARY_CLASSIFICATION:
                     # Compute classification metrics WITH CI
+                    head_metrics = compute_classification_metrics_with_ci(
+                        preds=preds,
+                        targets=targets,
+                        head_name=head,
+                        head_structure=self.config.head_structure,
+                        labels_map=self.config.labels_map,
+                        mode=self.config.run_mode, 
+                        wandb_wrapper=self.wandb_wrapper,
+                        is_ref_device=self.config.is_ref_device,
+                        confidence_level=getattr(self.config, 'ci_confidence_level', 0.95),
+                        n_bootstrap=getattr(self.config, 'ci_n_bootstrap', 1000)
+                    )
+                elif self.config.head_task[head] == MetricTask.MULTICLASS_CLASSIFICATION:
+                    # Compute classification metrics WITH CI for multiclass
                     head_metrics = compute_classification_metrics_with_ci(
                         preds=preds,
                         targets=targets,
@@ -673,7 +735,7 @@ class LinearProbingRunner:
                 else:
                     raise ValueError(
                         f"[DEBUG] rank={self.device} => Unknown head task: {self.config.head_task[head]} "
-                        f"Supported tasks: {MetricTask.CLASSIFICATION}, {MetricTask.REGRESSION}"
+                        f"Supported tasks: {', '.join([metric.value for metric in MetricTask])}"
                     )
                 
                 # Update inference metrics with computed metrics for the current head

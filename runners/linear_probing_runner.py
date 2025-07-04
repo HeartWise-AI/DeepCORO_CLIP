@@ -251,24 +251,11 @@ class LinearProbingRunner:
             )
 
         # Gather all predictions and targets across GPUs
-        if self.config.world_size > 1:
-            # Gather video names
-            gathered_names = DistributedUtils.gather_object(accumulated_names, self.config.world_size)
-            accumulated_names = [name for sublist in gathered_names for name in sublist]
-
-            # Gather predictions and targets for each head
-            for head in accumulated_preds.keys():
-                # Convert lists to tensors
-                local_preds: torch.Tensor = torch.cat(accumulated_preds[head], dim=0)
-                local_targets: torch.Tensor = torch.cat(accumulated_targets[head], dim=0)
-
-                # Gather tensors
-                gathered_preds: torch.Tensor = DistributedUtils.gather_tensor(local_preds, self.config.world_size)
-                gathered_targets: torch.Tensor = DistributedUtils.gather_tensor(local_targets, self.config.world_size)
-
-                # Update accumulated tensors
-                accumulated_preds[head] = [gathered_preds]
-                accumulated_targets[head] = [gathered_targets]
+        accumulated_preds, accumulated_targets, accumulated_names = self._gather_distributed_predictions(
+            accumulated_preds=accumulated_preds,
+            accumulated_targets=accumulated_targets,
+            accumulated_names=accumulated_names
+        )
 
         # Get mean epoch losses
         for k, v in gathered_metrics.items():
@@ -620,23 +607,11 @@ class LinearProbingRunner:
                 )
         
         # Gather all predictions and targets across GPUs if using distributed training
-        # Gather video names
-        gathered_names = DistributedUtils.gather_object(accumulated_names, self.config.world_size)
-        accumulated_names = [name for sublist in gathered_names for name in sublist]
-        
-        # Gather predictions and targets for each head
-        for head in accumulated_preds.keys():
-            # Convert lists to tensors
-            local_preds: torch.Tensor = torch.cat(accumulated_preds[head], dim=0)
-            local_targets: torch.Tensor = torch.cat(accumulated_targets[head], dim=0)
-            
-            # Gather tensors
-            gathered_preds: torch.Tensor = DistributedUtils.gather_tensor(local_preds, self.config.world_size)
-            gathered_targets: torch.Tensor = DistributedUtils.gather_tensor(local_targets, self.config.world_size)
-            
-            # Update accumulated tensors
-            accumulated_preds[head] = [gathered_preds]
-            accumulated_targets[head] = [gathered_targets]
+        accumulated_preds, accumulated_targets, accumulated_names = self._gather_distributed_predictions(
+            accumulated_preds=accumulated_preds,
+            accumulated_targets=accumulated_targets,
+            accumulated_names=accumulated_names
+        )
         
         # Compute mean losses
         total_batches = batch_idx + 1
@@ -1078,3 +1053,53 @@ class LinearProbingRunner:
         
         # Accumulate video names
         accumulated_names.extend(batch['video_fname'])
+
+    def _gather_distributed_predictions(
+        self,
+        accumulated_preds: Dict[str, list[torch.Tensor]],
+        accumulated_targets: Dict[str, list[torch.Tensor]], 
+        accumulated_names: list[str]
+    ) -> tuple[Dict[str, list[torch.Tensor]], Dict[str, list[torch.Tensor]], list[str]]:
+        """
+        Gather predictions, targets, and video names across all distributed processes.
+        
+        Args:
+            accumulated_preds: Dictionary of predictions for each head (modified in-place)
+            accumulated_targets: Dictionary of targets for each head (modified in-place)
+            accumulated_names: List of video names (modified in-place)
+            
+        Returns:
+            tuple: (accumulated_preds, accumulated_targets, accumulated_names) 
+                   Same objects as inputs, but gathered across all processes
+                   
+        Note:
+            This function modifies the input containers in-place for memory efficiency.
+            Only performs gathering if world_size > 1, otherwise returns inputs unchanged.
+        """
+        # Only gather if we're in distributed mode
+        if self.config.world_size <= 1:
+            return accumulated_preds, accumulated_targets, accumulated_names
+        
+        # Gather video names across all processes
+        gathered_names = DistributedUtils.gather_object(accumulated_names, self.config.world_size)
+        gathered_names_flat = [name for sublist in gathered_names for name in sublist]
+        
+        # Clear and update accumulated_names in-place
+        accumulated_names.clear()
+        accumulated_names.extend(gathered_names_flat)
+        
+        # Gather predictions and targets for each head
+        for head in accumulated_preds.keys():
+            # Convert lists to tensors (concatenate batches from this process)
+            local_preds: torch.Tensor = torch.cat(accumulated_preds[head], dim=0)
+            local_targets: torch.Tensor = torch.cat(accumulated_targets[head], dim=0)
+            
+            # Gather tensors across all processes
+            gathered_preds: torch.Tensor = DistributedUtils.gather_tensor(local_preds, self.config.world_size)
+            gathered_targets: torch.Tensor = DistributedUtils.gather_tensor(local_targets, self.config.world_size)
+            
+            # Update accumulated containers in-place (replace list of many tensors with list of one complete tensor)
+            accumulated_preds[head] = [gathered_preds]
+            accumulated_targets[head] = [gathered_targets]
+        
+        return accumulated_preds, accumulated_targets, accumulated_names

@@ -222,7 +222,7 @@ class LinearProbingRunner:
                     step_fn=step_fn
                 )
 
-                # Use the new accumulation function
+                # Accumulate batch metrics for each head
                 self._accumulate_batch_metrics(
                     run_batch=run_batch,
                     accumulated_preds=accumulated_preds,
@@ -252,11 +252,14 @@ class LinearProbingRunner:
             )
 
         # Gather all predictions and targets across GPUs
-        accumulated_preds, accumulated_targets, accumulated_names = self._gather_distributed_predictions(
-            accumulated_preds=accumulated_preds,
-            accumulated_targets=accumulated_targets,
-            accumulated_names=accumulated_names
-        )
+        if self.config.world_size > 1:
+            print(f"[DEBUG] rank={self.device} => Gathering distributed predictions... len(accumulated_preds): {len(accumulated_preds)}, len(accumulated_targets): {len(accumulated_targets)}, len(accumulated_names): {len(accumulated_names)}")
+            self._gather_distributed_predictions(
+                accumulated_preds=accumulated_preds,
+                accumulated_targets=accumulated_targets,
+                accumulated_names=accumulated_names
+            )
+            print(f"[DEBUG] rank={self.device} => Finished gathering distributed predictions... len(accumulated_preds): {len(accumulated_preds)}, len(accumulated_targets): {len(accumulated_targets)}, len(accumulated_names): {len(accumulated_names)}")
 
         # Get mean epoch losses
         for k, v in gathered_metrics.items():
@@ -526,7 +529,7 @@ class LinearProbingRunner:
                         step_fn=step_fn
                     )
                     
-                    # Use the new accumulation function
+                    # Accumulate batch metrics for each head
                     self._accumulate_batch_metrics(
                         run_batch=run_batch,
                         accumulated_preds=accumulated_preds,
@@ -553,12 +556,13 @@ class LinearProbingRunner:
                 )
         
         # Gather all predictions and targets across GPUs if using distributed training
-        accumulated_preds, accumulated_targets, accumulated_names = self._gather_distributed_predictions(
-            accumulated_preds=accumulated_preds,
-            accumulated_targets=accumulated_targets,
-            accumulated_names=accumulated_names
-        )
-        
+        if self.config.world_size > 1:
+            self._gather_distributed_predictions(
+                accumulated_preds=accumulated_preds,
+                accumulated_targets=accumulated_targets,
+                accumulated_names=accumulated_names
+            )
+            
         # Compute mean losses
         total_batches = batch_idx + 1
         for k, v in gathered_metrics.items():
@@ -878,10 +882,10 @@ class LinearProbingRunner:
     def _accumulate_batch_metrics(
         self,
         run_batch: BatchResult,
-        accumulated_preds: Dict[str, list[torch.Tensor]], # leverage ref. ptr to avoid copying
-        accumulated_targets: Dict[str, list[torch.Tensor]], # leverage ref. ptr to avoid copying
-        accumulated_names: list[str], # leverage ref. ptr to avoid copying
-        gathered_metrics: Dict[str, float], # leverage ref. ptr to avoid copying
+        accumulated_preds: Dict[str, list[torch.Tensor]], # leverage ref. ptr to avoid reference return by Tuple
+        accumulated_targets: Dict[str, list[torch.Tensor]], # leverage ref. ptr to avoid reference return by Tuple
+        accumulated_names: list[str], # leverage ref. ptr to avoid reference return by Tuple
+        gathered_metrics: Dict[str, float], # leverage ref. ptr to avoid reference return by Tuple
         batch: Dict[str, torch.Tensor]
     ) -> None:
         """
@@ -953,10 +957,10 @@ class LinearProbingRunner:
 
     def _gather_distributed_predictions(
         self,
-        accumulated_preds: Dict[str, list[torch.Tensor]],
-        accumulated_targets: Dict[str, list[torch.Tensor]], 
-        accumulated_names: list[str]
-    ) -> tuple[Dict[str, list[torch.Tensor]], Dict[str, list[torch.Tensor]], list[str]]:
+        accumulated_preds: Dict[str, list[torch.Tensor]],  # leverage ref. ptr to avoid reference return by Tuple
+        accumulated_targets: Dict[str, list[torch.Tensor]],  # leverage ref. ptr to avoid reference return by Tuple
+        accumulated_names: list[str]  # leverage ref. ptr to avoid reference return by Tuple
+    ) -> None:
         """
         Gather predictions, targets, and video names across all distributed processes.
         
@@ -964,19 +968,10 @@ class LinearProbingRunner:
             accumulated_preds: Dictionary of predictions for each head (modified in-place)
             accumulated_targets: Dictionary of targets for each head (modified in-place)
             accumulated_names: List of video names (modified in-place)
-            
-        Returns:
-            tuple: (accumulated_preds, accumulated_targets, accumulated_names) 
-                   Same objects as inputs, but gathered across all processes
-                   
-        Note:
-            This function modifies the input containers in-place for memory efficiency.
-            Only performs gathering if world_size > 1, otherwise returns inputs unchanged.
-        """
-        # Only gather if we're in distributed mode
-        if self.config.world_size <= 1:
-            return accumulated_preds, accumulated_targets, accumulated_names
         
+        Note:
+            This function modifies the input containers in-place and returns None.
+        """
         # Gather video names across all processes
         gathered_names = DistributedUtils.gather_object(accumulated_names, self.config.world_size)
         gathered_names_flat = [name for sublist in gathered_names for name in sublist]
@@ -998,8 +993,6 @@ class LinearProbingRunner:
             # Update accumulated containers in-place (replace list of many tensors with list of one complete tensor)
             accumulated_preds[head] = [gathered_preds]
             accumulated_targets[head] = [gathered_targets]
-        
-        return accumulated_preds, accumulated_targets, accumulated_names
     
     def _compute_heads_metrics(
         self,

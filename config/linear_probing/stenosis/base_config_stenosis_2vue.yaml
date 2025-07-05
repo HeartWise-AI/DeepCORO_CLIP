@@ -16,7 +16,7 @@ scheduler_name: !!str cosine_with_warmup
 lr_step_period: !!int 4
 factor: 0.16090885523071338
 optimizer: !!str AdamW
-use_amp: !!bool false
+use_amp: !!bool true
 gradient_accumulation_steps: !!int 1
 num_warmup_percent: !!float 0.1
 num_hard_restarts_cycles: !!float 1.0
@@ -145,7 +145,7 @@ attention_weight_decay: !!float 5.0e-05
 use_cls_token: !!bool true
 num_attention_heads: !!int 6
 separate_video_attention: !!bool false
-normalization_strategy: !!str pre_norm
+normalization_strategy: !!str post
 attention_within_lr: !!float 0.004147263799348898
 attention_across_lr: !!float 0.002025021570305698
 attention_within_weight_decay: !!float 6.304012341593597e-05
@@ -153,96 +153,8 @@ attention_across_weight_decay: !!float 6.810876814054958e-06
 aggregate_videos_tokens: !!bool false
 output_dir: !!str outputs/
 # Linear Probing parameters
-head_linear_probing:
-  prox_rca_stenosis: cls_token_linear_probing_regression
-  mid_rca_stenosis: cls_token_linear_probing_regression
-  dist_rca_stenosis: cls_token_linear_probing_regression
-  pda_stenosis: cls_token_linear_probing_regression
-  posterolateral_stenosis: cls_token_linear_probing_regression
-  left_main_stenosis: cls_token_linear_probing_regression
-  prox_lad_stenosis: cls_token_linear_probing_regression
-  mid_lad_stenosis: cls_token_linear_probing_regression
-  dist_lad_stenosis: cls_token_linear_probing_regression
-  D1_stenosis: cls_token_linear_probing_regression
-  D2_stenosis: cls_token_linear_probing_regression
-  prox_lcx_stenosis: cls_token_linear_probing_regression
-  mid_lcx_stenosis: cls_token_linear_probing_regression
-  dist_lcx_stenosis: cls_token_linear_probing_regression
-  om1_stenosis: cls_token_linear_probing_regression
-  om2_stenosis: cls_token_linear_probing_regression
-  bx_stenosis: cls_token_linear_probing_regression
-  prox_rca_stenosis_binary: cls_token_linear_probing_regression
-  mid_rca_stenosis_binary: cls_token_linear_probing_regression
-  dist_rca_stenosis_binary: cls_token_linear_probing_regression
-  pda_stenosis_binary: cls_token_linear_probing_regression
-  posterolateral_stenosis_binary: cls_token_linear_probing_regression
-  left_main_stenosis_binary: cls_token_linear_probing_regression
-  prox_lad_stenosis_binary: cls_token_linear_probing_regression
-  mid_lad_stenosis_binary: cls_token_linear_probing_regression
-  dist_lad_stenosis_binary: cls_token_linear_probing_regression
-  D1_stenosis_binary: cls_token_linear_probing_regression
-  D2_stenosis_binary: cls_token_linear_probing_regression
-  prox_lcx_stenosis_binary: cls_token_linear_probing_regression
-  mid_lcx_stenosis_binary: cls_token_linear_probing_regression
-  dist_lcx_stenosis_binary: cls_token_linear_probing_regression
-  om1_stenosis_binary: cls_token_linear_probing_regression
-  om2_stenosis_binary: cls_token_linear_probing_regression
-  bx_stenosis_binary: cls_token_linear_probing_regression
-  prox_rca_calcif_binary: cls_token_linear_probing
-  mid_rca_calcif_binary: cls_token_linear_probing
-  dist_rca_calcif_binary: cls_token_linear_probing
-  pda_calcif_binary: cls_token_linear_probing
-  posterolateral_calcif_binary: cls_token_linear_probing
-  left_main_calcif_binary: cls_token_linear_probing
-  prox_lad_calcif_binary: cls_token_linear_probing
-  mid_lad_calcif_binary: cls_token_linear_probing
-  dist_lad_calcif_binary: cls_token_linear_probing
-  D1_calcif_binary: cls_token_linear_probing
-  D2_calcif_binary: cls_token_linear_probing
-  prox_lcx_calcif_binary: cls_token_linear_probing
-  mid_lcx_calcif_binary: cls_token_linear_probing
-  dist_lcx_calcif_binary: cls_token_linear_probing
-  om1_calcif_binary: cls_token_linear_probing
-  om2_calcif_binary: cls_token_linear_probing
-  bx_calcif_binary: cls_token_linear_probing
-  lvp_calcif_binary: cls_token_linear_probing
-  prox_rca_cto: cls_token_linear_probing
-  mid_rca_cto: cls_token_linear_probing
-  dist_rca_cto: cls_token_linear_probing
-  pda_cto: cls_token_linear_probing
-  posterolateral_cto: cls_token_linear_probing
-  left_main_cto: cls_token_linear_probing
-  prox_lad_cto: cls_token_linear_probing
-  mid_lad_cto: cls_token_linear_probing
-  dist_lad_cto: cls_token_linear_probing
-  D1_cto: cls_token_linear_probing
-  D2_cto: cls_token_linear_probing
-  prox_lcx_cto: cls_token_linear_probing
-  mid_lcx_cto: cls_token_linear_probing
-  dist_lcx_cto: cls_token_linear_probing
-  om1_cto: cls_token_linear_probing
-  om2_cto: cls_token_linear_probing
-  bx_cto: cls_token_linear_probing
-  lvp_cto: cls_token_linear_probing
-  prox_rca_thrombus: cls_token_linear_probing
-  mid_rca_thrombus: cls_token_linear_probing
-  dist_rca_thrombus: cls_token_linear_probing
-  pda_thrombus: cls_token_linear_probing
-  posterolateral_thrombus: cls_token_linear_probing
-  left_main_thrombus: cls_token_linear_probing
-  prox_lad_thrombus: cls_token_linear_probing
-  mid_lad_thrombus: cls_token_linear_probing
-  dist_lad_thrombus: cls_token_linear_probing
-  D1_thrombus: cls_token_linear_probing
-  D2_thrombus: cls_token_linear_probing
-  prox_lcx_thrombus: cls_token_linear_probing
-  mid_lcx_thrombus: cls_token_linear_probing
-  dist_lcx_thrombus: cls_token_linear_probing
-  om1_thrombus: cls_token_linear_probing
-  om2_thrombus: cls_token_linear_probing
-  bx_thrombus: cls_token_linear_probing
-  lvp_thrombus: cls_token_linear_probing
 head_structure:
+  lvp_stenosis: 1
   prox_rca_stenosis: 1
   mid_rca_stenosis: 1
   dist_rca_stenosis: 1
@@ -260,6 +172,7 @@ head_structure:
   om1_stenosis: 1
   om2_stenosis: 1
   bx_stenosis: 1
+  lvp_stenosis_binary: 1
   prox_rca_stenosis_binary: 1
   mid_rca_stenosis_binary: 1
   dist_rca_stenosis_binary: 1
@@ -332,6 +245,7 @@ head_structure:
   bx_thrombus: 1
   lvp_thrombus: 1
 loss_structure:
+  lvp_stenosis: huber
   prox_rca_stenosis: huber
   mid_rca_stenosis: huber
   dist_rca_stenosis: huber
@@ -349,6 +263,7 @@ loss_structure:
   om1_stenosis: huber
   om2_stenosis: huber
   bx_stenosis: huber
+  lvp_stenosis_binary: bce_logit
   prox_rca_stenosis_binary: bce_logit
   mid_rca_stenosis_binary: bce_logit
   dist_rca_stenosis_binary: bce_logit
@@ -421,6 +336,7 @@ loss_structure:
   bx_thrombus: bce_logit
   lvp_thrombus: bce_logit
 head_dropout:
+  lvp_stenosis: 0.2
   prox_rca_stenosis: 0.2
   mid_rca_stenosis: 0.2
   dist_rca_stenosis: 0.2
@@ -438,6 +354,7 @@ head_dropout:
   om1_stenosis: 0.2
   om2_stenosis: 0.2
   bx_stenosis: 0.2
+  lvp_stenosis_binary: 0.2
   prox_rca_stenosis_binary: 0.2
   mid_rca_stenosis_binary: 0.2
   dist_rca_stenosis_binary: 0.2
@@ -510,6 +427,7 @@ head_dropout:
   bx_thrombus: 0.2
   lvp_thrombus: 0.2
 head_weights:
+  lvp_stenosis: 2.0
   prox_rca_stenosis: 2.0
   mid_rca_stenosis: 2.0
   dist_rca_stenosis: 2.0
@@ -527,6 +445,7 @@ head_weights:
   om1_stenosis: 2.0
   om2_stenosis: 2.0
   bx_stenosis: 2.0
+  lvp_stenosis_binary: 1.0
   prox_rca_stenosis_binary: 1.0
   mid_rca_stenosis_binary: 1.0
   dist_rca_stenosis_binary: 1.0
@@ -599,6 +518,7 @@ head_weights:
   bx_thrombus: 1.0
   lvp_thrombus: 1.0
 head_lr:
+  lvp_stenosis: 0.0005
   prox_rca_stenosis: 0.0005
   mid_rca_stenosis: 0.0005
   dist_rca_stenosis: 0.0005
@@ -616,6 +536,7 @@ head_lr:
   om1_stenosis: 0.0005
   om2_stenosis: 0.0005
   bx_stenosis: 0.0005
+  lvp_stenosis_binary: 0.0003
   prox_rca_stenosis_binary: 0.0003
   mid_rca_stenosis_binary: 0.0003
   dist_rca_stenosis_binary: 0.0003
@@ -688,6 +609,7 @@ head_lr:
   bx_thrombus: 0.0003
   lvp_thrombus: 0.0003
 head_weight_decay:
+  lvp_stenosis: 5.0e-06
   prox_rca_stenosis: 5.0e-06
   mid_rca_stenosis: 5.0e-06
   dist_rca_stenosis: 5.0e-06
@@ -705,6 +627,7 @@ head_weight_decay:
   om1_stenosis: 5.0e-06
   om2_stenosis: 5.0e-06
   bx_stenosis: 5.0e-06
+  lvp_stenosis_binary: 1.0e-05
   prox_rca_stenosis_binary: 1.0e-05
   mid_rca_stenosis_binary: 1.0e-05
   dist_rca_stenosis_binary: 1.0e-05
@@ -777,6 +700,7 @@ head_weight_decay:
   bx_thrombus: 1.0e-05
   lvp_thrombus: 1.0e-05
 head_task:
+  lvp_stenosis: regression
   prox_rca_stenosis: regression
   mid_rca_stenosis: regression
   dist_rca_stenosis: regression
@@ -794,79 +718,83 @@ head_task:
   om1_stenosis: regression
   om2_stenosis: regression
   bx_stenosis: regression
-  prox_rca_stenosis_binary: classification
-  mid_rca_stenosis_binary: classification
-  dist_rca_stenosis_binary: classification
-  pda_stenosis_binary: classification
-  posterolateral_stenosis_binary: classification
-  left_main_stenosis_binary: classification
-  prox_lad_stenosis_binary: classification
-  mid_lad_stenosis_binary: classification
-  dist_lad_stenosis_binary: classification
-  D1_stenosis_binary: classification
-  D2_stenosis_binary: classification
-  prox_lcx_stenosis_binary: classification
-  mid_lcx_stenosis_binary: classification
-  dist_lcx_stenosis_binary: classification
-  om1_stenosis_binary: classification
-  om2_stenosis_binary: classification
-  bx_stenosis_binary: classification
-  prox_rca_calcif_binary: classification
-  mid_rca_calcif_binary: classification
-  dist_rca_calcif_binary: classification
-  pda_calcif_binary: classification
-  posterolateral_calcif_binary: classification
-  left_main_calcif_binary: classification
-  prox_lad_calcif_binary: classification
-  mid_lad_calcif_binary: classification
-  dist_lad_calcif_binary: classification
-  D1_calcif_binary: classification
-  D2_calcif_binary: classification
-  prox_lcx_calcif_binary: classification
-  mid_lcx_calcif_binary: classification
-  dist_lcx_calcif_binary: classification
-  om1_calcif_binary: classification
-  om2_calcif_binary: classification
-  bx_calcif_binary: classification
-  lvp_calcif_binary: classification
-  prox_rca_cto: classification
-  mid_rca_cto: classification
-  dist_rca_cto: classification
-  pda_cto: classification
-  posterolateral_cto: classification
-  left_main_cto: classification
-  prox_lad_cto: classification
-  mid_lad_cto: classification
-  dist_lad_cto: classification
-  D1_cto: classification
-  D2_cto: classification
-  prox_lcx_cto: classification
-  mid_lcx_cto: classification
-  dist_lcx_cto: classification
-  om1_cto: classification
-  om2_cto: classification
-  bx_cto: classification
-  lvp_cto: classification
-  prox_rca_thrombus: classification
-  mid_rca_thrombus: classification
-  dist_rca_thrombus: classification
-  pda_thrombus: classification
-  posterolateral_thrombus: classification
-  left_main_thrombus: classification
-  prox_lad_thrombus: classification
-  mid_lad_thrombus: classification
-  dist_lad_thrombus: classification
-  D1_thrombus: classification
-  D2_thrombus: classification
-  prox_lcx_thrombus: classification
-  mid_lcx_thrombus: classification
-  dist_lcx_thrombus: classification
-  om1_thrombus: classification
-  om2_thrombus: classification
-  bx_thrombus: classification
-  lvp_thrombus: classification
+  lvp_stenosis_binary: binary_classification
+  prox_rca_stenosis_binary: binary_classification
+  mid_rca_stenosis_binary: binary_classification
+  dist_rca_stenosis_binary: binary_classification
+  pda_stenosis_binary: binary_classification
+  posterolateral_stenosis_binary: binary_classification
+  left_main_stenosis_binary: binary_classification
+  prox_lad_stenosis_binary: binary_classification
+  mid_lad_stenosis_binary: binary_classification
+  dist_lad_stenosis_binary: binary_classification
+  D1_stenosis_binary: binary_classification
+  D2_stenosis_binary: binary_classification
+  prox_lcx_stenosis_binary: binary_classification
+  mid_lcx_stenosis_binary: binary_classification
+  dist_lcx_stenosis_binary: binary_classification
+  om1_stenosis_binary: binary_classification
+  om2_stenosis_binary: binary_classification
+  bx_stenosis_binary: binary_classification
+  prox_rca_calcif_binary: binary_classification
+  mid_rca_calcif_binary: binary_classification
+  dist_rca_calcif_binary: binary_classification
+  pda_calcif_binary: binary_classification
+  posterolateral_calcif_binary: binary_classification
+  left_main_calcif_binary: binary_classification
+  prox_lad_calcif_binary: binary_classification
+  mid_lad_calcif_binary: binary_classification
+  dist_lad_calcif_binary: binary_classification
+  D1_calcif_binary: binary_classification
+  D2_calcif_binary: binary_classification
+  prox_lcx_calcif_binary: binary_classification
+  mid_lcx_calcif_binary: binary_classification
+  dist_lcx_calcif_binary: binary_classification
+  om1_calcif_binary: binary_classification
+  om2_calcif_binary: binary_classification
+  bx_calcif_binary: binary_classification
+  lvp_calcif_binary: binary_classification
+  prox_rca_cto: binary_classification
+  mid_rca_cto: binary_classification
+  dist_rca_cto: binary_classification
+  pda_cto: binary_classification
+  posterolateral_cto: binary_classification
+  left_main_cto: binary_classification
+  prox_lad_cto: binary_classification
+  mid_lad_cto: binary_classification
+  dist_lad_cto: binary_classification
+  D1_cto: binary_classification
+  D2_cto: binary_classification
+  prox_lcx_cto: binary_classification
+  mid_lcx_cto: binary_classification
+  dist_lcx_cto: binary_classification
+  om1_cto: binary_classification
+  om2_cto: binary_classification
+  bx_cto: binary_classification
+  lvp_cto: binary_classification
+  prox_rca_thrombus: binary_classification
+  mid_rca_thrombus: binary_classification
+  dist_rca_thrombus: binary_classification
+  pda_thrombus: binary_classification
+  posterolateral_thrombus: binary_classification
+  left_main_thrombus: binary_classification
+  prox_lad_thrombus: binary_classification
+  mid_lad_thrombus: binary_classification
+  dist_lad_thrombus: binary_classification
+  D1_thrombus: binary_classification
+  D2_thrombus: binary_classification
+  prox_lcx_thrombus: binary_classification
+  mid_lcx_thrombus: binary_classification
+  dist_lcx_thrombus: binary_classification
+  om1_thrombus: binary_classification
+  om2_thrombus: binary_classification
+  bx_thrombus: binary_classification
+  lvp_thrombus: binary_classification
 # Label mappings - Used for confusion matrix
 labels_map:
+  lvp_stenosis:
+    normal: 0
+    abnormal: 1
   prox_rca_stenosis:
     normal: 0
     abnormal: 1
@@ -916,6 +844,9 @@ labels_map:
     normal: 0
     abnormal: 1
   bx_stenosis:
+    normal: 0
+    abnormal: 1
+  lvp_stenosis_binary:
     normal: 0
     abnormal: 1
   prox_rca_stenosis_binary:
@@ -1132,4 +1063,4 @@ labels_map:
     normal: 0
     abnormal: 1
 # Inference parameters
-inference_model_path: !!str pretrained_models/91pibg3y_20250624-201539/models/best_model_epoch_9.pt
+inference_model_path: !!str pretrained_models/cnw09vn8_01062025-140448/best_model_epoch_3.pt

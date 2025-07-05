@@ -266,19 +266,18 @@ class LinearProbingRunner:
         # Compute AUC metrics for each head
         final_preds = {}
         final_targets = {}
-        if mode == RunMode.TRAIN or mode == RunMode.VALIDATE:
-            self._compute_heads_metrics(
-                accumulated_preds=accumulated_preds,
-                accumulated_targets=accumulated_targets,
-                validation_metrics=epoch_metrics,
-                compute_cli=False
-            )
-                
-            # Sync after logging metrics and confusion matrix
-            DistributedUtils.sync_process_group(
-                world_size=self.world_size,
-                device_ids=self.device
-            )
+        self._compute_heads_metrics(
+            accumulated_preds=accumulated_preds,
+            accumulated_targets=accumulated_targets,
+            validation_metrics=epoch_metrics,
+            compute_cli=False
+        )
+            
+        # Sync after logging metrics and confusion matrix
+        DistributedUtils.sync_process_group(
+            world_size=self.world_size,
+            device_ids=self.device
+        )
 
         print(f"[DEBUG] rank={self.device} => {mode} epoch metrics: {epoch_metrics}")
 

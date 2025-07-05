@@ -26,44 +26,57 @@ def best_threshold_fn(p, t):
     except:
         return 0.5
 
-def accuracy_at_threshold_fn(threshold):
+def accuracy_at_threshold_fn(threshold: float):
     def acc_fn(p, t):
         pred_labels = (p > threshold).astype(int)
         return np.mean(pred_labels == t.astype(int))
     return acc_fn
 
-def f1_at_threshold_fn(threshold):
+def f1_at_threshold_fn(threshold: float):
     def f1_fn(p, t):
         cm_metrics = compute_threshold_based_metrics(p, t, threshold)
         return cm_metrics['f1_score']
     return f1_fn
 
-def ppv_at_threshold_fn(threshold):
+def ppv_at_threshold_fn(threshold: float):
     def ppv_fn(p, t):
         cm_metrics = compute_threshold_based_metrics(p, t, threshold)
         return cm_metrics['ppv']
     return ppv_fn
 
-def npv_at_threshold_fn(threshold):
+def npv_at_threshold_fn(threshold: float):
     def npv_fn(p, t):
         cm_metrics = compute_threshold_based_metrics(p, t, threshold)
         return cm_metrics['npv']
     return npv_fn
 
-def sensitivity_at_threshold_fn(threshold):
+def sensitivity_at_threshold_fn(threshold: float):
     def sens_fn(p, t):
         cm_metrics = compute_threshold_based_metrics(p, t, threshold)
         return cm_metrics['sensitivity']
     return sens_fn
 
-def specificity_at_threshold_fn(threshold):
+def specificity_at_threshold_fn(threshold: float):
     def spec_fn(p, t):
         cm_metrics = compute_threshold_based_metrics(p, t, threshold)
         return cm_metrics['specificity']
     return spec_fn
 
+def auc_fn(p: np.ndarray, t: np.ndarray, average: str = "micro"):
+    try:
+        return roc_auc_score(t, p, average=average)
+    except:
+        return np.nan
 
-def compute_recall_at_k(similarity_matrix, global_gt_indices, k_values=[1, 5]):
+def auprc_fn(p: np.ndarray, t: np.ndarray, average: str = "micro"):
+    try:
+        return average_precision_score(t, p, average=average)
+    except:
+        return np.nan
+
+
+
+def compute_recall_at_k(similarity_matrix: torch.Tensor, global_gt_indices: torch.Tensor, k_values: List[int] = [1, 5]):
     """
     Compute recall@k for video->text retrieval.
     
@@ -558,20 +571,7 @@ def compute_classification_metrics(
     # Convert to numpy for sklearn metrics
     all_preds = preds.detach().cpu().numpy()
     all_targets = targets.detach().cpu().numpy()
-    
-    # Define metric functions for bootstrap
-    def auc_fn(p, t, average="micro"):
-        try:
-            return roc_auc_score(t, p, average=average)
-        except:
-            return np.nan
-    
-    def auprc_fn(p, t, average="micro"):
-        try:
-            return average_precision_score(t, p, average=average)
-        except:
-            return np.nan
-    
+        
     # Compute AUC with CI
     if compute_cli: 
         try:

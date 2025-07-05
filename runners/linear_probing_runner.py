@@ -4,7 +4,8 @@ import torch
 import numpy as np
 import pandas as pd
 from datetime import datetime
-from typing import Optional, Dict, Any, Callable
+from dataclasses import dataclass
+from typing import Optional, Dict,  Callable
 
 from tqdm import tqdm
 from torch.optim import Optimizer
@@ -24,10 +25,15 @@ from utils.enums import RunMode, MetricTask
 from utils.wandb_wrapper import WandbWrapper
 from utils.config.linear_probing_config import LinearProbingConfig
 
-# Type aliases
+# Type aliases Definitions
 ProcessedBatch = Dict[str, torch.Tensor]
-Outputs = Dict[str, Dict[str, torch.Tensor]]
-RunBatch = Dict[str, Any]
+StepFnResults = Dict[str, Dict[str, torch.Tensor]]
+
+@dataclass
+class BatchResult:
+    outputs: StepFnResults
+    processed_batch: ProcessedBatch
+    
 
 @RunnerRegistry.register("DeepCORO_video_linear_probing")
 @RunnerRegistry.register("DeepCORO_video_linear_probing_test")
@@ -196,7 +202,7 @@ class LinearProbingRunner:
         epoch_metrics: dict[str, float] = {}
 
         dataloader: DataLoader = self.train_loader if mode == RunMode.TRAIN else self.val_loader
-        step_fn: Callable[..., Outputs] = self._train_step if mode == RunMode.TRAIN else self._val_step
+        step_fn: Callable[..., StepFnResults] = self._train_step if mode == RunMode.TRAIN else self._val_step
 
         tqdm_desc: str = f"[GPU {self.device}] Running {mode} Epoch {epoch + 1}"
         if self.config.is_ref_device:
@@ -211,17 +217,14 @@ class LinearProbingRunner:
         
         for batch_idx, batch in enumerate(data_iter, start=1):
             try:
-                run_batch: RunBatch = self._run_batch(
+                run_batch: BatchResult = self._run_batch(
                     batch=batch,
                     step_fn=step_fn
                 )
-                outputs: Outputs = run_batch['outputs']
-                processed_batch: ProcessedBatch = run_batch['processed_batch']
 
                 # Use the new accumulation function
                 self._accumulate_batch_metrics(
-                    outputs=outputs,
-                    processed_batch=processed_batch,
+                    run_batch=run_batch,
                     accumulated_preds=accumulated_preds,
                     accumulated_targets=accumulated_targets,
                     accumulated_names=accumulated_names,
@@ -260,11 +263,6 @@ class LinearProbingRunner:
             if 'mean' in k:
                 epoch_metrics[f"{mode}/{k.replace('mean_', '')}_loss"] = v / batch_idx
         
-        # Add learning rate metrics to epoch metrics
-        for k, v in outputs.items():
-            if k.startswith('lr/'):
-                epoch_metrics[f"{mode}/{k}"] = v
-
         # Compute AUC metrics for each head
         final_preds = {}
         final_targets = {}
@@ -351,12 +349,12 @@ class LinearProbingRunner:
     def _run_batch(
         self,
         batch: Dict[str, torch.Tensor],
-        step_fn: Callable[..., Outputs],
-    ) -> RunBatch:
+        step_fn: Callable[..., StepFnResults],
+    ) -> BatchResult:
         processed_batch: ProcessedBatch = self._preprocess_inputs(batch)
-        outputs: Outputs = step_fn(**processed_batch)
+        outputs: StepFnResults = step_fn(**processed_batch)
         
-        return RunBatch(
+        return BatchResult(
             outputs=outputs,
             processed_batch=processed_batch
         )
@@ -365,7 +363,7 @@ class LinearProbingRunner:
         self, 
         batch_video: torch.Tensor,
         batch_targets: Dict[str, torch.Tensor]
-    ) -> dict[str, dict[str, torch.Tensor]]:
+    ) -> StepFnResults:
         # Clear gradients only if this is the first step in accumulation
         if self.step % self.config.gradient_accumulation_steps == 0:
             if self.optimizer is not None:
@@ -440,7 +438,7 @@ class LinearProbingRunner:
         self, 
         batch_video: torch.Tensor,
         batch_targets: Dict[str, torch.Tensor],
-    ) -> dict[str, dict[str, torch.Tensor]]:                
+    ) -> StepFnResults:                
         # Forward pass with autocast for mixed precision
         with torch.no_grad():
             try:
@@ -517,24 +515,21 @@ class LinearProbingRunner:
         else:
             data_iter = self.val_loader
         
-        step_fn: Callable[..., Outputs] = self._val_step
+        step_fn: Callable[..., StepFnResults] = self._val_step
         
         # Process all batches
         with torch.no_grad():
             for batch_idx, batch in enumerate(data_iter):
                 try:
                     # Forward pass
-                    run_batch: RunBatch = self._run_batch(
+                    run_batch: BatchResult = self._run_batch(
                         batch=batch,
                         step_fn=step_fn
                     )
-                    outputs: Outputs = run_batch['outputs']
-                    processed_batch: ProcessedBatch = run_batch['processed_batch']
                     
                     # Use the new accumulation function
                     self._accumulate_batch_metrics(
-                        outputs=outputs,
-                        processed_batch=processed_batch,
+                        run_batch=run_batch,
                         accumulated_preds=accumulated_preds,
                         accumulated_targets=accumulated_targets,
                         accumulated_names=accumulated_names,
@@ -883,8 +878,7 @@ class LinearProbingRunner:
 
     def _accumulate_batch_metrics(
         self,
-        outputs: Outputs,
-        processed_batch: ProcessedBatch,
+        run_batch: BatchResult,
         accumulated_preds: Dict[str, list[torch.Tensor]], # leverage ref. ptr to avoid copying
         accumulated_targets: Dict[str, list[torch.Tensor]], # leverage ref. ptr to avoid copying
         accumulated_names: list[str], # leverage ref. ptr to avoid copying
@@ -907,7 +901,7 @@ class LinearProbingRunner:
             This function modifies the input containers in-place and returns None.            
         """
         # Accumulate metrics
-        for k, v in outputs.items():
+        for k, v in run_batch.outputs.items():
             if k.startswith('lr/'):
                 # Learning rate metrics are already scalar values
                 gathered_metrics[k] = v
@@ -920,7 +914,7 @@ class LinearProbingRunner:
                 # Handle logits for classification/regression metrics
                 for head_name, logits in v.items():
                     # Get targets
-                    targets: torch.Tensor = processed_batch['batch_targets'][head_name]
+                    targets: torch.Tensor = run_batch.processed_batch['batch_targets'][head_name]
                     
                     # Get predictions based on task type
                     if self.config.head_task[head_name] == MetricTask.BINARY_CLASSIFICATION:

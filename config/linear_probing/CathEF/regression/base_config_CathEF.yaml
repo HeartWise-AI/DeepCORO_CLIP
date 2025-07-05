@@ -73,7 +73,7 @@ head_weights: # weight per head for loss computation - f_loss = f_loss * f_weigh
   y_true_cat: !!float 1.0
 head_task: # task for each head
   Value: !!str regression
-  y_true_cat: !!str classification
+  y_true_cat: !!str binary_classification
 # Label mappings - Used for confusion matrix
 labels_map: # label mapping for each head
   Value:

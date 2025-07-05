@@ -108,7 +108,7 @@ head_weights:
 
 head_task:
   mid_lad_IFRHYPER: !!str regression
-  mid_lad_IFRHYPER_cat: !!str classification
+  mid_lad_IFRHYPER_cat: !!str binary_classification
 
 # Label mappings - Only for categorical targets
 labels_map:

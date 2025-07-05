@@ -1,0 +1,138 @@
+# Improved CLS Token Configuration for CathEF Regression
+# Showcases advanced features: separate attention layers, hybrid pooling, configurable heads
+
+# Pipeline parameters
+pipeline_project: !!str DeepCORO_video_linear_probing
+base_checkpoint_path: !!str outputs
+run_mode: !!str train
+epochs: !!int 2
+seed: !!int 42
+tag: !!str mvit_pretrained_multiview_cls_token
+# wandb parameters
+name: !!str DeepCORO_video_linear_probing_multiview_improved_cls_token
+project: !!str DeepCORO_video_linear_probing_multiview_improved_cls_token
+entity: !!str mhi_ai
+use_wandb: !!bool false
+# Training parameters
+scheduler_name: !!str cosine_with_warmup
+num_warmup_percent: !!float 0.08
+optimizer: !!str AdamW
+use_amp: !!bool true
+gradient_accumulation_steps: !!int 1
+# Scheduler parameters
+lr_step_period: !!int 10
+factor: !!float 0.1
+num_hard_restarts_cycles: !!int 3
+warm_restart_tmult: !!float 2.0
+# Dataset parameters
+data_filename: !!str data/data_score_syntax_regression_classification.csv
+num_workers: !!int 8
+batch_size: !!int 2 # Smaller due to hybrid pooling memory requirements
+multi_video: !!bool true
+groupby_column: !!str 'StudyInstanceUID'
+num_videos: !!int 10
+shuffle_videos: !!bool true
+datapoint_loc_label: !!str FileName
+target_label: ["syntax", "syntax_left", "syntax_right", "syntax_left_category", "syntax_category", "syntax_right_category"]
+rand_augment: !!bool true
+resize: !!int 224
+frames: !!int 16
+stride: !!int 2
+# Improved CLS Token Configuration
+pooling_mode: !!str attention+cls_token # Hybrid pooling for richer features
+separate_video_attention: !!bool true # Separate within/across-video attention
+num_attention_heads: !!int 8 # Configurable attention heads
+normalization_strategy: !!str post_norm # Post-norm like ViT (can try pre_norm)
+use_cls_token: !!bool true
+attention_hidden: !!int 256 # Taille cachée pour le mécanisme d'attention
+dropout_attention: !!float 0.2 # Dropout pour le bloc d'attention
+# Video Encoder parameters
+model_name: !!str mvit
+aggregator_depth: !!int 1
+num_heads: !!int 16
+video_freeze_ratio: !!float 0.9179658719319556
+dropout: !!float 0.15
+pretrained: !!bool true
+# Learning rates - Optimized for improved architecture
+video_encoder_lr: !!float 8.795617632783049e-06 # Conservative for pretrained
+video_encoder_weight_decay: !!float 1.8160563690364244e-06
+# Attention learning rates - separate for within/across attention
+attention_within_lr: !!float 2e-3 # Within-video attention
+attention_across_lr: !!float 1.5e-3 # Across-video attention  
+attention_weight_decay: !!float 5e-5
+attention_lr: !!float 1.5e-3 # Global attention learning rate
+attention_within_weight_decay: !!float 5e-5 # Weight decay for within-video attention
+attention_across_weight_decay: !!float 5e-5 # Weight decay for across-video attention
+# Hybrid pooling means 2x feature dimension, so lower LR
+head_lr: !!float 3e-4 # Lower due to 2x input features
+head_weight_decay: !!float 1e-5
+video_encoder_checkpoint_path: !!str pretrained_models/DeepCORO_CLIP_ENCODER/single_video/8av1xygm_20250605-083820_best_single_video/checkpoint.pt
+aggregate_videos_tokens: !!bool false # Maintain 4D structure for hierarchical processing
+per_video_pool: !!bool false # Let improved cls_token handle all pooling
+output_dir: !!str outputs
+head_structure:
+  syntax: !!int 1
+  syntax_right: !!int 1
+  syntax_left: !!int 1
+  syntax_category: !!int 4
+  syntax_left_category: !!int 4
+  syntax_right_category: !!int 4
+head_dropout:
+  syntax: !!float 0.2
+  syntax_right: !!float 0.2
+  syntax_left: !!float 0.2
+  syntax_category: !!float 0.2
+  syntax_left_category: !!float 0.2
+  syntax_right_category: !!float 0.2
+loss_structure:
+  syntax: !!str huber
+  syntax_right: !!str huber
+  syntax_left: !!str huber
+  syntax_category: !!str ce
+  syntax_left_category: !!str ce
+  syntax_right_category: !!str ce
+head_lr:
+  syntax: !!float 5e-4
+  syntax_right: !!float 5e-4
+  syntax_left: !!float 5e-4
+  syntax_category: !!float 3e-4
+  syntax_left_category: !!float 3e-4
+  syntax_right_category: !!float 3e-4
+head_weight_decay:
+  syntax: !!float 5e-6
+  syntax_right: !!float 5e-6
+  syntax_left: !!float 5e-6
+  syntax_category: !!float 1e-5
+  syntax_left_category: !!float 1e-5
+  syntax_right_category: !!float 1e-5
+head_weights:
+  syntax: !!float 2.0
+  syntax_right: !!float 2.0
+  syntax_left: !!float 2.0
+  syntax_category: !!float 1.0
+  syntax_left_category: !!float 1.0
+  syntax_right_category: !!float 1.0
+head_task:
+  syntax: !!str regression
+  syntax_right: !!str regression
+  syntax_left: !!str regression
+  syntax_category: !!str multiclass_classification
+  syntax_left_category: !!str multiclass_classification
+  syntax_right_category: !!str multiclass_classification
+# Labels and their mappings
+labels_map:
+  syntax_category:
+    zero: 0
+    low: 1
+    intermediate: 2
+    high: 3
+  syntax_left_category:
+    zero: 0
+    low: 1
+    intermediate: 2
+    high: 3
+  syntax_right_category:
+    zero: 0
+    low: 1
+    intermediate: 2
+    high: 3

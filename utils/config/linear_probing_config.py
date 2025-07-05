@@ -54,7 +54,6 @@ class LinearProbingConfig(HeartWiseConfig):
     video_encoder_lr: float # learning rate for video encoder
     
     # Linear Probing parameters
-    head_linear_probing: Dict[str, str] # linear probing class for each head
     head_structure: Dict[str, int] # output dimension of each head
     loss_structure: Dict[str, str] # loss function for each head
     head_weights: Dict[str, float] # weight for each head

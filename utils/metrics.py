@@ -590,7 +590,7 @@ def compute_classification_metrics(
             print(f"Error computing AUC with CI: {e}")
             # Fallback to original computation
             try:
-                auc = auc_fn(all_preds.flatten(), all_targets.flatten())
+                auc = auc_fn(p=all_preds.flatten(), t=all_targets.flatten())
                 metrics[f"{mode}/{head_name}_auc"] = auc
             except:
                 pass
@@ -612,20 +612,20 @@ def compute_classification_metrics(
             print(f"Error computing AUPRC with CI: {e}")
             # Fallback to original computation
             try:
-                auprc = auprc_fn(all_preds.flatten(), all_targets.flatten())
+                auprc = auprc_fn(p=all_preds.flatten(), t=all_targets.flatten())
                 metrics[f"{mode}/{head_name}_auprc"] = auprc
             except:
                 pass
     
     else: 
         metrics[f"{mode}/{head_name}_auc"] = auc_fn(
-            preds=all_preds.flatten(), 
-            targets=all_targets.flatten(), 
+            p=all_preds.flatten(), 
+            t=all_targets.flatten(), 
             average="macro"
         )
         metrics[f"{mode}/{head_name}_auprc"] = auprc_fn(
-            preds=all_preds.flatten(), 
-            targets=all_targets.flatten(), 
+            p=all_preds.flatten(), 
+            t=all_targets.flatten(), 
             average="macro"
         )
     
@@ -635,9 +635,9 @@ def compute_classification_metrics(
             # Compute best threshold with CI
             try: 
                 threshold_val, threshold_ci_lower, threshold_ci_upper = bootstrap_metric(
-                    all_preds.flatten(), 
-                    all_targets.flatten(), 
-                    best_threshold_fn,
+                    p=all_preds.flatten(), 
+                    t=all_targets.flatten(), 
+                    metric_fn=best_threshold_fn,
                     n_bootstrap=n_bootstrap,
                     confidence_level=confidence_level
                 )
@@ -647,9 +647,9 @@ def compute_classification_metrics(
                 
                 # Compute accuracy at best threshold with CI
                 acc_val, acc_ci_lower, acc_ci_upper = bootstrap_metric(
-                    all_preds.flatten(), 
-                    all_targets.flatten(), 
-                    accuracy_at_threshold_fn(threshold_val),
+                    p=all_preds.flatten(), 
+                    t=all_targets.flatten(), 
+                    metric_fn=accuracy_at_threshold_fn(threshold_val),
                     n_bootstrap=n_bootstrap,
                     confidence_level=confidence_level
                 )
@@ -660,9 +660,9 @@ def compute_classification_metrics(
                 
                 # Compute F1 at best threshold with CI
                 f1_val, f1_ci_lower, f1_ci_upper = bootstrap_metric(
-                    all_preds.flatten(), 
-                    all_targets.flatten(), 
-                    f1_at_threshold_fn(threshold_val),
+                    p=all_preds.flatten(), 
+                    t=all_targets.flatten(), 
+                    metric_fn=f1_at_threshold_fn(threshold_val),
                     n_bootstrap=n_bootstrap,
                     confidence_level=confidence_level
                 )
@@ -673,9 +673,9 @@ def compute_classification_metrics(
                 
                 # Compute PPV at best threshold with CI
                 ppv_val, ppv_ci_lower, ppv_ci_upper = bootstrap_metric(
-                    all_preds.flatten(), 
-                    all_targets.flatten(), 
-                    ppv_at_threshold_fn(threshold_val),
+                    p=all_preds.flatten(), 
+                    t=all_targets.flatten(), 
+                    metric_fn=ppv_at_threshold_fn(threshold_val),
                     n_bootstrap=n_bootstrap,
                     confidence_level=confidence_level
                 )
@@ -686,9 +686,9 @@ def compute_classification_metrics(
                 
                 # Compute NPV at best threshold with CI
                 npv_val, npv_ci_lower, npv_ci_upper = bootstrap_metric(
-                    all_preds.flatten(), 
-                    all_targets.flatten(), 
-                    npv_at_threshold_fn(threshold_val),
+                    p=all_preds.flatten(), 
+                    t=all_targets.flatten(), 
+                    metric_fn=npv_at_threshold_fn(threshold_val),
                     n_bootstrap=n_bootstrap,
                     confidence_level=confidence_level
                 )
@@ -699,9 +699,9 @@ def compute_classification_metrics(
                 
                 # Compute Sensitivity at best threshold with CI
                 sensitivity_val, sensitivity_ci_lower, sensitivity_ci_upper = bootstrap_metric(
-                    all_preds.flatten(), 
-                    all_targets.flatten(), 
-                    sensitivity_at_threshold_fn(threshold_val),
+                    p=all_preds.flatten(), 
+                    t=all_targets.flatten(), 
+                    metric_fn=sensitivity_at_threshold_fn(threshold_val),
                     n_bootstrap=n_bootstrap,
                     confidence_level=confidence_level
                 ) 
@@ -712,9 +712,9 @@ def compute_classification_metrics(
                 
                 # Compute Specificity at best threshold with CI
                 specificity_val, specificity_ci_lower, specificity_ci_upper = bootstrap_metric(
-                    all_preds.flatten(), 
-                    all_targets.flatten(), 
-                    specificity_at_threshold_fn(threshold_val),
+                    p=all_preds.flatten(), 
+                    t=all_targets.flatten(), 
+                    metric_fn=specificity_at_threshold_fn(threshold_val),
                     n_bootstrap=n_bootstrap,
                     confidence_level=confidence_level
                 )   

@@ -1,7 +1,6 @@
 import torch
 import pytest
-import numpy as np
-from utils.metrics import (
+from utils.retrieval_metrics import (
     compute_mrr,
     compute_map,
     compute_ndcg_at_k,

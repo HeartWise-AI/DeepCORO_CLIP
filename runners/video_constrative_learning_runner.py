@@ -15,7 +15,7 @@ from utils.enums import RunMode
 from utils.ddp import DistributedUtils
 from utils.config.clip_config import ClipConfig
 from utils.registry import RunnerRegistry
-from utils.metrics import (
+from utils.retrieval_metrics import (
     compute_mrr,
     compute_map,
     compute_ndcg_at_k,

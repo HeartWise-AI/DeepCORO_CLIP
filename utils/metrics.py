@@ -553,7 +553,6 @@ def _compute_auc_metrics(
                     print(f"Error computing {metric_name}: {e2}")
         else:
             try:
-                print(f"Computing {metric_name} without CI: {metric_fn(preds, targets)}, average: {average}, multi_class: {multi_class}, preds shape: {preds.shape}, targets shape: {targets.shape}")
                 metrics[f"{mode}/{head_name}_{metric_name}"] = metric_fn(preds, targets)
             except Exception as e:
                 print(f"Error computing {metric_name}: {e}")

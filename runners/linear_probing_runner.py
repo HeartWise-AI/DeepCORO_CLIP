@@ -599,7 +599,7 @@ class LinearProbingRunner:
         if self.config.is_ref_device:
             print(f"[DEBUG] rank={self.device} => Computing metrics with CI - This might take a while...")
             self._compute_heads_metrics(
-                mode=RunMode.VAL,
+                mode=RunMode.VALIDATE,
                 accumulated_preds=accumulated_preds,
                 accumulated_targets=accumulated_targets,
                 validation_metrics=validation_metrics,
@@ -615,7 +615,7 @@ class LinearProbingRunner:
         # Save predictions if on reference device
         if self.config.is_ref_device:
             self._save_predictions(
-                mode=RunMode.VAL,
+                mode=RunMode.VALIDATE,
                 accumulated_names=accumulated_names,
                 accumulated_preds=accumulated_preds,
                 accumulated_targets=accumulated_targets,

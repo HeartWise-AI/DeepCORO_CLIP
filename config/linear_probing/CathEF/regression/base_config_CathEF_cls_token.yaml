@@ -109,7 +109,7 @@ head_weights:
 
 head_task:
   Value: !!str regression
-  y_true_cat: !!str classification
+  y_true_cat: !!str binary_classification
 
 # Label mappings
 labels_map:

@@ -49,7 +49,8 @@ class LossType(str, Enum):
     
 class MetricTask(str, Enum):
     """Enum for different metric tasks."""
-    CLASSIFICATION = "classification"
+    BINARY_CLASSIFICATION = "binary_classification"
+    MULTICLASS_CLASSIFICATION = "multiclass_classification"
     REGRESSION = "regression"
     
     def __str__(self):

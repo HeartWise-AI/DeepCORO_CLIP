@@ -115,7 +115,10 @@ class LinearProbingRunner:
             )            
             
             # Training phase
-            train_metrics = self._run_epoch(mode=RunMode.TRAIN, epoch=epoch)   
+            train_metrics = self._run_epoch(
+                mode=RunMode.TRAIN, 
+                epoch=epoch
+            )   
             if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
                 # Let wandb auto-increment steps
                 self.wandb_wrapper.log(train_metrics)
@@ -253,7 +256,7 @@ class LinearProbingRunner:
                 device_ids=self.device
             )
 
-        # Gather all predictions and targets across GPUs
+        # Gather all predictions and targets across GPUs if using distributed training
         if self.config.world_size > 1:
             self._gather_distributed_predictions(
                 accumulated_preds=accumulated_preds,
@@ -267,19 +270,30 @@ class LinearProbingRunner:
             device_ids=self.device
         )
 
-        # Get mean epoch losses
-        for k, v in gathered_metrics.items():
-            if 'mean' in k:
-                epoch_metrics[f"{mode}/{k.replace('mean_', '')}_loss"] = v / batch_idx
+        # Gather losses across GPUs if using distributed training
+        if self.config.world_size > 1:
+            # Convert accumulated losses to the format expected by gather_loss
+            for k, v in gathered_metrics.items():
+                if 'mean_' in k:
+                    # Convert accumulated loss sum to a list and gather across GPUs
+                    gathered_loss_sum = DistributedUtils.gather_loss([v], self.config.device)
+                    # Compute average using total batches across all GPUs
+                    epoch_metrics[f"{mode}/{k.replace('mean_', '')}_loss"] = gathered_loss_sum / batch_idx
+        else:
+            # Single GPU - compute averages normally
+            for k, v in gathered_metrics.items():
+                if 'mean' in k:
+                    epoch_metrics[f"{mode}/{k.replace('mean_', '')}_loss"] = v / batch_idx
         
         # Compute AUC metrics for each head
-        self._compute_heads_metrics(
-            mode=mode,
-            accumulated_preds=accumulated_preds,
-            accumulated_targets=accumulated_targets,
-            validation_metrics=epoch_metrics,
-            compute_ci=False
-        )
+        if self.config.is_ref_device:
+            self._compute_heads_metrics(
+                mode=mode,
+                accumulated_preds=accumulated_preds,
+                accumulated_targets=accumulated_targets,
+                validation_metrics=epoch_metrics,
+                compute_ci=False
+            )
             
         # Sync after computing heads metrics
         DistributedUtils.sync_process_group(
@@ -287,10 +301,12 @@ class LinearProbingRunner:
             device_ids=self.device
         )
 
-        print(f"[DEBUG] rank={self.device} => {mode} epoch metrics: {epoch_metrics}")
+        if self.config.is_ref_device:
+            print(f"[DEBUG] rank={self.device} => {mode} epoch metrics: {epoch_metrics}")
 
         # Save predictions for validation mode
         if mode == RunMode.VALIDATE and self.config.is_ref_device:
+            print(f"[DEBUG] rank={self.device} => Saving predictions for validation mode")
             self._save_predictions(
                 mode=mode,
                 accumulated_names=accumulated_names,
@@ -302,18 +318,23 @@ class LinearProbingRunner:
         # ------------------------------------------------------------------
         # Memory cleanup: delete large local variables & free GPU cache
         # ------------------------------------------------------------------
-        for _var in [
+        import gc
+
+        # Explicitly delete variables that exist in scope
+        variables_to_delete = [
             'accumulated_preds',
             'accumulated_targets',
             'preds',
             'targets',
             'outputs',
             'losses',
-        ]:
-            if _var in locals():
-                del locals()[_var]
+        ]
+
+        for var_name in variables_to_delete:
+            if var_name in locals():
+                del locals()[var_name]
+        
         torch.cuda.empty_cache()
-        import gc
         gc.collect()
 
         return epoch_metrics
@@ -532,7 +553,7 @@ class LinearProbingRunner:
         
         # Process all batches
         with torch.no_grad():
-            for batch_idx, batch in enumerate(data_iter):
+            for batch_idx, batch in enumerate(data_iter, start=1):
                 try:
                     # Forward pass
                     run_batch: BatchResult = self._run_batch(
@@ -556,7 +577,7 @@ class LinearProbingRunner:
                 # Update progress bar with gathered losses
                 if self.config.is_ref_device:
                     data_iter.set_postfix({
-                        f"{k}": f'{(v / (batch_idx + 1)):.4f}' if 'mean' in k else f'{v:.4f}' 
+                        f"{k}": f'{(v / (batch_idx)):.4f}' if 'mean' in k else f'{v:.4f}' 
                         for k, v in gathered_metrics.items()
                     })
                 
@@ -574,12 +595,6 @@ class LinearProbingRunner:
                 accumulated_names=accumulated_names
             )
             
-        # Compute mean losses
-        total_batches = batch_idx + 1
-        for k, v in gathered_metrics.items():
-            if 'mean' in k:
-                validation_metrics[f"validation/{k.replace('mean_', '')}_loss"] = v / total_batches
-        
         # Compute metrics for each head WITH CONFIDENCE INTERVALS
         if self.config.is_ref_device:
             print(f"[DEBUG] rank={self.device} => Computing metrics with CI - This might take a while...")
@@ -709,14 +724,6 @@ class LinearProbingRunner:
             epoch: Current epoch number
         """
         try:
-            for head in accumulated_preds.keys():
-                if isinstance(accumulated_preds[head], list):
-                    pred_shape = accumulated_preds[head][0].shape
-                    target_shape = accumulated_targets[head][0].shape
-                else:
-                    pred_shape = accumulated_preds[head].shape
-                    target_shape = accumulated_targets[head].shape
-
             # Create predictions dictionary with epoch column
             predictions_dict: dict[str, list] = {
                 'epoch': [epoch] * len(accumulated_names),
@@ -727,38 +734,50 @@ class LinearProbingRunner:
             for head in accumulated_preds.keys():
                 # Handle both tensor and list of tensors format
                 if isinstance(accumulated_preds[head], list):
-                    preds_tensor = accumulated_preds[head][0]
-                    targets_tensor = accumulated_targets[head][0]
+                    preds_tensor: torch.Tensor = accumulated_preds[head][0]
+                    targets_tensor: torch.Tensor = accumulated_targets[head][0]
                 else:
-                    preds_tensor = accumulated_preds[head]
-                    targets_tensor = accumulated_targets[head]
-                    
-                preds: np.ndarray = preds_tensor.squeeze().detach().cpu().float().numpy()
-                targets: np.ndarray = targets_tensor.squeeze().detach().cpu().float().numpy()
-                                
-                # Handle binary vs multi-class classification
-                if self.config.head_structure[head] == 1:
+                    preds_tensor: torch.Tensor = accumulated_preds[head]
+                    targets_tensor: torch.Tensor = accumulated_targets[head]
+                                                    
+                # Handle binary classification
+                if self.config.head_task[head] == MetricTask.BINARY_CLASSIFICATION:
+                    preds: np.ndarray = preds_tensor.squeeze().detach().cpu().float().numpy()
+                    targets: np.ndarray = targets_tensor.squeeze().detach().cpu().int().numpy()
                     predictions_dict[f'{head}_pred'] = preds
                     predictions_dict[f'{head}_true'] = targets
-                else:
+                    
+                # Handle regression
+                elif self.config.head_task[head] == MetricTask.REGRESSION:
+                    preds: np.ndarray = preds_tensor.squeeze().detach().cpu().float().numpy()
+                    targets: np.ndarray = targets_tensor.squeeze().detach().cpu().float().numpy()
+                    predictions_dict[f'{head}_pred'] = preds
+                    predictions_dict[f'{head}_true'] = targets
+                    
+                # Handle multi-class classification
+                elif self.config.head_task[head] == MetricTask.MULTICLASS_CLASSIFICATION:                        
                     # For multi-class, get both raw probabilities and predicted class
-                    pred_labels: np.ndarray = preds.argmax(axis=1)
-                    target_labels: np.ndarray = targets.argmax(axis=1)
+                    pred_labels: np.ndarray = preds_tensor.squeeze().detach().cpu().float().numpy()
+                    target_labels: np.ndarray = targets_tensor.squeeze().detach().cpu().int().numpy()
                     
-                    # Map numeric labels to actual class names
-                    label_map: dict[str, int] = self.config.labels_map[head]
-                    rev_label_map: dict[int, str] = {v: k for k, v in label_map.items()}
+                    # Create index_to_label mapping
+                    index_to_label = {v: k for k, v in self.config.labels_map[head].items()}
                     
-                    pred_classes: list[str] = [rev_label_map[i] for i in pred_labels]
-                    true_classes: list[str] = [rev_label_map[i] for i in target_labels]
+                    # Store probabilities for each class
+                    for class_idx in range(pred_labels.shape[1]):
+                        if hasattr(self.config, 'labels_map') and head in self.config.labels_map:
+                            label = f'{head}_prob_{index_to_label[class_idx]}'
+                        else:
+                            label = f'{head}_prob_{class_idx}'
+                        
+                        # Store probabilities for each class
+                        predictions_dict[label] = pred_labels[:, class_idx]    
+                        
+                    # Store predicted class
+                    predictions_dict[f'{head}_pred_class'] = pred_labels.argmax(axis=1)
+                    # Store true class
+                    predictions_dict[f'{head}_true_class'] = target_labels
                     
-                    predictions_dict[f'{head}_pred_class'] = pred_classes
-                    predictions_dict[f'{head}_true_class'] = true_classes
-                    
-                    # Add probabilities for each class
-                    for class_name, class_idx in label_map.items():
-                        predictions_dict[f'{head}_prob_{class_name}'] = preds[:, class_idx]
-            
             # Create and save DataFrame
             df: pd.DataFrame = pd.DataFrame(predictions_dict)
             predictions_dir: str = os.path.join(self.output_dir, "predictions") 
@@ -906,8 +925,14 @@ class LinearProbingRunner:
             elif k == 'losses':
                 # Losses are already scalar values
                 for loss_name, loss_val in v.items():
+                    # Store current batch loss
                     gathered_metrics[f"{loss_name}"] = loss_val
-                    gathered_metrics[f'mean_{loss_name}'] = gathered_metrics.get(f"mean_{loss_name}", 0.0) + loss_val
+                    
+                    # Accumulate sum for averaging over all batches
+                    if f'mean_{loss_name}' not in gathered_metrics:
+                        gathered_metrics[f'mean_{loss_name}'] = 0.0
+                    gathered_metrics[f'mean_{loss_name}'] += loss_val
+
             elif k == 'logits':
                 # Handle logits for classification/regression metrics
                 for head_name, logits in v.items():

@@ -377,7 +377,12 @@ class LinearProbingRunner:
             try:
                 if self.config.use_amp:
                     batch_video = batch_video.to(dtype=torch.float16)
-                    batch_targets = {k: v.to(dtype=torch.float16) for k, v in batch_targets.items()}
+                    # Only convert regression targets to float16, keep classification targets as integers
+                    for head_name, target in batch_targets.items():
+                        if self.config.head_task[head_name] == MetricTask.REGRESSION:
+                            batch_targets[head_name] = target.to(dtype=torch.float16)
+                        # For classification tasks, keep targets as integers (long)
+                        # No conversion needed as they should remain as long for loss functions
                     
                 outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
                     batch_video
@@ -448,7 +453,12 @@ class LinearProbingRunner:
                 # Convert inputs to float16 if AMP is enabled
                 if self.config.use_amp:
                     batch_video = batch_video.to(dtype=torch.float16)
-                    batch_targets = {k: v.to(dtype=torch.float16) for k, v in batch_targets.items()}
+                    # Only convert regression targets to float16, keep classification targets as integers
+                    for head_name, target in batch_targets.items():
+                        if self.config.head_task[head_name] == MetricTask.REGRESSION:
+                            batch_targets[head_name] = target.to(dtype=torch.float16)
+                        # For classification tasks, keep targets as integers (long)
+                        # No conversion needed as they should remain as long for loss functions
                 
                 outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
                     batch_video

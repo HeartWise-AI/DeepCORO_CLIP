@@ -145,7 +145,7 @@ attention_weight_decay: !!float 5.0e-05
 use_cls_token: !!bool true
 num_attention_heads: !!int 6
 separate_video_attention: !!bool false
-normalization_strategy: !!str post
+normalization_strategy: !!str post_norm
 attention_within_lr: !!float 0.004147263799348898
 attention_across_lr: !!float 0.002025021570305698
 attention_within_weight_decay: !!float 6.304012341593597e-05

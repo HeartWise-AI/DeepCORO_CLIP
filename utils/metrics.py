@@ -42,14 +42,18 @@ def pearson_fn(preds: np.ndarray, targets: np.ndarray):
     try:
         r, _ = pearsonr(preds, targets)
         return r if not np.isnan(r) else 0.0
-    except:
+    except (ValueError, TypeError) as e:
+        warnings.warn(f"Error in pearson_fn: {e}")
         return 0.0
 
 def best_threshold_fn(preds: np.ndarray, targets: np.ndarray):
     try:
         return compute_best_threshold(targets.tolist(), preds.tolist())
-    except:
-        return 0.5
+    except (ValueError, TypeError) as e:
+        warnings.warn(f"Error in best_threshold_fn: {e}")
+        # Use class balance as default
+        positive_rate = np.mean(targets)
+        return positive_rate if positive_rate > 0 else 0.5
     
 def metrics_at_threshold_fn(threshold: Optional[float] = None, average: str = "macro"):
     return partial(compute_confusion_matrix_metrics, threshold=threshold, average=average)
@@ -58,21 +62,24 @@ def binary_auc_fn(preds: np.ndarray, targets: np.ndarray):
     """AUC for binary classification - expects probabilities for positive class."""
     try:
         return roc_auc_score(targets, preds)
-    except:
+    except (ValueError, TypeError) as e:
+        warnings.warn(f"Error in binary_auc_fn: {e}")
         return np.nan
 
 def binary_auprc_fn(preds: np.ndarray, targets: np.ndarray):
     """AUPRC for binary classification - expects probabilities for positive class."""
     try:
         return average_precision_score(targets, preds)
-    except:
+    except (ValueError, TypeError) as e:
+        warnings.warn(f"Error in binary_auprc_fn: {e}")
         return np.nan
 
 def multiclass_auc_fn(preds: np.ndarray, targets: np.ndarray, average: str = "macro", multi_class: str = "ovr"):
     """AUC for multiclass classification - expects probabilities for positive class."""
     try:
         return roc_auc_score(targets, preds, average=average, multi_class=multi_class)
-    except:
+    except (ValueError, TypeError) as e:
+        warnings.warn(f"Error in multiclass_auc_fn: {e}")
         return np.nan
 
 def multiclass_auprc_fn(preds: np.ndarray, targets: np.ndarray, average: str = "macro"):
@@ -83,7 +90,8 @@ def multiclass_auprc_fn(preds: np.ndarray, targets: np.ndarray, average: str = "
             num_classes = preds.shape[1]
             targets = np.eye(num_classes)[targets.astype(int)]
         return average_precision_score(targets, preds, average=average)
-    except:
+    except (ValueError, TypeError) as e:
+        warnings.warn(f"Error in multiclass_auprc_fn: {e}")
         return np.nan
     
 # ================================ #
@@ -667,11 +675,23 @@ def _compute_confusion_matrix_metrics(
         except Exception as e:
             print(f"Error computing confusion matrix metrics with CI: {e}")
             _compute_confusion_matrix_point_estimates(
-                preds, targets, threshold, head_name, mode, metrics, average
+                preds=preds,
+                targets=targets,
+                threshold=threshold,
+                head_name=head_name,
+                mode=mode,
+                metrics=metrics,
+                average=average
             )
     else:
         _compute_confusion_matrix_point_estimates(
-            preds, targets, threshold, head_name, mode, metrics, average
+            preds=preds,
+            targets=targets,
+            threshold=threshold,
+            head_name=head_name,
+            mode=mode,
+            metrics=metrics,
+            average=average
         )
 
 

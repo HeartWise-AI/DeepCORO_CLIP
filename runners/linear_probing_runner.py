@@ -16,7 +16,8 @@ from collections import defaultdict
 
 from utils.metrics import (
     compute_regression_metrics,
-    compute_classification_metrics
+    compute_binary_classification_metrics, 
+    compute_multiclass_classification_metrics
 )
 from utils.loss.typing import Loss
 from utils.ddp import DistributedUtils
@@ -174,6 +175,7 @@ class LinearProbingRunner:
                 
             if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
                 val_metrics['best_val_loss'] = self.best_val_loss
+                print(f"[DEBUG] rank={self.device} => Val metrics: {val_metrics}")
                 self.wandb_wrapper.log(val_metrics)
                 print(f"[DEBUG] rank={self.device} => Logged val metrics to W&B")  
                 
@@ -253,13 +255,17 @@ class LinearProbingRunner:
 
         # Gather all predictions and targets across GPUs
         if self.config.world_size > 1:
-            print(f"[DEBUG] rank={self.device} => Gathering distributed predictions... len(accumulated_preds): {len(accumulated_preds)}, len(accumulated_targets): {len(accumulated_targets)}, len(accumulated_names): {len(accumulated_names)}")
             self._gather_distributed_predictions(
                 accumulated_preds=accumulated_preds,
                 accumulated_targets=accumulated_targets,
                 accumulated_names=accumulated_names
             )
-            print(f"[DEBUG] rank={self.device} => Finished gathering distributed predictions... len(accumulated_preds): {len(accumulated_preds)}, len(accumulated_targets): {len(accumulated_targets)}, len(accumulated_names): {len(accumulated_names)}")
+
+        # Sync after gathering predictions and targets
+        DistributedUtils.sync_process_group(
+            world_size=self.world_size,
+            device_ids=self.device
+        )
 
         # Get mean epoch losses
         for k, v in gathered_metrics.items():
@@ -267,16 +273,15 @@ class LinearProbingRunner:
                 epoch_metrics[f"{mode}/{k.replace('mean_', '')}_loss"] = v / batch_idx
         
         # Compute AUC metrics for each head
-        final_preds = {}
-        final_targets = {}
         self._compute_heads_metrics(
+            mode=mode,
             accumulated_preds=accumulated_preds,
             accumulated_targets=accumulated_targets,
             validation_metrics=epoch_metrics,
-            compute_cli=False
+            compute_ci=False
         )
             
-        # Sync after logging metrics and confusion matrix
+        # Sync after computing heads metrics
         DistributedUtils.sync_process_group(
             world_size=self.world_size,
             device_ids=self.device
@@ -286,15 +291,11 @@ class LinearProbingRunner:
 
         # Save predictions for validation mode
         if mode == RunMode.VALIDATE and self.config.is_ref_device:
-            # Use final_preds and final_targets if available, otherwise use accumulated
-            preds_to_save = final_preds if 'final_preds' in locals() and final_preds else accumulated_preds
-            targets_to_save = final_targets if 'final_targets' in locals() and final_targets else accumulated_targets
-            
             self._save_predictions(
                 mode=mode,
                 accumulated_names=accumulated_names,
-                accumulated_preds=preds_to_save,
-                accumulated_targets=targets_to_save,
+                accumulated_preds=accumulated_preds,
+                accumulated_targets=accumulated_targets,
                 epoch=epoch
             )
 
@@ -573,10 +574,11 @@ class LinearProbingRunner:
         if self.config.is_ref_device:
             print(f"[DEBUG] rank={self.device} => Computing metrics with CI - This might take a while...")
             self._compute_heads_metrics(
+                mode=RunMode.VAL,
                 accumulated_preds=accumulated_preds,
                 accumulated_targets=accumulated_targets,
                 validation_metrics=validation_metrics,
-                compute_cli=True
+                compute_ci=True
             )
         
         # Sync after computing metrics
@@ -588,7 +590,7 @@ class LinearProbingRunner:
         # Save predictions if on reference device
         if self.config.is_ref_device:
             self._save_predictions(
-                mode=self.config.run_mode,
+                mode=RunMode.VAL,
                 accumulated_names=accumulated_names,
                 accumulated_preds=accumulated_preds,
                 accumulated_targets=accumulated_targets,
@@ -697,8 +699,6 @@ class LinearProbingRunner:
             epoch: Current epoch number
         """
         try:
-            # Debug array lengths
-            print(f"[DEBUG] rank={self.device} => Number of accumulated names: {len(accumulated_names)}")
             for head in accumulated_preds.keys():
                 if isinstance(accumulated_preds[head], list):
                     pred_shape = accumulated_preds[head][0].shape
@@ -706,7 +706,6 @@ class LinearProbingRunner:
                 else:
                     pred_shape = accumulated_preds[head].shape
                     target_shape = accumulated_targets[head].shape
-                print(f"[DEBUG] rank={self.device} => Head {head} - Predictions shape: {pred_shape}, Targets shape: {target_shape}")
 
             # Create predictions dictionary with epoch column
             predictions_dict: dict[str, list] = {
@@ -726,10 +725,7 @@ class LinearProbingRunner:
                     
                 preds: np.ndarray = preds_tensor.squeeze().detach().cpu().float().numpy()
                 targets: np.ndarray = targets_tensor.squeeze().detach().cpu().float().numpy()
-                
-                # Debug shapes after conversion
-                print(f"[DEBUG] rank={self.device} => Head {head} - After conversion - Preds shape: {preds.shape}, Targets shape: {targets.shape}")
-                
+                                
                 # Handle binary vs multi-class classification
                 if self.config.head_structure[head] == 1:
                     predictions_dict[f'{head}_pred'] = preds
@@ -739,9 +735,6 @@ class LinearProbingRunner:
                     pred_labels: np.ndarray = preds.argmax(axis=1)
                     target_labels: np.ndarray = targets.argmax(axis=1)
                     
-                    # Debug shapes after argmax
-                    print(f"[DEBUG] rank={self.device} => Head {head} - After argmax - Pred labels shape: {pred_labels.shape}, Target labels shape: {target_labels.shape}")
-                    
                     # Map numeric labels to actual class names
                     label_map: dict[str, int] = self.config.labels_map[head]
                     rev_label_map: dict[int, str] = {v: k for k, v in label_map.items()}
@@ -749,20 +742,12 @@ class LinearProbingRunner:
                     pred_classes: list[str] = [rev_label_map[i] for i in pred_labels]
                     true_classes: list[str] = [rev_label_map[i] for i in target_labels]
                     
-                    # Debug lengths after class mapping
-                    print(f"[DEBUG] rank={self.device} => Head {head} - After class mapping - Pred classes len: {len(pred_classes)}, True classes len: {len(true_classes)}")
-                    
                     predictions_dict[f'{head}_pred_class'] = pred_classes
                     predictions_dict[f'{head}_true_class'] = true_classes
                     
                     # Add probabilities for each class
                     for class_name, class_idx in label_map.items():
                         predictions_dict[f'{head}_prob_{class_name}'] = preds[:, class_idx]
-            
-            # Debug final dictionary lengths
-            print(f"[DEBUG] rank={self.device} => Final dictionary lengths:")
-            for k, v in predictions_dict.items():
-                print(f"[DEBUG] rank={self.device} => {k}: {len(v)}")
             
             # Create and save DataFrame
             df: pd.DataFrame = pd.DataFrame(predictions_dict)
@@ -996,10 +981,11 @@ class LinearProbingRunner:
     
     def _compute_heads_metrics(
         self,
+        mode: str,
         accumulated_preds: Dict[str, list[torch.Tensor]],
         accumulated_targets: Dict[str, list[torch.Tensor]],
         validation_metrics: Dict[str, float], # leverage ref. ptr to avoid copying
-        compute_cli: bool = False
+        compute_ci: bool = False
     ) -> None:
         """
         Compute metrics for the given predictions and targets.
@@ -1012,40 +998,38 @@ class LinearProbingRunner:
         Note:
             This function modifies the input validation_metrics dictionary in-place.
         """
-        for head in tqdm(accumulated_preds.keys(), desc=f"Computing heads metrics {'with CI' if compute_cli else ''}", total=len(accumulated_preds)):
+        for head in tqdm(accumulated_preds.keys(), desc=f"Computing {mode} heads metrics {'with CI' if compute_ci else ''}", total=len(accumulated_preds)):
             # Gather accumulated predictions and targets for each head
             preds = torch.cat(accumulated_preds[head], dim=0)
             targets = torch.cat(accumulated_targets[head], dim=0)
             
             if self.config.head_task[head] == MetricTask.BINARY_CLASSIFICATION:
                 # Compute classification metrics WITH CI
-                head_metrics = compute_classification_metrics(
-                    preds=preds,
-                    targets=targets,
+                head_metrics = compute_binary_classification_metrics(
+                    preds=preds.squeeze(-1) if preds.ndim == 2 else preds, # squeeze to remove the last dimension of the preds tensor - currently [B, 1] and expects [B,]
+                    targets=targets.squeeze(-1) if targets.ndim == 2 else targets, # squeeze to remove the last dimension of the targets tensor - currently [B, 1] and expects [B,]
                     head_name=head,
-                    head_structure=self.config.head_structure,
                     labels_map=self.config.labels_map,
-                    mode=self.config.run_mode, 
+                    mode=mode, 
                     wandb_wrapper=self.wandb_wrapper,
                     is_ref_device=self.config.is_ref_device,
                     confidence_level=getattr(self.config, 'ci_confidence_level', 0.95),
                     n_bootstrap=getattr(self.config, 'ci_n_bootstrap', 1000),
-                    compute_cli=compute_cli
+                    compute_ci=compute_ci
                 )
             elif self.config.head_task[head] == MetricTask.MULTICLASS_CLASSIFICATION:
                 # Compute classification metrics WITH CI for multiclass
-                head_metrics = compute_classification_metrics(
+                head_metrics = compute_multiclass_classification_metrics(
                     preds=preds,
                     targets=targets,
                     head_name=head,
-                    head_structure=self.config.head_structure,
                     labels_map=self.config.labels_map,
-                    mode=self.config.run_mode, 
+                    mode=mode, 
                     wandb_wrapper=self.wandb_wrapper,
                     is_ref_device=self.config.is_ref_device,
                     confidence_level=getattr(self.config, 'ci_confidence_level', 0.95),
                     n_bootstrap=getattr(self.config, 'ci_n_bootstrap', 1000),
-                    compute_cli=compute_cli
+                    compute_ci=compute_ci
                 )
             elif self.config.head_task[head] == MetricTask.REGRESSION:
                 # Compute regression metrics WITH CI
@@ -1053,12 +1037,12 @@ class LinearProbingRunner:
                     preds=preds,
                     targets=targets,
                     head_name=head,
-                    mode=self.config.run_mode, 
+                    mode=mode, 
                     wandb_wrapper=self.wandb_wrapper,
                     is_ref_device=self.config.is_ref_device,
                     confidence_level=getattr(self.config, 'ci_confidence_level', 0.95),
                     n_bootstrap=getattr(self.config, 'ci_n_bootstrap', 1000),
-                    compute_cli=compute_cli
+                    compute_ci=compute_ci
                 )
             else:
                 raise ValueError(

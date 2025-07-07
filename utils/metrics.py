@@ -88,6 +88,8 @@ def multiclass_auprc_fn(preds: np.ndarray, targets: np.ndarray, average: str = "
         # Convert integer labels to one-hot if needed
         if targets.ndim == 1:
             num_classes = preds.shape[1]
+            if np.any(targets >= num_classes) or np.any(targets < 0):
+                raise ValueError(f"Target values must be in [0, {num_classes-1}]")            
             targets = np.eye(num_classes)[targets.astype(int)]
         return average_precision_score(targets, preds, average=average)
     except (ValueError, TypeError) as e:

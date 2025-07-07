@@ -3,14 +3,14 @@ pipeline_project: !!str DeepCORO_video_linear_probing
 #output_dir: !!str outputs
 base_checkpoint_path: !!str outputs
 run_mode: !!str train
-epochs: !!int 15
+epochs: !!int 3
 seed: !!int 42
 # wandb parameters
 tag: !!str mvit_pretrained
 name: !!str mil_probing_2vue
 project: !!str DeepCORO-MIL
-entity: !!str mhi_ai
-use_wandb: !!bool false
+entity: !!str jacques-delfrate
+use_wandb: !!bool true
 # Training parameters
 scheduler_name: !!str cosine_with_warmup
 lr_step_period: !!int 4

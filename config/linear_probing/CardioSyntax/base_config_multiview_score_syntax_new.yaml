@@ -5,14 +5,14 @@
 pipeline_project: !!str DeepCORO_video_linear_probing
 base_checkpoint_path: !!str outputs
 run_mode: !!str train
-epochs: !!int 2
+epochs: !!int 50
 seed: !!int 42
 tag: !!str mvit_pretrained_multiview_cls_token
 # wandb parameters
 name: !!str DeepCORO_video_linear_probing_multiview_improved_cls_token
 project: !!str DeepCORO_video_linear_probing_multiview_improved_cls_token
 entity: !!str mhi_ai
-use_wandb: !!bool false
+use_wandb: !!bool true
 # Training parameters
 scheduler_name: !!str cosine_with_warmup
 num_warmup_percent: !!float 0.08
@@ -76,7 +76,7 @@ head_structure:
   syntax_left: !!int 1
   syntax_category: !!int 4
   syntax_left_category: !!int 4
-  syntax_right_category: !!int 4
+  syntax_right_category: !!int 3
 head_dropout:
   syntax: !!float 0.2
   syntax_right: !!float 0.2

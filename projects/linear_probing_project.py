@@ -321,7 +321,7 @@ class LinearProbingProject(BaseProject):
         
         val_loader: DataLoader = get_distributed_video_dataloader(
             config=self.config, 
-            split=RunMode.VALIDATE, 
+            split=self.config.run_mode, 
             mean=mean.tolist(),
             std=std.tolist(),
             shuffle=False,
@@ -396,6 +396,9 @@ class LinearProbingProject(BaseProject):
             "output_dir": self.config.output_dir if self.config.is_ref_device else None,
         }
 
+    def _setup_test_objects(self) -> dict[str, Any]:
+        return self._setup_validation_objects()
+
     def run(self):
         
         if self.config.is_ref_device:
@@ -410,6 +413,10 @@ class LinearProbingProject(BaseProject):
             runner_args.update(self._setup_training_objects())
         elif self.config.run_mode == RunMode.VALIDATE:
             runner_args.update(self._setup_validation_objects())
+        elif self.config.run_mode == RunMode.TEST:
+            runner_args.update(self._setup_test_objects())
+        elif self.config.run_mode == RunMode.INFERENCE:
+            runner_args.update(self._setup_inference_objects())
         
         # Create runner instance
         runner: Runner = RunnerRegistry.get(
@@ -423,6 +430,8 @@ class LinearProbingProject(BaseProject):
             runner.validate()
         elif self.config.run_mode == RunMode.INFERENCE:
             runner.inference()
+        elif self.config.run_mode == RunMode.TEST:
+            runner.test()
 
         # Final cleanup
         if self.config.is_ref_device:

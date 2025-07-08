@@ -599,7 +599,7 @@ class LinearProbingRunner:
         if self.config.is_ref_device:
             print(f"[DEBUG] rank={self.device} => Computing metrics with CI - This might take a while...")
             self._compute_heads_metrics(
-                mode=RunMode.VALIDATE,
+                mode=self.config.run_mode,
                 accumulated_preds=accumulated_preds,
                 accumulated_targets=accumulated_targets,
                 validation_metrics=validation_metrics,
@@ -615,7 +615,7 @@ class LinearProbingRunner:
         # Save predictions if on reference device
         if self.config.is_ref_device:
             self._save_predictions(
-                mode=RunMode.VALIDATE,
+                mode=self.config.run_mode,
                 accumulated_names=accumulated_names,
                 accumulated_preds=accumulated_preds,
                 accumulated_targets=accumulated_targets,
@@ -641,7 +641,13 @@ class LinearProbingRunner:
         
         # Memory cleanup for GPU tensors
         torch.cuda.empty_cache()
-       
+        
+    def test(self) -> None:
+        """
+        Run test on the test dataset and return metrics with confidence intervals.
+        """
+        self.validate()
+    
     def inference(self) -> None:
         """
         Run inference on the test dataset and return metrics.

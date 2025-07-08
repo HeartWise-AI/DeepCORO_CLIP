@@ -29,6 +29,9 @@ class Runner:
     def validate(self):
         self.runner_type.validate()
         
+    def test(self):
+        self.runner_type.test()
+        
     def _run_epoch(
         self, 
         mode: str, 

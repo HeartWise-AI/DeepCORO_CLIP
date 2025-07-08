@@ -125,6 +125,9 @@ Process validation data from input CSV (rows where **Split == 'inference'**) - *
 bash scripts/runner.sh --selected_gpus 0 --base_config config/clip/base_config.yaml --run_mode inference --use_wandb false
 ```
 
+### Run test
+**Not supported**
+
 ### 2. Linear Probing
 
 Fine-tune the model for specific tasks using linear probing - couple of combination examples:
@@ -145,6 +148,12 @@ bash scripts/run_sweep.sh --base_config config/linear_probing/base_config.yaml -
 Process validation data from input CSV (rows where **Split == 'val'**)
 ``` bash
 bash scripts/runner.sh --use_wandb false --base_config config/linear_probing/stenosis/base_config_stenosis_2vue.yaml --run_mode val --selected_gpus 1,2,3
+```
+
+#### Run test 
+Process validation data from input CSV (rows where **Split == 'test'**)
+``` bash
+bash scripts/runner.sh --use_wandb false --base_config config/linear_probing/stenosis/base_config_stenosis_2vue.yaml --run_mode test --selected_gpus 1,2,3
 ```
 
 ### Run inference

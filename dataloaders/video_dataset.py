@@ -270,7 +270,7 @@ class VideoDataset(torch.utils.data.Dataset):
         
         if self.multi_video:
             group_fnames_in_item = self.fnames[actual_idx] # List of all video paths for this item's group
-            outcome_for_item = self.outcomes[actual_idx]
+            outcome_for_item = self.outcomes[actual_idx] 
             
             current_selected_fnames: List[str]
             # Select video fnames to load, based on self.num_videos and shuffle_videos

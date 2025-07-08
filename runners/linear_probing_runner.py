@@ -309,10 +309,10 @@ class LinearProbingRunner:
             print(f"[DEBUG] rank={self.device} => Saving predictions for validation mode")
             self._save_predictions(
                 mode=mode,
+                epoch=epoch,
                 accumulated_names=accumulated_names,
                 accumulated_preds=accumulated_preds,
                 accumulated_targets=accumulated_targets,
-                epoch=epoch
             )
 
         # ------------------------------------------------------------------
@@ -474,12 +474,6 @@ class LinearProbingRunner:
                 # Convert inputs to float16 if AMP is enabled
                 if self.config.use_amp:
                     batch_video = batch_video.to(dtype=torch.float16)
-                    # Only convert regression targets to float16, keep classification targets as integers
-                    for head_name, target in batch_targets.items():
-                        if self.config.head_task[head_name] == MetricTask.REGRESSION:
-                            batch_targets[head_name] = target.to(dtype=torch.float16)
-                        # For classification tasks, keep targets as integers (long)
-                        # No conversion needed as they should remain as long for loss functions
                 
                 outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
                     batch_video
@@ -488,6 +482,13 @@ class LinearProbingRunner:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")
 
         try:
+            # Only convert regression targets to float16, keep classification targets as integers
+            for head_name, target in batch_targets.items():
+                if self.config.head_task[head_name] == MetricTask.REGRESSION:
+                    batch_targets[head_name] = target.to(dtype=torch.float16)
+                        # For classification tasks, keep targets as integers (long)
+                        # No conversion needed as they should remain as long for loss functions
+            
             losses: dict[str, torch.Tensor] = self.loss_fn.run(
                 outputs=outputs_dict, 
                 targets=batch_targets
@@ -515,6 +516,37 @@ class LinearProbingRunner:
             "losses": scalar_losses,
             "logits": scalar_outputs,
             **lr_metrics
+        }
+
+    def _inference_step(
+        self, 
+        batch_video: torch.Tensor,
+        batch_targets: Dict[str, torch.Tensor] # Unused - parsed to match signature of _val_step and _train_step
+    ) -> StepFnResults:        
+        # Forward pass with autocast for mixed precision
+        with torch.no_grad():
+            try:
+                # Convert inputs to float16 if AMP is enabled
+                if self.config.use_amp:
+                    batch_video = batch_video.to(dtype=torch.float16)
+                
+                outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
+                    batch_video
+                )
+            except Exception as e:
+                raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")
+  
+        # Sync gradients across processes before optimizer step
+        DistributedUtils.sync_process_group(
+            world_size=self.config.world_size,
+            device_ids=self.config.device
+        )
+
+        # Convert losses to scalar values
+        scalar_outputs = {k: v.detach() for k, v in outputs_dict.items()}
+                
+        return {
+            "logits": scalar_outputs
         }
 
     def validate(self) -> None:
@@ -646,8 +678,70 @@ class LinearProbingRunner:
         """
         Run inference on the test dataset and return metrics.
         """
-        raise NotImplementedError("Inference mode is not implemented for linear probing")
+        assert len(self.val_loader) > 0, "Test loader is empty"
+        
+        self.linear_probing.train(False)
+        
+        # Synchronize before inference starts
+        DistributedUtils.sync_process_group(
+            world_size=self.world_size,
+            device_ids=self.device
+        )
+        
+        # Initialize metrics and accumulation containers
+        accumulated_preds: Dict[str, list[torch.Tensor]] = defaultdict(list)
+        accumulated_names: list[str] = []
+        
+        # Set up progress bar
+        tqdm_desc: str = f"[GPU {self.device}] Running Inference"
+        if self.config.is_ref_device:
+            data_iter: tqdm = tqdm(self.val_loader, desc=tqdm_desc, total=len(self.val_loader))
+        else:
+            data_iter = self.val_loader
+        
+        step_fn: Callable[..., StepFnResults] = self._inference_step
+        
+        # Process all batches
+        with torch.no_grad():
+            for _, batch in enumerate(data_iter, start=1):
+                    # Forward pass
+                    run_batch: BatchResult = self._run_batch(
+                        batch=batch,
+                        step_fn=step_fn
+                    )
+                    
+                    # Accumulate batch metrics for each head
+                    self._accumulate_batch_metrics_inference(
+                        run_batch=run_batch,
+                        accumulated_preds=accumulated_preds,
+                        accumulated_names=accumulated_names,
+                        batch=batch
+                    )
+
+        # Sync after inference
+        DistributedUtils.sync_process_group(
+            world_size=self.world_size,
+            device_ids=self.device
+        )
+
+        # Gather all predictions across GPUs if using distributed training
+        if self.config.world_size > 1:
+            self._gather_distributed_predictions(
+                accumulated_preds=accumulated_preds,
+                accumulated_names=accumulated_names,
+                accumulated_targets=None
+            )
             
+        # Save predictions if on reference device
+        if self.config.is_ref_device:
+            self._save_predictions(
+                mode=self.config.run_mode,
+                epoch=-1,
+                accumulated_names=accumulated_names,
+                accumulated_preds=accumulated_preds,
+                accumulated_targets=None,
+            )
+
     def _save_checkpoint(
         self, 
         epoch: int, 
@@ -708,10 +802,10 @@ class LinearProbingRunner:
     def _save_predictions(
         self,
         mode: str,
+        epoch: int,
         accumulated_names: list[str],
         accumulated_preds: dict[str, torch.Tensor],
-        accumulated_targets: dict[str, torch.Tensor],
-        epoch: int
+        accumulated_targets: Optional[dict[str, torch.Tensor]] = None,
     ) -> None:
         """
         Save model predictions and ground truth values to a CSV file.
@@ -735,22 +829,22 @@ class LinearProbingRunner:
                 # Handle both tensor and list of tensors format
                 if isinstance(accumulated_preds[head], list):
                     preds_tensor: torch.Tensor = accumulated_preds[head][0]
-                    targets_tensor: torch.Tensor = accumulated_targets[head][0]
+                    targets_tensor: torch.Tensor = accumulated_targets[head][0] if accumulated_targets is not None else None
                 else:
                     preds_tensor: torch.Tensor = accumulated_preds[head]
-                    targets_tensor: torch.Tensor = accumulated_targets[head]
+                    targets_tensor: torch.Tensor = accumulated_targets[head] if accumulated_targets is not None else None
                                                     
                 # Handle binary classification
                 if self.config.head_task[head] == MetricTask.BINARY_CLASSIFICATION:
                     preds: np.ndarray = preds_tensor.squeeze().detach().cpu().float().numpy()
-                    targets: np.ndarray = targets_tensor.squeeze().detach().cpu().int().numpy()
+                    targets: np.ndarray = targets_tensor.squeeze().detach().cpu().int().numpy() if targets_tensor is not None else None
                     predictions_dict[f'{head}_pred'] = preds
                     predictions_dict[f'{head}_true'] = targets
                     
                 # Handle regression
                 elif self.config.head_task[head] == MetricTask.REGRESSION:
                     preds: np.ndarray = preds_tensor.squeeze().detach().cpu().float().numpy()
-                    targets: np.ndarray = targets_tensor.squeeze().detach().cpu().float().numpy()
+                    targets: np.ndarray = targets_tensor.squeeze().detach().cpu().float().numpy() if targets_tensor is not None else None
                     predictions_dict[f'{head}_pred'] = preds
                     predictions_dict[f'{head}_true'] = targets
                     
@@ -758,7 +852,7 @@ class LinearProbingRunner:
                 elif self.config.head_task[head] == MetricTask.MULTICLASS_CLASSIFICATION:                        
                     # For multi-class, get both raw probabilities and predicted class
                     pred_labels: np.ndarray = preds_tensor.squeeze().detach().cpu().float().numpy()
-                    target_labels: np.ndarray = targets_tensor.squeeze().detach().cpu().int().numpy()
+                    target_labels: np.ndarray = targets_tensor.squeeze().detach().cpu().int().numpy() if targets_tensor is not None else None
                     
                     # Create index_to_label mapping
                     index_to_label = {v: k for k, v in self.config.labels_map[head].items()}
@@ -776,7 +870,7 @@ class LinearProbingRunner:
                     # Store predicted class
                     predictions_dict[f'{head}_pred_class'] = pred_labels.argmax(axis=1)
                     # Store true class
-                    predictions_dict[f'{head}_true_class'] = target_labels
+                    predictions_dict[f'{head}_true_class'] = target_labels if target_labels is not None else None
                     
             # Create and save DataFrame
             df: pd.DataFrame = pd.DataFrame(predictions_dict)
@@ -975,11 +1069,70 @@ class LinearProbingRunner:
         # Accumulate video names
         accumulated_names.extend(batch['video_fname'])
 
+    def _accumulate_batch_metrics_inference(
+        self,
+        run_batch: BatchResult,
+        accumulated_preds: Dict[str, list[torch.Tensor]], # leverage ref. ptr to avoid reference return by Tuple
+        accumulated_names: list[str], # leverage ref. ptr to avoid reference return by Tuple
+        batch: Dict[str, torch.Tensor]
+    ) -> None:
+        """
+        Accumulate metrics from a single batch for later computation.
+        
+        Args:
+            outputs: Model outputs containing losses, logits, and lr metrics
+            processed_batch: Preprocessed batch data
+            accumulated_preds: Dictionary to accumulate predictions for each head
+            accumulated_targets: Dictionary to accumulate targets for each head
+            accumulated_names: List to accumulate video names
+            gathered_metrics: Dictionary to accumulate scalar metrics
+            batch: Original batch data containing video filenames
+            
+        Note:
+            This function modifies the input containers in-place and returns None.            
+        """
+        # Accumulate metrics
+        for k, v in run_batch.outputs.items():
+            if k == 'logits':
+                # Handle logits for classification/regression metrics
+                for head_name, logits in v.items():                    
+                    # Get predictions based on task type
+                    if self.config.head_task[head_name] == MetricTask.BINARY_CLASSIFICATION:
+                        if logits.ndim != 2 or logits.shape[1] != 1:  # Expected shape: [B, 1]
+                            raise ValueError(
+                                f"[DEBUG] rank={self.device} => Binary classification head {head_name} "
+                                f"should have logits of shape [B, 1], but got {logits.shape}"
+                            )
+                        preds: torch.Tensor = torch.sigmoid(logits.float())
+                        
+                    elif self.config.head_task[head_name] == MetricTask.MULTICLASS_CLASSIFICATION:
+                        if logits.ndim != 2 or logits.shape[1] < 2:  # Expected shape: [B, C] with C > 1
+                            raise ValueError(
+                                f"[DEBUG] rank={self.device} => Multiclass classification head {head_name} "
+                                f"should have logits of shape [B, C] where C > 1 (Nb of classes), but got {logits.shape}"
+                            )
+                        preds: torch.Tensor = torch.softmax(logits.float(), dim=1)
+                        
+                    elif self.config.head_task[head_name] == MetricTask.REGRESSION:
+                        preds: torch.Tensor = logits
+                        
+                    else:
+                        raise ValueError(
+                            f"[DEBUG] rank={self.device} => Unknown head task: {self.config.head_task[head_name]} "
+                            f"Supported tasks: {', '.join([metric.value for metric in MetricTask])}"
+                        )
+                    
+                    # Accumulate predictions and targets
+                    accumulated_preds[head_name].append(preds)
+        
+        # Accumulate video names
+        accumulated_names.extend(batch['video_fname'])
+
     def _gather_distributed_predictions(
         self,
+        accumulated_names: list[str],  # leverage ref. ptr to avoid reference return by Tuple
         accumulated_preds: Dict[str, list[torch.Tensor]],  # leverage ref. ptr to avoid reference return by Tuple
-        accumulated_targets: Dict[str, list[torch.Tensor]],  # leverage ref. ptr to avoid reference return by Tuple
-        accumulated_names: list[str]  # leverage ref. ptr to avoid reference return by Tuple
+        accumulated_targets: Optional[Dict[str, list[torch.Tensor]]] = None  # leverage ref. ptr to avoid reference return by Tuple
     ) -> None:
         """
         Gather predictions, targets, and video names across all distributed processes.
@@ -1004,15 +1157,16 @@ class LinearProbingRunner:
         for head in accumulated_preds.keys():
             # Convert lists to tensors (concatenate batches from this process)
             local_preds: torch.Tensor = torch.cat(accumulated_preds[head], dim=0)
-            local_targets: torch.Tensor = torch.cat(accumulated_targets[head], dim=0)
+            local_targets: torch.Tensor = torch.cat(accumulated_targets[head], dim=0) if accumulated_targets is not None else None
             
             # Gather tensors across all processes
             gathered_preds: torch.Tensor = DistributedUtils.gather_tensor(local_preds, self.config.world_size)
-            gathered_targets: torch.Tensor = DistributedUtils.gather_tensor(local_targets, self.config.world_size)
+            gathered_targets: torch.Tensor = DistributedUtils.gather_tensor(local_targets, self.config.world_size) if accumulated_targets is not None else None
             
             # Update accumulated containers in-place (replace list of many tensors with list of one complete tensor)
             accumulated_preds[head] = [gathered_preds]
-            accumulated_targets[head] = [gathered_targets]
+            if accumulated_targets is not None:
+                accumulated_targets[head] = [gathered_targets]
     
     def _compute_heads_metrics(
         self,

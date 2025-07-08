@@ -606,12 +606,6 @@ class LinearProbingRunner:
                 compute_ci=True
             )
         
-        # Sync after computing metrics
-        DistributedUtils.sync_process_group(
-            world_size=self.world_size,
-            device_ids=self.device
-        )
-        
         # Save predictions if on reference device
         if self.config.is_ref_device:
             self._save_predictions(

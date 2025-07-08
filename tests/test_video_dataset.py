@@ -85,15 +85,15 @@ class TestVideoDataset(unittest.TestCase):
         """Test data loading functionality."""
         dataset = VideoDataset(
             data_filename=self.temp_csv_path,
-            split="all",  # Load all data
+            split="train", 
             target_label=["target_label"],
             datapoint_loc_label="target_video_path",
             mean=self.mean,
             std=self.std
         )
         
-        # Should load all videos
-        self.assertEqual(len(dataset.fnames), 3)
+        # Should load train videos
+        self.assertEqual(len(dataset.fnames), 2)
         
         # Test with specific split
         dataset = VideoDataset(

@@ -398,13 +398,7 @@ class LinearProbingRunner:
             try:
                 if self.config.use_amp:
                     batch_video = batch_video.to(dtype=torch.float16)
-                    # Only convert regression targets to float16, keep classification targets as integers
-                    for head_name, target in batch_targets.items():
-                        if self.config.head_task[head_name] == MetricTask.REGRESSION:
-                            batch_targets[head_name] = target.to(dtype=torch.float16)
-                        # For classification tasks, keep targets as integers (long)
-                        # No conversion needed as they should remain as long for loss functions
-                    
+                     
                 outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
                     batch_video
                 )
@@ -412,6 +406,13 @@ class LinearProbingRunner:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")
 
         try:
+            if self.config.use_amp:
+                for head_name, target in batch_targets.items():
+                    if self.config.head_task[head_name] == MetricTask.REGRESSION:
+                        batch_targets[head_name] = target.to(dtype=torch.float16)
+                    # For classification tasks, keep targets as integers (long)
+                    # No conversion needed as they should remain as long for loss functions
+            
             losses: dict[str, torch.Tensor] = self.loss_fn.run(
                 outputs=outputs_dict, 
                 targets=batch_targets
@@ -482,12 +483,13 @@ class LinearProbingRunner:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")
 
         try:
-            # Only convert regression targets to float16, keep classification targets as integers
-            for head_name, target in batch_targets.items():
-                if self.config.head_task[head_name] == MetricTask.REGRESSION:
-                    batch_targets[head_name] = target.to(dtype=torch.float16)
-                        # For classification tasks, keep targets as integers (long)
-                        # No conversion needed as they should remain as long for loss functions
+            # Only convert regression targets to float16 if AMP is enabled, keep classification targets as integers
+            if self.config.use_amp:
+                for head_name, target in batch_targets.items():
+                    if self.config.head_task[head_name] == MetricTask.REGRESSION:
+                        batch_targets[head_name] = target.to(dtype=torch.float16)
+                    # For classification tasks, keep targets as integers (long)
+                    # No conversion needed as they should remain as long for loss functions
             
             losses: dict[str, torch.Tensor] = self.loss_fn.run(
                 outputs=outputs_dict, 

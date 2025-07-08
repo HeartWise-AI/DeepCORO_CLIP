@@ -331,9 +331,7 @@ class LinearProbingProject(BaseProject):
             shuffle_videos=False,  # Don't shuffle validation videos
             labels_map=getattr(self.config, 'labels_map', None),
         )   
-        
-        print(f"len(val_loader): {len(val_loader)}")
-        
+                
         # Initialize video encoder backbone for linear probing
         video_encoder: VideoEncoder = ModelRegistry.get("video_encoder")(
             backbone=self.config.model_name,

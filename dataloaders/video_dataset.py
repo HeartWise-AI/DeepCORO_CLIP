@@ -27,7 +27,7 @@ class VideoDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         data_filename: str,
-        split: str,
+        split: Union[str, RunMode],
         target_label: Optional[List[str]] = None,
         datapoint_loc_label: str = "target_video_path",
         num_frames: int = 32,
@@ -103,7 +103,7 @@ class VideoDataset(torch.utils.data.Dataset):
 
     def load_data(
         self, 
-        split: str, 
+        split: Union[str, RunMode], 
         target_labels: Optional[List[str]]
     ) -> Tuple[List[str], Optional[List[Optional[dict]]], Optional[dict]]:
         """
@@ -111,7 +111,7 @@ class VideoDataset(torch.utils.data.Dataset):
         For multi-video mode, groups videos by groupby_column.
 
         Args:
-            split (str): Dataset split (TRAIN, VALIDATE, TEST, INFERENCE)
+            split (Union[str, RunMode]): Dataset split (TRAIN, VALIDATE, TEST, INFERENCE)
             target_labels (list): List of target label column names
 
         Returns:
@@ -128,9 +128,11 @@ class VideoDataset(torch.utils.data.Dataset):
         filename_col = self.datapoint_loc_label
         split_col = "Split"
 
-        split_dataset = data[data[split_col] == split]
+        # Convert split to string for CSV filtering, but keep original for enum comparison
+        split_str = str(split)
+        split_dataset = data[data[split_col] == split_str]
         if split_dataset.empty:
-            raise ValueError(f"No data found in {self.filename} for split {split}")
+            raise ValueError(f"No data found in {self.filename} for split {split_str}")
         
         # Handle target indices for multi-head case
         if target_labels is None or split == RunMode.INFERENCE:

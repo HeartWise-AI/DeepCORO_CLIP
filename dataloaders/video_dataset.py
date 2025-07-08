@@ -105,7 +105,7 @@ class VideoDataset(torch.utils.data.Dataset):
         self, 
         split: str, 
         target_labels: Optional[List[str]]
-    ) -> Tuple[List[str], List[dict], dict]:
+    ) -> Tuple[List[str], Optional[List[Optional[dict]]], Optional[dict]]:
         """
         Load data from the CSV file and extract filenames and outcomes.
         For multi-video mode, groups videos by groupby_column.
@@ -118,6 +118,7 @@ class VideoDataset(torch.utils.data.Dataset):
             tuple: (filenames, outcomes, target_indices)
             For multi-video: filenames is a list of lists of filenames per group
             For single-video: filenames is a list of filenames
+            For inference mode: outcomes is a list of None values (consistent between modes)
         """
         # Read the "α" separated file using pandas
         file_path = os.path.join(self.filename)
@@ -222,7 +223,9 @@ class VideoDataset(torch.utils.data.Dataset):
                     fnames.append(file_name)
 
             if not target_indices:
-                return fnames, None, None
+                # For inference mode, return a list of None values to maintain consistency
+                # with multi-video mode and avoid TypeError in __getitem__
+                return fnames, [None] * len(fnames), None
             
             return fnames, outcomes, target_indices
 
@@ -390,7 +393,7 @@ class VideoDataset(torch.utils.data.Dataset):
             
             return video, self.outcomes[actual_idx], video_fname
     
-def custom_collate_fn(batch: list[tuple[np.ndarray, dict, Union[str, List[str]]]], labels_map: dict = None) -> dict: # Adjusted type hint for paths
+def custom_collate_fn(batch: list[tuple[np.ndarray, Optional[dict], Union[str, List[str]]]], labels_map: dict = None) -> dict: # Adjusted type hint for paths
     videos, targets, paths = zip(*batch)
     # Multi-video: videos[0] is np.ndarray [num_videos, F, H, W, C]
     if isinstance(videos[0], np.ndarray) and videos[0].ndim == 5:

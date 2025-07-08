@@ -202,6 +202,56 @@ class TestVideoDataset(unittest.TestCase):
         self.assertEqual(collated["targets"]["target_label"].shape, torch.Size([2]))
         self.assertEqual(len(collated["video_fname"]), 2)
 
+    def test_inference_mode_consistency(self):
+        """Test that inference mode works consistently for both single and multi-video modes."""
+        # Test single-video inference mode
+        dataset_single = VideoDataset(
+            data_filename=self.temp_csv_path,
+            split="train",
+            target_label=None,  # No target labels for inference
+            datapoint_loc_label="target_video_path",
+            mean=self.mean,
+            std=self.std
+        )
+        
+        # Should not raise TypeError when accessing outcomes
+        video, outcomes, path = dataset_single[0]
+        self.assertIsInstance(video, np.ndarray)
+        self.assertIsNone(outcomes)  # Should be None in inference mode
+        self.assertIsInstance(path, str)
+        
+        # Test multi-video inference mode
+        dataset_multi = VideoDataset(
+            data_filename=self.temp_csv_path,
+            split="train",
+            target_label=None,  # No target labels for inference
+            datapoint_loc_label="target_video_path",
+            multi_video=True,
+            groupby_column="Split",  # Use Split as groupby column for testing
+            num_videos=1,
+            mean=self.mean,
+            std=self.std
+        )
+        
+        # Should not raise TypeError when accessing outcomes
+        video, outcomes, paths = dataset_multi[0]
+        self.assertIsInstance(video, np.ndarray)
+        self.assertIsNone(outcomes)  # Should be None in inference mode
+        self.assertIsInstance(paths, list)
+        
+        # Test that custom_collate_fn handles None targets correctly
+        batch = [
+            (np.zeros((32, 224, 224, 3), dtype=np.float32), None, "video1.mp4"),
+            (np.ones((32, 224, 224, 3), dtype=np.float32), None, "video2.mp4")
+        ]
+        
+        collated = custom_collate_fn(batch)
+        self.assertIn("videos", collated)
+        self.assertIn("targets", collated)
+        self.assertEqual(collated["videos"].shape, torch.Size([2, 32, 224, 224, 3]))
+        # In inference mode, targets should be empty dict since all targets are None
+        self.assertEqual(len(collated["targets"]), 0)
+
 
 if __name__ == '__main__':
     unittest.main() 

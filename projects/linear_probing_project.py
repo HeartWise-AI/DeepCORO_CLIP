@@ -310,10 +310,7 @@ class LinearProbingProject(BaseProject):
             "loss_fn": loss_fn,
             "output_dir": self.config.output_dir if self.config.is_ref_device else None,
         }            
-        
-    def _setup_inference_objects(self) -> dict[str, Any]:
-        raise NotImplementedError("Inference mode is not implemented for linear probing")
-    
+            
     def _setup_validation_objects(self) -> dict[str, Any]:
         """Setup objects for model validation/evaluation."""
         # Calculate dataset statistics
@@ -397,7 +394,10 @@ class LinearProbingProject(BaseProject):
         }
 
     def _setup_test_objects(self) -> dict[str, Any]:
-        return self._setup_validation_objects()
+        return self._setup_validation_objects() # Diff. is self.config.run_mode
+
+    def _setup_inference_objects(self) -> dict[str, Any]:
+        return self._setup_validation_objects() # Diff. is self.config.run_mode
 
     def run(self):
         
@@ -426,12 +426,12 @@ class LinearProbingProject(BaseProject):
         # Train the model
         if self.config.run_mode == RunMode.TRAIN:
             runner.train(start_epoch=0, end_epoch=self.config.epochs)
+        elif self.config.run_mode == RunMode.TEST:
+            runner.test()
         elif self.config.run_mode == RunMode.VALIDATE:
             runner.validate()
         elif self.config.run_mode == RunMode.INFERENCE:
             runner.inference()
-        elif self.config.run_mode == RunMode.TEST:
-            runner.test()
 
         # Final cleanup
         if self.config.is_ref_device:

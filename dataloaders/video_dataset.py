@@ -9,13 +9,13 @@ from torch.utils.data import DataLoader
 from collections import defaultdict
 from typing import (
     Any, 
-    Dict,
     List, 
     Optional, 
     Tuple,
     Union
 )
 
+from utils.enums import RunMode
 from utils.seed import seed_worker
 from utils.ddp import DistributedUtils
 from utils.video import load_video, format_mean_std
@@ -27,7 +27,7 @@ class VideoDataset(torch.utils.data.Dataset):
     def __init__(
         self,
         data_filename: str,
-        split: str,
+        split: Union[str, RunMode],
         target_label: Optional[List[str]] = None,
         datapoint_loc_label: str = "target_video_path",
         num_frames: int = 32,
@@ -101,19 +101,24 @@ class VideoDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.valid_indices)
 
-    def load_data(self, split, target_labels):
+    def load_data(
+        self, 
+        split: Union[str, RunMode], 
+        target_labels: Optional[List[str]]
+    ) -> Tuple[List[str], Optional[List[Optional[dict]]], Optional[dict]]:
         """
         Load data from the CSV file and extract filenames and outcomes.
         For multi-video mode, groups videos by groupby_column.
 
         Args:
-            split (str): Dataset split ('train', 'val', 'test', 'all')
+            split (Union[str, RunMode]): Dataset split (TRAIN, VALIDATE, TEST, INFERENCE)
             target_labels (list): List of target label column names
 
         Returns:
             tuple: (filenames, outcomes, target_indices)
             For multi-video: filenames is a list of lists of filenames per group
             For single-video: filenames is a list of filenames
+            For inference mode: outcomes is a list of None values (consistent between modes)
         """
         # Read the "α" separated file using pandas
         file_path = os.path.join(self.filename)
@@ -123,8 +128,14 @@ class VideoDataset(torch.utils.data.Dataset):
         filename_col = self.datapoint_loc_label
         split_col = "Split"
 
+        # Convert split to string for CSV filtering, but keep original for enum comparison
+        split_str = str(split)
+        split_dataset = data[data[split_col] == split_str]
+        if split_dataset.empty:
+            raise ValueError(f"No data found in {self.filename} for split {split_str}")
+        
         # Handle target indices for multi-head case
-        if target_labels is None:
+        if target_labels is None or split == RunMode.INFERENCE:
             target_indices = None
         else:
             target_indices = {}
@@ -137,25 +148,21 @@ class VideoDataset(torch.utils.data.Dataset):
         if self.multi_video:
             # Group by specified column
             print("Loading multi-video data... grouping by ", self.groupby_column)
-            grouped_data = data.groupby(self.groupby_column)
+            grouped_data = split_dataset.groupby(self.groupby_column)
             group_fnames = []
             group_outcomes = []
 
-            for _, group in grouped_data:
+            for group_id, group in grouped_data:
                 group_videos = []
                 group_outcome = None
-
-                for _, row in group.iterrows():
-                    file_name = row[filename_col]
-                    file_mode = row[split_col].lower()
-
-                    # Only process rows matching the split
-                    if split not in ["all", file_mode]:
-                        continue
-
+                skip_group = True
+                
+                for row_id, row in group.iterrows():
+                    file_path = row[filename_col]
+   
                     # Check if the video file exists
-                    if not os.path.exists(file_name):
-                        print(f"Skipping video {file_name} because file does not exist.")
+                    if not os.path.exists(file_path):
+                        print(f"Skipping group {row_id} in {group_id} because video {file_path} does not exist.")
                         continue
 
                     # If target labels are provided, ensure they are valid
@@ -166,7 +173,7 @@ class VideoDataset(torch.utils.data.Dataset):
                             for label in target_labels:
                                 value = row[label]
                                 if pd.isna(value):
-                                    print(f"Skipping group with video {file_name} because target '{label}' is missing.")
+                                    print(f"Skipping group {row_id} in {group_id} because target '{label}' is missing.")
                                     skip_row = True
                                     break
                                 else:
@@ -174,25 +181,23 @@ class VideoDataset(torch.utils.data.Dataset):
                             if skip_row:
                                 continue
                             group_outcome = row_outcomes
-
-                    group_videos.append(file_name)
-
-                if group_videos and group_outcome is not None:
-                    group_fnames.append(group_videos)
-                    group_outcomes.append(group_outcome)
-
+                    skip_group = False
+                    group_videos.append(file_path)
+                
+                if skip_group:
+                    continue
+                
+                group_fnames.append(group_videos)
+                group_outcomes.append(group_outcome) 
+                            
             return group_fnames, group_outcomes, target_indices
         else:
             # Original single-video logic
             fnames = []
             outcomes = []
 
-            for _, row in data.iterrows():
+            for _, row in split_dataset.iterrows():
                 file_name = row[filename_col]
-                file_mode = row[split_col].lower()
-
-                if split not in ["all", file_mode]:
-                    continue
 
                 if not os.path.exists(file_name):
                     print(f"Skipping video {file_name} because file does not exist.")
@@ -211,12 +216,19 @@ class VideoDataset(torch.utils.data.Dataset):
                             row_outcomes[label] = value
                     if skip_row:
                         continue
+                    
                     outcomes.append(row_outcomes)
+                    fnames.append(file_name)
+                    
                 else:
-                    outcomes.append(None)
+                    # Inference mode or no taget labels
+                    fnames.append(file_name)
 
-                fnames.append(file_name)
-
+            if not target_indices:
+                # For inference mode, return a list of None values to maintain consistency
+                # with multi-video mode and avoid TypeError in __getitem__
+                return fnames, [None] * len(fnames), None
+            
             return fnames, outcomes, target_indices
 
     def _validate_all_videos(self):
@@ -263,7 +275,7 @@ class VideoDataset(torch.utils.data.Dataset):
         
         if self.multi_video:
             group_fnames_in_item = self.fnames[actual_idx] # List of all video paths for this item's group
-            outcome_for_item = self.outcomes[actual_idx]
+            outcome_for_item = self.outcomes[actual_idx] 
             
             current_selected_fnames: List[str]
             # Select video fnames to load, based on self.num_videos and shuffle_videos
@@ -383,7 +395,7 @@ class VideoDataset(torch.utils.data.Dataset):
             
             return video, self.outcomes[actual_idx], video_fname
     
-def custom_collate_fn(batch: list[tuple[np.ndarray, dict, Union[str, List[str]]]], labels_map: dict = None) -> dict: # Adjusted type hint for paths
+def custom_collate_fn(batch: list[tuple[np.ndarray, Optional[dict], Union[str, List[str]]]], labels_map: dict = None) -> dict: # Adjusted type hint for paths
     videos, targets, paths = zip(*batch)
     # Multi-video: videos[0] is np.ndarray [num_videos, F, H, W, C]
     if isinstance(videos[0], np.ndarray) and videos[0].ndim == 5:

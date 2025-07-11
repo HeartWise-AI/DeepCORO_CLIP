@@ -369,14 +369,27 @@ def apply_hard_filters(df: pd.DataFrame, config: Dict[str, Any]) -> pd.DataFrame
     main_structures = config.get('filters', {}).get('main_structures', ['Left Coronary', 'Right Coronary'])
     contrast_agent_class = config.get('filters', {}).get('contrast_agent_class', 1)
     
+    # Handle both single status and list of statuses
+    if isinstance(status_filter, str):
+        # Single status - convert to list for uniform handling
+        status_list = [status_filter]
+    elif isinstance(status_filter, list):
+        # Multiple statuses
+        status_list = status_filter
+    else:
+        # Fallback to default
+        logger.warning(f"Invalid status filter type: {type(status_filter)}. Using default 'diagnostic'")
+        status_list = ['diagnostic']
+    
     # Apply filters
     filtered_df = df.loc[
-        (df["status"] == status_filter) &
+        (df["status"].isin(status_list)) &
         (df["main_structure_name"].isin(main_structures)) &
         (df["contrast_agent_class"] == contrast_agent_class)
     ].copy()
     
     logger.info(f"Dataset filtered from {len(df)} to {len(filtered_df)} rows")
+    logger.info(f"Status filter applied: {status_list}")
     return filtered_df
 
 
@@ -531,7 +544,7 @@ def create_default_config() -> Dict[str, Any]:
     """Create default configuration."""
     return {
         'filters': {
-            'status': 'diagnostic',  # Options: 'diagnostic', 'PCI', 'POST_PCI'
+            'status': 'diagnostic',  # Options: 'diagnostic', 'PCI', 'POST_PCI' or ['diagnostic', 'POST_PCI']
             'main_structures': ['Left Coronary', 'Right Coronary'],
             'contrast_agent_class': 1
         },

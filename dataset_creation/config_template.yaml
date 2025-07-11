@@ -3,9 +3,14 @@
 
 # Filter settings for data preprocessing
 filters:
-  # Status filter - only include records with this status
+  # Status filter - can be a single status or a list of statuses
+  # Single status example:
+  # status: "diagnostic"
+  # Multiple statuses example:
+  status: 
+    - "diagnostic"
+    - "POST_PCI"
   # Available values: "diagnostic", "PCI", "POST_PCI"
-  status: "diagnostic"
   
   # Main structures to include in the dataset
   main_structures:

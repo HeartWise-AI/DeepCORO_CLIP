@@ -118,6 +118,7 @@ class VideoMILWrapper(torch.nn.Module):
         return self.mil_model(embeddings, mask=attention_mask)
 
 @ProjectRegistry.register("DeepCORO_video_linear_probing")
+@ProjectRegistry.register("DeepCORO_video_linear_probing_cardio_syntax")
 class LinearProbingProject(BaseProject):
     def __init__(
         self, 
@@ -206,7 +207,8 @@ class LinearProbingProject(BaseProject):
         # Distribute MIL model
         mil_model = DistributedUtils.DDP(
             mil_model, 
-            device_ids=[self.config.device]
+            device_ids=[self.config.device],
+            find_unused_parameters=True
         )
         
         # Wrap both models
@@ -365,7 +367,8 @@ class LinearProbingProject(BaseProject):
         # Distribute linear probing model
         linear_probing = DistributedUtils.DDP(
             linear_probing,
-            device_ids=[self.config.device]
+            device_ids=[self.config.device],
+            find_unused_parameters=True
         )
         
         # Load checkpoint with fixed keys

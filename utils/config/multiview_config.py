@@ -42,6 +42,7 @@ class MultiviewConfig(HeartWiseConfig):
     pretrained: bool
     video_encoder_checkpoint_path: str
     video_encoder_lr: float
+    
     # Linear Probing parameters
     task: str
     linear_probing_head: str

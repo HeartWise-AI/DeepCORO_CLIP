@@ -38,6 +38,7 @@ class BatchResult:
 
 @RunnerRegistry.register("DeepCORO_video_linear_probing")
 @RunnerRegistry.register("DeepCORO_video_linear_probing_test")
+@RunnerRegistry.register("DeepCORO_video_linear_probing_cardio_syntax")
 class LinearProbingRunner:
     """
     This class runs a linear probing pipeline using a VideoEncoder and TextEncoder.

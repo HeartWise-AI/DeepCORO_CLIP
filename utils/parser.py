@@ -134,6 +134,7 @@ class ClipParser(BaseParser):
 
 
 @ParserRegistry.register("DeepCORO_video_linear_probing")
+@ParserRegistry.register("DeepCORO_video_linear_probing_cardio_syntax")
 class LinearProbingParser(BaseParser):
     """Parser for Linear Probing evaluation."""
     def __init__(self):

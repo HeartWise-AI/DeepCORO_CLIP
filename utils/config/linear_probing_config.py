@@ -9,6 +9,7 @@ from utils.config.heartwise_config import HeartWiseConfig
 @dataclass
 @ConfigRegistry.register("DeepCORO_video_linear_probing")
 @ConfigRegistry.register("DeepCORO_video_linear_probing_test")
+@ConfigRegistry.register("DeepCORO_video_linear_probing_cardio_syntax")
 class LinearProbingConfig(HeartWiseConfig):    
     # Pipeline parameters
     pipeline_project: str

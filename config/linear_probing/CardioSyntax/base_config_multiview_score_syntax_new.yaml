@@ -2,10 +2,10 @@
 # Showcases advanced features: separate attention layers, hybrid pooling, configurable heads
 
 # Pipeline parameters
-pipeline_project: !!str DeepCORO_video_linear_probing
+pipeline_project: !!str DeepCORO_video_linear_probing_cardio_syntax
 base_checkpoint_path: !!str outputs
 run_mode: !!str train
-epochs: !!int 50
+epochs: !!int 20
 seed: !!int 42
 tag: !!str mvit_pretrained_multiview_cls_token
 # wandb parameters
@@ -26,6 +26,7 @@ num_hard_restarts_cycles: !!int 3
 warm_restart_tmult: !!float 2.0
 # Dataset parameters
 data_filename: !!str data/data_score_syntax_regression_classification.csv
+# data_filename: !!str data/diagnostic_inference_2017-2024.csv
 num_workers: !!int 8
 batch_size: !!int 2 # Smaller due to hybrid pooling memory requirements
 multi_video: !!bool true
@@ -136,3 +137,5 @@ labels_map:
     low: 1
     intermediate: 2
     high: 3
+# Inference parameters
+inference_model_path: !!str outputs/DeepCORO_video_linear_probing/DeepCORO_video_linear_probing_multiview_improved_cls_token/g3cd6n40_20250707-114757/models/best_model_epoch_19.pt

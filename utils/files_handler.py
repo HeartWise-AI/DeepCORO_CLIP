@@ -1,7 +1,15 @@
 import os
-import yaml
+import json
 import time
+import yaml
 from typing import Dict, Any
+
+
+def read_api_key(path: str) -> dict[str, str]:
+    with open(path) as f:
+        api_key = json.load(f)
+    return api_key
+
 
 def load_yaml(config_path: str) -> Dict[str, Any]:
     """Load configuration from YAML file."""

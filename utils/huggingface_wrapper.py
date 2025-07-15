@@ -30,8 +30,7 @@ class HuggingFaceWrapper:
         self.hugging_face_api_key = hugging_face_api_key
         self.api = HfApi()
 
-    @staticmethod
-    def get_model(repo_id, local_dir, hugging_face_api_key):           
+    def get_model(self, repo_id, local_dir):           
         # Download repo from HuggingFace
         print(f"Checking if {repo_id} already exists in {local_dir}")
         if os.path.exists(local_dir):
@@ -45,7 +44,7 @@ class HuggingFaceWrapper:
             repo_id=repo_id, 
             local_dir=local_dir, 
             repo_type="model", 
-            token=hugging_face_api_key
+            token=self.hugging_face_api_key
         )
         
         print(f"{repo_id} downloaded to {local_dir}")
@@ -139,11 +138,13 @@ Examples:
         
         logger.info(f"Downloading {args.repo_id} to {local_dir}")
         
-        # Download the model
-        result_dir = HuggingFaceWrapper.get_model(
+        # Create wrapper instance
+        wrapper = HuggingFaceWrapper(hugging_face_api_key=args.token)
+
+        # Use instance method
+        result_dir = wrapper.get_model(
             repo_id=args.repo_id,
-            local_dir=local_dir,
-            hugging_face_api_key=args.token
+            local_dir=local_dir
         )
         
         logger.info(f"✓ Successfully downloaded model to: {result_dir}")

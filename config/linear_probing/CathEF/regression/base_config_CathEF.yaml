@@ -1,6 +1,6 @@
 # Pipeline parameters
 pipeline_project: !!str DeepCORO_video_linear_probing
-base_checkpoint_path: !!str outputs
+base_checkpoint_path: !!str results/outputs
 run_mode: !!str train
 epochs: !!int 15
 seed: !!int 42

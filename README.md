@@ -322,11 +322,14 @@ heartwise-ai-deepcoro_clip/
 │   ├── clip/                     # CLIP training configs
 │   └── linear_probing/           # Linear probing configs
 ├── dataloaders/                  # Data loading modules
+├── dataset_creation/             # How MHI dataset was built
+├── docs/                         # Documentation on CLS-Token implementation
 ├── models/                       # Neural network models
 ├── projects/                     # Project implementations
 ├── runners/                      # Training runners
 ├── scripts/                      # Training scripts
-└── utils/                        # Utility functions
+├── utils/                        # Utility functions
+└── tests/                        # Unit test pipeline
 ```
 
 ## 🤝 Contributing

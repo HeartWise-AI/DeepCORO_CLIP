@@ -1,0 +1,472 @@
+command:
+  - torchrun
+  - "--nproc_per_node=2"
+  - "--master_port=29500"
+  - "scripts/main.py"
+  - "--base_config"
+  - "config/linear_probing/stenosis/base_config_stenosis_2vue.yaml"
+  - ${args}
+name: "DeepCORO_video_linear_probing_stenosis_calcif_thrombus"
+project: "DeepCORO_video_linear_probing_stenosis_calcif_thrombus"
+entity: "mhi_ai"
+method: bayes
+metric:
+  name: best_val_loss
+  goal: minimize
+parameters:
+  # CLS Token specific parameters
+  pooling_mode:
+    values: ["cls_token", "attention+cls_token"]
+  use_cls_token:
+    values: [true]
+  num_attention_heads:
+    values: [8, 16, 24]
+  separate_video_attention:
+    values: [true]
+  normalization_strategy:
+    values: ["post_norm", "pre_norm"]
+  
+  # Separate attention learning rates
+  attention_within_lr:
+    distribution: uniform
+    min: 0.0005
+    max: 0.005
+  attention_across_lr:
+    distribution: uniform
+    min: 0.0005
+    max: 0.003
+  attention_within_weight_decay:
+    distribution: uniform
+    min: 0.000001
+    max: 0.0001
+  attention_across_weight_decay:
+    distribution: uniform
+    min: 0.000001
+    max: 0.0001
+
+   # Standard parameters
+  aggregate_videos_tokens:
+    values: [false]
+  batch_size:
+    values: [6, 8, 10]  # Smaller batches for hybrid pooling
+  dropout:
+    distribution: uniform
+    min: 0.05
+    max: 0.25
+  dropout_attention:
+    distribution: uniform
+    min: 0.1
+    max: 0.3
+  entity:
+    values: ["mhi_ai"]
+  factor:
+    distribution: uniform
+    min: 0.1
+    max: 0.7
+
+  # Head learning rates - using dot notation for dictionary parameters
+  head_lr.prox_rca_stenosis:
+    distribution: uniform
+    min: 0.00005
+    max: 0.0002  # Lower for hybrid pooling
+  head_lr.mid_rca_stenosis:
+    distribution: uniform
+    min: 0.00005
+    max: 0.0002  # Lower for hybrid pooling
+  head_lr.dist_rca_stenosis:
+    distribution: uniform
+    min: 0.00005
+    max: 0.0002  # Lower for hybrid pooling
+  head_lr.pda_stenosis:  
+    distribution: uniform
+    min: 0.00005
+    max: 0.0002  # Lower for hybrid pooling
+  head_lr.posterolateral_stenosis:
+    distribution: uniform
+    min: 0.00005
+    max: 0.0002  # Lower for hybrid pooling
+  head_lr.left_main_stenosis:
+    distribution: uniform
+    min: 0.00005
+    max: 0.0002  # Lower for hybrid pooling
+  # Head weight decay - using dot notation for dictionary parameters
+  head_weight_decay.prox_lad_stenosis:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.mid_lad_stenosis:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.dist_lad_stenosis:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.D1_stenosis:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.D2_stenosis:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.prox_lcx_stenosis:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.mid_lcx_stenosis:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.dist_lcx_stenosis:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.om1_stenosis:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.om2_stenosis:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.bx_stenosis:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.lvp_stenosis:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.prox_rca_calcif_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.mid_rca_calcif_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.dist_rca_calcif_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.pda_calcif_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.posterolateral_calcif_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.left_main_calcif_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.prox_lad_calcif_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.mid_lad_calcif_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.dist_lad_calcif_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.D1_calcif_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.D2_calcif_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.prox_lcx_calcif_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.mid_lcx_calcif_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.dist_lcx_calcif_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.om1_calcif_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.om2_calcif_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.bx_calcif_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.lvp_calcif_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.prox_rca_stenosis_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.mid_rca_stenosis_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.dist_rca_stenosis_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.pda_stenosis_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.posterolateral_stenosis_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.left_main_stenosis_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.prox_lad_stenosis_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.mid_lad_stenosis_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.dist_lad_stenosis_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.D1_stenosis_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.D2_stenosis_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.prox_lcx_stenosis_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.mid_lcx_stenosis_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.dist_lcx_stenosis_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.om1_stenosis_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.om2_stenosis_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.bx_stenosis_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.lvp_stenosis_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.prox_rca_cto:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.mid_rca_cto:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.dist_rca_cto:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.pda_cto:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.posterolateral_cto:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.left_main_cto:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.prox_lad_cto:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.mid_lad_cto:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.dist_lad_cto:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.D1_cto:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.D2_cto:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.prox_lcx_cto:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.mid_lcx_cto:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.dist_lcx_cto:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.om1_cto:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.om2_cto:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.bx_cto:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.lvp_cto:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.prox_rca_thrombus:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.mid_rca_thrombus:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.dist_rca_thrombus:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.pda_thrombus:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.posterolateral_thrombus:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.left_main_thrombus:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.prox_lad_thrombus:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.mid_lad_thrombus:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.dist_lad_thrombus:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.D1_thrombus:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.D2_thrombus:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.prox_lcx_thrombus:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.mid_lcx_thrombus:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.dist_lcx_thrombus:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.om1_thrombus:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.om2_thrombus:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.bx_thrombus:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.lvp_thrombus:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+
+  lr_step_period:
+    values: [4, 6, 8]
+
+  attention_hidden:
+    values: [128, 256, 512]
+
+  # Other parameters
+  name:
+    values: ["DeepCORO_video_linear_probing_stenosis_calcif_thrombus"]
+  num_videos:
+    values: [2, 3, 4]
+  num_warmup_percent:
+    distribution: uniform
+    min: 0.02
+    max: 0.15
+  optimizer:
+    values: [AdamW, RAdam]
+  per_video_pool:
+    values: [false, true]
+  project:
+    values: ["DeepCORO_video_linear_probing_stenosis_calcif_thrombus"]
+  scheduler_name:
+    values: ["linear_warmup", "cosine_with_warmup", "cosine_with_hard_restarts_with_warmup"]
+  stride:
+    values: [1, 2, 3]
+  video_encoder_lr:
+    distribution: uniform
+    min: 0.00005
+    max: 0.0001
+  video_encoder_weight_decay:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.000001
+  video_freeze_ratio:
+    distribution: uniform
+    min: 0.7
+    max: 1.0
+early_terminate:
+  type: hyperband
+  min_iter: 3
+  eta: 2
+  s: 2
+run_mode: train

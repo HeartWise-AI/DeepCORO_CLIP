@@ -161,7 +161,7 @@ bash scripts/runner.sh --use_wandb false --base_config config/linear_probing/ste
 
 ## 🐳 Docker Setup
 Optionally, you can build a Docker container to run training, validation, and inference pipelines. 
-For the *** validation pipeline ***, please set up your API key in `api_key.json` as weights will be publicly available only upon publication.
+For the *** validation pipeline ***, please set up your huggingface API key in `api_key.json` as weights will be publicly available only upon publication.
 
 ### Build Docker Image
 ``` bash
@@ -170,8 +170,8 @@ docker build -t deepcoro_clip-docker .
 
 ### Run Docker
 *** Requirements: ***
-* Make sure your CSV file is in data folder : $(pwd)/data can be replaced by the absolute path to that folder
-* Create a folder results : $(pwd)/results can be replaced by the absolute path to that folder
+* Make sure your CSV file is in the data folder : `$(pwd)/data` can be replaced by the absolute path to that folder
+* Create a folder results : `$(pwd)/results` can be replaced by the absolute path to that folder
 ``` bash
 docker run -it --gpus all -v $(pwd)/data:/app/data -v $(pwd)/results:/app/results deepcoro_clip-docker
 ```

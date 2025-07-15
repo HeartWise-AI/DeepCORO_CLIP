@@ -175,7 +175,7 @@ docker build -t deepcoro_clip-docker .
 ``` bash
 docker run -it --gpus all -v $(pwd)/data:/app/data -v $(pwd)/results:/app/results deepcoro_clip-docker
 ```
-** Inside the container: **
+**Inside the container:**
 Once connected to the docker container:
 1. **For validation and inference:** Follow step 3. only from the `Environment Setup` section above
 2. **For training:** Follow step 3. 4. 5. and 6. from the `Environment Setup` section above
@@ -184,7 +184,7 @@ Once connected to the docker container:
 python utils/download_pretrained_weights.py
 ```
 The pretrained weights will be in the folder `/app/pretrained_models`
-4. ** Run your pipeline: ** Select the appropriate command from the `Run Modes` section above
+4. **Run your pipeline:** Select the appropriate command from the `Run Modes` section above
 
 
 ## Model Architecture

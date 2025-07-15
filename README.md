@@ -183,7 +183,8 @@ Once connected to the docker container:
 ``` bash
 python utils/download_pretrained_weights.py
 ```
-The pretrained weights will be in the folder `/app/pretrained_models`
+The pretrained weights will be in the folder `/app/pretrained_models`.
+
 4. **Run your pipeline:** Select the appropriate command from the `Run Modes` section above
 
 

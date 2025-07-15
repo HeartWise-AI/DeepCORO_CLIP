@@ -161,7 +161,7 @@ bash scripts/runner.sh --use_wandb false --base_config config/linear_probing/ste
 
 ## 🐳 Docker Setup
 Optionally, you can build a Docker container to run training, validation, and inference pipelines. 
-For the *** validation pipeline ***, please set up your huggingface API key in `api_key.json` as weights will be publicly available only upon publication.
+For the **validation pipeline**, please set up your huggingface API key in `api_key.json` as weights will be publicly available only upon publication.
 
 ### Build Docker Image
 ``` bash
@@ -169,22 +169,22 @@ docker build -t deepcoro_clip-docker .
 ```
 
 ### Run Docker
-*** Requirements: ***
+**Requirements:**
 * Make sure your CSV file is in the data folder : `$(pwd)/data` can be replaced by the absolute path to that folder
 * Create a folder results : `$(pwd)/results` can be replaced by the absolute path to that folder
 ``` bash
 docker run -it --gpus all -v $(pwd)/data:/app/data -v $(pwd)/results:/app/results deepcoro_clip-docker
 ```
-*** Inside the container: ***
+** Inside the container: **
 Once connected to the docker container:
-1. *** For validation and inference: *** Follow step 3. only from the `Environment Setup` section above
-2. *** For training: *** Follow step 3. 4. 5. and 6. from the `Environment Setup` section above
-3. *** Download pretrained weights: ***
+1. **For validation and inference:** Follow step 3. only from the `Environment Setup` section above
+2. **For training:** Follow step 3. 4. 5. and 6. from the `Environment Setup` section above
+3. **Download pretrained weights:**
 ``` bash
 python utils/download_pretrained_weights.py
 ```
 The pretrained weights will be in the folder `/app/pretrained_models`
-4. *** Run your pipeline: *** Select the appropriate command from the `Run Modes` section above
+4. ** Run your pipeline: ** Select the appropriate command from the `Run Modes` section above
 
 
 ## Model Architecture

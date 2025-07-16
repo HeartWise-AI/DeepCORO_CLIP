@@ -175,13 +175,14 @@ docker build -t deepcoro_clip-docker .
 **Requirements:**
 * Make sure your CSV file is in the data folder : `$(pwd)/data` can be replaced by the absolute path to that folder
 * Create a folder results : `$(pwd)/results` can be replaced by the absolute path to that folder
+* Make sure you have a column `FileName` with root path fined as `/app/videos` : `$(pwd)/videos` can be replaced by the absolute path to your base video folder path
 ``` bash
-docker run -it --gpus all -v $(pwd)/data:/app/data -v $(pwd)/results:/app/results deepcoro_clip-docker
+docker run -it --gpus all --shm-size=32g --memory=64g --ipc=host --network=host -v $(pwd)/data:/app/data -v $(pwd)/results:/app/results -v $(pwd)/videos:/app/videos deepcoro_clip-docker
 ```
 **Inside the container:**
 Once connected to the docker container:
 1. **For validation and inference:** Follow step 3. only from the `Environment Setup` section above
-2. **For training:** Follow step 3. 4. 5. and 6. from the `Environment Setup` section above
+2. **For training:** Follow step 3. 5. and 6. from the `Environment Setup` section above
 3. **Download pretrained weights:**
 ``` bash
 python utils/download_pretrained_weights.py

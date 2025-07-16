@@ -145,19 +145,22 @@ bash scripts/run_sweep.sh --base_config config/linear_probing/base_config.yaml -
 ```
 
 #### Run validation
-Process validation data from input CSV (rows where **Split == 'val'**)
+Process validation data from input CSV (rows where **Split == 'val'**) and compute CI for each head
 ``` bash
 bash scripts/runner.sh --use_wandb false --base_config config/linear_probing/stenosis/base_config_stenosis_2vue.yaml --run_mode val --selected_gpus 1,2,3
 ```
 
 #### Run test 
-Process validation data from input CSV (rows where **Split == 'test'**)
+Process validation data from input CSV (rows where **Split == 'test'**) and compute CI for each head
 ``` bash
 bash scripts/runner.sh --use_wandb false --base_config config/linear_probing/stenosis/base_config_stenosis_2vue.yaml --run_mode test --selected_gpus 1,2,3
 ```
 
 ### Run inference
-**Not supported**
+Process validation data from input CSV (rows where **Split == 'inference'**)
+``` bash
+bash scripts/runner.sh --use_wandb false --base_config config/linear_probing/stenosis/base_config_stenosis_2vue.yaml --run_mode inference --selected_gpus 1,2,3
+```
 
 ## 🐳 Docker Setup
 Optionally, you can build a Docker container to run training, validation, and inference pipelines. 

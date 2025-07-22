@@ -564,6 +564,9 @@ class LinearProbingRunner:
         
         self.linear_probing.train(False)
         
+        # Define compute_ci flag
+        compute_ci: bool = False
+        
         # Synchronize before inference starts
         DistributedUtils.sync_process_group(
             world_size=self.world_size,
@@ -638,7 +641,7 @@ class LinearProbingRunner:
                 accumulated_preds=accumulated_preds,
                 accumulated_targets=accumulated_targets,
                 validation_metrics=validation_metrics,
-                compute_ci=True
+                compute_ci=compute_ci
             )
         
         # Save predictions if on reference device
@@ -656,7 +659,7 @@ class LinearProbingRunner:
             self.wandb_wrapper.log(validation_metrics)
             print(f"[DEBUG] rank={self.device} => Logged validation metrics to W&B")
         
-        print(f"[DEBUG] rank={self.device} => Validation metrics: {validation_metrics}")
+        # print(f"[DEBUG] rank={self.device} => Validation metrics: {validation_metrics}")
         
         # Final sync
         DistributedUtils.sync_process_group(
@@ -665,7 +668,7 @@ class LinearProbingRunner:
         )
         
         # Save validation metrics with CI to JSON file
-        if self.config.is_ref_device:                
+        if self.config.is_ref_device and compute_ci:                
             self._save_validation_metrics_to_json(validation_metrics)
         
         # Memory cleanup for GPU tensors
@@ -900,18 +903,18 @@ class LinearProbingRunner:
         except Exception as e:
             print(f"[DEBUG] rank={self.device} => Error saving predictions to CSV: {e}")
             print(f"[DEBUG] rank={self.device} => Accumulated names length: {len(accumulated_names)}")
-            for head in accumulated_preds.keys():
-                print(f"[DEBUG] rank={self.device} => Head {head} - Final shapes:")
-                if isinstance(accumulated_preds[head], list):
-                    print(f"[DEBUG] rank={self.device} =>   Predictions: {accumulated_preds[head][0].shape}")
-                    print(f"[DEBUG] rank={self.device} =>   Targets: {accumulated_targets[head][0].shape}")
-                else:
-                    print(f"[DEBUG] rank={self.device} =>   Predictions: {accumulated_preds[head].shape}")
-                    print(f"[DEBUG] rank={self.device} =>   Targets: {accumulated_targets[head].shape}")
-            if 'predictions_dict' in locals():
-                print(f"[DEBUG] rank={self.device} => Predictions dictionary keys and lengths:")
-                for k, v in predictions_dict.items():
-                    print(f"[DEBUG] rank={self.device} =>   {k}: {len(v)}")
+            # for head in accumulated_preds.keys():
+            #     print(f"[DEBUG] rank={self.device} => Head {head} - Final shapes:")
+            #     if isinstance(accumulated_preds[head], list):
+            #         print(f"[DEBUG] rank={self.device} =>   Predictions: {accumulated_preds[head][0].shape}")
+            #         print(f"[DEBUG] rank={self.device} =>   Targets: {accumulated_targets[head][0].shape}")
+            #     else:
+            #         print(f"[DEBUG] rank={self.device} =>   Predictions: {accumulated_preds[head].shape}")
+            #         print(f"[DEBUG] rank={self.device} =>   Targets: {accumulated_targets[head].shape}")
+            # if 'predictions_dict' in locals():
+            #     print(f"[DEBUG] rank={self.device} => Predictions dictionary keys and lengths:")
+            #     for k, v in predictions_dict.items():
+            #         print(f"[DEBUG] rank={self.device} =>   {k}: {len(v)}")
 
     def _save_validation_metrics_to_json(self, validation_metrics: dict[str, float]) -> None:
         """

@@ -258,12 +258,11 @@ class LinearProbingRunner:
             )
 
         # Gather all predictions and targets across GPUs if using distributed training
-        if self.config.world_size > 1:
-            self._gather_distributed_predictions(
-                accumulated_preds=accumulated_preds,
-                accumulated_targets=accumulated_targets,
-                accumulated_names=accumulated_names
-            )
+        self._gather_distributed_predictions(
+            accumulated_preds=accumulated_preds,
+            accumulated_targets=accumulated_targets,
+            accumulated_names=accumulated_names
+        )
 
         # Sync after gathering predictions and targets
         DistributedUtils.sync_process_group(
@@ -626,12 +625,11 @@ class LinearProbingRunner:
                 )
         
         # Gather all predictions and targets across GPUs if using distributed training
-        if self.config.world_size > 1:
-            self._gather_distributed_predictions(
-                accumulated_preds=accumulated_preds,
-                accumulated_targets=accumulated_targets,
-                accumulated_names=accumulated_names
-            )
+        self._gather_distributed_predictions(
+            accumulated_preds=accumulated_preds,
+            accumulated_targets=accumulated_targets,
+            accumulated_names=accumulated_names
+        )
             
         # Compute metrics for each head WITH CONFIDENCE INTERVALS
         if self.config.is_ref_device:
@@ -731,12 +729,11 @@ class LinearProbingRunner:
         )
 
         # Gather all predictions across GPUs if using distributed training
-        if self.config.world_size > 1:
-            self._gather_distributed_predictions(
-                accumulated_preds=accumulated_preds,
-                accumulated_names=accumulated_names,
-                accumulated_targets=None
-            )
+        self._gather_distributed_predictions(
+            accumulated_preds=accumulated_preds,
+            accumulated_names=accumulated_names,
+            accumulated_targets=None
+        )
             
         # Save predictions if on reference device
         if self.config.is_ref_device:

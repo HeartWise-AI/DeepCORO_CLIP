@@ -15,6 +15,7 @@ RUN git clone https://github.com/HeartWise-AI/HeartWise_StatPlots.git
 
 COPY uv.lock .
 COPY pyproject.toml .
+COPY docker_dependencies.txt .
 
 COPY README.md .
 COPY config/ config/
@@ -30,6 +31,7 @@ COPY api_key.json* .
 RUN pip install uv
 RUN uv sync
 
-RUN  uv pip install -e HeartWise_StatPlots
+RUN uv pip install -e HeartWise_StatPlots
+RUN uv pip install -r docker_dependencies.txt
 
 CMD ["/bin/bash"]

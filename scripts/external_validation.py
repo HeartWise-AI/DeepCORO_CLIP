@@ -318,7 +318,7 @@ if __name__ == "__main__":
         'hugging_face_api_key_path': 'api_key.yaml',
         'data_path': 'data/concatenated_final_20250703_181738.csv',
         'output_folder': 'results',
-        'tmp_dir': '/app/tmp',  # Make this configurable
+        'tmp_dir': '/app/tmp',
         'model_path': '',
         'batch_size': 1,
         'num_workers': 1,

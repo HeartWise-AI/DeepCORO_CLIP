@@ -7,6 +7,12 @@ RUN apt update && apt upgrade -y && apt install -y wget libgl1-mesa-glx libglib2
 RUN wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq && \
     chmod +x /usr/bin/yq
 
+# Clone the Orion repository and install it
+RUN git clone https://github.com/HeartWise-AI/Orion.git
+
+# Install HeartWise_StatPlots
+RUN pip install git+https://github.com/HeartWise-AI/HeartWise_StatPlots.git@dev
+
 COPY uv.lock .
 COPY pyproject.toml .
 

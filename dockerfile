@@ -30,4 +30,6 @@ COPY api_key.json* .
 RUN pip install uv
 RUN uv sync
 
+RUN  uv pip install -e HeartWise_StatPlots
+
 CMD ["/bin/bash"]

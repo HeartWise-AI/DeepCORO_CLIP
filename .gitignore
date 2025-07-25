@@ -60,3 +60,6 @@ logs/
 *.csv
 reports/
 api_key.json
+
+# Videos
+*.avi

@@ -28,7 +28,8 @@ class AngioClasses(Enum):
 DICOM_TAGS = {
     'frame_height': (0x028, 0x0011),
     'frame_width': (0x028, 0x0010),
-    'frame_rate': (0x08, 0x2144)
+    'frame_rate': (0x08, 0x2144),
+    'series_times': (0x0008, 0x0031)
 }
 
 REGRESSION_COLUMNS = [
@@ -107,13 +108,59 @@ BINARY_COLUMNS = [
 
 
 MODEL_MAPPING = {
-    'multi-head': {
-        'hugging_face_model_name': 'vaso_vision', 
+    'vaso_vision': {
+        'hugging_face_model_name': 'VasoVision', 
         'config' : {
             'frames': 72, 
             'resize': 256,
             'num_classes': 1,
-            'model_name': 'x3d_m'
+            'head_structure': {
+                'contrast_agent': 1,
+                'main_structure': 12,
+                'stent_presence': 1,
+                'dominance': 1
+            },
+            'labels_map': {
+                'contrast_agent': {
+                    'yes': 1,
+                    'no': 0
+                },
+                'main_structure': {
+                    'Left Coronary': 0,
+                    'Right Coronary': 1,
+                    'Other': 2,
+                    'Graft': 3,
+                    'Catheter': 4,
+                    'Femoral': 5,
+                    'LV': 6,
+                    'TAVR': 7,
+                    'Aorta': 8,
+                    'Radial': 9,
+                    'TEE probe': 10,
+                    'Pigtail': 11
+                },
+                'stent_presence': {
+                    'present': 1,
+                    'absent': 0
+                },
+                'dominance': {
+                    'right_dominant': 0,
+                    'left_dominant': 1
+                }
+            },
+            'model_name': 'x3d_m',
+            'task': 'classification',
+            'resume': False,
+            'mean': [112.24039459228516,112.24039459228516, 112.24039459228516],
+            'std': [39.012229919433594,39.012229919433594,39.012229919433594],
+            'period': 2,
+            'root': ".",
+            'apply_mask': False,
+            'view_count': None,
+            'datapoint_loc_label': 'FileName'
         }
+    },
+    'deepcoro_clip': {
+        'hugging_face_model_name': 'deepcoro_clip_generic' 
     }
 }

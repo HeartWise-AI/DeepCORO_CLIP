@@ -10,7 +10,7 @@ from utils.external_validation_constants import DICOM_TAGS
 def process_dicom_video(
     input_path: str, 
     output_path: str
-)->Tuple[Optional[str], Optional[str], Optional[str]]:
+)->Tuple[Optional[str], Optional[str]]:
     """
     Converts DICOM videos to AVI format and extracts acquisition time information.
     
@@ -19,11 +19,10 @@ def process_dicom_video(
         output_path (str): The path to save the AVI file.
     
     Returns:
-        Tuple[Optional[str], Optional[str], Optional[str]]: A tuple containing 
-            (avi_path, acquisition_time, acquisition_datetime).
+        Tuple[Optional[str], Optional[str]]: A tuple containing 
+            (avi_path, acquisition_time).
             avi_path: The path to the converted AVI file, or None if conversion failed.
             acquisition_time: The acquisition time as a string (HHMMSS.FFFFFF), or None if not available.
-            acquisition_datetime: The acquisition datetime as a string (YYYYMMDDHHMMSS.FFFFFF), or None if not available.
     """
     # Read DICOM file
     ds: pydicom.Dataset = pydicom.dcmread(input_path)

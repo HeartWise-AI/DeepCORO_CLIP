@@ -47,7 +47,7 @@ def process_dicom_video(
     
     # Insure extracted array is 3D
     if len(video.shape) != 3:
-        print(ValueError(f"Extracted video`shape is not 3D: {video.shape} -  {input_path}")) 
+        print(f"Error: Extracted video's shape is not 3D: {video.shape} -  {input_path}") 
         return None, series_times
     
     # get frame height and width
@@ -56,11 +56,11 @@ def process_dicom_video(
     
     # Insure consistence between dicom info and extracted video
     if frame_height != video.shape[1]:
-        print(ValueError(f"Dicom video height {frame_height} does not match extracted video`shape: {video.shape[1]} -  {input_path}")) 
+        print(f"Error: Dicom video height {frame_height} does not match extracted video's shape: {video.shape[1]} -  {input_path}") 
         return None, series_times
     
     if frame_width != video.shape[2]:
-        print(ValueError(f"Dicom video width {frame_width} does not match extracted video`shape: {video.shape[2]} -  {input_path}")) 
+        print(f"Error: Dicom video width {frame_width} does not match extracted video's shape: {video.shape[2]} -  {input_path}") 
         return None, series_times
     
     # Extract FPS; ensure the DICOM tag exists
@@ -71,7 +71,7 @@ def process_dicom_video(
     try:
         photometrics: str = ds.PhotometricInterpretation
         if photometrics not in ['MONOCHROME1', 'MONOCHROME2', 'RGB']:
-            print(ValueError(f"Unsupported Photometric Interpretation: {photometrics} - with shape{video.shape}"))
+            print(f"Error: Unsupported Photometric Interpretation: {photometrics} - with shape {video.shape}")
             return None, series_times
     except:
         print(f"Error in reading {input_path}")

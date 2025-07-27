@@ -499,7 +499,19 @@ def main(args: dict):
                         
         # Run bash command to run deepcoro_clip inference
         bash_command = f"bash scripts/runner.sh --use_wandb false --base_config config/linear_probing/stenosis/docker_base_config.yaml --run_mode val --selected_gpus 0"
-        subprocess.run(bash_command, shell=True)
+        logger.info(f"Executing deepcoro_clip inference command: {bash_command}")
+        try:
+            result = subprocess.run(bash_command, shell=True, check=True, capture_output=True, text=True)
+            logger.info("deepcoro_clip inference completed successfully")
+            if result.stdout:
+                logger.info(f"Command output: {result.stdout}")
+        except subprocess.CalledProcessError as e:
+            logger.error(f"deepcoro_clip inference failed with return code {e.returncode}")
+            if e.stdout:
+                logger.error(f"Command stdout: {e.stdout}")
+            if e.stderr:
+                logger.error(f"Command stderr: {e.stderr}")
+            raise RuntimeError(f"deepcoro_clip inference failed: {e}") from e
 
     except Exception as e:
         logger.exception(f"An error occurred during execution: {e}")

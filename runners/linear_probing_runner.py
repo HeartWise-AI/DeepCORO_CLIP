@@ -906,10 +906,16 @@ class LinearProbingRunner:
                 print(f"[DEBUG] rank={self.device} => Head {head} - Final shapes:")
                 if isinstance(accumulated_preds[head], list):
                     print(f"[DEBUG] rank={self.device} =>   Predictions: {accumulated_preds[head][0].shape}")
-                    print(f"[DEBUG] rank={self.device} =>   Targets: {accumulated_targets[head][0].shape}")
+                    if accumulated_targets is not None and head in accumulated_targets:
+                        print(f"[DEBUG] rank={self.device} =>   Targets: {accumulated_targets[head][0].shape}")
+                    else:
+                        print(f"[DEBUG] rank={self.device} =>   Targets: None (inference mode)")
                 else:
                     print(f"[DEBUG] rank={self.device} =>   Predictions: {accumulated_preds[head].shape}")
-                    print(f"[DEBUG] rank={self.device} =>   Targets: {accumulated_targets[head].shape}")
+                    if accumulated_targets is not None and head in accumulated_targets:
+                        print(f"[DEBUG] rank={self.device} =>   Targets: {accumulated_targets[head].shape}")
+                    else:
+                        print(f"[DEBUG] rank={self.device} =>   Targets: None (inference mode)")
             if 'predictions_dict' in locals():
                 print(f"[DEBUG] rank={self.device} => Predictions dictionary keys and lengths:")
                 for k, v in predictions_dict.items():

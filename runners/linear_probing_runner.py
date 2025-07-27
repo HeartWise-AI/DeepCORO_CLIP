@@ -264,6 +264,12 @@ class LinearProbingRunner:
             accumulated_names=accumulated_names
         )
 
+        # Sync after gathering predictions and targets
+        DistributedUtils.sync_process_group(
+            world_size=self.world_size,
+            device_ids=self.device
+        )
+
         # Gather losses across GPUs if using distributed training
         if self.config.world_size > 1:
             # Convert accumulated losses to the format expected by gather_loss
@@ -624,7 +630,7 @@ class LinearProbingRunner:
             accumulated_targets=accumulated_targets,
             accumulated_names=accumulated_names
         )
-
+            
         # Compute metrics for each head WITH CONFIDENCE INTERVALS
         if self.config.is_ref_device:
             print(f"[DEBUG] rank={self.device} => "

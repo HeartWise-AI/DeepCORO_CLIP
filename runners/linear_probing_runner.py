@@ -633,7 +633,8 @@ class LinearProbingRunner:
             
         # Compute metrics for each head WITH CONFIDENCE INTERVALS
         if self.config.is_ref_device:
-            print(f"[DEBUG] rank={self.device} => Computing metrics with CI - This might take a while...")
+            print(f"[DEBUG] rank={self.device} => "
+                  f"{'Computing metrics with CI - This might take a while...' if compute_ci else 'Computing metrics without CI'}")
             self._compute_heads_metrics(
                 mode=self.config.run_mode,
                 accumulated_preds=accumulated_preds,
@@ -641,6 +642,7 @@ class LinearProbingRunner:
                 validation_metrics=validation_metrics,
                 compute_ci=compute_ci
             )
+            
         
         # Save predictions if on reference device
         if self.config.is_ref_device:
@@ -900,18 +902,24 @@ class LinearProbingRunner:
         except Exception as e:
             print(f"[DEBUG] rank={self.device} => Error saving predictions to CSV: {e}")
             print(f"[DEBUG] rank={self.device} => Accumulated names length: {len(accumulated_names)}")
-            # for head in accumulated_preds.keys():
-            #     print(f"[DEBUG] rank={self.device} => Head {head} - Final shapes:")
-            #     if isinstance(accumulated_preds[head], list):
-            #         print(f"[DEBUG] rank={self.device} =>   Predictions: {accumulated_preds[head][0].shape}")
-            #         print(f"[DEBUG] rank={self.device} =>   Targets: {accumulated_targets[head][0].shape}")
-            #     else:
-            #         print(f"[DEBUG] rank={self.device} =>   Predictions: {accumulated_preds[head].shape}")
-            #         print(f"[DEBUG] rank={self.device} =>   Targets: {accumulated_targets[head].shape}")
-            # if 'predictions_dict' in locals():
-            #     print(f"[DEBUG] rank={self.device} => Predictions dictionary keys and lengths:")
-            #     for k, v in predictions_dict.items():
-            #         print(f"[DEBUG] rank={self.device} =>   {k}: {len(v)}")
+            for head in accumulated_preds.keys():
+                print(f"[DEBUG] rank={self.device} => Head {head} - Final shapes:")
+                if isinstance(accumulated_preds[head], list):
+                    print(f"[DEBUG] rank={self.device} =>   Predictions: {accumulated_preds[head][0].shape}")
+                    if accumulated_targets is not None and head in accumulated_targets:
+                        print(f"[DEBUG] rank={self.device} =>   Targets: {accumulated_targets[head][0].shape}")
+                    else:
+                        print(f"[DEBUG] rank={self.device} =>   Targets: None (inference mode)")
+                else:
+                    print(f"[DEBUG] rank={self.device} =>   Predictions: {accumulated_preds[head].shape}")
+                    if accumulated_targets is not None and head in accumulated_targets:
+                        print(f"[DEBUG] rank={self.device} =>   Targets: {accumulated_targets[head].shape}")
+                    else:
+                        print(f"[DEBUG] rank={self.device} =>   Targets: None (inference mode)")
+            if 'predictions_dict' in locals():
+                print(f"[DEBUG] rank={self.device} => Predictions dictionary keys and lengths:")
+                for k, v in predictions_dict.items():
+                    print(f"[DEBUG] rank={self.device} =>   {k}: {len(v)}")
 
     def _save_validation_metrics_to_json(self, validation_metrics: dict[str, float]) -> None:
         """
@@ -1133,21 +1141,10 @@ class LinearProbingRunner:
 
     def _gather_distributed_predictions(
         self,
-        accumulated_names: list[str],  # leverage ref. ptr to avoid reference return by Tuple
-        accumulated_preds: Dict[str, list[torch.Tensor]],  # leverage ref. ptr to avoid reference return by Tuple
-        accumulated_targets: Optional[Dict[str, list[torch.Tensor]]] = None  # leverage ref. ptr to avoid reference return by Tuple
+        accumulated_names: list[str],
+        accumulated_preds: Dict[str, list[torch.Tensor]],
+        accumulated_targets: Optional[Dict[str, list[torch.Tensor]]] = None
     ) -> None:
-        """
-        Gather predictions, targets, and video names across all distributed processes.
-        
-        Args:
-            accumulated_preds: Dictionary of predictions for each head (modified in-place)
-            accumulated_targets: Dictionary of targets for each head (modified in-place)
-            accumulated_names: List of video names (modified in-place)
-        
-        Note:
-            This function modifies the input containers in-place and returns None.
-        """
         # Gather video names across all processes
         gathered_names = DistributedUtils.gather_object(accumulated_names, self.config.world_size)
         gathered_names_flat = [name for sublist in gathered_names for name in sublist]
@@ -1166,11 +1163,11 @@ class LinearProbingRunner:
             gathered_preds: torch.Tensor = DistributedUtils.gather_tensor(local_preds, self.config.world_size)
             gathered_targets: torch.Tensor = DistributedUtils.gather_tensor(local_targets, self.config.world_size) if accumulated_targets is not None else None
             
-            # Update accumulated containers in-place (replace list of many tensors with list of one complete tensor)
+            # Update accumulated containers in-place
             accumulated_preds[head] = [gathered_preds]
             if accumulated_targets is not None:
                 accumulated_targets[head] = [gathered_targets]
-    
+
     def _compute_heads_metrics(
         self,
         mode: str,

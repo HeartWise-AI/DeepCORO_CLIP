@@ -7,10 +7,13 @@ DeepCORO_CLIP is a deep learning model for echocardiography video interpretation
 - **Contrastive Learning**: Train on video-report pairs using CLIP-style contrastive learning
   - Single video mode: Process one video per study
   - Multi-video mode: Process multiple videos per study with aggregation
-- **Multitask Learning**: Advanced training setup combining contrastive learning, captioning, and masked video modeling
-  - **LocCa-style Captioning**: Generate structured angiographic reports from video embeddings
-  - **Masked Video Modeling**: Self-supervised learning through masked patch reconstruction
-  - **Configurable Loss Weights**: Flexible weighting of different tasks
+- **Multitask Learning (SigLIP 2-Inspired)**: Advanced training setup combining three complementary objectives
+  - **LocCa-style Captioning Decoder**: Generate structured angiographic reports from video embeddings using transformer decoder with cross-attention
+  - **Masked Video Modeling (MVM)**: Self-supervised learning through 75% masked patch reconstruction for enhanced spatial understanding
+  - **Contrastive Learning**: Simultaneous video-text alignment with sigmoid or softmax loss
+  - **Configurable Loss Weights**: Flexible weighting and optional dynamic scheduling for each task
+  - **Component-Specific Learning Rates**: Independent optimization for encoder, decoder, and MVM components
+  - **Comprehensive W&B Logging**: Real-time monitoring of all loss components, gradients, and metrics
 - **Linear Probing**: Fine-tune the model for specific tasks using linear probing
 - **Multi-GPU Training**: Support for distributed training across multiple GPUs
 - **Hyperparameter Optimization**: Built-in support for Weights & Biases sweeps
@@ -109,6 +112,35 @@ The project uses configuration files located in the `config/` directory:
    - Hyperparameter optimization for linear probing tasks
    - Task-specific parameter ranges
 
+## 🔬 Hyperparameter Optimization with W&B Sweeps
+
+The project includes comprehensive support for hyperparameter optimization using Weights & Biases sweeps. This allows systematic exploration of the hyperparameter space to find optimal configurations.
+
+### How to Run Sweeps
+
+```bash
+bash scripts/run_sweep.sh --base_config BASE_CONFIG --sweep_config SWEEP_CONFIG --selected_gpus GPU_IDS --count NUM_RUNS
+```
+
+**Arguments:**
+- `--base_config`: Path to the base configuration file (required)
+- `--sweep_config`: Path to the W&B sweep configuration file (required)
+- `--selected_gpus`: Comma-separated list of GPU IDs to use (required)
+- `--count`: Number of sweep agents to run (required)
+
+**Notes:**
+- The script automatically sets `run_mode=train` and `use_wandb=true`
+- Each agent will try one hyperparameter configuration
+- Results are tracked in real-time on the W&B dashboard
+- Best hyperparameters are highlighted in the sweep summary
+
+### Available Sweep Configurations
+
+1. **Single Video CLIP**: `config/clip/sweep_config_single_video.yaml`
+2. **Multi-Video CLIP**: `config/clip/sweep_config_multi_video.yaml`
+3. **Multitask Learning**: `config/clip/sweep_config_multitask.yaml`
+4. **Linear Probing**: `config/linear_probing/sweep_config.yaml`
+
 ## 💻 Run Modes
 
 ### 1. Contrastive Learning (CLIP)
@@ -123,30 +155,93 @@ bash scripts/runner.sh --base_config config/clip/base_config.yaml --selected_gpu
 # Multi-GPU training with results logging on wandb (see scripts/runner.sh)
 bash scripts/runner.sh --base_config config/clip/base_config.yaml --selected_gpus 0,1 --use_wandb true --run_mode train
 
-# Multi-GPU hyperparameters fine-tuning - RunMode and UseWandb are forced to train and true respectively (see scripts/run_sweep.sh)
+# Hyperparameter optimization with W&B sweeps (see scripts/run_sweep.sh for details)
+# RunMode and UseWandB are automatically set to 'train' and 'true' respectively
+
+# Example 1: Run 5 sweep agents on GPU 3 with single video config
 bash scripts/run_sweep.sh --base_config config/clip/base_config.yaml --sweep_config config/clip/sweep_config_single_video.yaml --selected_gpus 3 --count 5
+
+# Example 2: Run 10 sweep agents on GPUs 0,1,2,3 with multi-video config  
+bash scripts/run_sweep.sh --base_config config/clip/base_config.yaml --sweep_config config/clip/sweep_config_multi_video.yaml --selected_gpus 0,1,2,3 --count 10
 ```
 
-### 2. Multitask Learning
+### 2. Multitask Learning (SigLIP 2-Inspired Architecture)
 
-#### Train the model with advanced multitask setup (contrastive + captioning + masked modeling)
+#### Train the model with advanced multitask setup combining three complementary objectives:
 
 ```bash
-# Test the multitask setup
+# Test the multitask setup before training
 python test_multitask_setup.py
 
 # Single GPU training with multitask learning
 bash scripts/runner.sh --base_config config/clip/multitask_config.yaml --selected_gpus 0 --use_wandb false --run_mode train
 
-# Multi-GPU training with multitask learning
+# Multi-GPU training with multitask learning (recommended)
 bash scripts/runner.sh --base_config config/clip/multitask_config.yaml --selected_gpus 0,1 --use_wandb true --run_mode train
+
+# Training with custom batch size (reduce if OOM)
+bash scripts/runner.sh --base_config config/clip/multitask_config.yaml --selected_gpus 0,1,2,3 --use_wandb true --run_mode train --batch_size 8
+
+# Hyperparameter optimization for multitask learning
+bash scripts/run_sweep.sh --base_config config/clip/multitask_config.yaml --sweep_config config/clip/sweep_config_multitask.yaml --selected_gpus 0,1,2,3 --count 5
 ```
 
-**Key Features:**
-- **Captioning**: Generates structured angiographic reports from video embeddings
-- **Masked Modeling**: Self-supervised learning through masked patch reconstruction
-- **Flexible Loss Weights**: Configurable weights for each task
-- **Biomedical Integration**: PubMedBERT tokenizer for medical text processing
+**Key Components:**
+
+##### 1. **Contrastive Learning** (Video-Text Alignment)
+- Aligns video and text representations in shared embedding space
+- Supports both sigmoid (SigLIP-style) and softmax (CLIP-style) loss
+- Configurable temperature parameter for similarity scaling
+
+##### 2. **LocCa-style Captioning Decoder** (Report Generation)
+- Generates structured angiographic reports from video embeddings
+- Transformer decoder with cross-attention to video tokens
+- Biomedical tokenizer (PubMedBERT) for medical terminology
+- Autoregressive generation with beam search support
+
+##### 3. **Masked Video Modeling** (Self-Supervised Learning)
+- Randomly masks 75% of video patches during training
+- Lightweight decoder reconstructs masked tokens
+- Improves spatial understanding without additional annotations
+
+**Configuration Options** (`config/clip/multitask_config.yaml`):
+
+```yaml
+# Loss weights for each task
+loss_weights:
+  contrastive: 1.0      # Video-text alignment
+  captioning: 1.0       # Report generation
+  masked_modeling: 0.1  # Self-supervised learning
+
+# Component-specific learning rates
+lr: 0.00006                    # Base learning rate
+text_lr: 0.00002              # Text encoder learning rate
+captioning_lr: 0.00006        # Captioning decoder learning rate  
+mvm_lr: 0.000006              # Masked modeling decoder learning rate
+
+# Captioning decoder parameters
+decoder_layers: 6             # Number of transformer layers
+decoder_heads: 8              # Number of attention heads
+max_generation_length: 128   # Maximum caption length
+
+# Masked video modeling parameters
+mask_ratio: 0.75             # Fraction of patches to mask
+mvm_decoder_layers: 2        # Decoder depth
+mvm_decoder_hidden_size: 256 # Decoder hidden size
+```
+
+**Monitoring Training (W&B Metrics):**
+- **Step-wise Logging**: Individual loss components logged per batch
+- **Gradient Norms**: Monitor training stability
+- **Learning Rates**: Track per-component learning rates
+- **Validation Metrics**: Recall@K, NDCG, caption quality
+- **Loss Weights**: Dynamic weight scheduling if enabled
+
+**Recommended Settings:**
+- **Batch Size**: 12 (reduce to 8 for GPUs with <24GB memory)
+- **GPUs**: 2-4 GPUs for optimal training speed
+- **Mixed Precision**: Enabled by default (`use_amp: true`)
+- **Gradient Accumulation**: Set to 2-4 if using smaller batch sizes
 
 ### Run validation
 **Not supported**
@@ -336,17 +431,31 @@ pre-commit run --all-files
 ### Common Issues
 
 1. **Out of Memory (OOM)**:
-   - Reduce batch size
-   - Use gradient accumulation
-   - Force single GPU mode
+   - Reduce batch size (e.g., `--batch_size 8` or `--batch_size 4`)
+   - Use gradient accumulation (`gradient_accumulation_steps: 2` in config)
+   - Force single GPU mode (`--selected_gpus 0`)
+   - For multitask: Reduce decoder layers or hidden sizes
 
 2. **GPU Selection**:
    - Use `CUDA_VISIBLE_DEVICES` to select specific GPUs
    - Monitor GPU usage with `nvidia-smi`
+   - Ensure GPUs are not already in use
 
 3. **Training Speed**:
    - Multi-GPU isn't always faster due to overhead
    - Start with single GPU and scale up if needed
+   - For multitask: Consider reducing mask_ratio to speed up MVM
+
+4. **Multitask Training Issues**:
+   - **High captioning loss**: Normal in early epochs, should decrease over time
+   - **Unstable gradients**: Reduce learning rates or increase gradient clipping
+   - **Imbalanced losses**: Adjust loss_weights in config
+   - **Slow convergence**: Increase batch size or use gradient accumulation
+
+5. **Configuration Errors**:
+   - Ensure `pipeline_project: DeepCORO_multitask` is set in multitask config
+   - Check that all required parameters are present in the YAML file
+   - Verify dataset paths and file existence
 
 ## Monitoring Training
 

@@ -214,12 +214,17 @@ class MaskedVideoModeling(nn.Module):
         # Forward through decoder
         pred = self.forward_decoder(latent, ids_restore)
         
+        # Apply prediction head to project to hidden_size
+        pred_projected = self.predict_head(pred)
+        if self.norm_predict_loss:
+            pred_projected = self.predict_norm(pred_projected)
+        
         # Compute loss
         loss = self.forward_loss(pred, x, mask)
         
         return {
             "loss": loss,
-            "pred": pred,
+            "pred": pred_projected,  # Return projected predictions
             "mask": mask,
             "latent": latent,
         }

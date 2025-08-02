@@ -1,5 +1,8 @@
 import os
 import pandas as pd
+import numpy as np
+from collections import defaultdict
+from datetime import datetime
 
 import torch
 import torch.nn as nn
@@ -29,6 +32,7 @@ from utils.wandb_logger import (
     log_gradient_norms,
     save_retrieval_results,
 )
+import wandb
 from utils.loss.typing import Loss
 from utils.wandb_wrapper import WandbWrapper
 from models.video_encoder import VideoEncoder
@@ -125,6 +129,7 @@ class MultitaskRunner:
         self.best_loss = float('inf')
         self.best_alignment = 0.0
         self.current_epoch = 0
+        self.global_step = 0  # Global step counter for consistent wandb logging
         
         # Loss weight scheduler (optional)
         self.loss_weight_scheduler = None
@@ -228,6 +233,7 @@ class MultitaskRunner:
         all_video_features = []
         all_text_features = []
         all_texts = []
+        all_paths = []  # Store paths for best/worst retrieval logging
         
         # For captioning metrics
         all_generated_texts = []
@@ -244,13 +250,58 @@ class MultitaskRunner:
                 if mode == "train":
                     # Training step
                     batch_metrics, batch_outputs = self._train_step(
-                        videos, input_ids, attention_mask, texts
+                        videos, input_ids, attention_mask, texts, batch
                     )
+                    
+                    # Log step-wise metrics to W&B
+                    if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
+                        self.global_step += 1  # Increment global step counter
+                        step_log_dict = {
+                            "train/step_loss": batch_metrics["total_loss"],
+                            "train/step_contrastive_loss": batch_metrics.get("contrastive_loss", 0.0),
+                            "train/step_captioning_loss": batch_metrics.get("captioning_loss", 0.0),
+                            "train/step_masked_modeling_loss": batch_metrics.get("masked_modeling_loss", 0.0),
+                            "train/grad_norm": batch_metrics.get("grad_norm", 0.0),
+                            "train/step": self.global_step,
+                            "train/epoch": epoch,
+                        }
+                        
+                        # Log learning rates for each param group with clear labels
+                        if self.optimizer is not None:
+                            for i, param_group in enumerate(self.optimizer.param_groups):
+                                # Use the name if available, otherwise use index
+                                group_name = param_group.get('name', f'group_{i}')
+                                step_log_dict[f"lr/{group_name}"] = param_group['lr']
+                        
+                        # Log temperature
+                        if self.log_temp is not None:
+                            step_log_dict["train/temperature"] = torch.exp(self.log_temp).item()
+                        
+                        # Log loss weight if using scheduler
+                        if self.loss_weight_scheduler is not None:
+                            current_weights = self.loss_weight_scheduler.get_weights(self.global_step)
+                            for key, value in current_weights.items():
+                                step_log_dict[f"loss_weight/{key}"] = value
+                        
+                        self.wandb_wrapper.log(step_log_dict, step=self.global_step)
                 else:
                     # Validation step
                     batch_metrics, batch_outputs = self._val_step(
-                        videos, input_ids, attention_mask, texts
+                        videos, input_ids, attention_mask, texts, batch
                     )
+                    
+                    # Log validation step metrics to W&B
+                    if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
+                        # Don't increment global step during validation, just use current value
+                        val_step_log_dict = {
+                            "val/step_loss": batch_metrics["total_loss"],
+                            "val/step_contrastive_loss": batch_metrics.get("contrastive_loss", 0.0),
+                            "val/step_captioning_loss": batch_metrics.get("captioning_loss", 0.0),
+                            "val/step_masked_modeling_loss": batch_metrics.get("masked_modeling_loss", 0.0),
+                            "val/step": self.global_step,
+                            "val/epoch": epoch,
+                        }
+                        self.wandb_wrapper.log(val_step_log_dict, step=self.global_step)
                 
                 # Accumulate metrics
                 total_loss += batch_metrics["total_loss"]
@@ -266,6 +317,8 @@ class MultitaskRunner:
                     all_text_features.append(batch_outputs["text_features"].detach())
                 if "texts" in batch_outputs:
                     all_texts.extend(batch_outputs["texts"])
+                if "paths" in batch_outputs:
+                    all_paths.extend(batch_outputs["paths"])
                 
                 # Store captioning outputs
                 if "generated_texts" in batch_outputs:
@@ -289,38 +342,78 @@ class MultitaskRunner:
             "masked_modeling_loss": total_masked_modeling_loss / num_batches,
         }
         
-        # Compute contrastive learning metrics
+        # Gather all predictions and compute metrics
         if all_video_features and all_text_features:
-            video_features = torch.cat(all_video_features, dim=0)
-            text_features = torch.cat(all_text_features, dim=0)
+            # Gather distributed predictions
+            (video_features, text_features, 
+             gathered_texts, gathered_paths, 
+             gathered_generated, gathered_targets) = self._gather_distributed_predictions(
+                all_video_features, all_text_features,
+                all_texts, all_paths,
+                all_generated_texts, all_target_texts
+            )
             
-            # Gather features across GPUs
-            if self.world_size > 1:
-                video_features = self._gather_tensor_along_batch(video_features, self.world_size)
-                text_features = self._gather_tensor_along_batch(text_features, self.world_size)
-                all_texts = self._gather_strings_across_gpus(all_texts, self.world_size, self.device)
-            
+            # Compute metrics on rank 0
             if self.config.is_ref_device:
+                # Compute contrastive metrics
                 contrastive_metrics = self._compute_contrastive_metrics(
-                    video_features, text_features, all_texts
+                    video_features, text_features, gathered_texts, gathered_paths, epoch
                 )
                 metrics.update(contrastive_metrics)
+                
+                # Compute captioning metrics if available
+                if gathered_generated and gathered_targets:
+                    captioning_metrics = self._compute_captioning_metrics(
+                        gathered_generated, gathered_targets, epoch
+                    )
+                    metrics.update(captioning_metrics)
+                
+                # Save predictions for validation
+                if mode == "val":
+                    self._save_predictions(
+                        epoch=epoch,
+                        video_paths=gathered_paths,
+                        texts=gathered_texts,
+                        generated_texts=gathered_generated,
+                        video_features=video_features,
+                        text_features=text_features,
+                    )
         
-        # Compute captioning metrics
-        if all_generated_texts and all_target_texts:
-            if self.world_size > 1:
-                all_generated_texts = self._gather_strings_across_gpus(
-                    all_generated_texts, self.world_size, self.device
-                )
-                all_target_texts = self._gather_strings_across_gpus(
-                    all_target_texts, self.world_size, self.device
-                )
+        # Print validation metrics to console
+        if mode == "val" and self.config.is_ref_device:
+            print(f"\n{'='*60}")
+            print(f"Validation Metrics - Epoch {epoch}")
+            print(f"{'='*60}")
+            print(f"Loss: {metrics.get('total_loss', 0.0):.4f}")
+            print(f"  - Contrastive: {metrics.get('contrastive_loss', 0.0):.4f}")
+            print(f"  - Captioning: {metrics.get('captioning_loss', 0.0):.4f}")
+            print(f"  - MVM: {metrics.get('masked_modeling_loss', 0.0):.4f}")
             
-            if self.config.is_ref_device:
-                captioning_metrics = self._compute_captioning_metrics(
-                    all_generated_texts, all_target_texts
-                )
-                metrics.update(captioning_metrics)
+            if 'Recall@1' in metrics:
+                print(f"\nRetrieval Metrics:")
+                for k in [1, 5, 10, 50]:
+                    recall_key = f"Recall@{k}"
+                    if recall_key in metrics:
+                        print(f"  {recall_key}: {metrics[recall_key]:.4f}")
+                
+                if 'MRR_V2T' in metrics:
+                    print(f"  MRR: {metrics['MRR_V2T']:.4f}")
+                if 'NDCG@5_V2T' in metrics:
+                    print(f"  NDCG@5: {metrics['NDCG@5_V2T']:.4f}")
+                if 'alignment_score' in metrics:
+                    print(f"  Alignment Score: {metrics['alignment_score']:.4f}")
+                if 'median_rank' in metrics:
+                    print(f"  Median Rank: {metrics['median_rank']}")
+            
+            if 'BLEU' in metrics:
+                print(f"\nCaptioning Metrics:")
+                print(f"  BLEU: {metrics.get('BLEU', 0.0):.4f}")
+                print(f"  ROUGE-1: {metrics.get('ROUGE-1', 0.0):.4f}")
+                print(f"  ROUGE-2: {metrics.get('ROUGE-2', 0.0):.4f}")
+                print(f"  ROUGE-L: {metrics.get('ROUGE-L', 0.0):.4f}")
+                if 'METEOR' in metrics:
+                    print(f"  METEOR: {metrics['METEOR']:.4f}")
+            print(f"{'='*60}\n")
         
         return metrics
     
@@ -330,6 +423,7 @@ class MultitaskRunner:
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
         texts: list[str],
+        batch: dict,
     ) -> tuple[dict, dict]:
         """
         Single training step.
@@ -346,10 +440,17 @@ class MultitaskRunner:
         self.optimizer.zero_grad()
         
         # Get video features (token-level for captioning and masked modeling)
-        video_tokens = self.video_encoder.get_tokens(videos, mode="patch")  # [B, num_tokens, hidden_size]
+        # Handle DistributedDataParallel wrapper
+        if hasattr(self.video_encoder, 'module'):
+            video_tokens = self.video_encoder.module.get_tokens(videos, mode="patch")  # [B, num_tokens, hidden_size]
+        else:
+            video_tokens = self.video_encoder.get_tokens(videos, mode="patch")  # [B, num_tokens, hidden_size]
         
         # Get aggregated video features for contrastive learning
-        video_features = self.video_encoder.get_tokens(videos, mode="video")  # [B, hidden_size]
+        if hasattr(self.video_encoder, 'module'):
+            video_features = self.video_encoder.module.get_tokens(videos, mode="video")  # [B, hidden_size]
+        else:
+            video_features = self.video_encoder.get_tokens(videos, mode="video")  # [B, hidden_size]
         
         # Get text features
         text_features = self.text_encoder(input_ids, attention_mask)  # [B, hidden_size]
@@ -375,9 +476,7 @@ class MultitaskRunner:
         
         # Update loss weights if using scheduler
         if self.loss_weight_scheduler is not None:
-            current_weights = self.loss_weight_scheduler.get_weights(
-                self.current_epoch * len(self.train_loader) + batch_idx
-            )
+            current_weights = self.loss_weight_scheduler.get_weights(self.global_step)
             self.loss_fn.loss_type.loss_weights = current_weights
         
         # Compute multitask loss
@@ -401,9 +500,15 @@ class MultitaskRunner:
         else:
             total_loss.backward()
         
-        # Gradient clipping
+        # Gradient clipping and norm logging
+        grad_norm = None
         if hasattr(self.config, 'max_grad_norm') and self.config.max_grad_norm > 0:
-            clip_grad_norm_(self.optimizer.param_groups, self.config.max_grad_norm)
+            # Get all parameters from all param groups
+            all_params = []
+            for group in self.optimizer.param_groups:
+                all_params.extend(group['params'])
+            total_norm = clip_grad_norm_(all_params, self.config.max_grad_norm)
+            grad_norm = total_norm.item() if isinstance(total_norm, torch.Tensor) else total_norm
         
         # Optimizer step
         if self.scaler is not None:
@@ -424,11 +529,16 @@ class MultitaskRunner:
             "masked_modeling_loss": loss_outputs.get("masked_modeling", torch.tensor(0.0)).item(),
         }
         
+        # Add gradient norm if calculated
+        if grad_norm is not None:
+            metrics["grad_norm"] = grad_norm
+        
         # Prepare outputs
         outputs = {
             "video_features": video_features,
             "text_features": text_features,
             "texts": texts,
+            "paths": batch.get("paths", batch.get("sids", [])),  # Get paths or SIDs from batch
         }
         
         return metrics, outputs
@@ -439,6 +549,7 @@ class MultitaskRunner:
         input_ids: torch.Tensor, 
         attention_mask: torch.Tensor,
         texts: list[str],
+        batch: dict,
     ) -> tuple[dict, dict]:
         """
         Single validation step.
@@ -454,8 +565,12 @@ class MultitaskRunner:
         """
         with torch.no_grad():
             # Get video features
-            video_tokens = self.video_encoder.get_tokens(videos, mode="patch")
-            video_features = self.video_encoder.get_tokens(videos, mode="video")
+            if hasattr(self.video_encoder, 'module'):
+                video_tokens = self.video_encoder.module.get_tokens(videos, mode="patch")
+                video_features = self.video_encoder.module.get_tokens(videos, mode="video")
+            else:
+                video_tokens = self.video_encoder.get_tokens(videos, mode="patch")
+                video_features = self.video_encoder.get_tokens(videos, mode="video")
             
             # Get text features
             text_features = self.text_encoder(input_ids, attention_mask)
@@ -474,12 +589,21 @@ class MultitaskRunner:
             caption_logits = caption_outputs["logits"]
             
             # Generate captions for evaluation
-            generated_ids = self.captioning_decoder.generate(
-                video_features=video_tokens,
-                max_length=getattr(self.config, 'max_generation_length', 128),
-                do_sample=getattr(self.config, 'captioning_do_sample', False),
-                temperature=getattr(self.config, 'captioning_temperature', 1.0),
-            )
+            # Handle DistributedDataParallel wrapper
+            if hasattr(self.captioning_decoder, 'module'):
+                generated_ids = self.captioning_decoder.module.generate(
+                    video_features=video_tokens,
+                    max_length=getattr(self.config, 'max_generation_length', 128),
+                    do_sample=getattr(self.config, 'captioning_do_sample', False),
+                    temperature=getattr(self.config, 'captioning_temperature', 1.0),
+                )
+            else:
+                generated_ids = self.captioning_decoder.generate(
+                    video_features=video_tokens,
+                    max_length=getattr(self.config, 'max_generation_length', 128),
+                    do_sample=getattr(self.config, 'captioning_do_sample', False),
+                    temperature=getattr(self.config, 'captioning_temperature', 1.0),
+                )
             
             # Decode generated texts
             generated_texts = []
@@ -532,6 +656,7 @@ class MultitaskRunner:
                 "texts": texts,
                 "generated_texts": generated_texts,
                 "target_texts": target_texts,
+                "paths": batch.get("paths", batch.get("sids", [])),  # Get paths or SIDs from batch
             }
             
             return metrics, outputs
@@ -541,6 +666,8 @@ class MultitaskRunner:
         video_features: torch.Tensor,
         text_features: torch.Tensor,
         texts: list[str],
+        paths: list[str] = None,
+        epoch: int = 0,
     ) -> dict[str, float]:
         """Compute contrastive learning metrics."""
         metrics = {}
@@ -554,22 +681,64 @@ class MultitaskRunner:
             # Compute similarity matrix
             similarity_matrix = torch.matmul(video_features_norm, text_features_norm.t())
             
-            # Compute metrics
-            for k in self.config.recall_k:
-                recall = compute_recall_at_k(similarity_matrix, k)
-                metrics[f"recall_at_{k}"] = recall
+            # Get unique texts and create mapping
+            unique_texts = list(dict.fromkeys(texts))  # Preserve order while removing duplicates
+            text_to_idx = {text: idx for idx, text in enumerate(unique_texts)}
             
-            for k in self.config.ndcg_k:
-                ndcg = compute_ndcg_at_k(similarity_matrix, k)
-                metrics[f"ndcg_at_{k}"] = ndcg
+            # Create ground truth indices for unique texts
+            ground_truth_indices = torch.tensor([text_to_idx[text] for text in texts], 
+                                               device=similarity_matrix.device)
+            
+            if len(unique_texts) < len(texts):
+                # Remap similarity matrix to unique texts
+                unique_text_features = []
+                for text in unique_texts:
+                    idx = texts.index(text)
+                    unique_text_features.append(text_features_norm[idx])
+                unique_text_features = torch.stack(unique_text_features)
+                similarity_matrix = torch.matmul(video_features_norm, unique_text_features.t())
+            
+            # Compute retrieval metrics with proper ground truth indices
+            recall_metrics = compute_recall_at_k(similarity_matrix, ground_truth_indices, self.config.recall_k)
+            metrics.update(recall_metrics)
+            
+            # Compute NDCG metrics
+            ndcg_metrics = compute_ndcg_at_k(similarity_matrix, ground_truth_indices, self.config.ndcg_k)
+            for metric_name, value in ndcg_metrics.items():
+                metrics[metric_name] = value
             
             # Compute alignment score
             alignment_score = compute_alignment_score(video_features_norm, text_features_norm)
             metrics["alignment_score"] = alignment_score
             
+            # Compute embedding norms
+            embedding_norms = compute_embedding_norms(video_features_norm, text_features_norm)
+            metrics.update(embedding_norms)
+            
             # Compute median rank
-            median_rank = compute_median_rank(similarity_matrix)
+            median_rank = compute_median_rank(similarity_matrix, ground_truth_indices)
             metrics["median_rank"] = median_rank
+            
+            # Compute MRR
+            mrr_dict = compute_mrr(similarity_matrix, ground_truth_indices)
+            metrics.update(mrr_dict)
+            
+            # Log best/worst retrievals if wandb is initialized and we have paths
+            if self.wandb_wrapper.is_initialized() and paths is not None and self.val_loader is not None:
+                try:
+                    # Get the dataset object
+                    dataset = self.val_loader.dataset
+                    log_best_worst_retrievals(
+                        similarity_matrix=similarity_matrix,
+                        all_paths=paths,
+                        unique_texts=unique_texts,
+                        ground_truth_indices=ground_truth_indices,
+                        epoch=self.global_step,  # Use global_step instead of epoch
+                        wandb_wrapper=self.wandb_wrapper,
+                        dataset_obj=dataset
+                    )
+                except Exception as e:
+                    print(f"Warning: Failed to log best/worst retrievals: {e}")
         
         return metrics
     
@@ -577,21 +746,128 @@ class MultitaskRunner:
         self,
         generated_texts: list[str],
         target_texts: list[str],
+        epoch: int,
     ) -> dict[str, float]:
-        """Compute captioning metrics."""
+        """Compute captioning metrics including BLEU, ROUGE, and METEOR."""
         metrics = {}
         
-        # TODO: Implement BLEU, ROUGE, and other captioning metrics
-        # For now, return basic metrics
-        metrics["num_generated"] = len(generated_texts)
-        metrics["num_targets"] = len(target_texts)
+        if not generated_texts or not target_texts:
+            return metrics
+        
+        try:
+            # Import metrics libraries
+            from nltk.translate.bleu_score import sentence_bleu, corpus_bleu
+            from nltk.translate.meteor_score import meteor_score
+            from rouge_score import rouge_scorer
+            import nltk
+            
+            # Ensure NLTK data is downloaded
+            try:
+                nltk.download('punkt', quiet=True)
+                nltk.download('wordnet', quiet=True)
+                nltk.download('omw-1.4', quiet=True)
+            except:
+                pass
+            
+            # Calculate BLEU scores
+            bleu_scores = []
+            for gen, tgt in zip(generated_texts, target_texts):
+                reference = [tgt.split()]
+                hypothesis = gen.split()
+                bleu_scores.append(sentence_bleu(reference, hypothesis))
+            
+            metrics["BLEU"] = sum(bleu_scores) / len(bleu_scores) if bleu_scores else 0.0
+            
+            # Calculate ROUGE scores
+            scorer = rouge_scorer.RougeScorer(['rouge1', 'rouge2', 'rougeL'], use_stemmer=True)
+            rouge1_scores = []
+            rouge2_scores = []
+            rougeL_scores = []
+            
+            for gen, tgt in zip(generated_texts, target_texts):
+                scores = scorer.score(tgt, gen)
+                rouge1_scores.append(scores['rouge1'].fmeasure)
+                rouge2_scores.append(scores['rouge2'].fmeasure)
+                rougeL_scores.append(scores['rougeL'].fmeasure)
+            
+            metrics["ROUGE-1"] = sum(rouge1_scores) / len(rouge1_scores) if rouge1_scores else 0.0
+            metrics["ROUGE-2"] = sum(rouge2_scores) / len(rouge2_scores) if rouge2_scores else 0.0
+            metrics["ROUGE-L"] = sum(rougeL_scores) / len(rougeL_scores) if rougeL_scores else 0.0
+            
+            # Calculate METEOR scores
+            meteor_scores = []
+            for gen, tgt in zip(generated_texts, target_texts):
+                # METEOR requires word tokenization
+                reference = tgt.split()
+                hypothesis = gen.split()
+                try:
+                    score = meteor_score([reference], hypothesis)
+                    meteor_scores.append(score)
+                except:
+                    # If METEOR fails, skip this pair
+                    pass
+            
+            if meteor_scores:
+                metrics["METEOR"] = sum(meteor_scores) / len(meteor_scores)
+            
+            # Log best, random, and worst caption examples to W&B
+            if self.wandb_wrapper.is_initialized() and len(generated_texts) >= 5:
+                # Calculate BLEU scores for all samples to identify best/worst
+                sample_scores = bleu_scores if bleu_scores else [0.0] * len(generated_texts)
+                
+                # Get indices for best, worst, and random samples
+                sorted_indices = sorted(range(len(sample_scores)), key=lambda i: sample_scores[i], reverse=True)
+                best_indices = sorted_indices[:5]
+                worst_indices = sorted_indices[-5:]
+                
+                # Get random 5 samples
+                import random
+                random_indices = random.sample(range(len(generated_texts)), min(5, len(generated_texts)))
+                
+                # Log best examples
+                best_html = "<h3>Best Generated Captions (Top 5 BLEU)</h3>"
+                for i, idx in enumerate(best_indices):
+                    best_html += f"<p><b>Sample {i+1} (BLEU: {sample_scores[idx]:.3f}):</b><br>"
+                    best_html += f"<b>Generated:</b> {generated_texts[idx]}<br>"
+                    best_html += f"<b>Target:</b> {target_texts[idx]}</p>"
+                
+                # Log worst examples
+                worst_html = "<h3>Worst Generated Captions (Bottom 5 BLEU)</h3>"
+                for i, idx in enumerate(worst_indices):
+                    worst_html += f"<p><b>Sample {i+1} (BLEU: {sample_scores[idx]:.3f}):</b><br>"
+                    worst_html += f"<b>Generated:</b> {generated_texts[idx]}<br>"
+                    worst_html += f"<b>Target:</b> {target_texts[idx]}</p>"
+                
+                # Log random examples
+                random_html = "<h3>Random Generated Captions (5 samples)</h3>"
+                for i, idx in enumerate(random_indices):
+                    random_html += f"<p><b>Sample {i+1} (BLEU: {sample_scores[idx]:.3f}):</b><br>"
+                    random_html += f"<b>Generated:</b> {generated_texts[idx]}<br>"
+                    random_html += f"<b>Target:</b> {target_texts[idx]}</p>"
+                
+                self.wandb_wrapper.log({
+                    "captioning/best_examples": wandb.Html(best_html),
+                    "captioning/worst_examples": wandb.Html(worst_html),
+                    "captioning/random_examples": wandb.Html(random_html),
+                    "epoch": epoch,
+                }, step=self.global_step)
+            
+        except ImportError as e:
+            print(f"Warning: Could not compute caption metrics due to missing dependencies: {e}")
+            print("Install with: pip install nltk rouge-score")
+            metrics["num_generated"] = len(generated_texts)
+            metrics["num_targets"] = len(target_texts)
         
         return metrics
     
     def _preprocess_inputs(self, batch: dict) -> tuple[dict, list[str]]:
         """Preprocess inputs for the model."""
         videos = batch["videos"]
-        texts = batch["texts"]
+        # Get raw texts from reports if available, otherwise use texts
+        texts = batch.get("reports", batch.get("texts", None))
+        if texts is None and "encoded_texts" in batch and batch["encoded_texts"] is not None:
+            # If we only have encoded texts, we'll need to decode them or use placeholder
+            texts = [""] * len(videos)
         
         # Tokenize texts
         if self.tokenizer is not None:
@@ -629,22 +905,19 @@ class MultitaskRunner:
     def _gather_strings_across_gpus(
         self, local_strings: list[str], world_size: int, device: torch.device
     ) -> list[str]:
-        """Gather strings from all GPUs."""
+        """Gather strings from all GPUs using all_gather_object."""
         if world_size == 1:
             return local_strings
         
-        # Convert strings to tensors for gathering
-        string_tensor = torch.tensor([hash(s) for s in local_strings], device=device)
-        gathered_tensors = [torch.zeros_like(string_tensor) for _ in range(world_size)]
-        torch.distributed.all_gather(gathered_tensors, string_tensor)
+        # Use all_gather_object to properly gather strings from all ranks
+        all_strings_list = [None] * world_size
+        torch.distributed.all_gather_object(all_strings_list, local_strings)
         
-        # Convert back to strings (simplified - in practice you'd need proper string handling)
-        all_strings = local_strings.copy()
-        for tensor in gathered_tensors:
-            if tensor.device != device:
-                tensor = tensor.to(device)
-            # This is a simplified version - in practice you'd need proper string serialization
-            all_strings.extend(local_strings)  # Simplified
+        # Flatten the list of lists
+        all_strings = []
+        for strings in all_strings_list:
+            if strings is not None:
+                all_strings.extend(strings)
         
         return all_strings
     
@@ -658,10 +931,12 @@ class MultitaskRunner:
             # Log validation metrics
             val_log_dict = {f"val/{k}": v for k, v in val_metrics.items()}
             
-            # Log learning rate
+            # Log learning rate with clear labels
             if self.optimizer is not None:
                 for i, param_group in enumerate(self.optimizer.param_groups):
-                    train_log_dict[f"lr/group_{i}"] = param_group['lr']
+                    # Use the name if available, otherwise use index
+                    group_name = param_group.get('name', f'group_{i}')
+                    train_log_dict[f"lr/{group_name}"] = param_group['lr']
             
             # Log temperature
             if self.log_temp is not None:
@@ -669,7 +944,7 @@ class MultitaskRunner:
             
             # Combine and log
             log_dict = {**train_log_dict, **val_log_dict}
-            self.wandb_wrapper.log(log_dict)
+            self.wandb_wrapper.log(log_dict, step=self.global_step)
     
     def _save_checkpoint(self, epoch: int, metrics: dict, is_best: bool = False, is_highest_alignment: bool = False):
         """Save checkpoint."""
@@ -713,3 +988,132 @@ class MultitaskRunner:
         """Run inference."""
         # TODO: Implement inference logic
         pass
+    
+    def _save_predictions(
+        self,
+        epoch: int,
+        video_paths: List[str],
+        texts: List[str],
+        generated_texts: List[str],
+        video_features: torch.Tensor,
+        text_features: torch.Tensor,
+    ) -> None:
+        """
+        Save validation predictions to CSV file with top-5 retrieval results.
+        
+        Args:
+            epoch: Current epoch number
+            video_paths: List of video file paths
+            texts: List of ground truth texts
+            generated_texts: List of generated captions
+            video_features: Video feature embeddings [N, D]
+            text_features: Text feature embeddings [M, D]
+        """
+        if not self.config.is_ref_device:
+            return
+        
+        # Create predictions directory
+        predictions_dir = os.path.join(self.output_dir, "predictions")
+        os.makedirs(predictions_dir, exist_ok=True)
+        
+        # Normalize features for similarity computation
+        video_features_norm = torch.nn.functional.normalize(video_features, dim=1)
+        text_features_norm = torch.nn.functional.normalize(text_features, dim=1)
+        
+        # Compute similarity matrix [N_videos, N_texts]
+        similarity_matrix = torch.matmul(video_features_norm, text_features_norm.t())
+        
+        # Get unique texts for retrieval
+        unique_texts = list(dict.fromkeys(texts))  # Preserve order while removing duplicates
+        text_to_idx = {text: idx for idx, text in enumerate(unique_texts)}
+        
+        # If we have duplicates, remap similarity matrix
+        if len(unique_texts) < len(texts):
+            unique_text_features = []
+            for text in unique_texts:
+                idx = texts.index(text)
+                unique_text_features.append(text_features_norm[idx])
+            unique_text_features = torch.stack(unique_text_features)
+            similarity_matrix = torch.matmul(video_features_norm, unique_text_features.t())
+        
+        # Get top-5 retrievals for each video
+        topk_values, topk_indices = torch.topk(similarity_matrix, k=min(5, len(unique_texts)), dim=1)
+        
+        # Prepare data for CSV
+        predictions_data = []
+        for i, video_path in enumerate(video_paths):
+            row = {
+                'epoch': epoch,
+                'video_path': video_path,
+                'ground_truth_text': texts[i] if i < len(texts) else "",
+                'predicted_text': generated_texts[i] if i < len(generated_texts) else "",
+            }
+            
+            # Add top-5 retrieval results
+            for k in range(min(5, len(unique_texts))):
+                if k < topk_indices.shape[1]:
+                    idx = topk_indices[i, k].item()
+                    score = topk_values[i, k].item()
+                    retrieved_text = unique_texts[idx]
+                    
+                    row[f'top{k+1}_idx'] = idx
+                    row[f'top{k+1}_score'] = score
+                    row[f'top{k+1}_text'] = retrieved_text
+                else:
+                    row[f'top{k+1}_idx'] = -1
+                    row[f'top{k+1}_score'] = 0.0
+                    row[f'top{k+1}_text'] = ""
+            
+            predictions_data.append(row)
+        
+        # Create DataFrame and save to CSV
+        df = pd.DataFrame(predictions_data)
+        
+        # Save current epoch predictions
+        epoch_file = os.path.join(predictions_dir, f'val_predictions_epoch_{epoch}.csv')
+        df.to_csv(epoch_file, index=False)
+        print(f"Saved predictions to {epoch_file}")
+        
+        # If this is the best epoch, save separately
+        if hasattr(self, 'best_epoch') and epoch == self.best_epoch:
+            best_file = os.path.join(predictions_dir, f'val_predictions_best_epoch_{epoch}.csv')
+            df.to_csv(best_file, index=False)
+            print(f"Saved best epoch predictions to {best_file}")
+    
+    def _gather_distributed_predictions(
+        self,
+        video_features: List[torch.Tensor],
+        text_features: List[torch.Tensor],
+        texts: List[str],
+        paths: List[str],
+        generated_texts: List[str],
+        target_texts: List[str],
+    ) -> Tuple[torch.Tensor, torch.Tensor, List[str], List[str], List[str], List[str]]:
+        """
+        Gather all predictions across GPUs.
+        
+        Returns:
+            Gathered tensors and lists from all GPUs
+        """
+        # Concatenate local tensors
+        local_video_features = torch.cat(video_features, dim=0) if video_features else torch.empty(0)
+        local_text_features = torch.cat(text_features, dim=0) if text_features else torch.empty(0)
+        
+        # Gather across GPUs if distributed
+        if self.world_size > 1:
+            gathered_video_features = self._gather_tensor_along_batch(local_video_features, self.world_size)
+            gathered_text_features = self._gather_tensor_along_batch(local_text_features, self.world_size)
+            gathered_texts = self._gather_strings_across_gpus(texts, self.world_size, self.device)
+            gathered_paths = self._gather_strings_across_gpus(paths, self.world_size, self.device)
+            gathered_generated = self._gather_strings_across_gpus(generated_texts, self.world_size, self.device)
+            gathered_targets = self._gather_strings_across_gpus(target_texts, self.world_size, self.device)
+        else:
+            gathered_video_features = local_video_features
+            gathered_text_features = local_text_features
+            gathered_texts = texts
+            gathered_paths = paths
+            gathered_generated = generated_texts
+            gathered_targets = target_texts
+        
+        return (gathered_video_features, gathered_text_features, 
+                gathered_texts, gathered_paths, gathered_generated, gathered_targets)

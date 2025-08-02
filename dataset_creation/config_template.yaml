@@ -9,7 +9,7 @@ filters:
   # Multiple statuses example:
   status: 
     - "diagnostic"
-    - "POST_PCI"
+  #  - "POST_PCI"
   # Available values: "diagnostic", "PCI", "POST_PCI"
   
   # Main structures to include in the dataset
@@ -27,6 +27,29 @@ report_settings:
   # If False, comprehensive reports will be generated for all vessels
   coronary_specific: true
 
+# Train/test split settings
+train_test_split:
+  # Whether to enable train/val/test split (True/False)
+  enabled: true
+  
+  # Ratio of patients for training set (0.0-1.0)
+  train_ratio: 0.7
+  
+  # Ratio of patients for validation set (0.0-1.0)
+  val_ratio: 0.1
+  
+  # Ratio of patients for test set (0.0-1.0, will be computed as 1 - train_ratio - val_ratio if not specified)
+  test_ratio: 0.2
+  
+  # Random seed for reproducible splits
+  random_state: 42
+  
+  # Column containing patient IDs for patient-based splitting
+  patient_column: "CathReport_MRN"
+  
+  # Whether to save separate files for each split
+  save_separate_files: false
+
 # Sampling settings for creating balanced datasets
 sampling:
   # Whether to enable sampling (True/False)
@@ -41,6 +64,17 @@ sampling:
 # Data mapping settings
 # Whether to apply predefined mappings to categorical variables
 apply_mappings: true
+
+# Whether to auto-assign status based on PCI timing
+assign_status: true
+
+# Output settings
+output_settings:
+  # Separator character for CSV files (use "α" for alpha separator)
+  separator: "α"
+  
+  # Whether to include index column in output
+  include_index: false
 
 # Optional: Custom mappings (if different from defaults)
 # custom_mappings:

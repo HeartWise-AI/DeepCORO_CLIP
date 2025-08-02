@@ -159,7 +159,7 @@ def main():
             ("IMPLEMENTATION_SUMMARY.md", None),
         ]),
         ("Test Scripts", [
-            ("test_multitask_setup.py", "test_multitask_setup"),
+            ("test/test_multitask_setup.py", None),
         ]),
     ]
     

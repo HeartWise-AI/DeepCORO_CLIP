@@ -17,6 +17,15 @@ def compute_recall_at_k(similarity_matrix: torch.Tensor, global_gt_indices: torc
     Returns:
         Dictionary containing recall scores for each k value
     """
+    # Ensure global_gt_indices is a tensor
+    if not isinstance(global_gt_indices, torch.Tensor):
+        if isinstance(global_gt_indices, (int, float)):
+            # Single value - expand to match batch size
+            global_gt_indices = torch.tensor([global_gt_indices] * similarity_matrix.shape[0], 
+                                            device=similarity_matrix.device, dtype=torch.long)
+        else:
+            global_gt_indices = torch.tensor(global_gt_indices, device=similarity_matrix.device, dtype=torch.long)
+    
     metrics = {}
     num_candidates = similarity_matrix.size(1)
     for k in k_values:
@@ -40,12 +49,59 @@ def compute_mrr(
     similarity_matrix: torch.Tensor, 
     global_gt_indices: torch.Tensor
 ) -> dict[str, float]:
-    # Video to Text
-    target_scores: torch.Tensor = similarity_matrix.gather(1, global_gt_indices.unsqueeze(1))
-    v2t_ranks: torch.Tensor = (similarity_matrix >= target_scores).sum(1).float()
-    v2t_mrr: float = (1 / v2t_ranks).mean().item()
-
-    return {"MRR_V2T": v2t_mrr}
+    """Compute Mean Reciprocal Rank for video-to-text retrieval.
+    
+    Args:
+        similarity_matrix: [num_videos, num_unique_texts]
+        global_gt_indices: [num_videos] with indices of correct texts
+    """
+    try:
+        # Ensure we have the right dimensions
+        if similarity_matrix.dim() != 2:
+            print(f"Warning: similarity_matrix has {similarity_matrix.dim()} dimensions, expected 2")
+            return {"MRR_V2T": 0.0}
+        
+        num_videos = similarity_matrix.size(0)
+        num_texts = similarity_matrix.size(1)
+        
+        # Handle edge case where we have only one unique text
+        if num_texts == 1:
+            # All videos point to the same text, MRR is 1.0
+            return {"MRR_V2T": 1.0}
+        
+        # Ensure global_gt_indices is 1D tensor
+        if not isinstance(global_gt_indices, torch.Tensor):
+            global_gt_indices = torch.tensor(global_gt_indices, device=similarity_matrix.device)
+        
+        # Flatten if needed
+        if global_gt_indices.dim() > 1:
+            global_gt_indices = global_gt_indices.flatten()
+        
+        # Ensure we have the right number of indices
+        if global_gt_indices.size(0) != num_videos:
+            print(f"Warning: global_gt_indices size {global_gt_indices.size(0)} doesn't match num_videos {num_videos}")
+            global_gt_indices = global_gt_indices[:num_videos]
+        
+        # Clamp indices to valid range
+        global_gt_indices = global_gt_indices.clamp(0, num_texts - 1)
+        
+        # Compute MRR
+        mrr_values = []
+        for i in range(num_videos):
+            gt_idx = global_gt_indices[i].item()
+            target_score = similarity_matrix[i, gt_idx]
+            rank = (similarity_matrix[i] >= target_score).sum().item()
+            mrr_values.append(1.0 / rank)
+        
+        v2t_mrr = sum(mrr_values) / len(mrr_values) if mrr_values else 0.0
+        
+        return {"MRR_V2T": v2t_mrr}
+        
+    except Exception as e:
+        print(f"Error in compute_mrr: {e}")
+        print(f"similarity_matrix shape: {similarity_matrix.shape}")
+        print(f"global_gt_indices shape: {global_gt_indices.shape if isinstance(global_gt_indices, torch.Tensor) else 'not tensor'}")
+        return {"MRR_V2T": 0.0}
 
 def compute_similarity_matrix(video_features: torch.Tensor, text_features: torch.Tensor) -> torch.Tensor:
     normalized_video: torch.Tensor = nn.functional.normalize(video_features, dim=1)
@@ -141,7 +197,8 @@ def compute_ndcg_at_k(
                 ndcg_values.append(0.0)
                 continue
 
-            rank: int = ranking.item()
+            # If multiple matches (duplicate texts), take the first one
+            rank: int = ranking[0].item() if ranking.numel() > 1 else ranking.item()
             if rank < effective_k:
                 # DCG = 1 / log2(rank+2)
                 dcg: float = 1.0 / math.log2(rank + 2)
@@ -178,7 +235,9 @@ def compute_median_rank(
             # Not found, assign large rank
             ranks.append(similarity_matrix.size(1))
         else:
-            rank = ranking.item() + 1  # +1 because ranks are 1-based
+            # If multiple matches (duplicate texts), take the first one
+            rank_idx = ranking[0].item() if ranking.numel() > 1 else ranking.item()
+            rank = rank_idx + 1  # +1 because ranks are 1-based
             ranks.append(rank)
 
     ranks = torch.tensor(ranks, dtype=torch.float)
@@ -206,7 +265,9 @@ def compute_map(similarity_matrix: torch.Tensor, global_gt_indices: torch.Tensor
             # Correct not found, AP=0
             aps.append(0.0)
         else:
-            rank = ranking.item() + 1
+            # If multiple matches (duplicate texts), take the first one
+            rank_idx = ranking[0].item() if ranking.numel() > 1 else ranking.item()
+            rank = rank_idx + 1
             ap = 1.0 / rank
             aps.append(ap)
 

@@ -1,0 +1,51 @@
+name: 'DeepCORO_Multitask_Sweep_Simple'
+project: 'DeepCORO_Multitask'
+entity: 'mhi_ai'
+method: bayes
+metric:
+  goal: minimize
+  name: val/loss
+
+parameters:
+  # Core learning rates only
+  lr:
+    distribution: log_uniform_values
+    min: 0.00001
+    max: 0.0001
+  
+  # Essential model parameters
+  temperature:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 0.1
+  
+  dropout:
+    distribution: uniform
+    min: 0.1
+    max: 0.3
+  
+  # Keep batch size fixed for stability
+  batch_size:
+    value: 8
+  
+  # Loss weights - smaller range
+  loss_weights.contrastive:
+    distribution: uniform
+    min: 0.8
+    max: 1.2
+  
+  loss_weights.captioning:
+    distribution: uniform
+    min: 0.8
+    max: 1.2
+  
+  loss_weights.masked_modeling:
+    distribution: uniform
+    min: 0.05
+    max: 0.2
+
+command:
+  - python
+  - scripts/main.py
+  - --base_config
+  - "config/clip/multitask_config.yaml"

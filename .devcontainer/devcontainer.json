@@ -1,0 +1,29 @@
+{
+  "name": "deepcoro-dev",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "."
+  },
+  "workspaceFolder": "/workspace",
+  "runArgs": [
+    "--gpus=all",
+    "--shm-size=64g",
+    "-p", "6006:6006",
+    "-p", "8888:8888"
+  ],
+  "mounts": [
+    "source=${localWorkspaceFolder},target=/workspace,type=bind",
+    "type=bind,source=/mnt,target=/media,consistency=cached"
+  ],
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "nodeGypDependencies": true,
+      "version": "lts"
+    }
+  },
+  "settings": {
+    "terminal.integrated.defaultProfile.linux": "bash"
+  },
+  "postCreateCommand": "echo '🔄 Setting up development environment...' && npm update -g npm && npm install -g @anthropic-ai/claude-code && echo '✅ Dev container ready with all dependencies pre-installed!' && nvidia-smi || echo '⚠️ GPU not available'",
+  "remoteUser": "root"
+}

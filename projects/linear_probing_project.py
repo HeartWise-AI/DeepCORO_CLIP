@@ -1,7 +1,7 @@
 import os
 import torch
 from typing import Any, Optional, Dict
-from torch.amp.grad_scaler import GradScaler
+from torch.cuda.amp import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
 import itertools

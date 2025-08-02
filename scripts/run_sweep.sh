@@ -10,26 +10,29 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 print_usage() {
-    echo "Usage: $0 [--selected_gpus GPU_IDS] [--sweep_config SWEEP_CONFIG_PATH] [--count COUNT]"
+    echo "Usage: $0 --base_config BASE_CONFIG_PATH --sweep_config SWEEP_CONFIG_PATH --selected_gpus GPU_IDS --count COUNT"
     echo ""
-    echo "Example:"
-    echo "  $0 --selected_gpus 0,1,2,3 --sweep_config config/sweep_config.yaml --count 5"
-    echo "  $0 --selected_gpus 1,3 --sweep_config config/sweep_config.yaml"
+    echo "Examples:"
+    echo "  # Run 5 sweep agents on GPU 3 with single video config"
+    echo "  $0 --base_config config/clip/base_config.yaml --sweep_config config/clip/sweep_config_single_video.yaml --selected_gpus 3 --count 5"
+    echo ""
+    echo "  # Run 10 sweep agents on GPUs 0,1,2,3 with multitask config"
+    echo "  $0 --base_config config/clip/multitask_config.yaml --sweep_config config/clip/sweep_config_multitask.yaml --selected_gpus 0,1,2,3 --count 10"
     echo ""
     echo "Arguments:"
-    echo "  --selected_gpus    Comma-separated list of GPU IDs to use (default: 1,3)"
-    echo "  --base_config     Path to the base configuration file (default: config/gpt2/base_config.yaml)"
-    echo "  --sweep_config     Path to the sweep configuration file (default: config/gpt2/sweep_config.yaml)"
-    echo "  --count           Number of runs to execute (default: 5)"
+    echo "  --base_config      Path to the base configuration file (required)"
+    echo "  --sweep_config     Path to the sweep configuration file (required)"
+    echo "  --selected_gpus    Comma-separated list of GPU IDs to use (required)"
+    echo "  --count           Number of runs to execute (required)"
     echo "  --help, -h         Display this help message"
     exit 1
 }
 
-# Default values
-SELECTED_GPUS="1,3" # Comma-separated list of GPU IDs to use
-BASE_CONFIG_PATH="config/clip/base_config.yaml"
-SWEEP_CONFIG_PATH="config/clip/sweep_config_single_video.yaml"
-COUNT="5" # Number of runs to execute
+# Default values - all are required
+SELECTED_GPUS=""
+BASE_CONFIG_PATH=""
+SWEEP_CONFIG_PATH=""
+COUNT=""
 
 # Activate virtual environment
 source .venv/bin/activate
@@ -84,8 +87,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Check if required arguments are provided
-if [ -z "${SELECTED_GPUS}" ] || [ -z "${SWEEP_CONFIG_PATH}" ] || [ -z "${BASE_CONFIG_PATH}" ]; then
-    echo "Error: Missing required arguments"
+if [ -z "${SELECTED_GPUS}" ] || [ -z "${SWEEP_CONFIG_PATH}" ] || [ -z "${BASE_CONFIG_PATH}" ] || [ -z "${COUNT}" ]; then
+    echo -e "${RED}Error: Missing required arguments${NC}"
+    echo ""
     print_usage
 fi
 

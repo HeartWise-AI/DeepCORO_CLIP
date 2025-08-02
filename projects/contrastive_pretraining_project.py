@@ -3,7 +3,7 @@ from typing import Any
 
 import torch
 import torch.nn as nn
-from torch.amp.grad_scaler import GradScaler
+from torch.cuda.amp import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
 

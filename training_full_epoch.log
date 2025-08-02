@@ -1,0 +1,72 @@
+[0;34m========================================[0m
+[0;32mSetting run_mode in config/clip/multitask_config.yaml to train[0m
+[0;32mSetting use_wandb in config/clip/multitask_config.yaml to true[0m
+[0;34m========================================
+[0m
+[0;34mStarting training with:[0m
+Selected GPUs: 0 (Total: 1 GPUs)
+Config path: config/clip/multitask_config.yaml
+Using CUDA device 0
+Output directory: outputs/DeepCORO_multitask/DeepCORO_Multitask/t4zumc9a_20250802-185341
+
+=== Calculating Dataset Statistics ===
+Frame count per video: 16
+Number of videos: 11
+
+Dataset Statistics:
+Mean: [118.33661651611328, 118.33661651611328, 118.33661651611328]
+Std:  [31.851032257080078, 31.851032257080078, 31.851032257080078]
+===========================
+
+Rank: 0 - mean: tensor([118.3366, 118.3366, 118.3366]) - std: tensor([31.8510, 31.8510, 31.8510])
+[VideoClipDataset] seed=42 for random video sampling
+Initializing single-video mode
+
+Available splits in dataset:
+Split
+train    700
+test     200
+val      100
+Name: count, dtype: int64
+
+Dataset loading statistics for split 'train':
+Total rows in CSV: 1000
+Valid files found: 1000
+Matching split 'train': 700
+Final dataset size: 700
+Tokenizer initialized successfully
+Initializing single-video mode
+[VideoClipDataset] seed=42 for random video sampling
+Initializing single-video mode
+
+Available splits in dataset:
+Split
+train    700
+test     200
+val      100
+Name: count, dtype: int64
+
+Dataset loading statistics for split 'val':
+Total rows in CSV: 1000
+Valid files found: 1000
+Matching split 'val': 100
+Final dataset size: 100
+Tokenizer initialized successfully
+Initializing single-video mode
+
+=== Dataset Information ===
+Training:   58 batches per GPU
+Validation: 9 batches per GPU
+Total:      67 batches per GPU
+
+Batch Size: 12
+Training: 696 videos per GPU
+Validation: 108 videos per GPU
+Total: 804 videos per GPU
+===========================
+
+Starting training from epoch 0 to 10
+Warning: similarity matrix has only 1 candidates; adjusting Recall@5 to Recall@1.
+Warning: similarity matrix has only 1 candidates; adjusting Recall@10 to Recall@1.
+Warning: similarity matrix has only 1 candidates; adjusting Recall@50 to Recall@1.
+Error: a Tensor with 484 elements cannot be converted to Scalar

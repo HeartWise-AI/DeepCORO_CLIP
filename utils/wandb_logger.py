@@ -732,16 +732,7 @@ def _log_retrieval(
 
     if video_to_log_path:
         prefix = "good" if is_best else "bad"
-        wandb_wrapper.log({
-            f"qualitative/{prefix}_retrieval": wandb.Video(
-                video_to_log_path,
-                caption=f"Sim: {score:.3f} (Identifier: {all_paths[idx]})",
-                format="mp4"
-            ),
-            "epoch": epoch
-        })
-        
-        # Log text information
+        # Log both video and text information together
         predicted_html = "<br>".join(
             [f"{i+1}. {text}" for i, text in enumerate(predicted_texts)]
         )
@@ -757,10 +748,17 @@ def _log_retrieval(
             f"<b>Ground Truth:</b> {ground_truth_text_display}<br>"
             f"<b>Top 5 Predicted:</b><br>{predicted_html}"
         )
-        wandb.log({
+        
+        # Log everything in a single call to avoid epoch conflicts
+        log_dict = {
+            f"qualitative/{prefix}_retrieval": wandb.Video(
+                video_to_log_path,
+                caption=f"Sim: {score:.3f} (Identifier: {all_paths[idx]})",
+                format="mp4"
+            ),
             f"qualitative/{prefix}_retrieval_text": wandb.Html(ground_truth_html),
-            "epoch": epoch
-        })
+        }
+        wandb_wrapper.log(log_dict, step=int(epoch) if not isinstance(epoch, int) else epoch)
         
         if is_temp_video:
             cleanup_temp_video(video_to_log_path)

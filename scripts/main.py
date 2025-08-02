@@ -7,6 +7,9 @@ import wandb
 from typing import Tuple
 from pprint import pprint
 
+# Add project root to Python path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from utils.seed import set_seed
 from utils.enums import SubmoduleType
 from utils.ddp import DistributedUtils
@@ -48,7 +51,16 @@ def main(config: HeartWiseConfig):
             'text_freeze_ratio', 'dropout', 'num_heads', 'aggregator_depth',
             'optimizer', 'scheduler_name', 'lr_step_period', 'factor',
             'weight_decay', 'loss_name', 'tag', 'name', 'project', 'entity',
-            'gradient_accumulation_steps', 'num_warmup_percent'
+            'gradient_accumulation_steps', 'num_warmup_percent',
+            # Multitask-specific parameters
+            'text_lr', 'captioning_lr', 'mvm_lr',
+            'video_weight_decay', 'text_weight_decay', 'captioning_weight_decay', 'mvm_weight_decay',
+            'decoder_layers', 'decoder_heads', 'decoder_intermediate_size',
+            'max_generation_length', 'mvm_decoder_hidden_size', 'mvm_decoder_layers',
+            'mvm_decoder_heads', 'mask_ratio', 'label_smoothing',
+            'frames', 'stride', 'max_grad_norm',
+            'loss_weights', 'loss_weights.contrastive', 'loss_weights.captioning', 
+            'loss_weights.masked_modeling'
         )
         
         wandb_wrapper: WandbWrapper = WandbWrapper(

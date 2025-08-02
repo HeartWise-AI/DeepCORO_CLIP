@@ -275,7 +275,7 @@ class VideoClipDataset(torch.utils.data.Dataset):
                 return_tensors="pt",
             )
             encoded = {k: v.squeeze(0) for k, v in encoded.items()}
-            return multi_stack, encoded, sid
+            return multi_stack, encoded, sid, text_report
         else:
             actual_idx = self.valid_indices[index]
             video_fname = self.fnames[actual_idx]
@@ -315,7 +315,11 @@ class VideoClipDataset(torch.utils.data.Dataset):
                     print("No target label or target index")
                     encoded = None
 
-                return video, encoded, video_fname
+                # Get raw text for captioning
+                raw_text = self.outcome[actual_idx] if self.split != "inference" and self.target_label is not None else ""
+                if not isinstance(raw_text, str):
+                    raw_text = str(raw_text)
+                return video, encoded, video_fname, raw_text
 
             except Exception as e:
                 raise RuntimeError(f"Failed to load video {video_fname}: {str(e)}") from e
@@ -352,12 +356,12 @@ class VideoClipDataset(torch.utils.data.Dataset):
 def custom_collate_fn(batch):
     """Custom collate function to handle video and text data.
     Args:
-        batch: List of tuples (video, encoded_text, path_or_sid)
+        batch: List of tuples (video, encoded_text, path_or_sid, raw_text)
     Returns:
-        For multi-video: videos: Tensor (B, N, F, H, W, C), encoded_texts: dict, paths: List[sid]
-        For single-video: videos: Tensor (B, F, H, W, C), encoded_texts: dict, paths: List[path]
+        For multi-video: videos: Tensor (B, N, F, H, W, C), encoded_texts: dict, paths: List[sid], reports: List[str]
+        For single-video: videos: Tensor (B, F, H, W, C), encoded_texts: dict, paths: List[path], reports: List[str]
     """
-    videos, encoded_texts, paths = zip(*batch)
+    videos, encoded_texts, paths, raw_texts = zip(*batch)
     import numpy as np
     import torch
     if isinstance(videos[0], np.ndarray) and videos[0].ndim == 5:
@@ -376,7 +380,8 @@ def custom_collate_fn(batch):
     return {
         "videos": videos,
         "encoded_texts": combined_texts,
-        "paths": list(paths)
+        "paths": list(paths),
+        "reports": list(raw_texts)
     }
 
 def get_distributed_video_clip_dataloader(

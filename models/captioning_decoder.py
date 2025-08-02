@@ -157,9 +157,20 @@ class CaptioningDecoder(nn.Module):
         # Create causal attention mask for autoregressive generation
         causal_mask = self._get_causal_mask(seq_len, device=input_ids.device)
         
-        # Create attention mask for padding
-        attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)  # [batch_size, 1, 1, seq_len]
-        attention_mask = attention_mask & causal_mask  # Combine with causal mask
+        # Create attention mask for padding and causal attention
+        # For MultiheadAttention, we need either:
+        # - 2D mask: [seq_len, seq_len] (same for all batch)
+        # - 3D mask: [batch_size * num_heads, seq_len, seq_len]
+        # We'll use 2D for simplicity since causal mask is the same for all batches
+        
+        # Convert attention_mask to key_padding_mask format
+        # attention_mask is [batch_size, seq_len] where 1 means valid, 0 means padding
+        # key_padding_mask needs True for positions to be masked
+        key_padding_mask = ~attention_mask.bool() if attention_mask is not None else None
+        
+        # causal_mask is already in the right format (2D boolean mask)
+        # where True means positions to be masked
+        attention_mask = causal_mask
         
         hidden_states = embeddings
         all_self_attentions = () if output_attentions else None
@@ -175,8 +186,9 @@ class CaptioningDecoder(nn.Module):
             layer_outputs = decoder_layer(
                 hidden_states=hidden_states,
                 attention_mask=attention_mask,
+                key_padding_mask=key_padding_mask,
                 video_features=video_features,
-                past_key_value=past_key_values[i] if past_key_values is not None else None,
+                past_key_value=past_key_values[i] if (past_key_values is not None and len(past_key_values) > i) else None,
                 use_cache=use_cache,
                 output_attentions=output_attentions,
             )
@@ -212,8 +224,8 @@ class CaptioningDecoder(nn.Module):
     
     def _get_causal_mask(self, seq_len: int, device: torch.device) -> torch.Tensor:
         """Create causal attention mask for autoregressive generation."""
-        mask = torch.triu(torch.ones(seq_len, seq_len, device=device), diagonal=1)
-        mask = mask.masked_fill(mask == 1, float('-inf'))
+        # Create mask where True means "should be masked"
+        mask = torch.triu(torch.ones(seq_len, seq_len, device=device, dtype=torch.bool), diagonal=1)
         return mask
     
     def generate(
@@ -263,11 +275,12 @@ class CaptioningDecoder(nn.Module):
         input_ids = torch.full((batch_size, 1), bos_token_id, device=device, dtype=torch.long)
         
         # Generate tokens autoregressively
+        # Note: Caching is disabled since MultiheadAttention doesn't support it
         for _ in range(max_length - 1):
             outputs = self.forward(
                 input_ids=input_ids,
                 video_features=video_features,
-                use_cache=True
+                use_cache=False  # Disabled since not properly implemented
             )
             
             next_token_logits = outputs["logits"][:, -1, :]
@@ -284,7 +297,8 @@ class CaptioningDecoder(nn.Module):
             
             # Apply top-k filtering
             if top_k > 0:
-                indices_to_remove = next_token_logits < torch.topk(next_token_logits, top_k)[0][..., -1, None]
+                top_k_values, _ = torch.topk(next_token_logits, min(top_k, next_token_logits.size(-1)))
+                indices_to_remove = next_token_logits < top_k_values[..., -1, None]
                 next_token_logits[indices_to_remove] = float('-inf')
             
             # Apply top-p filtering
@@ -303,6 +317,12 @@ class CaptioningDecoder(nn.Module):
                 next_tokens = torch.multinomial(probs, num_samples=1).squeeze(1)
             else:
                 next_tokens = torch.argmax(next_token_logits, dim=-1)
+            
+            # Ensure next_tokens is a tensor
+            if not isinstance(next_tokens, torch.Tensor):
+                next_tokens = torch.tensor(next_tokens, device=device, dtype=torch.long)
+            if next_tokens.dim() == 0:
+                next_tokens = next_tokens.unsqueeze(0)
             
             # Append new tokens
             input_ids = torch.cat([input_ids, next_tokens.unsqueeze(-1)], dim=-1)
@@ -356,6 +376,7 @@ class DecoderLayer(nn.Module):
         self,
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
+        key_padding_mask: Optional[torch.Tensor] = None,
         video_features: Optional[torch.Tensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
         use_cache: bool = False,
@@ -384,7 +405,7 @@ class DecoderLayer(nn.Module):
             key=hidden_states,
             value=hidden_states,
             attn_mask=attention_mask,
-            key_padding_mask=None,
+            key_padding_mask=key_padding_mask,
             need_weights=output_attentions,
         )
         
@@ -433,7 +454,9 @@ class DecoderLayer(nn.Module):
         outputs = (hidden_states,)
         
         if use_cache:
-            outputs += (self_attention_outputs[2],)  # key-value cache
+            # Note: MultiheadAttention doesn't support cache, so we return None for now
+            # A proper implementation would require custom attention with cache support
+            outputs += (None,)  # placeholder for key-value cache
         
         if output_attentions:
             outputs += (self_attentions, cross_attentions)

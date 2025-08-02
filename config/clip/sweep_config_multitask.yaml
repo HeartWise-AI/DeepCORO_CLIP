@@ -1,0 +1,154 @@
+name: 'DeepCORO_Multitask_Sweep'
+project: 'DeepCORO_Multitask'
+entity: 'mhi_ai'
+method: bayes
+metric:
+  goal: minimize
+  name: val/loss
+
+parameters:
+  # Learning rates for different components
+  lr:
+    distribution: log_uniform_values
+    min: 0.00001
+    max: 0.0001
+  
+  text_lr:
+    distribution: log_uniform_values
+    min: 0.000005
+    max: 0.00005
+  
+  captioning_lr:
+    distribution: log_uniform_values
+    min: 0.00001
+    max: 0.0001
+  
+  mvm_lr:
+    distribution: log_uniform_values
+    min: 0.000001
+    max: 0.00001
+  
+  # Weight decay parameters
+  video_weight_decay:
+    distribution: log_uniform_values
+    min: 0.000001
+    max: 0.0001
+  
+  text_weight_decay:
+    distribution: log_uniform_values
+    min: 0.0000001
+    max: 0.00001
+  
+  captioning_weight_decay:
+    distribution: uniform
+    min: 0.001
+    max: 0.1
+  
+  mvm_weight_decay:
+    distribution: uniform
+    min: 0.001
+    max: 0.1
+  
+  # Model architecture parameters
+  temperature:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 0.2
+  
+  dropout:
+    distribution: uniform
+    min: 0.0
+    max: 0.3
+  
+  video_freeze_ratio:
+    distribution: uniform
+    min: 0.5
+    max: 0.95
+  
+  text_freeze_ratio:
+    distribution: uniform
+    min: 0.5
+    max: 0.95
+  
+  # Captioning decoder parameters
+  decoder_layers:
+    values: [4, 6, 8]
+  
+  decoder_heads:
+    values: [4, 8, 12]
+  
+  decoder_intermediate_size:
+    values: [1024, 2048, 3072]
+  
+  max_generation_length:
+    values: [64, 128, 256]
+  
+  # Masked video modeling parameters
+  mvm_decoder_hidden_size:
+    values: [128, 256, 512]
+  
+  mvm_decoder_layers:
+    values: [1, 2, 3]
+  
+  mvm_decoder_heads:
+    values: [4, 8]
+  
+  mask_ratio:
+    distribution: uniform
+    min: 0.5
+    max: 0.9
+  
+  # Loss weights for multitask learning
+  loss_weights.contrastive:
+    distribution: uniform
+    min: 0.5
+    max: 2.0
+  
+  loss_weights.captioning:
+    distribution: uniform
+    min: 0.5
+    max: 2.0
+  
+  loss_weights.masked_modeling:
+    distribution: log_uniform_values
+    min: 0.01
+    max: 0.5
+  
+  # Training parameters
+  batch_size:
+    values: [12, 16]
+  
+  gradient_accumulation_steps:
+    values: [1, 2, 4]
+  
+  # Optimizer parameters
+  num_warmup_percent:
+    distribution: uniform
+    min: 0.05
+    max: 0.2
+  
+  max_grad_norm:
+    values: [0.5, 1.0, 2.0]
+  
+  # Loss configuration
+  label_smoothing:
+    distribution: uniform
+    min: 0.0
+    max: 0.2
+  
+  # Data parameters
+  frames:
+    values: [8, 16, 24]
+  
+  stride:
+    values: [1, 2, 3]
+
+command:
+  - python
+  - -m
+  - torch.distributed.run
+  - --nproc_per_node=2
+  - --master_port=29500
+  - scripts/main.py
+  - --base_config
+  - "config/clip/multitask_config.yaml"

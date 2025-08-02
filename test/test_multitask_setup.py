@@ -9,6 +9,14 @@ This script tests:
 4. Basic training step
 """
 
+import os
+import sys
+
+# Add workspace to path if not already there
+workspace_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if workspace_path not in sys.path:
+    sys.path.insert(0, workspace_path)
+
 import torch
 import torch.nn as nn
 from typing import Dict, Any

@@ -2,7 +2,7 @@ from typing import Any, Dict, Optional
 
 import torch
 import torch.nn as nn
-from torch.amp.grad_scaler import GradScaler
+from torch.cuda.amp import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
 
@@ -273,7 +273,7 @@ class MultitaskPretrainingProject(BaseProject):
             "scaler": scaler,
             "log_temp": log_temperature,
             "loss_fn": loss_fn,
-            "output_dir": self.config.output_dir if self.config.is_ref_device else None,
+            "output_dir": self.config.output_dir,  # Now synchronized across all GPUs
         }    
 
     def _setup_inference_objects(

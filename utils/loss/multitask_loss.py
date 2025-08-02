@@ -94,8 +94,14 @@ class MultitaskLoss(nn.Module):
             Contrastive loss
         """
         # Normalize features
-        video_features = F.normalize(video_features, dim=1)
-        text_features = F.normalize(text_features, dim=1)
+        video_features = F.normalize(video_features, dim=-1)
+        text_features = F.normalize(text_features, dim=-1)
+        
+        # Ensure features are 2D
+        if video_features.dim() == 3:
+            video_features = video_features.squeeze(1)
+        if text_features.dim() == 3:
+            text_features = text_features.squeeze(1)
         
         # Compute similarity matrix
         similarity = torch.matmul(video_features, text_features.t())
@@ -131,8 +137,14 @@ class MultitaskLoss(nn.Module):
             Contrastive loss
         """
         # Normalize features
-        video_features = F.normalize(video_features, dim=1)
-        text_features = F.normalize(text_features, dim=1)
+        video_features = F.normalize(video_features, dim=-1)
+        text_features = F.normalize(text_features, dim=-1)
+        
+        # Ensure features are 2D
+        if video_features.dim() == 3:
+            video_features = video_features.squeeze(1)
+        if text_features.dim() == 3:
+            text_features = text_features.squeeze(1)
         
         # Compute similarity matrix
         similarity = torch.matmul(video_features, text_features.t())

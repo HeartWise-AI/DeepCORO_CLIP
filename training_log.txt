@@ -1,0 +1,12 @@
+Unknown parameter: 2
+Usage: scripts/runner.sh --selected_gpus GPU_IDS --base_config CONFIG_PATH
+Example:
+  scripts/runner.sh --selected_gpus 0,1,2,3 --base_config configs/default_config.yaml
+  scripts/runner.sh --selected_gpus 1,3 --base_config configs/my_config.yaml
+
+Arguments:
+  --selected_gpus  Comma-separated list of GPU IDs to use
+  --base_config    Path to the base configuration file
+  --run_mode       Run mode to use (supported: train, val, test, inference)
+  --use_wandb      Use W&B for logging (true/false)
+  --help, -h       Display this help message

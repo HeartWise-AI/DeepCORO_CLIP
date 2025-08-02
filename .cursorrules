@@ -61,6 +61,7 @@ Directory structure:
 - Use the config/ directory to get an overview of the configurations.
 - Use the models/ directory to get an overview of the models.
 - Use the scripts/ directory to get an overview of the scripts.
+- ALWAYS USE uv to install dependencies.
 
 ALWAYS ACTIVATE THE VENV BEFORE RUNNING ANY COMAMND
 ```source .venv/bin/activate```

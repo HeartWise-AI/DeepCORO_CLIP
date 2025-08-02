@@ -281,6 +281,9 @@ class VideoEncoder(nn.Module):
             #print("Per-video pooling") 
             #print(f"token_feats.shape: {token_feats.shape}")
             feats = token_feats.mean(dim=2)  # [B, N, D_out]
+            # If N=1 (single video), squeeze to get [B, D_out] instead of [B, 1, D_out]
+            if N == 1:
+                feats = feats.squeeze(1)  # [B, D_out]
             #print(f"feats.shape: {feats.shape}")
         else:
             #print("Per-patch pooling")

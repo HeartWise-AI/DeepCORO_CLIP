@@ -7,6 +7,10 @@ DeepCORO_CLIP is a deep learning model for echocardiography video interpretation
 - **Contrastive Learning**: Train on video-report pairs using CLIP-style contrastive learning
   - Single video mode: Process one video per study
   - Multi-video mode: Process multiple videos per study with aggregation
+- **Multitask Learning**: Advanced training setup combining contrastive learning, captioning, and masked video modeling
+  - **LocCa-style Captioning**: Generate structured angiographic reports from video embeddings
+  - **Masked Video Modeling**: Self-supervised learning through masked patch reconstruction
+  - **Configurable Loss Weights**: Flexible weighting of different tasks
 - **Linear Probing**: Fine-tune the model for specific tasks using linear probing
 - **Multi-GPU Training**: Support for distributed training across multiple GPUs
 - **Hyperparameter Optimization**: Built-in support for Weights & Biases sweeps
@@ -82,7 +86,14 @@ The project uses configuration files located in the `config/` directory:
    - Video mode settings (single/multi)
    - Video aggregation parameters
 
-2. **Linear Probing** (`config/linear_probing/base_config.yaml`):
+2. **Multitask Training** (`config/clip/multitask_config.yaml`):
+   - Advanced training combining contrastive, captioning, and masked modeling
+   - Captioning decoder parameters (layers, heads, vocabulary)
+   - Masked video modeling parameters (mask ratio, decoder architecture)
+   - Configurable loss weights and learning rates for each component
+   - Biomedical tokenizer integration
+
+3. **Linear Probing** (`config/linear_probing/base_config.yaml`):
    - Task-specific parameters
    - Head structure configuration
    - Loss function settings
@@ -116,6 +127,27 @@ bash scripts/runner.sh --base_config config/clip/base_config.yaml --selected_gpu
 bash scripts/run_sweep.sh --base_config config/clip/base_config.yaml --sweep_config config/clip/sweep_config_single_video.yaml --selected_gpus 3 --count 5
 ```
 
+### 2. Multitask Learning
+
+#### Train the model with advanced multitask setup (contrastive + captioning + masked modeling)
+
+```bash
+# Test the multitask setup
+python test_multitask_setup.py
+
+# Single GPU training with multitask learning
+bash scripts/runner.sh --base_config config/clip/multitask_config.yaml --selected_gpus 0 --use_wandb false --run_mode train
+
+# Multi-GPU training with multitask learning
+bash scripts/runner.sh --base_config config/clip/multitask_config.yaml --selected_gpus 0,1 --use_wandb true --run_mode train
+```
+
+**Key Features:**
+- **Captioning**: Generates structured angiographic reports from video embeddings
+- **Masked Modeling**: Self-supervised learning through masked patch reconstruction
+- **Flexible Loss Weights**: Configurable weights for each task
+- **Biomedical Integration**: PubMedBERT tokenizer for medical text processing
+
 ### Run validation
 **Not supported**
 
@@ -128,7 +160,7 @@ bash scripts/runner.sh --selected_gpus 0 --base_config config/clip/base_config.y
 ### Run test
 **Not supported**
 
-### 2. Linear Probing
+### 3. Linear Probing
 
 Fine-tune the model for specific tasks using linear probing - couple of combination examples:
 
@@ -205,6 +237,20 @@ The pretrained weights will be in the folder `/app/pretrained_models`.
     `[B, N, D]`, ready for MIL / linear probing heads.
   * `aggregate=False, per_video_pool=False` – returns **all patch tokens - ONLY Setting that preeservs all the tokens**
     `[B, N·L, D]` for the most detailed downstream reasoning.
+
+### Captioning Decoder (Multitask)
+- LocCa-style transformer decoder for structured angiographic report generation
+- Causal attention for autoregressive generation
+- Cross-attention to video tokens
+- Biomedical tokenizer integration (PubMedBERT)
+- Configurable architecture (layers, heads, hidden size)
+
+### Masked Video Modeling (Multitask)
+- Self-supervised masked patch modeling
+- Random token masking with configurable ratio
+- Lightweight decoder for reconstruction
+- MSE loss on masked tokens only
+- Improves video representation learning
     
 
 
@@ -325,16 +371,29 @@ nvidia-smi -l 1  # Monitor GPU usage every second
 heartwise-ai-deepcoro_clip/
 ├── config/                        # Configuration files
 │   ├── clip/                     # CLIP training configs
+│   │   ├── base_config.yaml      # Base CLIP training
+│   │   └── multitask_config.yaml # Multitask training
 │   └── linear_probing/           # Linear probing configs
 ├── dataloaders/                  # Data loading modules
 ├── dataset_creation/             # How MHI dataset was built
-├── docs/                         # Documentation on CLS-Token implementation
+├── docs/                         # Documentation
+│   └── MULTITASK_SETUP.md       # Multitask setup documentation
 ├── models/                       # Neural network models
+│   ├── captioning_decoder.py     # LocCa-style captioning decoder
+│   ├── masked_video_modeling.py # Self-supervised masked modeling
+│   └── ...                      # Other models
 ├── projects/                     # Project implementations
+│   ├── multitask_pretraining_project.py # Multitask training project
+│   └── ...                      # Other projects
 ├── runners/                      # Training runners
+│   ├── multitask_runner.py       # Multitask training runner
+│   └── ...                      # Other runners
 ├── scripts/                      # Training scripts
 ├── utils/                        # Utility functions
-└── tests/                        # Unit test pipeline
+│   └── loss/
+│       └── multitask_loss.py    # Multitask loss function
+├── tests/                        # Unit test pipeline
+└── test_multitask_setup.py      # Multitask setup test script
 ```
 
 ## 🤝 Contributing

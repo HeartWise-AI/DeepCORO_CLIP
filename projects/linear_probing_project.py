@@ -1,7 +1,7 @@
 import os
 import torch
 from typing import Any, Optional, Dict
-from torch.cuda.amp import GradScaler
+from torch.amp import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
 import itertools
@@ -271,7 +271,7 @@ class LinearProbingProject(BaseProject):
 
         # Initialize scaler
         print(f"Using AMP: {self.config.use_amp}")
-        scaler = GradScaler() if self.config.use_amp else None
+        scaler = GradScaler('cuda') if self.config.use_amp else None
         
         # Create loss function
         loss_fn = Loss(
@@ -445,7 +445,7 @@ class LinearProbingProject(BaseProject):
         device = self.config.device
         if isinstance(device, int):
             device = f"cuda:{device}"
-        checkpoint: dict[str, Any] = torch.load(path, map_location=device, weights_only=True)
+        checkpoint: dict[str, Any] = torch.load(path, map_location=device, weights_only=False)
         return checkpoint
 
     def _load_and_fix_checkpoint(self, path: str) -> dict[str, Any]:

@@ -2,7 +2,7 @@ from typing import Any, Dict, Optional
 
 import torch
 import torch.nn as nn
-from torch.cuda.amp import GradScaler
+from torch.amp import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
 
@@ -220,7 +220,7 @@ class MultitaskPretrainingProject(BaseProject):
             warm_restart_tmult=self.config.warm_restart_tmult,
         )
 
-        scaler: GradScaler = GradScaler() if self.config.use_amp else None
+        scaler: GradScaler = GradScaler('cuda') if self.config.use_amp else None
 
         # Create multitask loss function
         loss_weights = getattr(self.config, 'loss_weights', {

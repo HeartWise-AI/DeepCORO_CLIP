@@ -3,7 +3,7 @@ from unittest.mock import Mock, MagicMock
 import torch
 from torch.utils.data import DataLoader
 from torch.optim import Adam
-from torch.cuda.amp import GradScaler
+from torch.amp import GradScaler
 
 from runners.linear_probing_runner import LinearProbingRunner
 from utils.config.linear_probing_config import LinearProbingConfig

@@ -8,7 +8,7 @@ use_amp: !!bool true
 period: !!int 1
 run_mode: !!str train
 # Dataset parameters
-data_filename: !!str reports/dataset_small_1000.csv
+data_filename: !!str reports/dataset_with_splits_20250801.csv
 root: !!str "."
 target_label: !!str Report
 datapoint_loc_label: !!str FileName

@@ -6,8 +6,9 @@ from datetime import datetime
 
 import torch
 import torch.nn as nn
+import torch.distributed as dist
 from torch.optim import Optimizer
-from torch.cuda.amp import GradScaler
+from torch.amp import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
 from typing import Callable, Dict, Tuple, List, Any, Optional
@@ -130,6 +131,8 @@ class MultitaskRunner:
         self.best_alignment = 0.0
         self.current_epoch = 0
         self.global_step = 0  # Global step counter for consistent wandb logging
+        self.best_val_loss = float("inf")
+        self.best_epoch = -1
         
         # Loss weight scheduler (optional)
         self.loss_weight_scheduler = None
@@ -178,6 +181,13 @@ class MultitaskRunner:
             
             # Validation phase
             val_metrics = self._run_epoch("val", epoch)
+            
+            # Track best epoch
+            if val_metrics.get("total_loss", float("inf")) < self.best_val_loss:
+                self.best_val_loss = val_metrics["total_loss"]
+                self.best_epoch = epoch
+                if self.config.is_ref_device:
+                    print(f"New best model at epoch {epoch} with val loss: {self.best_val_loss:.4f}")
             
             # Update learning rate
             if self.lr_scheduler is not None:
@@ -326,6 +336,13 @@ class MultitaskRunner:
                 if "target_texts" in batch_outputs:
                     all_target_texts.extend(batch_outputs["target_texts"])
                 
+                # Sync after each validation batch
+                if mode == "val":
+                    DistributedUtils.sync_process_group(
+                        world_size=self.world_size,
+                        device_ids=self.device
+                    )
+                
                 # Update progress bar
                 pbar.set_postfix({
                     'loss': f"{batch_metrics['total_loss']:.4f}",
@@ -334,13 +351,35 @@ class MultitaskRunner:
                     'mvm': f"{batch_metrics.get('masked_modeling_loss', 0.0):.4f}",
                 })
         
-        # Compute average metrics
-        metrics = {
-            "total_loss": total_loss / num_batches,
-            "contrastive_loss": total_contrastive_loss / num_batches,
-            "captioning_loss": total_captioning_loss / num_batches,
-            "masked_modeling_loss": total_masked_modeling_loss / num_batches,
-        }
+        # Gather losses across GPUs
+        if self.world_size > 1:
+            # Gather loss sums from all GPUs
+            total_loss_gathered = DistributedUtils.gather_loss([total_loss], self.device)
+            total_contrastive_gathered = DistributedUtils.gather_loss([total_contrastive_loss], self.device)
+            total_captioning_gathered = DistributedUtils.gather_loss([total_captioning_loss], self.device)
+            total_mvm_gathered = DistributedUtils.gather_loss([total_masked_modeling_loss], self.device)
+            
+            # Gather batch counts
+            batch_count_tensor = torch.tensor([num_batches], dtype=torch.float32, device=self.device)
+            batch_counts = [torch.zeros_like(batch_count_tensor) for _ in range(self.world_size)]
+            dist.all_gather(batch_counts, batch_count_tensor)
+            total_batches = sum(b.item() for b in batch_counts)
+            
+            # Compute average metrics across all GPUs
+            metrics = {
+                "total_loss": total_loss_gathered / total_batches,
+                "contrastive_loss": total_contrastive_gathered / total_batches,
+                "captioning_loss": total_captioning_gathered / total_batches,
+                "masked_modeling_loss": total_mvm_gathered / total_batches,
+            }
+        else:
+            # Single GPU - compute averages normally
+            metrics = {
+                "total_loss": total_loss / num_batches,
+                "contrastive_loss": total_contrastive_loss / num_batches,
+                "captioning_loss": total_captioning_loss / num_batches,
+                "masked_modeling_loss": total_masked_modeling_loss / num_batches,
+            }
         
         # Gather all predictions and compute metrics
         if all_video_features and all_text_features:
@@ -378,6 +417,12 @@ class MultitaskRunner:
                         video_features=video_features,
                         text_features=text_features,
                     )
+        
+        # Final sync after metrics computation
+        DistributedUtils.sync_process_group(
+            world_size=self.world_size,
+            device_ids=self.device
+        )
         
         # Print validation metrics to console
         if mode == "val" and self.config.is_ref_device:
@@ -1049,20 +1094,17 @@ class MultitaskRunner:
                 'predicted_text': generated_texts[i] if i < len(generated_texts) else "",
             }
             
-            # Add top-5 retrieval results
+            # Add top-5 retrieval results (indices and scores only)
             for k in range(min(5, len(unique_texts))):
                 if k < topk_indices.shape[1]:
                     idx = topk_indices[i, k].item()
                     score = topk_values[i, k].item()
-                    retrieved_text = unique_texts[idx]
                     
                     row[f'top{k+1}_idx'] = idx
                     row[f'top{k+1}_score'] = score
-                    row[f'top{k+1}_text'] = retrieved_text
                 else:
                     row[f'top{k+1}_idx'] = -1
                     row[f'top{k+1}_score'] = 0.0
-                    row[f'top{k+1}_text'] = ""
             
             predictions_data.append(row)
         

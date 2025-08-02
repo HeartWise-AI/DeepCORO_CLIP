@@ -4,7 +4,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from torch.optim import Optimizer
-from torch.cuda.amp import GradScaler
+from torch.amp import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
 from typing import Callable, Dict, Tuple, List, Any
@@ -694,7 +694,7 @@ class VideoContrastiveLearningRunner:
             return None, 0, float("inf"), -1
 
         print(f"[Preview] Loading minimal info from checkpoint: {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
 
         wandb_run = checkpoint.get("wandb_run", None)
         start_epoch = checkpoint.get("epoch", -1) + 1
@@ -946,7 +946,7 @@ class VideoContrastiveLearningRunner:
         Method for a dedicated inference.
         """
         # Load text embeddings tensor
-        text_embeddings: torch.Tensor = torch.load(self.config.text_embeddings_path, weights_only=True, map_location=torch.device(self.device))
+        text_embeddings: torch.Tensor = torch.load(self.config.text_embeddings_path, weights_only=False, map_location=torch.device(self.device))
         # Load metadata
         metadata: pd.DataFrame = pd.read_parquet(self.config.metadata_path)
         

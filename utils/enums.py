@@ -41,6 +41,9 @@ class LossType(str, Enum):
     # Multi-head loss
     MULTI_HEAD = "multi_head" # Multi-head loss
     
+    # Multitask losses
+    MULTITASK = "multitask" # Multitask loss combining contrastive, captioning, and masked modeling
+    
     # Custom losses
     MULTICLASS_FOCAL = "multiclass_focal" # Multi-class Focal Loss
     BINARY_FOCAL = "binary_focal" # Binary Focal Loss

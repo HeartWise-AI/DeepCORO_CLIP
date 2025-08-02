@@ -1,0 +1,18 @@
+{
+  "name": "deepcoro-dev",
+  "image": "pytorch/pytorch:latest",
+  "workspaceFolder": "/workspace",
+  "runArgs": [
+    "--gpus=all",
+    "-p", "6006:6006",
+    "-p", "8888:8888"
+  ],
+  "mounts": [
+    "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached"
+  ],
+  "settings": {
+    "terminal.integrated.defaultProfile.linux": "bash"
+  },
+  "postCreateCommand": "echo '✅ Dev container is ready.'",
+  "remoteUser": "root"
+}

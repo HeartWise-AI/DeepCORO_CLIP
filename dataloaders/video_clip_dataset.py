@@ -11,6 +11,7 @@ import pandas as pd
 from typing import Any, List, Optional
 from torch.utils.data import DataLoader
 
+from utils.enums import RunMode
 from utils.seed import seed_worker
 from utils.ddp import DistributedUtils
 from models.text_encoder import get_tokenizer
@@ -53,7 +54,7 @@ class VideoClipDataset(torch.utils.data.Dataset):
         self.mean = format_mean_std(mean)
         self.std = format_mean_std(std)
         self.normalize = normalize
-        self.stride = stride
+        self.stride = np.random.randint(1, stride + 1) if stride > 1 else 1 if split == RunMode.TRAIN else stride
         self.groupby_column = groupby_column
         self.num_videos = num_videos
         self.shuffle_videos = shuffle_videos
@@ -68,7 +69,7 @@ class VideoClipDataset(torch.utils.data.Dataset):
             )
 
         self.video_transforms = kwargs.pop("video_transforms", None)
-        self.rand_augment = kwargs.pop("rand_augment", False)
+        self.rand_augment = kwargs.pop("rand_augment", False) if split == RunMode.TRAIN else False
         self.resize = kwargs.pop("resize", 224)
         self.max_length = kwargs.pop("max_length", 250)
 

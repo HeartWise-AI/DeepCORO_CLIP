@@ -1,10 +1,10 @@
 import os
 import torch
-import pathlib
-
+import numpy as np
 import pandas as pd
 from torch.utils.data import DataLoader
 
+from utils.enums import RunMode
 from utils.seed import seed_worker
 from utils.video import load_video
 from utils.config.heartwise_config import HeartWiseConfig
@@ -28,7 +28,7 @@ class StatsDataset(torch.utils.data.Dataset):
         self.datapoint_loc_label = datapoint_loc_label
         self.split = split
         self.num_frames = 16 if backbone.lower() == "mvit" else num_frames
-        self.stride = stride
+        self.stride = np.random.randint(1, stride + 1) if stride > 1 else 1 if split == RunMode.TRAIN else stride
         self.backbone = backbone
         self.max_samples = max_samples
 

@@ -64,8 +64,8 @@ class VideoDataset(torch.utils.data.Dataset):
         self.mean: List[float] = format_mean_std(mean) if mean is not None else [0.485, 0.456, 0.406]
         self.std: List[float] = format_mean_std(std) if std is not None else [0.229, 0.224, 0.225]
         self.normalize: bool = normalize
-        self.rand_augment: bool = rand_augment
-        self.stride: int = stride
+        self.rand_augment: bool = rand_augment if split == RunMode.TRAIN else False
+        self.stride: int = np.random.randint(1, stride + 1) if stride > 1 else 1 if split == RunMode.TRAIN else stride
         
         # Define X3D model specific parameters (requirements)
         self.x3d_default_params = {

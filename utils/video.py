@@ -103,16 +103,13 @@ def load_video(
         if not cap.isOpened():
             raise ValueError(f"Failed to open video file: {video_path}")
 
-        # Randomly choose stride between 1 and specified stride
-        actual_stride = np.random.randint(1, stride + 1) if stride > 1 else 1
-
         frames = []
         frame_count = 0
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
-            if frame_count % actual_stride == 0:
+            if frame_count % stride == 0:
                 if frame.ndim == 3:
                     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 frames.append(frame)

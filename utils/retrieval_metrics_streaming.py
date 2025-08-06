@@ -36,8 +36,9 @@ def compute_recall_at_k_streaming(
     n_texts = text_features.size(0)
     
     # Keep text features on GPU for reuse
-    # Ensure no gradients are tracked
-    text_features = text_features.detach().to(device)
+    # Ensure no gradients are tracked and convert to float32 for compatibility
+    text_features = text_features.detach().float().to(device)
+    video_features = video_features.float()
     
     recalls = {k: 0 for k in k_values}
     k_max = max(k_values)
@@ -120,6 +121,10 @@ def compute_metrics_streaming(
     n_texts = text_features.size(0)
     
     print(f"   Computing metrics with streaming (video_chunks={video_chunk_size}, text_chunks={text_chunk_size})")
+    
+    # Convert to float32 for compatibility with mixed precision training
+    video_features = video_features.float()
+    text_features = text_features.float()
     
     # Normalize features if not already normalized
     video_features = F.normalize(video_features, dim=1)

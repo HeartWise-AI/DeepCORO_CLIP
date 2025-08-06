@@ -7,6 +7,7 @@ from torch.amp.autocast_mode import autocast
 
 from utils.registry import ModelRegistry
 from models.video_aggregator import EnhancedVideoAggregator
+from models.attention_pool import AttentionPool
 
 
 
@@ -27,6 +28,9 @@ class VideoEncoder(nn.Module):
         aggregator_depth: int = 2,
         aggregate_videos_tokens: bool = True,
         per_video_pool: bool = False,
+        token_pooling_mode: str = "mean",
+        attention_pool_heads: int = 8,
+        attention_pool_dropout: float = 0.1,
     ):
         """Initialize the video encoder.
 
@@ -115,6 +119,19 @@ class VideoEncoder(nn.Module):
         # Whether to apply the internal aggregator in the forward pass.
         self._apply_aggregator: bool = aggregate_videos_tokens
         self._per_video_pool: bool = per_video_pool
+        self.token_pooling_mode: str = token_pooling_mode
+        
+        # Initialize attention pooling if needed
+        self.attention_pool = None
+        if self.token_pooling_mode == "attention":
+            self.attention_pool = AttentionPool(
+                embed_dim=output_dim,
+                num_heads=attention_pool_heads,
+                dropout=attention_pool_dropout
+            )
+            print(f"[VideoEncoder.__init__] Created AttentionPool with mode='{self.token_pooling_mode}'")
+        else:
+            print(f"[VideoEncoder.__init__] NOT creating AttentionPool, mode='{self.token_pooling_mode}'")
 
         # ------------------------------------------------------------------
         # Monkey-patch `forward_features` on the instance *once*.
@@ -269,7 +286,17 @@ class VideoEncoder(nn.Module):
             # preserves backward-compatibility with existing training code &
             # tests that expect a study-level pooling over videos rather than
             # patches.
-            feats = token_feats.mean(dim=2)  # [B, N, D_out]
+            if self.token_pooling_mode == "attention" and self.attention_pool is not None:
+                # Apply attention pooling to each video's tokens separately
+                B, N, L, D_out = token_feats.shape
+                feats_list = []
+                for i in range(N):
+                    video_tokens = token_feats[:, i, :, :]  # [B, L, D_out]
+                    pooled = self.attention_pool(video_tokens)  # [B, D_out]
+                    feats_list.append(pooled.unsqueeze(1))  # [B, 1, D_out]
+                feats = torch.cat(feats_list, dim=1)  # [B, N, D_out]
+            else:
+                feats = token_feats.mean(dim=2)  # [B, N, D_out]
 
             orig_dtype = feats.dtype
             with autocast('cuda', enabled=False):
@@ -280,7 +307,17 @@ class VideoEncoder(nn.Module):
         if self._per_video_pool:
             #print("Per-video pooling") 
             #print(f"token_feats.shape: {token_feats.shape}")
-            feats = token_feats.mean(dim=2)  # [B, N, D_out]
+            if self.token_pooling_mode == "attention" and self.attention_pool is not None:
+                # Apply attention pooling to each video's tokens separately
+                B, N, L, D_out = token_feats.shape
+                feats_list = []
+                for i in range(N):
+                    video_tokens = token_feats[:, i, :, :]  # [B, L, D_out]
+                    pooled = self.attention_pool(video_tokens)  # [B, D_out]
+                    feats_list.append(pooled.unsqueeze(1))  # [B, 1, D_out]
+                feats = torch.cat(feats_list, dim=1)  # [B, N, D_out]
+            else:
+                feats = token_feats.mean(dim=2)  # [B, N, D_out]
             # If N=1 (single video), squeeze to get [B, D_out] instead of [B, 1, D_out]
             if N == 1:
                 feats = feats.squeeze(1)  # [B, D_out]

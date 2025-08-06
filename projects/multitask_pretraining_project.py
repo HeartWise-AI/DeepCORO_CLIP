@@ -91,6 +91,9 @@ class MultitaskPretrainingProject(BaseProject):
             num_heads=self.config.num_heads,
             aggregator_depth=self.config.aggregator_depth,
             aggregate_videos_tokens=False,  # We need token-level features for captioning
+            token_pooling_mode=self.config.video_pooling_mode,
+            attention_pool_heads=self.config.attention_pool_heads,
+            attention_pool_dropout=self.config.attention_pool_dropout,
         )
         video_encoder = video_encoder.to(self.config.device).float()
 

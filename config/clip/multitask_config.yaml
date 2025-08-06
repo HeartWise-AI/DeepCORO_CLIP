@@ -20,7 +20,7 @@ multi_video: !!bool false
 num_videos: !!int 1
 groupby_column: !!str StudyInstanceUID
 shuffle_videos: !!bool true
-batch_size: !!int 12 # Reduced batch size for multitask training
+batch_size: !!int 20
 # Seed
 seed: !!int 42
 # Model parameters
@@ -80,22 +80,26 @@ ignore_index: !!int -100
 # Loss weights
 loss_weights:
   contrastive: !!float 1.0
-  captioning: !!float 1.0
+  captioning: !!float 0.3
   masked_modeling: !!float 0.1
   distillation: !!float 0.0
 # Loss weight scheduler (optional)
 use_loss_weight_scheduler: !!bool false
 initial_loss_weights:
-  contrastive: !!float 1.0
+  contrastive: !!float 0.5
   captioning: !!float 0.5
   masked_modeling: !!float 0.1
 final_loss_weights:
-  contrastive: !!float 1.0
-  captioning: !!float 1.0
+  contrastive: !!float 0.5
+  captioning: !!float 0.5
   masked_modeling: !!float 0.1
 loss_warmup_steps: !!int 1000
 loss_total_steps: !!int 10000
 loss_schedule_type: !!str linear # "linear", "cosine", "step"
+# Video pooling configuration (used by video encoder)
+video_pooling_mode: !!str attention # "mean" or "attention"
+attention_pool_heads: !!int 8
+attention_pool_dropout: !!float 0.1
 # Checkpointing
 resume_training: !!bool false
 checkpoint: !!str ""

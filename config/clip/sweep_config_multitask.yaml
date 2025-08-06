@@ -4,7 +4,7 @@ entity: 'mhi_ai'
 method: bayes
 metric:
   goal: minimize
-  name: val/loss
+  name: val/total_loss
 
 parameters:
   # Learning rates for different components
@@ -116,7 +116,7 @@ parameters:
   
   # Training parameters
   batch_size:
-    values: [12, 16]
+    values: [16, 20]
   
   gradient_accumulation_steps:
     values: [1, 2, 4]

@@ -511,6 +511,106 @@ def apply_hard_filters(df: pd.DataFrame, config: Dict[str, Any]) -> pd.DataFrame
         # Filter the DataFrame
         df = df[mask]
         logger.info(f"Filtered stenosis columns: {len(df)} rows remaining")
+        
+        # ──────────────────────────────────────────────────────────────────────────
+        # FILTER EXCESSIVE NORMAL REPORTS (per vessel system)
+        # ──────────────────────────────────────────────────────────────────────────
+        normal_report_ratio = config.get('filters', {}).get('normal_report_ratio', 0.05)  # Default to 5%
+        
+        # Identify normal reports based on main_structure_name
+        if 'main_structure_name' in df.columns:
+            # Define vessels for each coronary side
+            rca_vessels_cols = ["prox_rca_stenosis", "mid_rca_stenosis", "dist_rca_stenosis",
+                                "pda_stenosis", "posterolateral_stenosis"]
+            lca_vessels_cols = ["left_main_stenosis", "prox_lad_stenosis", "mid_lad_stenosis", 
+                               "dist_lad_stenosis", "D1_stenosis", "D2_stenosis", 
+                               "prox_lcx_stenosis", "dist_lcx_stenosis", "om1_stenosis", 
+                               "om2_stenosis", "bx_stenosis", "lvp_stenosis"]
+            
+            # Check which columns exist
+            existing_rca_cols = [col for col in rca_vessels_cols if col in df.columns]
+            existing_lca_cols = [col for col in lca_vessels_cols if col in df.columns]
+            
+            # Process RCA reports
+            indices_to_remove = pd.Index([])
+            
+            if existing_rca_cols:
+                rca_mask = df['main_structure_name'] == 'Right Coronary'
+                rca_df = df[rca_mask].copy()
+                
+                # Check if all RCA vessels have stenosis = 0 (accounting for NaN and -1)
+                rca_stenosis_vals = rca_df[existing_rca_cols].fillna(-1)
+                is_normal_rca = ((rca_stenosis_vals == 0) | (rca_stenosis_vals == -1)).all(axis=1) & \
+                               (rca_stenosis_vals == 0).any(axis=1)  # At least one 0, rest 0 or -1
+                
+                normal_rca_indices = rca_df[is_normal_rca].index
+                abnormal_rca_indices = rca_df[~is_normal_rca].index
+                
+                logger.info(f"RCA: Found {len(normal_rca_indices)} normal reports out of {len(rca_df)} ({len(normal_rca_indices)/len(rca_df)*100:.1f}%)")
+                
+                # Calculate target for RCA (5% of RCA reports)
+                target_normal_rca = int(len(rca_df) * normal_report_ratio)
+                
+                if len(normal_rca_indices) > target_normal_rca:
+                    logger.info(f"  Reducing RCA normal reports from {len(normal_rca_indices)} to {target_normal_rca} ({normal_report_ratio*100:.0f}% of RCA)")
+                    
+                    # Randomly select which normal RCA reports to remove
+                    np.random.seed(42)
+                    rca_to_remove = np.random.choice(normal_rca_indices, 
+                                                    size=len(normal_rca_indices) - target_normal_rca, 
+                                                    replace=False)
+                    indices_to_remove = indices_to_remove.union(pd.Index(rca_to_remove))
+            
+            # Process LCA reports
+            if existing_lca_cols:
+                lca_mask = df['main_structure_name'] == 'Left Coronary'
+                lca_df = df[lca_mask].copy()
+                
+                # Check if all LCA vessels have stenosis = 0 (accounting for NaN and -1)
+                lca_stenosis_vals = lca_df[existing_lca_cols].fillna(-1)
+                is_normal_lca = ((lca_stenosis_vals == 0) | (lca_stenosis_vals == -1)).all(axis=1) & \
+                               (lca_stenosis_vals == 0).any(axis=1)  # At least one 0, rest 0 or -1
+                
+                normal_lca_indices = lca_df[is_normal_lca].index
+                abnormal_lca_indices = lca_df[~is_normal_lca].index
+                
+                logger.info(f"LCA: Found {len(normal_lca_indices)} normal reports out of {len(lca_df)} ({len(normal_lca_indices)/len(lca_df)*100:.1f}%)")
+                
+                # Calculate target for LCA (5% of LCA reports)
+                target_normal_lca = int(len(lca_df) * normal_report_ratio)
+                
+                if len(normal_lca_indices) > target_normal_lca:
+                    logger.info(f"  Reducing LCA normal reports from {len(normal_lca_indices)} to {target_normal_lca} ({normal_report_ratio*100:.0f}% of LCA)")
+                    
+                    # Randomly select which normal LCA reports to remove
+                    np.random.seed(43)  # Different seed for LCA
+                    lca_to_remove = np.random.choice(normal_lca_indices, 
+                                                    size=len(normal_lca_indices) - target_normal_lca, 
+                                                    replace=False)
+                    indices_to_remove = indices_to_remove.union(pd.Index(lca_to_remove))
+            
+            # Remove the selected indices
+            if len(indices_to_remove) > 0:
+                df = df.drop(indices_to_remove)
+                logger.info(f"Removed {len(indices_to_remove)} normal reports")
+                logger.info(f"After normal report filtering: {len(df)} rows remaining")
+                
+                # Log final distribution
+                if existing_rca_cols:
+                    rca_remaining = df[df['main_structure_name'] == 'Right Coronary']
+                    rca_stenosis_vals = rca_remaining[existing_rca_cols].fillna(-1)
+                    is_normal_rca_final = ((rca_stenosis_vals == 0) | (rca_stenosis_vals == -1)).all(axis=1) & \
+                                         (rca_stenosis_vals == 0).any(axis=1)
+                    logger.info(f"  Final RCA: {is_normal_rca_final.sum()} normal / {len(rca_remaining)} total ({is_normal_rca_final.sum()/len(rca_remaining)*100:.1f}%)")
+                
+                if existing_lca_cols:
+                    lca_remaining = df[df['main_structure_name'] == 'Left Coronary']
+                    lca_stenosis_vals = lca_remaining[existing_lca_cols].fillna(-1)
+                    is_normal_lca_final = ((lca_stenosis_vals == 0) | (lca_stenosis_vals == -1)).all(axis=1) & \
+                                         (lca_stenosis_vals == 0).any(axis=1)
+                    logger.info(f"  Final LCA: {is_normal_lca_final.sum()} normal / {len(lca_remaining)} total ({is_normal_lca_final.sum()/len(lca_remaining)*100:.1f}%)")
+        else:
+            logger.warning("main_structure_name column not found. Skipping normal report filtering.")
     
     # Get filter criteria from config
     status_filter = config.get('filters', {}).get('status', 'diagnostic')
@@ -824,7 +924,8 @@ def create_default_config() -> Dict[str, Any]:
         'filters': {
             'status': ['diagnostic', 'POST_PCI'],  # Options: 'diagnostic', 'PCI', 'POST_PCI' or list
             'main_structures': ['Left Coronary', 'Right Coronary'],
-            'contrast_agent_class': 1
+            'contrast_agent_class': 1,
+            'normal_report_ratio': 0.05  # Limit normal reports to 5% per vessel type
         },
         'report_settings': {
             'coronary_specific': True

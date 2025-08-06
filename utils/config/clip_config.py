@@ -41,6 +41,11 @@ class ClipConfig(HeartWiseConfig):
     num_heads: int
     aggregator_depth: int
     
+    # Video pooling configuration (no defaults to avoid dataclass ordering issues)
+    video_pooling_mode: str  # 'mean' or 'attention'
+    attention_pool_heads: int
+    attention_pool_dropout: float
+    
     # Optimization parameters
     optimizer: str
     scheduler_name: str

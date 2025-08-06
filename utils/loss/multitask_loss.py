@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.amp.autocast_mode import autocast
 from typing import Dict, Optional, Any
 
 from utils.registry import LossRegistry
@@ -93,31 +94,36 @@ class MultitaskLoss(nn.Module):
         Returns:
             Contrastive loss
         """
-        # Normalize features
-        video_features = F.normalize(video_features, dim=-1)
-        text_features = F.normalize(text_features, dim=-1)
-        
-        # Ensure features are 2D
-        if video_features.dim() == 3:
-            video_features = video_features.squeeze(1)
-        if text_features.dim() == 3:
-            text_features = text_features.squeeze(1)
-        
-        # Compute similarity matrix
-        similarity = torch.matmul(video_features, text_features.t())
-        
-        # Apply temperature
-        temp = torch.exp(log_temp)
-        logits = similarity / temp
-        
-        # Create labels (diagonal = positive pairs)
-        labels = torch.eye(logits.size(0), device=logits.device)
-        
-        # Sigmoid cross-entropy loss
-        loss_v2t = F.binary_cross_entropy_with_logits(logits, labels)
-        loss_t2v = F.binary_cross_entropy_with_logits(logits.t(), labels)
-        
-        return 0.5 * (loss_v2t + loss_t2v)
+        # Perform the entire loss computation in full precision to avoid
+        # overflow/underflow issues when AMP is enabled. This has negligible
+        # memory overhead because the tensors involved are only of size [B, D]
+        # and [B, B].
+        with autocast('cuda', enabled=False):
+            # Ensure features are 2D
+            if video_features.dim() == 3:
+                video_features = video_features.squeeze(1)
+            if text_features.dim() == 3:
+                text_features = text_features.squeeze(1)
+            
+            # Normalize features in fp32 for numerical stability
+            video_features_fp32 = F.normalize(video_features.float(), dim=-1)
+            text_features_fp32 = F.normalize(text_features.float(), dim=-1)
+            
+            # Compute similarity matrix
+            similarity = torch.matmul(video_features_fp32, text_features_fp32.t())
+            
+            # Apply temperature
+            temp = torch.exp(log_temp.float())
+            logits = similarity / temp
+            
+            # Create labels (diagonal = positive pairs)
+            labels = torch.eye(logits.size(0), device=logits.device)
+            
+            # Sigmoid cross-entropy loss
+            loss_v2t = F.binary_cross_entropy_with_logits(logits, labels)
+            loss_t2v = F.binary_cross_entropy_with_logits(logits.t(), labels)
+            
+            return 0.5 * (loss_v2t + loss_t2v)
     
     def _softmax_contrastive_loss(
         self,
@@ -136,31 +142,36 @@ class MultitaskLoss(nn.Module):
         Returns:
             Contrastive loss
         """
-        # Normalize features
-        video_features = F.normalize(video_features, dim=-1)
-        text_features = F.normalize(text_features, dim=-1)
-        
-        # Ensure features are 2D
-        if video_features.dim() == 3:
-            video_features = video_features.squeeze(1)
-        if text_features.dim() == 3:
-            text_features = text_features.squeeze(1)
-        
-        # Compute similarity matrix
-        similarity = torch.matmul(video_features, text_features.t())
-        
-        # Apply temperature
-        temp = torch.exp(log_temp)
-        logits = similarity / temp
-        
-        # Create labels
-        labels = torch.arange(logits.size(0), device=logits.device)
-        
-        # Cross-entropy loss
-        loss_v2t = F.cross_entropy(logits, labels)
-        loss_t2v = F.cross_entropy(logits.t(), labels)
-        
-        return 0.5 * (loss_v2t + loss_t2v)
+        # Perform the entire loss computation in full precision to avoid
+        # overflow/underflow issues when AMP is enabled. This has negligible
+        # memory overhead because the tensors involved are only of size [B, D]
+        # and [B, B].
+        with autocast('cuda', enabled=False):
+            # Ensure features are 2D
+            if video_features.dim() == 3:
+                video_features = video_features.squeeze(1)
+            if text_features.dim() == 3:
+                text_features = text_features.squeeze(1)
+            
+            # Normalize features in fp32 for numerical stability
+            video_features_fp32 = F.normalize(video_features.float(), dim=-1)
+            text_features_fp32 = F.normalize(text_features.float(), dim=-1)
+            
+            # Compute similarity matrix
+            similarity = torch.matmul(video_features_fp32, text_features_fp32.t())
+            
+            # Apply temperature
+            temp = torch.exp(log_temp.float())
+            logits = similarity / temp
+            
+            # Create labels
+            labels = torch.arange(logits.size(0), device=logits.device)
+            
+            # Cross-entropy loss
+            loss_v2t = F.cross_entropy(logits, labels)
+            loss_t2v = F.cross_entropy(logits.t(), labels)
+            
+            return 0.5 * (loss_v2t + loss_t2v)
     
     def _cross_entropy_loss(
         self,

@@ -1,11 +1,15 @@
 import os
+import gc
 import pandas as pd
 import numpy as np
 from collections import defaultdict
 from datetime import datetime
+import json
+import traceback
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.distributed as dist
 from torch.optim import Optimizer
 from torch.amp import GradScaler
@@ -28,6 +32,7 @@ from utils.retrieval_metrics import (
     compute_embedding_norms,
     compute_alignment_score,
 )
+from utils.retrieval_metrics_streaming import compute_metrics_streaming
 from utils.wandb_logger import (
     log_best_worst_retrievals,
     log_gradient_norms,
@@ -126,13 +131,34 @@ class MultitaskRunner:
         else:
             self.tokenizer = None
         
+        
         # Training state
         self.best_loss = float('inf')
         self.best_alignment = 0.0
         self.current_epoch = 0
+        
+        # Debug video encoder configuration at initialization
+        if hasattr(self.video_encoder, 'module'):
+            encoder = self.video_encoder.module
+        else:
+            encoder = self.video_encoder
+        
+        print("=" * 60)
+        print("VIDEO ENCODER CONFIGURATION AT INIT:")
+        print(f"  token_pooling_mode: {encoder.token_pooling_mode}")
+        print(f"  has attention_pool: {hasattr(encoder, 'attention_pool')}")
+        print(f"  attention_pool is None: {encoder.attention_pool is None if hasattr(encoder, 'attention_pool') else 'N/A'}")
+        if hasattr(encoder, 'attention_pool') and encoder.attention_pool is not None:
+            print(f"  attention_pool type: {type(encoder.attention_pool).__name__}")
+        print("=" * 60)
         self.global_step = 0  # Global step counter for consistent wandb logging
         self.best_val_loss = float("inf")
         self.best_epoch = -1
+        
+        # Memory debugging
+        self.memory_log_file = os.path.join(output_dir, "memory_debug.jsonl") if output_dir else "memory_debug.jsonl"
+        self.memory_stats = []
+        self.last_memory_warning_gb = 0
         
         # Loss weight scheduler (optional)
         self.loss_weight_scheduler = None
@@ -158,6 +184,62 @@ class MultitaskRunner:
         """Check if the scheduler is per-iteration or per-epoch."""
         scheduler_name = self.config.scheduler_name.lower()
         return scheduler_name in ['cosine', 'linear', 'exponential', 'step']
+    
+    def _log_memory_stats(self, phase: str, batch_idx: int = -1, epoch: int = -1):
+        """Log detailed memory statistics for debugging OOM issues."""
+        if not torch.cuda.is_available():
+            return
+        
+        try:
+            # Get memory stats
+            allocated_mb = torch.cuda.memory_allocated() / 1024 / 1024
+            reserved_mb = torch.cuda.memory_reserved() / 1024 / 1024
+            max_allocated_mb = torch.cuda.max_memory_allocated() / 1024 / 1024
+            
+            # Get GPU total memory
+            total_memory_mb = torch.cuda.get_device_properties(0).total_memory / 1024 / 1024
+            
+            # Calculate usage percentage
+            usage_percent = (allocated_mb / total_memory_mb) * 100
+            
+            # Create memory record
+            memory_record = {
+                "timestamp": datetime.now().isoformat(),
+                "phase": phase,
+                "epoch": epoch,
+                "batch_idx": batch_idx,
+                "global_step": self.global_step,
+                "allocated_mb": round(allocated_mb, 2),
+                "reserved_mb": round(reserved_mb, 2),
+                "max_allocated_mb": round(max_allocated_mb, 2),
+                "total_memory_mb": round(total_memory_mb, 2),
+                "usage_percent": round(usage_percent, 2),
+                "free_mb": round(total_memory_mb - allocated_mb, 2)
+            }
+            
+            # Check if we're getting close to OOM (>90% usage)
+            if usage_percent > 90:
+                allocated_gb = allocated_mb / 1024
+                if allocated_gb > self.last_memory_warning_gb + 1:  # Warn every 1GB increase
+                    self.last_memory_warning_gb = allocated_gb
+                    print(f"\n⚠️ WARNING: High GPU memory usage: {allocated_gb:.2f}GB / {total_memory_mb/1024:.2f}GB ({usage_percent:.1f}%)")
+                    print(f"   Phase: {phase}, Epoch: {epoch}, Batch: {batch_idx}")
+                    
+                    # Log feature accumulator sizes
+                    if hasattr(self, '_current_feature_count'):
+                        print(f"   Accumulated features: {self._current_feature_count}")
+            
+            # Save to file
+            with open(self.memory_log_file, 'a') as f:
+                f.write(json.dumps(memory_record) + '\n')
+            
+            # Keep in memory for recent tracking (last 100 records)
+            self.memory_stats.append(memory_record)
+            if len(self.memory_stats) > 100:
+                self.memory_stats.pop(0)
+                
+        except Exception as e:
+            print(f"Warning: Failed to log memory stats: {e}")
     
     def train(
         self, 
@@ -195,7 +277,10 @@ class MultitaskRunner:
                     # Scheduler is updated per iteration, so we don't update here
                     pass
                 else:
-                    self.lr_scheduler.step()
+                    # Only step the scheduler if we've done at least one optimizer step
+                    # This avoids the warning about calling scheduler.step() before optimizer.step()
+                    if self.global_step > 0:
+                        self.lr_scheduler.step()
             
             # Log metrics
             if self.config.is_ref_device:
@@ -204,6 +289,25 @@ class MultitaskRunner:
             # Save checkpoint
             if self.config.is_ref_device:
                 self._save_checkpoint(epoch, val_metrics)
+            
+            # Memory cleanup to avoid GPU OOM across epochs
+            torch.cuda.empty_cache()
+            gc.collect()
+            
+            # Print memory summary for first few epochs
+            if self.config.is_ref_device and epoch <= 2:
+                print(f"\n📊 Memory Summary - End of Epoch {epoch}")
+                if torch.cuda.is_available():
+                    allocated_gb = torch.cuda.memory_allocated() / 1024 / 1024 / 1024
+                    max_allocated_gb = torch.cuda.max_memory_allocated() / 1024 / 1024 / 1024
+                    reserved_gb = torch.cuda.memory_reserved() / 1024 / 1024 / 1024
+                    print(f"   Current GPU memory: {allocated_gb:.2f}GB")
+                    print(f"   Peak GPU memory: {max_allocated_gb:.2f}GB")
+                    print(f"   Reserved GPU memory: {reserved_gb:.2f}GB")
+                    print(f"   Memory log saved to: {self.memory_log_file}")
+                    
+                    # Reset peak memory for next epoch
+                    torch.cuda.reset_peak_memory_stats()
     
     def _run_epoch(
         self, 
@@ -276,6 +380,11 @@ class MultitaskRunner:
                             "train/epoch": epoch,
                         }
                         
+                        # Add per-component gradient norms
+                        for key, value in batch_metrics.items():
+                            if key.startswith("grad_norm_"):
+                                step_log_dict[f"train/{key}"] = value
+                        
                         # Log learning rates for each param group with clear labels
                         if self.optimizer is not None:
                             for i, param_group in enumerate(self.optimizer.param_groups):
@@ -320,15 +429,24 @@ class MultitaskRunner:
                 total_masked_modeling_loss += batch_metrics.get("masked_modeling_loss", 0.0)
                 num_batches += 1
                 
-                # Store features for metrics
+                # Store features for metrics - detach and move to CPU to save GPU memory
+                # IMPORTANT: detach() ensures no gradients are tracked
                 if "video_features" in batch_outputs:
-                    all_video_features.append(batch_outputs["video_features"].detach())
+                    all_video_features.append(batch_outputs["video_features"].detach().cpu())
                 if "text_features" in batch_outputs:
-                    all_text_features.append(batch_outputs["text_features"].detach())
+                    all_text_features.append(batch_outputs["text_features"].detach().cpu())
                 if "texts" in batch_outputs:
                     all_texts.extend(batch_outputs["texts"])
                 if "paths" in batch_outputs:
                     all_paths.extend(batch_outputs["paths"])
+                
+                # Safety check: Monitor accumulated feature size
+                if len(all_video_features) > 0 and batch_idx % 100 == 0:
+                    accumulated_samples = len(all_video_features) * all_video_features[0].shape[0]
+                    estimated_cpu_mb = (accumulated_samples * 768 * 4 * 2) / (1024 * 1024)  # 768 dim, 4 bytes, 2 features
+                    if estimated_cpu_mb > 10000:  # If over 10GB CPU memory
+                        print(f"\n⚠️ Large feature accumulation detected: ~{estimated_cpu_mb:.0f}MB CPU memory")
+                        print(f"   Batch {batch_idx}, Accumulated batches: {len(all_video_features)}")
                 
                 # Store captioning outputs
                 if "generated_texts" in batch_outputs:
@@ -350,6 +468,10 @@ class MultitaskRunner:
                     'captioning': f"{batch_metrics.get('captioning_loss', 0.0):.4f}",
                     'mvm': f"{batch_metrics.get('masked_modeling_loss', 0.0):.4f}",
                 })
+                
+                # Clear GPU cache periodically to prevent memory buildup
+                if batch_idx % 10 == 0:  # Clear every 10 batches
+                    torch.cuda.empty_cache()
         
         # Gather losses across GPUs
         if self.world_size > 1:
@@ -381,24 +503,71 @@ class MultitaskRunner:
                 "masked_modeling_loss": total_masked_modeling_loss / num_batches,
             }
         
+        # Track feature accumulation for debugging
+        self._current_feature_count = len(all_video_features) * (all_video_features[0].shape[0] if all_video_features else 0)
+        
+        # Log memory before gathering (critical point)
+        if mode == "train" and (epoch == 0 or epoch == 1):
+            self._log_memory_stats(f"{mode}_before_gather", batch_idx=num_batches, epoch=epoch)
+            print(f"\n📊 Memory check before gathering - Epoch {epoch}, Mode: {mode}")
+            print(f"   Accumulated {len(all_video_features)} batches, ~{self._current_feature_count} samples")
+        
         # Gather all predictions and compute metrics
         if all_video_features and all_text_features:
-            # Gather distributed predictions
-            (video_features, text_features, 
-             gathered_texts, gathered_paths, 
-             gathered_generated, gathered_targets) = self._gather_distributed_predictions(
-                all_video_features, all_text_features,
-                all_texts, all_paths,
-                all_generated_texts, all_target_texts
-            )
+            try:
+                # Gather distributed predictions
+                (video_features, text_features, 
+                 gathered_texts, gathered_paths, 
+                 gathered_generated, gathered_targets) = self._gather_distributed_predictions(
+                    all_video_features, all_text_features,
+                    all_texts, all_paths,
+                    all_generated_texts, all_target_texts
+                )
+            except RuntimeError as e:
+                # Log detailed error info for debugging
+                print(f"\n❌ OOM Error during gathering at epoch {epoch}, mode {mode}")
+                print(f"   Error: {str(e)}")
+                print(f"   Accumulated batches: {len(all_video_features)}")
+                print(f"   Estimated samples: {self._current_feature_count}")
+                
+                # Log final memory state
+                self._log_memory_stats(f"{mode}_oom_error", batch_idx=num_batches, epoch=epoch)
+                
+                # Save accumulated data info for debugging
+                debug_info = {
+                    "epoch": epoch,
+                    "mode": mode,
+                    "num_batches": num_batches,
+                    "accumulated_batches": len(all_video_features),
+                    "batch_shapes": [f.shape for f in all_video_features[:5]],  # First 5 batch shapes
+                    "error": str(e),
+                    "traceback": traceback.format_exc()
+                }
+                
+                debug_file = os.path.join(self.output_dir, f"oom_debug_epoch{epoch}_{mode}.json")
+                with open(debug_file, 'w') as f:
+                    json.dump(debug_info, f, indent=2)
+                print(f"   Debug info saved to: {debug_file}")
+                
+                # Re-raise the error
+                raise
             
             # Compute metrics on rank 0
             if self.config.is_ref_device:
+                # Log memory before metrics computation (critical point)
+                if mode == "train" and (epoch == 0 or epoch == 1):
+                    self._log_memory_stats(f"{mode}_before_metrics", batch_idx=num_batches, epoch=epoch)
+                    print(f"   Computing metrics for {len(video_features)} samples...")
+                
                 # Compute contrastive metrics
                 contrastive_metrics = self._compute_contrastive_metrics(
                     video_features, text_features, gathered_texts, gathered_paths, epoch
                 )
                 metrics.update(contrastive_metrics)
+                
+                # Log memory after metrics computation
+                if mode == "train" and (epoch == 0 or epoch == 1):
+                    self._log_memory_stats(f"{mode}_after_metrics", batch_idx=num_batches, epoch=epoch)
                 
                 # Compute captioning metrics if available
                 if gathered_generated and gathered_targets:
@@ -484,57 +653,86 @@ class MultitaskRunner:
         """
         self.optimizer.zero_grad()
         
-        # Get video features (token-level for captioning and masked modeling)
-        # Handle DistributedDataParallel wrapper
-        if hasattr(self.video_encoder, 'module'):
-            video_tokens = self.video_encoder.module.get_tokens(videos, mode="patch")  # [B, num_tokens, hidden_size]
-        else:
-            video_tokens = self.video_encoder.get_tokens(videos, mode="patch")  # [B, num_tokens, hidden_size]
-        
-        # Get aggregated video features for contrastive learning
-        if hasattr(self.video_encoder, 'module'):
-            video_features = self.video_encoder.module.get_tokens(videos, mode="video")  # [B, hidden_size]
-        else:
-            video_features = self.video_encoder.get_tokens(videos, mode="video")  # [B, hidden_size]
-        
-        # Get text features
-        text_features = self.text_encoder(input_ids, attention_mask)  # [B, hidden_size]
-        
-        # Captioning: prepare targets (shift input_ids for autoregressive training)
-        caption_targets = input_ids.clone()
-        caption_input_ids = input_ids[:, :-1].contiguous()
-        caption_targets = caption_targets[:, 1:].contiguous()
-        
-        # Captioning forward pass
-        caption_outputs = self.captioning_decoder(
-            input_ids=caption_input_ids,
-            attention_mask=attention_mask[:, :-1],
-            video_features=video_tokens,
-        )
-        caption_logits = caption_outputs["logits"]  # [B, seq_len-1, vocab_size]
-        
-        # Masked video modeling forward pass
-        mvm_outputs = self.masked_video_modeling(video_tokens)
-        masked_pred = mvm_outputs["pred"]
-        masked_target = video_tokens
-        masked_mask = mvm_outputs["mask"]
-        
-        # Update loss weights if using scheduler
-        if self.loss_weight_scheduler is not None:
-            current_weights = self.loss_weight_scheduler.get_weights(self.global_step)
-            self.loss_fn.loss_type.loss_weights = current_weights
-        
-        # Compute multitask loss
-        loss_outputs = self.loss_fn.run(
-            video_features=video_features,
-            text_features=text_features,
-            caption_logits=caption_logits,
-            caption_targets=caption_targets,
-            masked_pred=masked_pred,
-            masked_target=masked_target,
-            masked_mask=masked_mask,
-            log_temp=self.log_temp,
-        )
+        # Use autocast for mixed precision if scaler is enabled
+        amp_enabled = self.scaler is not None
+        with torch.amp.autocast('cuda', enabled=amp_enabled):
+            # Get video features (token-level for captioning and masked modeling) - compute once
+            # Handle DistributedDataParallel wrapper
+            if hasattr(self.video_encoder, 'module'):
+                video_tokens = self.video_encoder.module.get_tokens(videos, mode="patch")  # [B, num_tokens, hidden_size]
+                # Get aggregated video features for contrastive learning using attention pooling if available
+                if hasattr(self.video_encoder.module, 'attention_pool') and self.video_encoder.module.attention_pool is not None:
+                    video_features = self.video_encoder.module.attention_pool(video_tokens)  # [B, hidden_size]
+                    if self.current_epoch == 0 and self.global_step == 0:  # Log once at start
+                        print(f"✓ Using ATTENTION POOLING for video features (mode: {self.video_encoder.module.token_pooling_mode})")
+                else:
+                    video_features = video_tokens.mean(dim=1)  # Fallback to average pooling
+                    if self.current_epoch == 0 and self.global_step == 0:  # Log once at start
+                        has_attr = hasattr(self.video_encoder.module, 'attention_pool')
+                        attr_val = getattr(self.video_encoder.module, 'attention_pool', 'NO_ATTR')
+                        is_none = attr_val is None if has_attr else 'N/A'
+                        print(f"⚠️ Using MEAN POOLING - Debug: has_attr={has_attr}, is_None={is_none}, pooling_mode={getattr(self.video_encoder.module, 'token_pooling_mode', 'NO_MODE')}")
+            else:
+                video_tokens = self.video_encoder.get_tokens(videos, mode="patch")  # [B, num_tokens, hidden_size]
+                # Get aggregated video features for contrastive learning using attention pooling if available
+                if hasattr(self.video_encoder, 'attention_pool') and self.video_encoder.attention_pool is not None:
+                    video_features = self.video_encoder.attention_pool(video_tokens)  # [B, hidden_size]
+                    if self.current_epoch == 0 and self.global_step == 0:  # Log once at start
+                        print(f"✓ Using ATTENTION POOLING for video features (mode: {self.video_encoder.token_pooling_mode})")
+                else:
+                    video_features = video_tokens.mean(dim=1)  # Fallback to average pooling
+                    if self.current_epoch == 0 and self.global_step == 0:  # Log once at start
+                        print(f"⚠️ Using MEAN POOLING for video features (attention_pool: {hasattr(self.video_encoder, 'attention_pool')})")
+            
+            # Get text features
+            text_features = self.text_encoder(input_ids, attention_mask)  # [B, hidden_size]
+            
+            # DO NOT normalize features here - the loss function will normalize them
+            # This matches the CLIP runner behavior
+            
+            # Validate feature dimensions
+            assert video_features.dim() == 2, f"Video features should be 2D, got {video_features.dim()}D"
+            assert text_features.dim() == 2, f"Text features should be 2D, got {text_features.dim()}D"
+            assert video_features.shape[0] == text_features.shape[0], \
+                f"Batch size mismatch: video={video_features.shape[0]}, text={text_features.shape[0]}"
+            assert video_features.shape[1] == text_features.shape[1], \
+                f"Feature dimension mismatch: video={video_features.shape[1]}, text={text_features.shape[1]}"
+            
+            # Captioning: prepare targets (shift input_ids for autoregressive training)
+            caption_targets = input_ids.clone()
+            caption_input_ids = input_ids[:, :-1].contiguous()
+            caption_targets = caption_targets[:, 1:].contiguous()
+            
+            # Captioning forward pass
+            caption_outputs = self.captioning_decoder(
+                input_ids=caption_input_ids,
+                attention_mask=attention_mask[:, :-1],
+                video_features=video_tokens,
+            )
+            caption_logits = caption_outputs["logits"]  # [B, seq_len-1, vocab_size]
+            
+            # Masked video modeling forward pass
+            mvm_outputs = self.masked_video_modeling(video_tokens)
+            masked_pred = mvm_outputs["pred"]
+            masked_target = video_tokens
+            masked_mask = mvm_outputs["mask"]
+            
+            # Update loss weights if using scheduler
+            if self.loss_weight_scheduler is not None:
+                current_weights = self.loss_weight_scheduler.get_weights(self.global_step)
+                self.loss_fn.loss_type.loss_weights = current_weights
+            
+            # Compute multitask loss
+            loss_outputs = self.loss_fn.run(
+                video_features=video_features,
+                text_features=text_features,
+                caption_logits=caption_logits,
+                caption_targets=caption_targets,
+                masked_pred=masked_pred,
+                masked_target=masked_target,
+                masked_mask=masked_mask,
+                log_temp=self.log_temp,
+            )
         
         total_loss = loss_outputs["total"]
         
@@ -547,7 +745,17 @@ class MultitaskRunner:
         
         # Gradient clipping and norm logging
         grad_norm = None
+        grad_norms_by_component = {}
+        
         if hasattr(self.config, 'max_grad_norm') and self.config.max_grad_norm > 0:
+            # Compute gradient norms for each component before clipping
+            for group in self.optimizer.param_groups:
+                group_name = group.get('name', 'unknown')
+                params = [p for p in group['params'] if p.grad is not None]
+                if params:
+                    component_norm = torch.norm(torch.stack([torch.norm(p.grad.detach(), 2) for p in params]), 2)
+                    grad_norms_by_component[f"grad_norm_{group_name}"] = component_norm.item()
+            
             # Get all parameters from all param groups
             all_params = []
             for group in self.optimizer.param_groups:
@@ -563,6 +771,8 @@ class MultitaskRunner:
             self.optimizer.step()
         
         # Update learning rate if per-iteration scheduler
+        # IMPORTANT: lr_scheduler.step() must be called AFTER optimizer.step()
+        # to avoid skipping the first learning rate value
         if self.lr_scheduler is not None and self._scheduler_is_per_iteration():
             self.lr_scheduler.step()
         
@@ -574,14 +784,43 @@ class MultitaskRunner:
             "masked_modeling_loss": loss_outputs.get("masked_modeling", torch.tensor(0.0)).item(),
         }
         
+        # Compute alignment score and embedding norms for training
+        with torch.no_grad():
+            # Use the features directly - compute_alignment_score will normalize them
+            video_fp32 = video_features.float()
+            text_fp32 = text_features.float()
+            
+            alignment_score = compute_alignment_score(video_fp32, text_fp32)
+            embedding_norms = compute_embedding_norms(video_fp32, text_fp32)
+            
+            # Validate alignment score is in [-1, 1] range (cosine similarity)
+            assert -1.01 <= alignment_score <= 1.01, \
+                f"Alignment score {alignment_score:.4f} out of range [-1, 1]. Check feature normalization!"
+            
+            # Log detailed info if alignment is negative
+            if alignment_score < 0:
+                print(f"⚠️ Negative alignment score: {alignment_score:.4f}")
+                # Compute similarity matrix to debug
+                video_norm_debug = F.normalize(video_fp32, dim=1)
+                text_norm_debug = F.normalize(text_fp32, dim=1)
+                similarity = torch.matmul(video_norm_debug, text_norm_debug.t())
+                diagonal_similarities = torch.diagonal(similarity)
+                print(f"   Diagonal similarities range: [{diagonal_similarities.min():.4f}, {diagonal_similarities.max():.4f}]")
+                print(f"   Mean diagonal similarity: {diagonal_similarities.mean():.4f}")
+            
+            metrics["alignment_score"] = alignment_score
+            metrics.update(embedding_norms)
+        
         # Add gradient norm if calculated
         if grad_norm is not None:
             metrics["grad_norm"] = grad_norm
+            # Add per-component gradient norms
+            metrics.update(grad_norms_by_component)
         
         # Prepare outputs
         outputs = {
-            "video_features": video_features,
-            "text_features": text_features,
+            "video_features": video_features,  # Features are already unnormalized
+            "text_features": text_features,  # Features are already unnormalized
             "texts": texts,
             "paths": batch.get("paths", batch.get("sids", [])),  # Get paths or SIDs from batch
         }
@@ -609,42 +848,57 @@ class MultitaskRunner:
             Tuple of (metrics, outputs)
         """
         with torch.no_grad():
-            # Get video features
-            if hasattr(self.video_encoder, 'module'):
-                video_tokens = self.video_encoder.module.get_tokens(videos, mode="patch")
-                video_features = self.video_encoder.module.get_tokens(videos, mode="video")
-            else:
-                video_tokens = self.video_encoder.get_tokens(videos, mode="patch")
-                video_features = self.video_encoder.get_tokens(videos, mode="video")
-            
-            # Get text features
-            text_features = self.text_encoder(input_ids, attention_mask)
-            
-            # Captioning: prepare targets
-            caption_targets = input_ids.clone()
-            caption_input_ids = input_ids[:, :-1].contiguous()
-            caption_targets = caption_targets[:, 1:].contiguous()
-            
-            # Captioning forward pass
-            caption_outputs = self.captioning_decoder(
-                input_ids=caption_input_ids,
-                attention_mask=attention_mask[:, :-1],
-                video_features=video_tokens,
-            )
-            caption_logits = caption_outputs["logits"]
+            # Use autocast for mixed precision if scaler is enabled
+            amp_enabled = self.scaler is not None
+            with torch.amp.autocast('cuda', enabled=amp_enabled):
+                # Get video features - compute once and reuse
+                if hasattr(self.video_encoder, 'module'):
+                    video_tokens = self.video_encoder.module.get_tokens(videos, mode="patch")
+                    # Use attention pooling if available for contrastive features
+                    if hasattr(self.video_encoder.module, 'attention_pool') and self.video_encoder.module.attention_pool is not None:
+                        video_features = self.video_encoder.module.attention_pool(video_tokens)
+                    else:
+                        video_features = video_tokens.mean(dim=1)  # Fallback to average pooling
+                else:
+                    video_tokens = self.video_encoder.get_tokens(videos, mode="patch")
+                    # Use attention pooling if available for contrastive features
+                    if hasattr(self.video_encoder, 'attention_pool') and self.video_encoder.attention_pool is not None:
+                        video_features = self.video_encoder.attention_pool(video_tokens)
+                    else:
+                        video_features = video_tokens.mean(dim=1)  # Fallback to average pooling
+                
+                # Get text features
+                text_features = self.text_encoder(input_ids, attention_mask)
+                
+                # DO NOT normalize features here - the loss function will normalize them
+                # This matches the CLIP runner behavior
+                
+                # Captioning: prepare targets
+                caption_targets = input_ids.clone()
+                caption_input_ids = input_ids[:, :-1].contiguous()
+                caption_targets = caption_targets[:, 1:].contiguous()
+                
+                # Captioning forward pass
+                caption_outputs = self.captioning_decoder(
+                    input_ids=caption_input_ids,
+                    attention_mask=attention_mask[:, :-1],
+                    video_features=video_tokens,
+                )
+                caption_logits = caption_outputs["logits"]
             
             # Generate captions for evaluation
+            # Convert video_tokens to float32 for generation (generate doesn't use autocast)
             # Handle DistributedDataParallel wrapper
             if hasattr(self.captioning_decoder, 'module'):
                 generated_ids = self.captioning_decoder.module.generate(
-                    video_features=video_tokens,
+                    video_features=video_tokens.float(),  # Convert to float32
                     max_length=getattr(self.config, 'max_generation_length', 128),
                     do_sample=getattr(self.config, 'captioning_do_sample', False),
                     temperature=getattr(self.config, 'captioning_temperature', 1.0),
                 )
             else:
                 generated_ids = self.captioning_decoder.generate(
-                    video_features=video_tokens,
+                    video_features=video_tokens.float(),  # Convert to float32
                     max_length=getattr(self.config, 'max_generation_length', 128),
                     do_sample=getattr(self.config, 'captioning_do_sample', False),
                     temperature=getattr(self.config, 'captioning_temperature', 1.0),
@@ -666,23 +920,25 @@ class MultitaskRunner:
                     generated_texts.append(generated_text)
                     target_texts.append(target_text)
             
-            # Masked video modeling forward pass
-            mvm_outputs = self.masked_video_modeling(video_tokens)
-            masked_pred = mvm_outputs["pred"]
-            masked_target = video_tokens
-            masked_mask = mvm_outputs["mask"]
-            
-            # Compute multitask loss
-            loss_outputs = self.loss_fn.run(
-                video_features=video_features,
-                text_features=text_features,
-                caption_logits=caption_logits,
-                caption_targets=caption_targets,
-                masked_pred=masked_pred,
-                masked_target=masked_target,
-                masked_mask=masked_mask,
-                log_temp=self.log_temp,
-            )
+            # Use autocast context for remaining operations
+            with torch.amp.autocast('cuda', enabled=amp_enabled):
+                # Masked video modeling forward pass
+                mvm_outputs = self.masked_video_modeling(video_tokens)
+                masked_pred = mvm_outputs["pred"]
+                masked_target = video_tokens
+                masked_mask = mvm_outputs["mask"]
+                
+                # Compute multitask loss
+                loss_outputs = self.loss_fn.run(
+                    video_features=video_features,
+                    text_features=text_features,
+                    caption_logits=caption_logits,
+                    caption_targets=caption_targets,
+                    masked_pred=masked_pred,
+                    masked_target=masked_target,
+                    masked_mask=masked_mask,
+                    log_temp=self.log_temp,
+                )
             
             total_loss = loss_outputs["total"]
             
@@ -696,8 +952,8 @@ class MultitaskRunner:
             
             # Prepare outputs
             outputs = {
-                "video_features": video_features,
-                "text_features": text_features,
+                "video_features": video_features,  # Features are already unnormalized
+                "text_features": text_features,  # Features are already unnormalized
                 "texts": texts,
                 "generated_texts": generated_texts,
                 "target_texts": target_texts,
@@ -719,57 +975,99 @@ class MultitaskRunner:
         
         # Compute retrieval metrics
         if len(video_features) > 0 and len(text_features) > 0:
-            # Normalize features
-            video_features_norm = torch.nn.functional.normalize(video_features, dim=1)
-            text_features_norm = torch.nn.functional.normalize(text_features, dim=1)
-            
-            # Compute similarity matrix
-            similarity_matrix = torch.matmul(video_features_norm, text_features_norm.t())
-            
-            # Get unique texts and create mapping
+            # FIRST: Get unique texts and create mapping
             unique_texts = list(dict.fromkeys(texts))  # Preserve order while removing duplicates
             text_to_idx = {text: idx for idx, text in enumerate(unique_texts)}
             
+            print(f"   Found {len(unique_texts)} unique texts out of {len(texts)} total samples")
+            
+            # SECOND: Extract features for unique texts only (still on CPU)
+            unique_text_features = []
+            for text in unique_texts:
+                idx = texts.index(text)
+                unique_text_features.append(text_features[idx])
+            unique_text_features = torch.stack(unique_text_features)
+            
+            # Sanity check: ensure no gradients are being tracked
+            assert not video_features.requires_grad, "Video features should not require gradients in metrics!"
+            assert not unique_text_features.requires_grad, "Text features should not require gradients in metrics!"
+            
+            # THIRD: Move to GPU and normalize
+            device = torch.device(f'cuda:{self.device}')
+            if video_features.device.type == 'cpu':
+                video_features = video_features.to(device)
+            if unique_text_features.device.type == 'cpu':
+                unique_text_features = unique_text_features.to(device)
+            
+            # Normalize features
+            video_features_norm = torch.nn.functional.normalize(video_features, dim=1)
+            unique_text_features_norm = torch.nn.functional.normalize(unique_text_features, dim=1)
+            
             # Create ground truth indices for unique texts
             ground_truth_indices = torch.tensor([text_to_idx[text] for text in texts], 
-                                               device=similarity_matrix.device)
+                                               device=device)
             
-            if len(unique_texts) < len(texts):
-                # Remap similarity matrix to unique texts
-                unique_text_features = []
-                for text in unique_texts:
-                    idx = texts.index(text)
-                    unique_text_features.append(text_features_norm[idx])
-                unique_text_features = torch.stack(unique_text_features)
-                similarity_matrix = torch.matmul(video_features_norm, unique_text_features.t())
+            # Check if similarity matrix would be too large
+            matrix_size_mb = (len(video_features) * len(unique_texts) * 4) / (1024 * 1024)
             
-            # Compute retrieval metrics with proper ground truth indices
-            recall_metrics = compute_recall_at_k(similarity_matrix, ground_truth_indices, self.config.recall_k)
-            metrics.update(recall_metrics)
-            
-            # Compute NDCG metrics
-            ndcg_metrics = compute_ndcg_at_k(similarity_matrix, ground_truth_indices, self.config.ndcg_k)
-            for metric_name, value in ndcg_metrics.items():
-                metrics[metric_name] = value
-            
-            # Compute alignment score
-            alignment_score = compute_alignment_score(video_features_norm, text_features_norm)
-            metrics["alignment_score"] = alignment_score
-            
-            # Compute embedding norms
-            embedding_norms = compute_embedding_norms(video_features_norm, text_features_norm)
-            metrics.update(embedding_norms)
-            
-            # Compute median rank
-            median_rank = compute_median_rank(similarity_matrix, ground_truth_indices)
-            metrics["median_rank"] = median_rank
-            
-            # Compute MRR
-            mrr_dict = compute_mrr(similarity_matrix, ground_truth_indices)
-            metrics.update(mrr_dict)
+            if matrix_size_mb > 2000:  # If larger than 2GB, use streaming
+                print(f"   Matrix would be {matrix_size_mb:.1f}MB - using streaming computation")
+                
+                # Use streaming metrics computation
+                metrics = compute_metrics_streaming(
+                    video_features_norm,
+                    unique_text_features_norm,
+                    ground_truth_indices,
+                    k_values=self.config.recall_k,
+                    video_chunk_size=2048,
+                    text_chunk_size=4096,
+                    device=device.type if hasattr(device, 'type') else str(device)
+                )
+                
+                # Add NDCG placeholder (expensive to compute in streaming)
+                for k in self.config.ndcg_k:
+                    metrics[f"NDCG@{k}_V2T"] = 0.0
+                    
+            else:
+                # Small enough to compute full matrix
+                similarity_matrix = torch.matmul(video_features_norm, unique_text_features_norm.t())
+                print(f"   Similarity matrix shape: {similarity_matrix.shape} (~{matrix_size_mb:.1f}MB)")
+                
+                # Compute retrieval metrics with proper ground truth indices
+                recall_metrics = compute_recall_at_k(similarity_matrix, ground_truth_indices, self.config.recall_k)
+                metrics.update(recall_metrics)
+                
+                # Compute NDCG metrics
+                ndcg_metrics = compute_ndcg_at_k(similarity_matrix, ground_truth_indices, self.config.ndcg_k)
+                for metric_name, value in ndcg_metrics.items():
+                    metrics[metric_name] = value
+                
+                # Compute alignment score using global mode with ground truth indices
+                alignment_score = compute_alignment_score(
+                    video_features_norm, 
+                    unique_text_features_norm,
+                    all_video_embeddings=video_features_norm,
+                    all_text_embeddings=unique_text_features_norm,
+                    global_ground_truth_indices_tensor=ground_truth_indices
+                )
+                metrics["alignment_score"] = alignment_score
+                
+                # Compute embedding norms
+                video_norm = torch.norm(video_features_norm, dim=1).mean().item()
+                text_norm = torch.norm(unique_text_features_norm, dim=1).mean().item()
+                metrics["video_norm"] = video_norm
+                metrics["text_norm"] = text_norm
+                
+                # Compute median rank
+                median_rank = compute_median_rank(similarity_matrix, ground_truth_indices)
+                metrics["median_rank"] = median_rank
+                
+                # Compute MRR
+                mrr_dict = compute_mrr(similarity_matrix, ground_truth_indices)
+                metrics.update(mrr_dict)
             
             # Log best/worst retrievals if wandb is initialized and we have paths
-            if self.wandb_wrapper.is_initialized() and paths is not None and self.val_loader is not None:
+            if self.wandb_wrapper.is_initialized() and paths is not None and self.val_loader is not None and matrix_size_mb <= 2000:
                 try:
                     # Get the dataset object
                     dataset = self.val_loader.dataset
@@ -784,6 +1082,12 @@ class MultitaskRunner:
                     )
                 except Exception as e:
                     print(f"Warning: Failed to log best/worst retrievals: {e}")
+            
+            # Clear GPU memory after metrics computation
+            del video_features_norm, unique_text_features_norm
+            if matrix_size_mb <= 2000:
+                del similarity_matrix
+            torch.cuda.empty_cache()
         
         return metrics
     
@@ -943,9 +1247,21 @@ class MultitaskRunner:
         if world_size == 1:
             return local_tensor
         
+        # Move to GPU for distributed gathering if needed
+        device = torch.device(f'cuda:{self.device}')
+        if local_tensor.device.type == 'cpu':
+            local_tensor = local_tensor.to(device)
+        
         gathered_tensors = [torch.zeros_like(local_tensor) for _ in range(world_size)]
         torch.distributed.all_gather(gathered_tensors, local_tensor)
-        return torch.cat(gathered_tensors, dim=0)
+        
+        # Concatenate and move back to CPU to save memory
+        result = torch.cat(gathered_tensors, dim=0).cpu()
+        
+        # Clear GPU memory
+        torch.cuda.empty_cache()
+        
+        return result
     
     def _gather_strings_across_gpus(
         self, local_strings: list[str], world_size: int, device: torch.device
@@ -1009,6 +1325,7 @@ class MultitaskRunner:
             "metrics": metrics,
         }
         
+        
         # Save latest checkpoint
         latest_path = os.path.join(self.output_dir, "checkpoints", "latest.pt")
         os.makedirs(os.path.dirname(latest_path), exist_ok=True)
@@ -1033,6 +1350,7 @@ class MultitaskRunner:
         """Run inference."""
         # TODO: Implement inference logic
         pass
+    
     
     def _save_predictions(
         self,
@@ -1061,25 +1379,23 @@ class MultitaskRunner:
         predictions_dir = os.path.join(self.output_dir, "predictions")
         os.makedirs(predictions_dir, exist_ok=True)
         
-        # Normalize features for similarity computation
-        video_features_norm = torch.nn.functional.normalize(video_features, dim=1)
-        text_features_norm = torch.nn.functional.normalize(text_features, dim=1)
-        
-        # Compute similarity matrix [N_videos, N_texts]
-        similarity_matrix = torch.matmul(video_features_norm, text_features_norm.t())
-        
-        # Get unique texts for retrieval
+        # FIRST: Get unique texts for retrieval
         unique_texts = list(dict.fromkeys(texts))  # Preserve order while removing duplicates
         text_to_idx = {text: idx for idx, text in enumerate(unique_texts)}
         
-        # If we have duplicates, remap similarity matrix
-        if len(unique_texts) < len(texts):
-            unique_text_features = []
-            for text in unique_texts:
-                idx = texts.index(text)
-                unique_text_features.append(text_features_norm[idx])
-            unique_text_features = torch.stack(unique_text_features)
-            similarity_matrix = torch.matmul(video_features_norm, unique_text_features.t())
+        # SECOND: Extract features for unique texts only
+        unique_text_features = []
+        for text in unique_texts:
+            idx = texts.index(text)
+            unique_text_features.append(text_features[idx])
+        unique_text_features = torch.stack(unique_text_features)
+        
+        # THIRD: Normalize features for similarity computation
+        video_features_norm = torch.nn.functional.normalize(video_features, dim=1)
+        unique_text_features_norm = torch.nn.functional.normalize(unique_text_features, dim=1)
+        
+        # FOURTH: Compute similarity matrix [N_videos, M_unique_texts]
+        similarity_matrix = torch.matmul(video_features_norm, unique_text_features_norm.t())
         
         # Get top-5 retrievals for each video
         topk_values, topk_indices = torch.topk(similarity_matrix, k=min(5, len(unique_texts)), dim=1)
@@ -1137,7 +1453,7 @@ class MultitaskRunner:
         Returns:
             Gathered tensors and lists from all GPUs
         """
-        # Concatenate local tensors
+        # Concatenate local tensors (they're on CPU now)
         local_video_features = torch.cat(video_features, dim=0) if video_features else torch.empty(0)
         local_text_features = torch.cat(text_features, dim=0) if text_features else torch.empty(0)
         

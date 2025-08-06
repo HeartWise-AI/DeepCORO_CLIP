@@ -84,6 +84,9 @@ class ContrastivePretrainingProject(BaseProject):
             dropout=self.config.dropout,
             num_heads=self.config.num_heads,
             aggregator_depth=self.config.aggregator_depth,
+            token_pooling_mode=getattr(self.config, 'video_pooling_mode', 'mean'),
+            attention_pool_heads=getattr(self.config, 'attention_pool_heads', 8),
+            attention_pool_dropout=getattr(self.config, 'attention_pool_dropout', 0.1),
         )
         video_encoder = video_encoder.to(self.config.device).float()
 
@@ -230,6 +233,9 @@ class ContrastivePretrainingProject(BaseProject):
             dropout=self.config.dropout,
             num_heads=self.config.num_heads,
             aggregator_depth=self.config.aggregator_depth,
+            token_pooling_mode=getattr(self.config, 'video_pooling_mode', 'mean'),
+            attention_pool_heads=getattr(self.config, 'attention_pool_heads', 8),
+            attention_pool_dropout=getattr(self.config, 'attention_pool_dropout', 0.1),
         )        
         video_encoder = video_encoder.to(self.config.device).float()
         

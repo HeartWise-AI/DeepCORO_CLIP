@@ -86,7 +86,7 @@ parameters:
   num_videos:
     values: [2, 3, 4]
   loss_name:  
-    values: ["contrastive_ddp","siglip_ddp"]
+    values: ["contrast_ddp","siglip_ddp"]
 
 early_terminate:
   type: hyperband

@@ -35,6 +35,13 @@ if project_root not in sys.path:
 
 def main(config: HeartWiseConfig):
     
+    # Memory and performance optimizations
+    import torch
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = True  # Faster matmul with slightly lower precision
+        torch.backends.cudnn.allow_tf32 = True  # Faster convolutions
+        torch.cuda.empty_cache()  # Clear cache at startup
+    
     # Set seed for reproducibility
     set_seed(config.seed)
     

@@ -32,11 +32,15 @@ class StatsDataset(torch.utils.data.Dataset):
         self.backbone = backbone
         self.max_samples = max_samples
 
-        if target_label and not isinstance(target_label, list):
-            target_label = [target_label]
+        if split != RunMode.INFERENCE:
+            if target_label and not isinstance(target_label, list):
+                target_label = [target_label]
+        else:
+            target_label = None
         self.target_label = target_label
-
+        
         self.fnames, self.outcome, _ = self.load_data(split, target_label)
+        
         if self.max_samples and len(self.fnames) > self.max_samples:
             self.fnames = self.fnames[: self.max_samples]
             if self.outcome:
@@ -48,6 +52,7 @@ class StatsDataset(torch.utils.data.Dataset):
 
         filename_index = data.columns.get_loc(self.datapoint_loc_label)
         split_index = data.columns.get_loc("Split")
+        
         target_index = None
         if target_label is not None:
             target_index = data.columns.get_loc(target_label[0])

@@ -180,6 +180,25 @@ class MultitaskRunner:
                 schedule_type=getattr(config, 'loss_schedule_type', 'linear'),
             )
     
+    def __del__(self):
+        """Cleanup when runner is destroyed (important for sweep runs)."""
+        try:
+            # Clear CUDA cache
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+            
+            # Force garbage collection
+            gc.collect()
+            
+            # Clear any accumulated features
+            if hasattr(self, 'accumulated_features'):
+                del self.accumulated_features
+            
+            print("MultitaskRunner cleanup completed")
+        except Exception as e:
+            print(f"Warning: Error during MultitaskRunner cleanup: {e}")
+    
     def _scheduler_is_per_iteration(self) -> bool:
         """Check if the scheduler is per-iteration or per-epoch."""
         scheduler_name = self.config.scheduler_name.lower()
@@ -292,7 +311,16 @@ class MultitaskRunner:
             
             # Memory cleanup to avoid GPU OOM across epochs
             torch.cuda.empty_cache()
+            torch.cuda.synchronize()  # Ensure all CUDA operations complete
             gc.collect()
+            
+            # Additional cleanup for sweep runs
+            if hasattr(self, '_accumulated_data'):
+                del self._accumulated_data
+            
+            # Reset memory tracking
+            if torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats()
             
             # Print memory summary for first few epochs
             if self.config.is_ref_device and epoch <= 2:
@@ -472,6 +500,11 @@ class MultitaskRunner:
                 # Clear GPU cache periodically to prevent memory buildup
                 if batch_idx % 10 == 0:  # Clear every 10 batches
                     torch.cuda.empty_cache()
+                
+                # Clear accumulated features periodically in long epochs
+                if batch_idx > 0 and batch_idx % 100 == 0:
+                    # Force garbage collection on accumulated CPU features
+                    gc.collect()
         
         # Gather losses across GPUs
         if self.world_size > 1:
@@ -506,28 +539,56 @@ class MultitaskRunner:
         # Track feature accumulation for debugging
         self._current_feature_count = len(all_video_features) * (all_video_features[0].shape[0] if all_video_features else 0)
         
+        # Clear local accumulated features BEFORE gathering to free memory
+        # Keep references for gathering but clear immediately after
+        video_features_to_gather = all_video_features
+        text_features_to_gather = all_text_features
+        texts_to_gather = all_texts
+        paths_to_gather = all_paths
+        generated_to_gather = all_generated_texts
+        targets_to_gather = all_target_texts
+        
+        # Clear original references
+        all_video_features = []
+        all_text_features = []
+        all_texts = []
+        all_paths = []
+        all_generated_texts = []
+        all_target_texts = []
+        gc.collect()
+        
         # Log memory before gathering (critical point)
         if mode == "train" and (epoch == 0 or epoch == 1):
             self._log_memory_stats(f"{mode}_before_gather", batch_idx=num_batches, epoch=epoch)
             print(f"\n📊 Memory check before gathering - Epoch {epoch}, Mode: {mode}")
-            print(f"   Accumulated {len(all_video_features)} batches, ~{self._current_feature_count} samples")
+            print(f"   Accumulated {len(video_features_to_gather)} batches, ~{self._current_feature_count} samples")
         
         # Gather all predictions and compute metrics
-        if all_video_features and all_text_features:
+        if video_features_to_gather and text_features_to_gather:
             try:
                 # Gather distributed predictions
                 (video_features, text_features, 
                  gathered_texts, gathered_paths, 
                  gathered_generated, gathered_targets) = self._gather_distributed_predictions(
-                    all_video_features, all_text_features,
-                    all_texts, all_paths,
-                    all_generated_texts, all_target_texts
+                    video_features_to_gather, text_features_to_gather,
+                    texts_to_gather, paths_to_gather,
+                    generated_to_gather, targets_to_gather
                 )
+                
+                # Clear gather references immediately after use
+                del video_features_to_gather
+                del text_features_to_gather
+                del texts_to_gather
+                del paths_to_gather
+                del generated_to_gather
+                del targets_to_gather
+                gc.collect()
+                torch.cuda.empty_cache()
             except RuntimeError as e:
                 # Log detailed error info for debugging
                 print(f"\n❌ OOM Error during gathering at epoch {epoch}, mode {mode}")
                 print(f"   Error: {str(e)}")
-                print(f"   Accumulated batches: {len(all_video_features)}")
+                print(f"   Accumulated batches: {len(video_features_to_gather) if 'video_features_to_gather' in locals() else 'N/A'}")
                 print(f"   Estimated samples: {self._current_feature_count}")
                 
                 # Log final memory state
@@ -538,8 +599,8 @@ class MultitaskRunner:
                     "epoch": epoch,
                     "mode": mode,
                     "num_batches": num_batches,
-                    "accumulated_batches": len(all_video_features),
-                    "batch_shapes": [f.shape for f in all_video_features[:5]],  # First 5 batch shapes
+                    "accumulated_batches": len(video_features_to_gather) if 'video_features_to_gather' in locals() else 'N/A',
+                    "batch_shapes": [f.shape for f in video_features_to_gather[:5]] if 'video_features_to_gather' in locals() and video_features_to_gather else [],  # First 5 batch shapes
                     "error": str(e),
                     "traceback": traceback.format_exc()
                 }
@@ -992,12 +1053,16 @@ class MultitaskRunner:
             assert not video_features.requires_grad, "Video features should not require gradients in metrics!"
             assert not unique_text_features.requires_grad, "Text features should not require gradients in metrics!"
             
-            # THIRD: Move to GPU and normalize
+            # THIRD: Move to GPU and ensure float32 dtype for similarity computation
             device = torch.device(f'cuda:{self.device}')
             if video_features.device.type == 'cpu':
                 video_features = video_features.to(device)
             if unique_text_features.device.type == 'cpu':
                 unique_text_features = unique_text_features.to(device)
+            
+            # Convert to float32 to avoid dtype mismatches in similarity computation
+            video_features = video_features.float()
+            unique_text_features = unique_text_features.float()
             
             # Normalize features
             video_features_norm = torch.nn.functional.normalize(video_features, dim=1)
@@ -1087,6 +1152,9 @@ class MultitaskRunner:
             del video_features_norm, unique_text_features_norm
             if matrix_size_mb <= 2000:
                 del similarity_matrix
+            del video_features  # Also delete the original features
+            del unique_text_features
+            gc.collect()  # Force garbage collection
             torch.cuda.empty_cache()
         
         return metrics
@@ -1390,7 +1458,9 @@ class MultitaskRunner:
             unique_text_features.append(text_features[idx])
         unique_text_features = torch.stack(unique_text_features)
         
-        # THIRD: Normalize features for similarity computation
+        # THIRD: Ensure float32 dtype and normalize features for similarity computation
+        video_features = video_features.float()
+        unique_text_features = unique_text_features.float()
         video_features_norm = torch.nn.functional.normalize(video_features, dim=1)
         unique_text_features_norm = torch.nn.functional.normalize(unique_text_features, dim=1)
         

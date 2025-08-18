@@ -3,7 +3,9 @@
 
 import os
 import sys
+import gc
 import wandb
+import torch
 from typing import Tuple
 from pprint import pprint
 
@@ -36,11 +38,11 @@ if project_root not in sys.path:
 def main(config: HeartWiseConfig):
     
     # Memory and performance optimizations
-    import torch
     if torch.cuda.is_available():
         torch.backends.cuda.matmul.allow_tf32 = True  # Faster matmul with slightly lower precision
         torch.backends.cudnn.allow_tf32 = True  # Faster convolutions
         torch.cuda.empty_cache()  # Clear cache at startup
+        torch.cuda.reset_peak_memory_stats()  # Reset memory stats
     
     # Set seed for reproducibility
     set_seed(config.seed)
@@ -102,9 +104,35 @@ def main(config: HeartWiseConfig):
         raise e
         
     finally:
+        # Cleanup for sweep runs to prevent memory accumulation
+        print("\n🧹 Performing cleanup after run...")
+        
+        # Clear CUDA cache and synchronize
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            
+            # Print final memory stats
+            allocated_gb = torch.cuda.memory_allocated() / 1024 / 1024 / 1024
+            reserved_gb = torch.cuda.memory_reserved() / 1024 / 1024 / 1024
+            print(f"   Final GPU memory: {allocated_gb:.2f}GB allocated, {reserved_gb:.2f}GB reserved")
+        
+        # Force garbage collection
+        gc.collect()
+        
+        # Finish wandb run
         if config.is_ref_device:
             wandb_wrapper.finish()
+        
+        # Cleanup distributed training
         DistributedUtils.ddp_cleanup()
+        
+        # Additional cleanup for sweep runs
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()
+        
+        print("   Cleanup completed ✓")
     
 if __name__ == "__main__":
     # Get HeartWiseConfig with GPU info already set

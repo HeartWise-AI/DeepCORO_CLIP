@@ -73,3 +73,8 @@ topk: !!int 5
 text_embeddings_path: !!str utils/inference/reports_embeddings.pt
 metadata_path: !!str utils/inference/reports_metadata.parquet
 inference_results_path: !!str utils/inference/inference_results.csv
+# RoPE configuration
+use_rope: !!bool false
+rope_base: !!float 10000.0
+rope_temporal_scale: !!float 1.0
+rope_normalize_mode: !!str separate

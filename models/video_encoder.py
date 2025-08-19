@@ -2,12 +2,14 @@
 
 import torch
 import torch.nn as nn
+import math
 from torchvision.models.video import mvit_v2_s, r3d_18
 from torch.amp.autocast_mode import autocast
 
 from utils.registry import ModelRegistry
 from models.video_aggregator import EnhancedVideoAggregator
 from models.attention_pool import AttentionPool
+from models.rope_3d import Rope3D
 
 
 
@@ -31,6 +33,12 @@ class VideoEncoder(nn.Module):
         token_pooling_mode: str = "mean",
         attention_pool_heads: int = 8,
         attention_pool_dropout: float = 0.1,
+        use_rope: bool = False,
+        rope_base: float = 10000.0,
+        rope_temporal_scale: float = 1.0,
+        rope_normalize_mode: str = "separate",
+        use_cls_token: bool = False,
+        multi_video_cls_aggregation: str = "mean",  # "mean", "attention", or "first"
     ):
         """Initialize the video encoder.
 
@@ -55,6 +63,16 @@ class VideoEncoder(nn.Module):
 
         # Add embedding_dim property
         self._embedding_dim: int = output_dim
+        
+        # Store RoPE configuration
+        self.use_rope = use_rope
+        self.rope_base = rope_base
+        self.rope_temporal_scale = rope_temporal_scale
+        self.rope_normalize_mode = rope_normalize_mode
+        
+        # Store CLS token configuration
+        self.use_cls_token = use_cls_token
+        self.multi_video_cls_aggregation = multi_video_cls_aggregation
 
         # 1) Build backbone
         if backbone == "mvit":
@@ -74,6 +92,52 @@ class VideoEncoder(nn.Module):
             # full token sequence produced **after** the transformer blocks
             # but **before** the classification logic.
             self.model.head = nn.Identity()  # type: ignore[assignment]
+            
+            # Initialize RoPE if enabled for MViT
+            if self.use_rope:
+                # MViT has blocks with different head dimensions
+                # Most blocks use head_dim=96 which is divisible by 6
+                # We'll create multiple RoPE modules for different configurations
+                # Store as regular dict (not nn.ModuleDict) since RoPE has no parameters
+                rope_modules = {}
+                
+                # Common configurations in MViT v2 S
+                configs = [
+                    (4, 96),   # Blocks 3-13: 4 heads, 96 dim/head
+                    (8, 96),   # Blocks 14-15: 8 heads, 96 dim/head
+                ]
+                
+                for num_heads, head_dim in configs:
+                    if head_dim % 6 == 0:  # Check 3D RoPE compatibility
+                        key = f"{num_heads}_{head_dim}"
+                        rope_module = Rope3D(
+                            embed_dim=num_heads * head_dim,
+                            num_heads=num_heads,
+                            temporal_base=self.rope_base,
+                            spatial_base=self.rope_base,
+                            temporal_scale=self.rope_temporal_scale,
+                            normalize_mode=self.rope_normalize_mode
+                        )
+                        # Set to eval mode (RoPE has no trainable params)
+                        rope_module.eval()
+                        rope_modules[key] = rope_module
+                        print(f"[VideoEncoder] Initialized 3D RoPE for {num_heads} heads, {head_dim} dim/head")
+                
+                # Store as a non-parameter attribute to avoid DDP tracking
+                self._rope_modules = rope_modules
+                print(f"[VideoEncoder] Created {len(rope_modules)} RoPE modules for MViT")
+            else:
+                self._rope_modules = None
+                print(f"[VideoEncoder] RoPE DISABLED (use_rope={self.use_rope})")
+            
+            # Initialize CLS token if enabled for MViT
+            if self.use_cls_token:
+                # MViT internal dimension is 768 for v2 S
+                cls_dim = 768
+                self.cls_token = nn.Parameter(torch.randn(1, 1, cls_dim) * 0.02)
+                print(f"[VideoEncoder] Added learnable CLS token (dim={cls_dim})")
+            else:
+                self.cls_token = None
         
         elif backbone == "r3d":
             self.model: nn.Module = r3d_18(pretrained=pretrained)
@@ -163,7 +227,142 @@ class VideoEncoder(nn.Module):
 
         # Attach to the specific instance so it does not affect other MViT objects.
         self.model.forward_features = MethodType(_forward_features_mvit, self.model)  # type: ignore[attr-defined]
+        
+        # If RoPE is enabled for MViT, monkey-patch attention blocks
+        if backbone == "mvit" and self.use_rope and self._rope_modules is not None:
+            self._patch_mvit_attention_for_rope()
 
+    def _patch_mvit_attention_for_rope(self):
+        """Monkey-patch MViT's MultiScaleAttention to apply 3D RoPE."""
+        from types import MethodType
+        import torch.nn.functional as F
+        from torchvision.models.video.mvit import _add_rel_pos
+        
+        # Store reference to rope modules
+        rope_modules = self._rope_modules
+        
+        def patched_forward(self_attn, x, thw):
+            """Patched forward for MultiScaleAttention with RoPE.
+            
+            Args:
+                x: Input tensor [B, N, C]
+                thw: Tuple of (T, H, W) dimensions
+            """
+            B, N, C = x.shape
+            T, H, W = thw
+            
+            # Get actual dimensions from the attention module
+            num_heads = self_attn.num_heads
+            head_dim = self_attn.head_dim
+            output_dim = self_attn.output_dim
+            
+            # Standard MViT attention computation
+            # Project to Q, K, V  
+            qkv = self_attn.qkv(x)
+            # The output dimension is output_dim * 3 (for q, k, v)
+            qkv = qkv.reshape(B, N, 3, num_heads, output_dim // num_heads)
+            qkv = qkv.permute(2, 0, 3, 1, 4)  # [3, B, num_heads, N, head_dim]
+            q, k, v = qkv[0], qkv[1], qkv[2]
+            
+            # Apply pooling if needed (MViT specific)
+            if hasattr(self_attn, 'pool_q') and self_attn.pool_q is not None:
+                q, thw_q = self_attn.pool_q(q, thw)
+            else:
+                thw_q = thw
+                
+            if hasattr(self_attn, 'pool_k') and self_attn.pool_k is not None:
+                k, thw_k = self_attn.pool_k(k, thw)
+            else:
+                thw_k = thw
+                
+            if hasattr(self_attn, 'pool_v') and self_attn.pool_v is not None:
+                v, thw_v = self_attn.pool_v(v, thw)
+            else:
+                thw_v = thw
+            
+            # Apply 3D RoPE to Q and K after pooling
+            T_q, H_q, W_q = thw_q
+            T_k, H_k, W_k = thw_k
+            
+            # Detect CLS tokens (N > T*H*W means we have special tokens)
+            expected_q = T_q * H_q * W_q
+            expected_k = T_k * H_k * W_k
+            n_special_q = max(0, q.shape[2] - expected_q)  # Usually 0 or 1
+            n_special_k = max(0, k.shape[2] - expected_k)
+            
+            # Apply RoPE if we have a matching module
+            actual_head_dim = q.shape[-1]
+            if rope_modules is not None and actual_head_dim % 6 == 0:
+                rope_key = f"{num_heads}_{actual_head_dim}"
+                if rope_key in rope_modules:
+                    try:
+                        rope_module = rope_modules[rope_key]
+                        # Handle Q and K separately if they have different dimensions
+                        if q.shape[2] == k.shape[2] and (T_q, H_q, W_q) == (T_k, H_k, W_k):
+                            # Same dimensions, apply RoPE to both
+                            q, k = rope_module(q, k, T_q, H_q, W_q, n_special=n_special_q)
+                        else:
+                            # Different dimensions after pooling, apply separately
+                            # Apply to Q
+                            q_rot, _ = rope_module(q, q, T_q, H_q, W_q, n_special=n_special_q)
+                            q = q_rot
+                            # Apply to K with its dimensions
+                            if (T_k * H_k * W_k + n_special_k) == k.shape[2]:
+                                _, k_rot = rope_module(k, k, T_k, H_k, W_k, n_special=n_special_k)
+                                k = k_rot
+                        # Log only once per training to avoid spam
+                        if not hasattr(self_attn, '_rope_applied_logged'):
+                            cls_info = f" (with {n_special_q} CLS)" if n_special_q > 0 else ""
+                            print(f"[RoPE] Applied to block with {num_heads} heads, head_dim={actual_head_dim}, grid=({T_q}x{H_q}x{W_q}){cls_info}")
+                            self_attn._rope_applied_logged = True
+                    except Exception as e:
+                        # Skip RoPE for this block if error
+                        if not hasattr(self_attn, '_rope_error_logged'):
+                            print(f"[RoPE] Error in block: {e}")
+                            self_attn._rope_error_logged = True
+            
+            # Compute attention
+            # MViT uses 'scaler' not 'scale'
+            scale = 1.0 / math.sqrt(self_attn.head_dim) if hasattr(self_attn, 'head_dim') else 1.0 / math.sqrt(q.shape[-1])
+            attn = (q @ k.transpose(-2, -1)) * scale
+            
+            # Apply relative position bias (fixes DDP unused parameters)
+            if hasattr(self_attn, 'rel_pos_h') and hasattr(self_attn, 'rel_pos_w'):
+                # Use MViT's relative position bias function
+                attn = _add_rel_pos(
+                    attn,
+                    q,  # Need to pass q tensor
+                    thw_q,  # q dimensions  
+                    thw_k,  # k dimensions
+                    self_attn.rel_pos_h,
+                    self_attn.rel_pos_w,
+                    self_attn.rel_pos_t if hasattr(self_attn, 'rel_pos_t') else None
+                )
+            
+            attn = attn.softmax(dim=-1)
+            attn = self_attn.attn_drop(attn) if hasattr(self_attn, 'attn_drop') else attn
+            
+            # Apply to values
+            x = attn @ v  # [B, num_heads, N_q, head_dim]
+            x = x.transpose(1, 2)  # [B, N_q, num_heads, head_dim]
+            
+            # Reshape to [B, N_q, output_dim]
+            # Note: output_dim may be different from C (input dim)
+            x = x.reshape(B, x.shape[1], -1)
+            x = self_attn.project(x)  # MViT uses 'project' not 'proj'
+            
+            return x, thw_q
+        
+        # Patch all MultiScaleAttention blocks in the model
+        for block in self.model.blocks:
+            if hasattr(block, 'attn'):
+                # Store original forward for potential restoration
+                block.attn._original_forward = block.attn.forward
+                # Apply patched forward
+                block.attn.forward = MethodType(patched_forward, block.attn)
+        
+        print(f"[VideoEncoder] Patched {len(self.model.blocks)} MViT attention blocks for 3D RoPE")
+    
     def _freeze_partial_layers(self):
         """
         Freeze a fraction (1 - freeze_ratio) of the backbone's layers
@@ -279,6 +478,35 @@ class VideoEncoder(nn.Module):
         # ------------------------------------------------------------------
         BNL, L, D_out = token_feats.shape  # BNL = B * N
         token_feats = token_feats.view(B, N, L, D_out)
+        
+        # ------------------------------------------------------------------
+        # 3.5) Handle CLS tokens for multi-video scenarios
+        # ------------------------------------------------------------------
+        if self.use_cls_token and hasattr(self, 'cls_token') and self.backbone == "mvit":
+            # Extract CLS tokens if they exist (first token of each video)
+            # MViT may have CLS tokens in some configurations
+            cls_tokens = token_feats[:, :, 0:1, :]  # [B, N, 1, D_out]
+            
+            if N > 1 and self.multi_video_cls_aggregation != "none":
+                # Multi-video: aggregate CLS tokens across videos
+                if self.multi_video_cls_aggregation == "mean":
+                    # Average CLS tokens across videos
+                    aggregated_cls = cls_tokens.mean(dim=1)  # [B, 1, D_out]
+                elif self.multi_video_cls_aggregation == "attention" and self.attention_pool is not None:
+                    # Use attention pooling over CLS tokens
+                    cls_for_pool = cls_tokens.squeeze(2)  # [B, N, D_out]
+                    aggregated_cls = self.attention_pool(cls_for_pool)  # [B, D_out]
+                    aggregated_cls = aggregated_cls.unsqueeze(1).unsqueeze(1)  # [B, 1, 1, D_out]
+                elif self.multi_video_cls_aggregation == "first":
+                    # Use only the first video's CLS token
+                    aggregated_cls = cls_tokens[:, 0:1, :, :]  # [B, 1, 1, D_out]
+                else:
+                    aggregated_cls = cls_tokens  # Keep all CLS tokens
+                
+                # Option: Replace token_feats with aggregated CLS for study-level representation
+                # This is useful when you want a single representation per study
+                # Uncomment if needed:
+                # token_feats = aggregated_cls  # Use aggregated CLS as the representation
 
 #       print(f"token_feats.shape: {token_feats.shape}")
         if self._apply_aggregator:

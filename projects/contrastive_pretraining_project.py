@@ -87,6 +87,11 @@ class ContrastivePretrainingProject(BaseProject):
             token_pooling_mode=getattr(self.config, 'video_pooling_mode', 'mean'),
             attention_pool_heads=getattr(self.config, 'attention_pool_heads', 8),
             attention_pool_dropout=getattr(self.config, 'attention_pool_dropout', 0.1),
+            # RoPE parameters
+            use_rope=getattr(self.config, 'use_rope', False),
+            rope_base=getattr(self.config, 'rope_base', 10000.0),
+            rope_temporal_scale=getattr(self.config, 'rope_temporal_scale', 1.0),
+            rope_normalize_mode=getattr(self.config, 'rope_normalize_mode', 'separate'),
         )
         video_encoder = video_encoder.to(self.config.device).float()
 
@@ -236,6 +241,11 @@ class ContrastivePretrainingProject(BaseProject):
             token_pooling_mode=getattr(self.config, 'video_pooling_mode', 'mean'),
             attention_pool_heads=getattr(self.config, 'attention_pool_heads', 8),
             attention_pool_dropout=getattr(self.config, 'attention_pool_dropout', 0.1),
+            # RoPE parameters
+            use_rope=getattr(self.config, 'use_rope', False),
+            rope_base=getattr(self.config, 'rope_base', 10000.0),
+            rope_temporal_scale=getattr(self.config, 'rope_temporal_scale', 1.0),
+            rope_normalize_mode=getattr(self.config, 'rope_normalize_mode', 'separate'),
         )        
         video_encoder = video_encoder.to(self.config.device).float()
         

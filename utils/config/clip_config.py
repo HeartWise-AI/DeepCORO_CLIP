@@ -85,6 +85,12 @@ class ClipConfig(HeartWiseConfig):
 
     # Optional parameters
     view_count: Optional[int] = None
+    
+    # RoPE configuration (optional with defaults)
+    use_rope: bool = False
+    rope_base: float = 10000.0
+    rope_temporal_scale: float = 1.0
+    rope_normalize_mode: str = "separate"  # "separate", "max", or "min"
 
     # Device and distributed info are now inherited from HeartWiseConfig
     # No local definition of device, world_size, is_ref_device, 

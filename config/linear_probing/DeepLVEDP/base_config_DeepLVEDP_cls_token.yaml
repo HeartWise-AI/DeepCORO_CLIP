@@ -1,0 +1,158 @@
+# Improved CLS Token Configuration for DeepLVEDP 3-Class Classification
+# Showcases advanced features: separate attention layers, hybrid pooling, configurable heads
+
+# Pipeline parameters
+pipeline_project: !!str DeepCORO_video_linear_probing
+base_checkpoint_path: !!str outputs
+run_mode: !!str train
+epochs: !!int 100
+seed: !!int 42
+
+# wandb parameters
+name: !!str DeepCORO_video_linear_probing_deepLVEDP_improved_cls_token
+project: !!str DeepCORO_video_linear_probing_deepLVEDP_improved_cls_token
+entity: !!str mhi_ai
+use_wandb: !!bool true
+
+# Training parameters
+scheduler_name: !!str cosine_with_warmup
+num_warmup_percent: !!float 0.08
+optimizer: !!str AdamW
+use_amp: !!bool true
+gradient_accumulation_steps: !!int 1
+
+# Scheduler parameters
+lr_step_period: !!int 10
+factor: !!float 0.1
+num_hard_restarts_cycles: !!int 3
+warm_restart_tmult: !!float 2.0
+
+# Dataset parameters
+data_filename: !!str data/deep_lvedp_data_alpha.csv
+num_workers: !!int 8
+batch_size: !!int 8  # Smaller due to hybrid pooling memory requirements
+multi_video: !!bool true
+groupby_column: !!str 'StudyInstanceUID'
+num_videos: !!int 4
+shuffle_videos: !!bool true
+datapoint_loc_label: !!str FileName
+target_label: [Outcome]
+rand_augment: !!bool true
+resize: !!int 224
+frames: !!int 16
+stride: !!int 2
+tag: !!str 'DeepLVEDP_cls_token'
+
+# Improved CLS Token Configuration
+pooling_mode: !!str attention+cls_token  # Hybrid pooling for richer features
+separate_video_attention: !!bool true    # Separate within/across-video attention
+num_attention_heads: !!int 8             # Configurable attention heads
+normalization_strategy: !!str post_norm  # Post-norm like ViT (can try pre_norm)
+use_cls_token: !!bool true
+
+# Video Encoder parameters
+model_name: !!str mvit
+aggregator_depth: !!int 1
+num_heads: !!int 16
+video_freeze_ratio: !!float 0.9179658719319556
+dropout: !!float 0.15
+pretrained: !!bool true
+
+# Learning rates - Optimized for improved architecture
+video_encoder_lr: !!float 0.000008795617632783049  # Conservative for pretrained
+video_encoder_weight_decay: !!float 0.0000018160563690364244
+
+# Attention learning rates - separate for within/across attention
+attention_within_lr: !!float 0.002        # Within-video attention
+attention_across_lr: !!float 0.0015      # Across-video attention  
+attention_weight_decay: !!float 0.00005
+
+# Hybrid pooling means 2x feature dimension, so lower LR
+head_lr: !!float 0.0003                    # Lower due to 2x input features
+head_weight_decay: !!float 0.00001
+
+video_encoder_checkpoint_path: !!str outputs/DeepCORO_clip/dev_deep_coro_clip_single_video/8av1xygm_20250605-083820_best_single_video/checkpoints/checkpoint.pt
+
+aggregate_videos_tokens: !!bool false   # Maintain 4D structure for hierarchical processing
+per_video_pool: !!bool false            # Let improved cls_token handle all pooling
+output_dir: !!str outputs/
+
+# Enhanced Linear Probing parameters
+head_linear_probing: # Use improved linear probing classes
+  Outcome: !!str cls_token_linear_probing
+
+head_structure: # Note: Input will be 2x embedding_dim due to hybrid pooling
+  Outcome: !!int 3
+
+head_dropout: # Higher dropout due to richer features
+  Outcome: !!float 0.2
+
+loss_structure:
+  Outcome: !!str ce
+
+head_lr: # Lower LR for hybrid features
+  Outcome: !!float 0.0003
+
+head_weight_decay:
+  Outcome: !!float 0.00001
+
+head_weights:
+  Outcome: !!float 1.0
+
+head_task:
+  Outcome: !!str classification
+
+# Label mappings - For 3-class classification (0: Low LVEDP, 1: Moderate LVEDP, 2: High LVEDP)
+labels_map:
+  Outcome:
+    Low: !!int 0      # LVEDP Normal/Low
+    Moderate: !!int 1     # LVEDP Moderate
+    High: !!int 2     # LVEDP Elevated/High
+
+
+# Advanced Configuration Notes
+notes: |
+  Improved CLS Token Configuration for DeepLVEDP 3-Class Classification with Advanced Features:
+  
+  🚀 New Features Enabled:
+  • Hybrid Pooling: attention+cls_token provides 2x richer feature representations
+  • Separate Attention: Different layers for within-video and across-video attention
+  • Configurable Heads: 8 attention heads for better representational capacity
+  • Post-Norm Strategy: Layer normalization after attention (ViT-style)
+  • Enhanced Edge Handling: Robust fallbacks for empty masks
+  
+  🧠 Architecture Benefits:
+  • More sophisticated attention patterns for complex medical video analysis
+  • Better capture of both local (within-video) and global (across-video) relationships
+  • Richer feature representations through hybrid pooling
+  • Improved training stability with separate learning rates
+  
+  ⚙️ Training Optimizations:
+  • Separate learning rates for within/across-video attention components
+  • Lower learning rates compensating for 2x feature dimensions
+  • Conservative video encoder updates to preserve pretrained knowledge
+  • Higher dropout to prevent overfitting with richer features
+  
+  💾 Memory Considerations:
+  • Smaller batch size due to hybrid pooling memory requirements
+  • 2x feature dimensions in classification heads
+  • Separate attention layers increase parameter count
+  
+  🎯 DeepLVEDP Specific:
+  • Dataset: deep_lvedp_data_alpha.csv
+  • Target: Outcome (3-class classification for LVEDP prediction)
+  • Task: 3-class classification (0: Low/Normal LVEDP, 1: Moderate LVEDP, 2: High/Elevated LVEDP)
+  • Optimized for Left Ventricular End-Diastolic Pressure prediction tasks
+  • Cross-entropy loss for multi-class classification
+  
+  📊 LVEDP Background:
+  • LVEDP is a key hemodynamic parameter in cardiac catheterization
+  • Elevated LVEDP indicates increased filling pressure and potential heart failure
+  • 3-Class Classification:
+    - Low/Normal LVEDP (Class 0): typically < 12 mmHg
+    - Moderate LVEDP (Class 1): 12-18 mmHg, borderline elevated
+    - High/Elevated LVEDP (Class 2): > 18 mmHg, associated with diastolic dysfunction
+  
+  Expected Performance: Significant improvement over standard pooling methods
+  due to learnable, task-adaptive attention patterns and richer feature representations
+  specifically tuned for LVEDP prediction from coronary angiography videos. 

@@ -8,7 +8,7 @@ use_amp: !!bool true
 period: !!int 1
 run_mode: !!str train
 # Dataset parameters
-data_filename: !!str data/reports/dataset_with_splits_20250801.csv
+data_filename: !!str /media/data1/ravram/DeepCORO_CLIP_ENCODER/datasets/reports_with_alpha_separator_with_Calcifc_Stenosis_IFR_20250601_RCA_LCA_merged_with_left_dominance_dependent_vessels.csv
 root: !!str "."
 target_label: !!str Report
 datapoint_loc_label: !!str FileName
@@ -47,7 +47,7 @@ num_heads: !!int 16
 aggregator_depth: !!int 1
 temperature: !!float 0.08703471467769354
 dropout: !!float 0.11443597301670493
-video_freeze_ratio: !!float 0.8006794008069684
+video_freeze_ratio: !!float 0.0
 text_freeze_ratio: !!float 0.7464391999406222
 # Checkpointing
 resume_training: !!bool false

@@ -59,8 +59,8 @@ parameters:
 
   video_freeze_ratio:
     distribution: uniform
-    min: 0.8
-    max: 0.95
+    min: 0.0
+    max: 0.15
   
   multi_video:
     values: [false]

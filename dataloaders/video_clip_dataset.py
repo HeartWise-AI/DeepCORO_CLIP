@@ -394,6 +394,9 @@ def get_distributed_video_clip_dataloader(
     rank: Optional[int] = None,
     drop_last: bool = True,
 ) -> DataLoader:
+    # Determine if this is validation/test split for deterministic behavior
+    is_validation = split in ['val', 'validation', 'test', 'inference']
+    
     # Create the video dataset
     video_dataset = VideoClipDataset(
         root=getattr(config, 'root', '') or '',
@@ -405,14 +408,14 @@ def get_distributed_video_clip_dataloader(
         backbone=getattr(config, 'model_name', 'default'),
         mean=mean,
         std=std,
-        rand_augment=getattr(config, 'rand_augment', False),
+        rand_augment=False if is_validation else getattr(config, 'rand_augment', False),  # NEVER augment validation
         stride=getattr(config, 'stride', 1),
         groupby_column=getattr(config, 'groupby_column', None),
         num_videos=getattr(config, 'num_videos', 4),
-        shuffle_videos=getattr(config, 'shuffle_videos', False),
+        shuffle_videos=False if is_validation else getattr(config, 'shuffle_videos', False),  # NEVER shuffle videos in validation
         seed=getattr(config, 'seed', None),
         multi_video=getattr(config, 'multi_video', False),
-        video_transforms=getattr(config, 'video_transforms', None),
+        video_transforms=None if is_validation else getattr(config, 'video_transforms', None),  # No transforms for validation
         resize=getattr(config, 'resize', 224),
         max_length=getattr(config, 'max_length', 250),
     )
@@ -423,14 +426,34 @@ def get_distributed_video_clip_dataloader(
         num_replicas=num_replicas, 
         rank=rank
     )
-    # Create the dataloader
+    # Determine batch size based on split
+    if split in ['val', 'validation', 'test', 'inference']:
+        batch_size = getattr(config, 'validation_batch_size', getattr(config, 'batch_size', 1))
+    else:
+        batch_size = getattr(config, 'batch_size', 1)
+    
+    # Use deterministic worker init for validation
+    if is_validation:
+        def deterministic_worker_init(worker_id):
+            """Fixed seed for validation workers to ensure determinism."""
+            fixed_seed = 42 + worker_id  # Fixed seed per worker
+            np.random.seed(fixed_seed)
+            random.seed(fixed_seed)
+            torch.manual_seed(fixed_seed)
+        worker_init = deterministic_worker_init
+    else:
+        worker_init = seed_worker
+    
+    # Create the dataloader with optimizations
     return DataLoader(
         video_dataset,
-        batch_size=getattr(config, 'batch_size', 1),
+        batch_size=batch_size,
         sampler=sampler,
         num_workers=getattr(config, 'num_workers', 0),
         pin_memory=True,
         drop_last=drop_last,
         collate_fn=custom_collate_fn,
-        worker_init_fn=seed_worker,
+        worker_init_fn=worker_init,
+        persistent_workers=getattr(config, 'persistent_workers', False) and getattr(config, 'num_workers', 0) > 0,
+        prefetch_factor=getattr(config, 'prefetch_factor', 2) if getattr(config, 'num_workers', 0) > 0 else None,
     )

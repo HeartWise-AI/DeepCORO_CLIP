@@ -41,7 +41,8 @@
       "Bash(CUDA_VISIBLE_DEVICES=1 python scripts/main.py --base_config config/clip/base_config.yaml --use_wandb true --run_mode train)",
       "Bash(CUDA_VISIBLE_DEVICES=1 python scripts/main.py --base_config config/clip/base_config.yaml --use_wandb true)",
       "Bash(CUDA_VISIBLE_DEVICES=1 python scripts/main.py --base_config config/clip/base_config.yaml --use_wandb false)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(CUDA_VISIBLE_DEVICES=0 timeout 120 python scripts/main.py --base_config config/clip/base_config.yaml --epochs 1 --batch_size 4)"
     ],
     "deny": []
   },

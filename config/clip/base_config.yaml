@@ -3,6 +3,8 @@ base_checkpoint_path: !!str outputs
 # Training parameters
 epochs: !!int 30
 num_workers: !!int 16
+persistent_workers: !!bool true # Keep workers alive between epochs
+prefetch_factor: !!int 2 # Prefetch batches for better pipeline
 debug: !!bool false
 use_amp: !!bool true
 period: !!int 1
@@ -20,7 +22,8 @@ multi_video: !!bool false
 num_videos: !!int 1
 groupby_column: !!str StudyInstanceUID
 shuffle_videos: !!bool true
-batch_size: !!int 64
+batch_size: !!int 32 # Reduced from 64 for stability with 3D RoPE
+validation_batch_size: !!int 16 # Smaller batch for validation to prevent timeouts
 # Seed
 seed: !!int 42
 # Model parameters
@@ -31,7 +34,7 @@ optimizer: !!str AdamW
 scheduler_name: !!str linear_warmup
 attention_pool_heads: !!int 8
 attention_pool_dropout: !!float 0.1
-lr: !!float 0.00007214087700658924
+lr: !!float 0.00002 # Reduced learning rate for stability with RoPE
 lr_step_period: !!int 15
 factor: !!float 0.14617805853947136
 loss_name: !!str siglip_ddp
@@ -41,14 +44,29 @@ gradient_accumulation_steps: !!int 1
 num_warmup_percent: !!float 0.05
 num_hard_restarts_cycles: !!int 1
 warm_restart_tmult: !!int 2
-max_grad_norm: !!float 1
+max_grad_norm: !!float 0.5 # Reduced for better stability
 # Model architecture parameters
 num_heads: !!int 16
 aggregator_depth: !!int 1
 temperature: !!float 0.08703471467769354
 dropout: !!float 0.11443597301670493
 video_freeze_ratio: !!float 0.0
-text_freeze_ratio: !!float 0.7464391999406222
+text_freeze_ratio: !!float 0.85
+# Temperature scheduling for stable SigLIP training
+temperature_schedule: !!str "cosine" # "linear", "cosine", "exponential", or "constant"
+temperature_start: !!float 0.5 # Moderate start temp to prevent SigLIP instability
+temperature_end: !!float 0.08703471467769354 # Target temperature (original value)
+temperature_warmup_epochs: !!int 8 # Longer warmup for stability
+# Video freeze scheduling for gradual unfreezing
+video_freeze_schedule: !!str "cosine" # Cosine for smoother transition
+video_freeze_start: !!float 0.95 # Start with 95% frozen (only 5% trainable)
+video_freeze_end: !!float 0.0 # End with fully trainable (needed for RoPE adaptation)
+video_freeze_warmup_epochs: !!int 10 # Much slower unfreezing over 10 epochs
+# Text freeze scheduling to maintain balance
+text_freeze_schedule: !!str "cosine" # Match video schedule type
+text_freeze_start: !!float 0.95 # Start similarly frozen
+text_freeze_end: !!float 0.7 # Keep some stability in text encoder
+text_freeze_warmup_epochs: !!int 10 # Same schedule length as video
 # Checkpointing
 resume_training: !!bool false
 checkpoint: !!str outputs/deepCORO_CLIP/DeepCORO_Clip_Sweep_Learnable_Temp_Full_mvit_b12_f16_RAdam_lr0.0001_20250114-190320_2o5xoevj/checkpoints/latest.pt

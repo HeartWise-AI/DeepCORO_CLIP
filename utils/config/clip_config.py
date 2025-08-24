@@ -10,6 +10,8 @@ from utils.config.heartwise_config import HeartWiseConfig
 @ConfigRegistry.register("DeepCORO_clip")
 @ConfigRegistry.register("DeepCORO_clip_test")
 class ClipConfig(HeartWiseConfig):
+    # ===== FIELDS WITHOUT DEFAULTS (REQUIRED) =====
+    
     # Training parameters
     lr: float
     batch_size: int
@@ -41,7 +43,7 @@ class ClipConfig(HeartWiseConfig):
     num_heads: int
     aggregator_depth: int
     
-    # Video pooling configuration (no defaults to avoid dataclass ordering issues)
+    # Video pooling configuration
     video_pooling_mode: str  # 'mean' or 'attention'
     attention_pool_heads: int
     attention_pool_dropout: float
@@ -83,6 +85,13 @@ class ClipConfig(HeartWiseConfig):
     metadata_path: str
     inference_results_path: str
 
+    # ===== FIELDS WITH DEFAULTS (OPTIONAL) =====
+    
+    # Training parameter defaults
+    validation_batch_size: int = 16  # Separate validation batch size
+    persistent_workers: bool = False  # Keep DataLoader workers alive
+    prefetch_factor: int = 2  # Number of batches to prefetch
+    
     # Optional parameters
     view_count: Optional[int] = None
     
@@ -91,6 +100,24 @@ class ClipConfig(HeartWiseConfig):
     rope_base: float = 10000.0
     rope_temporal_scale: float = 1.0
     rope_normalize_mode: str = "separate"  # "separate", "max", or "min"
+    
+    # Temperature scheduling parameters (optional with defaults)
+    temperature_schedule: str = "constant"  # "linear", "cosine", "exponential", or "constant"
+    temperature_start: float = 1.0  # Starting temperature for scheduling
+    temperature_end: float = 0.1  # Target temperature for scheduling
+    temperature_warmup_epochs: int = 0  # Number of epochs for temperature warmup
+    
+    # Video freeze scheduling parameters (optional with defaults)
+    video_freeze_schedule: str = "constant"  # "linear", "step", or "constant"  
+    video_freeze_start: float = 0.95  # Starting freeze ratio for scheduling
+    video_freeze_end: float = 0.0  # Target freeze ratio for scheduling
+    video_freeze_warmup_epochs: int = 0  # Number of epochs for freeze warmup
+    
+    # Text freeze scheduling parameters (optional with defaults)
+    text_freeze_schedule: str = "constant"  # "linear", "cosine", "step", or "constant"
+    text_freeze_start: float = 0.95  # Starting freeze ratio for text encoder
+    text_freeze_end: float = 0.7  # Target freeze ratio for text encoder
+    text_freeze_warmup_epochs: int = 0  # Number of epochs for text freeze warmup
 
     # Device and distributed info are now inherited from HeartWiseConfig
     # No local definition of device, world_size, is_ref_device, 

@@ -324,18 +324,16 @@ class WandbLogger:
 
                 wandb.log(
                     {
-                        f"{scenario}/qualitative/good_retrieval_epoch_{epoch}_{i}": wandb.Video(
+                        f"{scenario}/qualitative/good_retrieval_{i}": wandb.Video(
                             mp4_path,
                             caption=(
-                                f"Good {scenario} Retrieval {i+1} "
+                                f"Good {scenario} Retrieval {i+1} @ Epoch {epoch} "
                                 f"(Sim: {report_data['similarity_score']:.3f})"
                             ),
                         ),
-                        f"{scenario}/qualitative/good_reports_epoch_{epoch}_{i}": wandb.Html(report_html),
-                        f"{scenario}/qualitative/good_similarity_epoch_{epoch}_{i}": report_data["similarity_score"],
-                        "epoch": epoch,
-                    },
-                    step=epoch,
+                        f"{scenario}/qualitative/good_reports_{i}": wandb.Html(report_html),
+                        f"{scenario}/qualitative/good_similarity_{i}": report_data["similarity_score"],
+                    }
                 )
 
             except Exception as e:
@@ -366,18 +364,16 @@ class WandbLogger:
 
                 wandb.log(
                     {
-                        f"{scenario}/qualitative/bad_retrieval_epoch_{epoch}_{i}": wandb.Video(
+                        f"{scenario}/qualitative/bad_retrieval_{i}": wandb.Video(
                             mp4_path,
                             caption=(
-                                f"Bad {scenario} Retrieval {i+1} "
+                                f"Bad {scenario} Retrieval {i+1} @ Epoch {epoch} "
                                 f"(Sim: {report_data['similarity_score']:.3f})"
                             ),
                         ),
-                        f"{scenario}/qualitative/bad_reports_epoch_{epoch}_{i}": wandb.Html(report_html),
-                        f"{scenario}/qualitative/bad_similarity_epoch_{epoch}_{i}": report_data["similarity_score"],
-                        "epoch": epoch,
-                    },
-                    step=epoch,
+                        f"{scenario}/qualitative/bad_reports_{i}": wandb.Html(report_html),
+                        f"{scenario}/qualitative/bad_similarity_{i}": report_data["similarity_score"],
+                    }
                 )
 
             except Exception as e:
@@ -646,7 +642,7 @@ def log_best_worst_retrievals(
     # Find best and worst retrievals based on maximum similarity scores for each video
     max_scores_per_video, _ = similarity_matrix.max(dim=1)
     
-    num_examples_to_log = 2  # Log top 2 best and top 2 worst
+    num_examples_to_log = 5  # Log top 5 best and top 5 worst
     
     # Ensure k is not greater than the number of videos
     k_actual = min(num_examples_to_log, max_scores_per_video.numel())

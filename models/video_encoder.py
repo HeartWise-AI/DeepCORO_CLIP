@@ -384,6 +384,11 @@ class VideoEncoder(nn.Module):
         Args:
             new_freeze_ratio: New freeze ratio (0.0 = all trainable, 1.0 = all frozen)
         """
+        # Only update if the ratio actually changed
+        if abs(self.freeze_ratio - new_freeze_ratio) < 1e-6:
+            return  # No change needed
+            
+        old_freeze_ratio = self.freeze_ratio
         self.freeze_ratio = new_freeze_ratio
         
         # First, unfreeze all parameters
@@ -405,7 +410,8 @@ class VideoEncoder(nn.Module):
         total_params = sum(p.numel() for p in self.model.parameters())
         trainable_percent = (trainable_params / total_params) * 100 if total_params > 0 else 0
         
-        print(f"[VideoEncoder] Updated freeze_ratio to {new_freeze_ratio:.2f}")
+        # Only print if the ratio actually changed
+        print(f"[VideoEncoder] Updated freeze_ratio from {old_freeze_ratio:.2f} to {new_freeze_ratio:.2f}")
         print(f"[VideoEncoder] Trainable parameters: {trainable_params:,} / {total_params:,} ({trainable_percent:.1f}%)")
 
     @property

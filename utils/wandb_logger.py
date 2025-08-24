@@ -623,7 +623,8 @@ def log_best_worst_retrievals(
     ground_truth_indices: torch.Tensor,
     epoch: int, 
     wandb_wrapper: WandbWrapper,
-    dataset_obj: VideoClipDataset 
+    dataset_obj: VideoClipDataset,
+    step: Optional[int] = None
 ) -> None:
     """Log best and worst retrievals to wandb.
     
@@ -635,6 +636,7 @@ def log_best_worst_retrievals(
         ground_truth_indices: Tensor mapping each video to its ground truth text index
         epoch: Current epoch number
         dataset_obj: The VideoClipDataset instance for multi-video path resolution.
+        step: Optional wandb step to use (if None, uses epoch)
     """
     if not wandb_wrapper.is_initialized(): # Check if wandb is initialized
         return
@@ -668,7 +670,8 @@ def log_best_worst_retrievals(
             epoch=epoch,
             is_best=True,
             wandb_wrapper=wandb_wrapper,
-            dataset_obj=dataset_obj
+            dataset_obj=dataset_obj,
+            step=step
         )
 
     # Process and log worst retrievals
@@ -685,7 +688,8 @@ def log_best_worst_retrievals(
             epoch=epoch,
             is_best=False,
             wandb_wrapper=wandb_wrapper,
-            dataset_obj=dataset_obj
+            dataset_obj=dataset_obj,
+            step=step
         )
 
 def _log_retrieval(
@@ -698,7 +702,8 @@ def _log_retrieval(
     epoch: int,
     is_best: bool,
     wandb_wrapper: WandbWrapper,
-    dataset_obj: VideoClipDataset
+    dataset_obj: VideoClipDataset,
+    step: Optional[int] = None
 ) -> None:
     """Helper function to log a single retrieval example."""
     top_5_text_indices = torch.argsort(similarity_matrix[idx], descending=True)[:5]
@@ -754,7 +759,9 @@ def _log_retrieval(
             ),
             f"qualitative/{prefix}_retrieval_text": wandb.Html(ground_truth_html),
         }
-        wandb_wrapper.log(log_dict, step=int(epoch) if not isinstance(epoch, int) else epoch)
+        # Use provided step if available, otherwise fall back to epoch
+        wandb_step = step if step is not None else epoch
+        wandb_wrapper.log(log_dict, step=wandb_step)
         
         if is_temp_video:
             cleanup_temp_video(video_to_log_path)

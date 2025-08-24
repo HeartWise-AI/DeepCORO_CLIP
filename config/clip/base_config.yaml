@@ -1,7 +1,7 @@
-pipeline_project: !!str "DeepCORO_clip"
+pipeline_project: !!str "DeepCORO_clip_v2"
 base_checkpoint_path: !!str outputs
 # Training parameters
-epochs: !!int 30
+epochs: !!int 30 # Test phase A (5 epochs) and phase B (5 epochs)
 num_workers: !!int 16
 persistent_workers: !!bool true # Keep workers alive between epochs
 prefetch_factor: !!int 2 # Prefetch batches for better pipeline
@@ -22,25 +22,51 @@ multi_video: !!bool false
 num_videos: !!int 1
 groupby_column: !!str StudyInstanceUID
 shuffle_videos: !!bool true
-batch_size: !!int 32 # Reduced from 64 for stability with 3D RoPE
-validation_batch_size: !!int 16 # Smaller batch for validation to prevent timeouts
+batch_size: !!int 64 # Small batch for testing
+validation_batch_size: !!int 32 # Smaller batch for validation to prevent timeouts
 # Seed
 seed: !!int 42
 # Model parameters
 model_name: !!str mvit
 pretrained: !!bool true
-# Optimizer parameters
+# Two-optimizer setup with LLRD
+use_two_optimizers: !!bool true
+text_lr: !!float 1e-5 # Base LR for text encoder top layer (PubMedBERT)
+video_lr: !!float 2e-4 # Base LR for video encoder top layer (MViT)
+proj_lr: !!float 1e-3 # LR for projection heads (2-layer MLPs)
+logit_scale_lr: !!float 0.01 # LR for temperature parameter
+text_llrd_factor: !!float 0.8 # Layer-wise decay for text encoder
+video_llrd_factor: !!float 0.8 # Layer-wise decay for video encoder
+# Phased training configuration
+use_phased_training: !!bool true
+phase_a_epochs: !!int 5 # Phase A: Warm-start (freeze text, train video + heads) - Just 1 for testing
+phase_b_epochs: !!int 5 # Phase B: Alignment (unfreeze top 2-4 BERT layers) - Skip for testing
+phase_c_epochs: !!int 20 # Phase C: Fine-tune (optional full LLRD) - Skip for testing
+phase_a_text_layers: !!int 0 # All text frozen in phase A
+phase_b_text_layers: !!int 4 # Top 4 BERT layers unfrozen in phase B
+phase_c_text_layers: !!int 12 # All 12 BERT layers unfrozen in phase C
+# Logit scale (temperature) configuration
+logit_scale_init: !!float 2.659 # ln(1/0.07) ≈ 2.659
+logit_scale_min: !!float 0.0 # Clamp minimum
+logit_scale_max: !!float 3.912 # ln(50) ≈ 3.912
+clamp_logit_scale: !!bool true # Enable clamping to [0, ln(50)]
+# Mixed precision and normalization discipline
+text_amp_enabled: !!bool true # Enable AMP for text encoder
+video_amp_enabled: !!bool true # Enable AMP for video encoder  
+keep_norm_fp32: !!bool true # Keep LayerNorm & Softmax in fp32
+grad_clip_norm: !!float 0.5 # Gradient clipping norm (0.5-1.0)
+# Base optimizer parameters (fallback for single optimizer mode)
 optimizer: !!str AdamW
-scheduler_name: !!str linear_warmup
+scheduler_name: !!str cosine_with_warmup
 attention_pool_heads: !!int 8
 attention_pool_dropout: !!float 0.1
-lr: !!float 0.00002 # Reduced learning rate for stability with RoPE
+lr: !!float 0.00002 # Fallback learning rate
 lr_step_period: !!int 15
 factor: !!float 0.14617805853947136
 loss_name: !!str siglip_ddp
-video_weight_decay: !!float 0.000010931731551842769
-text_weight_decay: !!float 1.1105191010748157e-7
-gradient_accumulation_steps: !!int 1
+video_weight_decay: !!float 0.05 # Higher weight decay for video encoder
+text_weight_decay: !!float 0.01 # Lower weight decay for text (exclude LayerNorm/bias)
+gradient_accumulation_steps: !!int 1 # No accumulation for testing
 num_warmup_percent: !!float 0.05
 num_hard_restarts_cycles: !!int 1
 warm_restart_tmult: !!int 2
@@ -48,25 +74,25 @@ max_grad_norm: !!float 0.5 # Reduced for better stability
 # Model architecture parameters
 num_heads: !!int 16
 aggregator_depth: !!int 1
-temperature: !!float 0.08703471467769354
-dropout: !!float 0.11443597301670493
-video_freeze_ratio: !!float 0.0
-text_freeze_ratio: !!float 0.85
-# Temperature scheduling for stable SigLIP training
-temperature_schedule: !!str "cosine" # "linear", "cosine", "exponential", or "constant"
-temperature_start: !!float 0.5 # Moderate start temp to prevent SigLIP instability
-temperature_end: !!float 0.08703471467769354 # Target temperature (original value)
-temperature_warmup_epochs: !!int 8 # Longer warmup for stability
-# Video freeze scheduling for gradual unfreezing
-video_freeze_schedule: !!str "cosine" # Cosine for smoother transition
-video_freeze_start: !!float 0.95 # Start with 95% frozen (only 5% trainable)
-video_freeze_end: !!float 0.0 # End with fully trainable (needed for RoPE adaptation)
-video_freeze_warmup_epochs: !!int 10 # Much slower unfreezing over 10 epochs
-# Text freeze scheduling to maintain balance
-text_freeze_schedule: !!str "cosine" # Match video schedule type
-text_freeze_start: !!float 0.95 # Start similarly frozen
-text_freeze_end: !!float 0.7 # Keep some stability in text encoder
-text_freeze_warmup_epochs: !!int 10 # Same schedule length as video
+temperature: !!float 0.07 # Will be overridden by logit_scale_init
+dropout: !!float 0.1 # Simplified dropout
+video_freeze_ratio: !!float 0.0 # Start unfrozen for 3D RoPE adaptation
+text_freeze_ratio: !!float 0.95 # Start mostly frozen, will be controlled by phases
+# Temperature scheduling (disabled when using phased training with logit_scale control)
+temperature_schedule: !!str "constant" # Phased training controls temperature instead
+temperature_start: !!float 0.07 # Will be overridden by logit_scale_init
+temperature_end: !!float 0.07 # Will be overridden by logit_scale_init
+temperature_warmup_epochs: !!int 0 # Disabled - phased training handles this
+# Video freeze scheduling (disabled when using phased training)
+video_freeze_schedule: !!str "constant" # Phased training controls freezing
+video_freeze_start: !!float 0.0 # Controlled by phases
+video_freeze_end: !!float 0.0 # Controlled by phases
+video_freeze_warmup_epochs: !!int 0 # Disabled - phased training handles this
+# Text freeze scheduling (disabled when using phased training)
+text_freeze_schedule: !!str "constant" # Phased training controls freezing
+text_freeze_start: !!float 0.95 # Controlled by phases
+text_freeze_end: !!float 0.95 # Controlled by phases
+text_freeze_warmup_epochs: !!int 0 # Disabled - phased training handles this
 # Checkpointing
 resume_training: !!bool false
 checkpoint: !!str outputs/deepCORO_CLIP/DeepCORO_Clip_Sweep_Learnable_Temp_Full_mvit_b12_f16_RAdam_lr0.0001_20250114-190320_2o5xoevj/checkpoints/latest.pt
@@ -82,9 +108,9 @@ rand_augment: !!bool true
 resize: !!int 224
 apply_mask: !!bool false
 # wandb parameters
-tag: !!str mvit_pretrained
-name: !!str dev_deep_coro_clip_single_video
-project: !!str dev_deep_coro_clip_single_video
+tag: !!str mvit_3d_rope_two_opt_llrd_phased
+name: !!str mvit_3d_rope_two_optimizer_llrd_phased_siglip
+project: !!str deep_coro_clip_v2
 entity: !!str mhi_ai
 use_wandb: !!bool true
 # Inference parameters

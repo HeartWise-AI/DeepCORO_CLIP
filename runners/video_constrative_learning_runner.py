@@ -703,6 +703,8 @@ class VideoContrastiveLearningRunner:
             
             # Log best/worst retrievals using unique texts
             if self.wandb_wrapper.is_initialized():
+                # Calculate global step for consistent wandb logging
+                wandb_step = epoch * len(self.train_loader) + len(self.train_loader)
                 log_best_worst_retrievals(
                     similarity_matrix=similarity_matrix,
                     all_paths=global_paths,
@@ -710,7 +712,8 @@ class VideoContrastiveLearningRunner:
                     ground_truth_indices=ground_truth_indices,
                     epoch=epoch,
                     wandb_wrapper=self.wandb_wrapper,
-                    dataset_obj=dataset # Pass the dataset object
+                    dataset_obj=dataset, # Pass the dataset object
+                    step=wandb_step
                 )
 
             # Save retrieval results with mapping

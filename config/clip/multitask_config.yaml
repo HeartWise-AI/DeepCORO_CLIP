@@ -1,14 +1,14 @@
 pipeline_project: !!str "DeepCORO_multitask"
 base_checkpoint_path: !!str outputs
 # Training parameters
-epochs: !!int 25
+epochs: !!int 30
 num_workers: !!int 16
 debug: !!bool false
 use_amp: !!bool true
 period: !!int 1
 run_mode: !!str train
 # Dataset parameters
-data_filename: !!str reports/dataset_with_splits_20250801.csv
+data_filename: !!str /media/data1/ravram/DeepCORO_CLIP_ENCODER/datasets/reports_with_alpha_separator_with_Calcifc_Stenosis_IFR_20250601_RCA_LCA_merged_with_left_dominance_dependent_vessels.csv
 root: !!str "."
 target_label: !!str Report
 datapoint_loc_label: !!str FileName
@@ -20,7 +20,7 @@ multi_video: !!bool false
 num_videos: !!int 1
 groupby_column: !!str StudyInstanceUID
 shuffle_videos: !!bool true
-batch_size: !!int 20
+batch_size: !!int 60
 # Seed
 seed: !!int 42
 # Model parameters

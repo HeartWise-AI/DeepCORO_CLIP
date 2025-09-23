@@ -516,6 +516,7 @@ def apply_hard_filters(df: pd.DataFrame, config: Dict[str, Any]) -> pd.DataFrame
         # FILTER EXCESSIVE NORMAL REPORTS (per vessel system)
         # ──────────────────────────────────────────────────────────────────────────
         normal_report_ratio = config.get('filters', {}).get('normal_report_ratio', 0.05)  # Default to 5%
+        logger.info(f"Using normal report ratio: {normal_report_ratio*100:.1f}%")
         
         # Identify normal reports based on main_structure_name
         if 'main_structure_name' in df.columns:
@@ -925,7 +926,7 @@ def create_default_config() -> Dict[str, Any]:
             'status': ['diagnostic', 'POST_PCI'],  # Options: 'diagnostic', 'PCI', 'POST_PCI' or list
             'main_structures': ['Left Coronary', 'Right Coronary'],
             'contrast_agent_class': 1,
-            'normal_report_ratio': 0.05  # Limit normal reports to 5% per vessel type
+            'normal_report_ratio': 0.05  # Limit normal reports to 5% per vessel type (0.05 = 5%, 0.1 = 10%, etc.)
         },
         'report_settings': {
             'coronary_specific': True
@@ -960,12 +961,10 @@ def main():
     )
     parser.add_argument(
         '--input-csv', 
-        required=True,
         help='Path to input CSV or Parquet file'
     )
     parser.add_argument(
         '--output-dir',
-        required=True,
         help='Directory to save processed dataset'
     )
     parser.add_argument(
@@ -977,6 +976,11 @@ def main():
         action='store_true',
         help='Create a default configuration file and exit'
     )
+    parser.add_argument(
+        '--normal-report-ratio',
+        type=float,
+        help='Percentage of normal reports to keep (0.05 = 5%%, 0.1 = 10%%, etc.)'
+    )
     
     args = parser.parse_args()
     
@@ -987,12 +991,23 @@ def main():
         print("Created default_config.yaml")
         return
     
+    # Validate required arguments for normal operation
+    if not args.input_csv or not args.output_dir:
+        parser.error("--input-csv and --output-dir are required when not creating default config")
+    
     # Load configuration
     if args.config:
         config = load_config(args.config)
     else:
         logger.info("No config provided, using default configuration")
         config = create_default_config()
+    
+    # Override normal report ratio if provided via command line
+    if args.normal_report_ratio is not None:
+        if 'filters' not in config:
+            config['filters'] = {}
+        config['filters']['normal_report_ratio'] = args.normal_report_ratio
+        logger.info(f"Overriding normal report ratio to {args.normal_report_ratio*100:.1f}% via command line")
     
     # Process dataset
     process_dataset(args.input_csv, args.output_dir, config)

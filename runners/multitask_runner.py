@@ -631,11 +631,22 @@ class MultitaskRunner:
                     self._log_memory_stats(f"{mode}_after_metrics", batch_idx=num_batches, epoch=epoch)
                 
                 # Compute captioning metrics if available
+                print(f"\n[DEBUG] Checking if should compute captioning metrics:")
+                print(f"  - gathered_generated exists: {bool(gathered_generated)}")
+                print(f"  - gathered_targets exists: {bool(gathered_targets)}")
+                if gathered_generated:
+                    print(f"  - gathered_generated count: {len(gathered_generated)}")
+                if gathered_targets:
+                    print(f"  - gathered_targets count: {len(gathered_targets)}")
+                    
                 if gathered_generated and gathered_targets:
+                    print(f"  - Calling _compute_captioning_metrics...")
                     captioning_metrics = self._compute_captioning_metrics(
                         gathered_generated, gathered_targets, epoch
                     )
                     metrics.update(captioning_metrics)
+                else:
+                    print(f"  - Skipping captioning metrics (no generated/target texts)")
                 
                 # Save predictions for validation
                 if mode == "val":
@@ -968,12 +979,22 @@ class MultitaskRunner:
             # Decode generated texts
             generated_texts = []
             target_texts = []
+            
+            # Debug: Check generated IDs
+            print(f"\n[DEBUG] Caption generation in val_step:")
+            print(f"  - Generated IDs shape: {generated_ids.shape if hasattr(generated_ids, 'shape') else 'N/A'}")
+            if hasattr(generated_ids, 'shape') and len(generated_ids) > 0:
+                print(f"  - First generated IDs sample: {generated_ids[0][:20].tolist() if len(generated_ids[0]) > 0 else 'EMPTY'}")
+            
             if self.tokenizer is not None:
                 for i in range(len(generated_ids)):
                     generated_text = self.tokenizer.decode(
                         generated_ids[i], 
                         skip_special_tokens=True
                     )
+                    if i == 0:  # Debug first sample
+                        print(f"  - First decoded text length: {len(generated_text)}")
+                        print(f"  - First decoded text: '{generated_text[:100]}...' if len > 100 else '{generated_text}'")
                     target_text = self.tokenizer.decode(
                         input_ids[i], 
                         skip_special_tokens=True
@@ -1168,7 +1189,14 @@ class MultitaskRunner:
         """Compute captioning metrics including BLEU, ROUGE, and METEOR."""
         metrics = {}
         
+        print(f"\n[DEBUG] _compute_captioning_metrics called:")
+        print(f"  - Number of generated texts: {len(generated_texts) if generated_texts else 0}")
+        print(f"  - Number of target texts: {len(target_texts) if target_texts else 0}")
+        print(f"  - Epoch: {epoch}")
+        print(f"  - WandB initialized: {self.wandb_wrapper.is_initialized()}")
+        
         if not generated_texts or not target_texts:
+            print(f"  - Returning early: no texts to process")
             return metrics
         
         try:
@@ -1228,7 +1256,13 @@ class MultitaskRunner:
                 metrics["METEOR"] = sum(meteor_scores) / len(meteor_scores)
             
             # Log best, random, and worst caption examples to W&B
+            print(f"\n[DEBUG] Checking if should log examples to W&B:")
+            print(f"  - WandB initialized: {self.wandb_wrapper.is_initialized()}")
+            print(f"  - Generated texts count: {len(generated_texts)}")
+            print(f"  - Need at least 5 texts: {len(generated_texts) >= 5}")
+            
             if self.wandb_wrapper.is_initialized() and len(generated_texts) >= 5:
+                print(f"  - Proceeding with W&B logging...")
                 # Calculate BLEU scores for all samples to identify best/worst
                 sample_scores = bleu_scores if bleu_scores else [0.0] * len(generated_texts)
                 
@@ -1262,12 +1296,21 @@ class MultitaskRunner:
                     random_html += f"<b>Generated:</b> {generated_texts[idx]}<br>"
                     random_html += f"<b>Target:</b> {target_texts[idx]}</p>"
                 
+                print(f"\n[DEBUG] Logging captioning examples to W&B:")
+                print(f"  - global_step: {self.global_step}")
+                print(f"  - epoch: {epoch}")
+                print(f"  - Best examples length: {len(best_html)}")
+                print(f"  - Worst examples length: {len(worst_html)}")
+                print(f"  - Random examples length: {len(random_html)}")
+                
                 self.wandb_wrapper.log({
                     "captioning/best_examples": wandb.Html(best_html),
                     "captioning/worst_examples": wandb.Html(worst_html),
                     "captioning/random_examples": wandb.Html(random_html),
                     "epoch": epoch,
                 }, step=self.global_step)
+                
+                print(f"  - W&B log call completed successfully")
             
         except ImportError as e:
             print(f"Warning: Could not compute caption metrics due to missing dependencies: {e}")

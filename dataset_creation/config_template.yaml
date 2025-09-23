@@ -19,6 +19,11 @@ filters:
   
   # Contrast agent class filter (1 = positive, 0 = negative)
   contrast_agent_class: 1
+  
+  # Normal report ratio - percentage of normal reports to keep per vessel type
+  # This helps balance the dataset by limiting excessive normal reports
+  # Examples: 0.05 = 5%, 0.1 = 10%, 0.15 = 15%, 0.0 = 0%, 1.0 = 100%
+  normal_report_ratio: 1
 
 # Report generation settings
 report_settings:
@@ -36,10 +41,10 @@ train_test_split:
   train_ratio: 0.7
   
   # Ratio of patients for validation set (0.0-1.0)
-  val_ratio: 0.1
+  val_ratio: 0.15
   
   # Ratio of patients for test set (0.0-1.0, will be computed as 1 - train_ratio - val_ratio if not specified)
-  test_ratio: 0.2
+  test_ratio: 0.15
   
   # Random seed for reproducible splits
   random_state: 42

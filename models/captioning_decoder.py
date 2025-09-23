@@ -60,8 +60,8 @@ class CaptioningDecoder(nn.Module):
         else:
             self.tokenizer = None
         
-        # Token embeddings
-        self.token_embeddings = nn.Embedding(vocab_size, hidden_size, padding_idx=pad_token_id)
+        # Token embeddings - use updated vocab_size and pad_token_id
+        self.token_embeddings = nn.Embedding(self.vocab_size, hidden_size, padding_idx=self.pad_token_id)
         
         # Position embeddings
         self.position_embeddings = nn.Embedding(max_position_embeddings, hidden_size)
@@ -274,9 +274,18 @@ class CaptioningDecoder(nn.Module):
         # Initialize with BOS token
         input_ids = torch.full((batch_size, 1), bos_token_id, device=device, dtype=torch.long)
         
+        # Debug: Check initialization
+        print(f"\n[DEBUG] CaptioningDecoder.generate:")
+        print(f"  - Batch size: {batch_size}")
+        print(f"  - BOS token ID: {bos_token_id}")
+        print(f"  - EOS token ID: {eos_token_id}")
+        print(f"  - PAD token ID: {pad_token_id}")
+        print(f"  - Max length: {max_length}")
+        print(f"  - Initial input_ids: {input_ids[0].tolist() if batch_size > 0 else 'N/A'}")
+        
         # Generate tokens autoregressively
         # Note: Caching is disabled since MultiheadAttention doesn't support it
-        for _ in range(max_length - 1):
+        for step in range(max_length - 1):
             outputs = self.forward(
                 input_ids=input_ids,
                 video_features=video_features,
@@ -327,8 +336,15 @@ class CaptioningDecoder(nn.Module):
             # Append new tokens
             input_ids = torch.cat([input_ids, next_tokens.unsqueeze(-1)], dim=-1)
             
+            # Debug: Check if generating EOS immediately
+            if step < 3:  # Only debug first few steps
+                print(f"  - Step {step}: Generated token {next_tokens[0].item() if batch_size > 0 else 'N/A'}")
+                if next_tokens[0].item() == eos_token_id:
+                    print(f"  - WARNING: Generated EOS at step {step}!")
+            
             # Check if all sequences have reached EOS
             if (input_ids == eos_token_id).any(dim=-1).all():
+                print(f"  - Stopping at step {step}: All sequences reached EOS")
                 break
         
         return input_ids

@@ -65,10 +65,10 @@ class ContrastivePretrainingProject(BaseProject):
             split="val", 
             mean=mean.tolist(),
             std=std.tolist(),
-            shuffle=False,
+            shuffle=False,  # IMPORTANT: Never shuffle validation
             num_replicas=self.config.world_size,
             rank=self.config.device,
-            drop_last=False,
+            drop_last=False,  # IMPORTANT: Keep all validation samples
         )
 
         # Create models

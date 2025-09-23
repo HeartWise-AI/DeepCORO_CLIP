@@ -65,3 +65,6 @@ pytest
 - Always ensure CUDA devices are available before running GPU training
 - The sweep script automatically handles distributed training setup
 - Monitor GPU memory usage to avoid OOM errors
+- awlays use source .venv/bin/activeate
+- In Python dataclasses, fields with default values must come after fields without
+  defaults.

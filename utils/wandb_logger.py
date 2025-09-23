@@ -324,18 +324,16 @@ class WandbLogger:
 
                 wandb.log(
                     {
-                        f"{scenario}/qualitative/good_retrieval_epoch_{epoch}_{i}": wandb.Video(
+                        f"{scenario}/qualitative/good_retrieval_{i}": wandb.Video(
                             mp4_path,
                             caption=(
-                                f"Good {scenario} Retrieval {i+1} "
+                                f"Good {scenario} Retrieval {i+1} @ Epoch {epoch} "
                                 f"(Sim: {report_data['similarity_score']:.3f})"
                             ),
                         ),
-                        f"{scenario}/qualitative/good_reports_epoch_{epoch}_{i}": wandb.Html(report_html),
-                        f"{scenario}/qualitative/good_similarity_epoch_{epoch}_{i}": report_data["similarity_score"],
-                        "epoch": epoch,
-                    },
-                    step=epoch,
+                        f"{scenario}/qualitative/good_reports_{i}": wandb.Html(report_html),
+                        f"{scenario}/qualitative/good_similarity_{i}": report_data["similarity_score"],
+                    }
                 )
 
             except Exception as e:
@@ -366,18 +364,16 @@ class WandbLogger:
 
                 wandb.log(
                     {
-                        f"{scenario}/qualitative/bad_retrieval_epoch_{epoch}_{i}": wandb.Video(
+                        f"{scenario}/qualitative/bad_retrieval_{i}": wandb.Video(
                             mp4_path,
                             caption=(
-                                f"Bad {scenario} Retrieval {i+1} "
+                                f"Bad {scenario} Retrieval {i+1} @ Epoch {epoch} "
                                 f"(Sim: {report_data['similarity_score']:.3f})"
                             ),
                         ),
-                        f"{scenario}/qualitative/bad_reports_epoch_{epoch}_{i}": wandb.Html(report_html),
-                        f"{scenario}/qualitative/bad_similarity_epoch_{epoch}_{i}": report_data["similarity_score"],
-                        "epoch": epoch,
-                    },
-                    step=epoch,
+                        f"{scenario}/qualitative/bad_reports_{i}": wandb.Html(report_html),
+                        f"{scenario}/qualitative/bad_similarity_{i}": report_data["similarity_score"],
+                    }
                 )
 
             except Exception as e:
@@ -627,7 +623,8 @@ def log_best_worst_retrievals(
     ground_truth_indices: torch.Tensor,
     epoch: int, 
     wandb_wrapper: WandbWrapper,
-    dataset_obj: VideoClipDataset 
+    dataset_obj: VideoClipDataset,
+    step: Optional[int] = None
 ) -> None:
     """Log best and worst retrievals to wandb.
     
@@ -639,6 +636,7 @@ def log_best_worst_retrievals(
         ground_truth_indices: Tensor mapping each video to its ground truth text index
         epoch: Current epoch number
         dataset_obj: The VideoClipDataset instance for multi-video path resolution.
+        step: Optional wandb step to use (if None, uses epoch)
     """
     if not wandb_wrapper.is_initialized(): # Check if wandb is initialized
         return
@@ -646,7 +644,7 @@ def log_best_worst_retrievals(
     # Find best and worst retrievals based on maximum similarity scores for each video
     max_scores_per_video, _ = similarity_matrix.max(dim=1)
     
-    num_examples_to_log = 2  # Log top 2 best and top 2 worst
+    num_examples_to_log = 5  # Log top 5 best and top 5 worst
     
     # Ensure k is not greater than the number of videos
     k_actual = min(num_examples_to_log, max_scores_per_video.numel())
@@ -672,7 +670,8 @@ def log_best_worst_retrievals(
             epoch=epoch,
             is_best=True,
             wandb_wrapper=wandb_wrapper,
-            dataset_obj=dataset_obj
+            dataset_obj=dataset_obj,
+            step=step
         )
 
     # Process and log worst retrievals
@@ -689,7 +688,8 @@ def log_best_worst_retrievals(
             epoch=epoch,
             is_best=False,
             wandb_wrapper=wandb_wrapper,
-            dataset_obj=dataset_obj
+            dataset_obj=dataset_obj,
+            step=step
         )
 
 def _log_retrieval(
@@ -702,7 +702,8 @@ def _log_retrieval(
     epoch: int,
     is_best: bool,
     wandb_wrapper: WandbWrapper,
-    dataset_obj: VideoClipDataset
+    dataset_obj: VideoClipDataset,
+    step: Optional[int] = None
 ) -> None:
     """Helper function to log a single retrieval example."""
     top_5_text_indices = torch.argsort(similarity_matrix[idx], descending=True)[:5]
@@ -758,7 +759,9 @@ def _log_retrieval(
             ),
             f"qualitative/{prefix}_retrieval_text": wandb.Html(ground_truth_html),
         }
-        wandb_wrapper.log(log_dict, step=int(epoch) if not isinstance(epoch, int) else epoch)
+        # Use provided step if available, otherwise fall back to epoch
+        wandb_step = step if step is not None else epoch
+        wandb_wrapper.log(log_dict, step=wandb_step)
         
         if is_temp_video:
             cleanup_temp_video(video_to_log_path)

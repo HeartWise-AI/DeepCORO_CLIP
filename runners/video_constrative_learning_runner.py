@@ -1,5 +1,6 @@
 import os
 import pandas as pd
+import math
 
 import torch
 import torch.nn as nn
@@ -111,6 +112,119 @@ class VideoContrastiveLearningRunner:
         # For simplicity: check the config for a known scheduler_name
         # If it includes "_warmup" or is from HF, we treat it as per-iteration
         self.scheduler_per_iteration = self._scheduler_is_per_iteration()
+        
+        # Store initial temperature for scheduling
+        self.initial_log_temp = log_temp.clone() if log_temp is not None else torch.log(torch.tensor(config.temperature))
+
+    def _compute_temperature_schedule(self, epoch: int) -> float:
+        """
+        Compute scheduled temperature for current epoch.
+        
+        Args:
+            epoch: Current epoch number (0-indexed)
+            
+        Returns:
+            Scheduled temperature value
+        """
+        schedule_type = getattr(self.config, "temperature_schedule", "constant")
+        temp_start = getattr(self.config, "temperature_start", self.config.temperature)
+        temp_end = getattr(self.config, "temperature_end", self.config.temperature)
+        warmup_epochs = getattr(self.config, "temperature_warmup_epochs", 0)
+        
+        if schedule_type == "constant" or warmup_epochs <= 0:
+            return self.config.temperature
+        
+        if epoch >= warmup_epochs:
+            return temp_end
+        
+        progress = epoch / warmup_epochs
+        
+        if schedule_type == "linear":
+            return temp_start + (temp_end - temp_start) * progress
+        elif schedule_type == "cosine":
+            # Cosine annealing from start to end
+            cosine_factor = (1 - math.cos(progress * math.pi)) / 2
+            return temp_start + (temp_end - temp_start) * cosine_factor
+        elif schedule_type == "exponential":
+            # Exponential decay
+            decay_rate = math.log(temp_end / temp_start) / warmup_epochs
+            return temp_start * math.exp(decay_rate * epoch)
+        else:
+            return self.config.temperature
+    
+    def _compute_freeze_schedule(self, epoch: int) -> float:
+        """
+        Compute scheduled video freeze ratio for current epoch.
+        
+        Args:
+            epoch: Current epoch number (0-indexed)
+            
+        Returns:
+            Scheduled freeze ratio (1.0 = all frozen, 0.0 = all trainable)
+        """
+        schedule_type = getattr(self.config, "video_freeze_schedule", "constant")
+        freeze_start = getattr(self.config, "video_freeze_start", self.config.video_freeze_ratio)
+        freeze_end = getattr(self.config, "video_freeze_end", self.config.video_freeze_ratio)
+        warmup_epochs = getattr(self.config, "video_freeze_warmup_epochs", 0)
+        
+        if schedule_type == "constant" or warmup_epochs <= 0:
+            return self.config.video_freeze_ratio
+        
+        if epoch >= warmup_epochs:
+            return freeze_end
+        
+        progress = epoch / warmup_epochs
+        
+        if schedule_type == "linear":
+            return freeze_start + (freeze_end - freeze_start) * progress
+        elif schedule_type == "cosine":
+            # Cosine annealing from start to end
+            cosine_factor = (1 - math.cos(progress * math.pi)) / 2
+            return freeze_start + (freeze_end - freeze_start) * cosine_factor
+        elif schedule_type == "step":
+            # Step-wise decrease
+            steps = warmup_epochs
+            step_size = (freeze_start - freeze_end) / steps
+            return max(freeze_end, freeze_start - step_size * (epoch + 1))
+        else:
+            return self.config.video_freeze_ratio
+    
+    def _compute_text_freeze_schedule(self, epoch: int) -> float:
+        """
+        Compute scheduled text encoder freeze ratio for current epoch.
+        
+        Args:
+            epoch: Current epoch number (0-indexed)
+            
+        Returns:
+            Scheduled freeze ratio (1.0 = all frozen, 0.0 = all trainable)
+        """
+        schedule_type = getattr(self.config, "text_freeze_schedule", "constant")
+        freeze_start = getattr(self.config, "text_freeze_start", self.config.text_freeze_ratio)
+        freeze_end = getattr(self.config, "text_freeze_end", self.config.text_freeze_ratio)
+        warmup_epochs = getattr(self.config, "text_freeze_warmup_epochs", 0)
+        
+        if schedule_type == "constant" or warmup_epochs <= 0:
+            return self.config.text_freeze_ratio
+        
+        if epoch >= warmup_epochs:
+            return freeze_end
+        
+        progress = epoch / warmup_epochs
+        
+        if schedule_type == "linear":
+            return freeze_start + (freeze_end - freeze_start) * progress
+        elif schedule_type == "cosine":
+            # Cosine annealing from start to end
+            cosine_factor = (1 - math.cos(progress * math.pi)) / 2
+            return freeze_start + (freeze_end - freeze_start) * cosine_factor
+        elif schedule_type == "step":
+            # Step-wise decrease
+            steps = warmup_epochs
+            step_size = (freeze_start - freeze_end) / steps
+            return max(freeze_end, freeze_start - step_size * (epoch + 1))
+        else:
+            return self.config.text_freeze_ratio
 
     def _scheduler_is_per_iteration(self) -> bool:
         """
@@ -149,9 +263,40 @@ class VideoContrastiveLearningRunner:
                     world_size=self.world_size,
                     device_ids=self.device
                 )
+                
+                # Apply temperature schedule
+                scheduled_temp = self._compute_temperature_schedule(epoch)
+                self.log_temp = torch.log(torch.tensor(scheduled_temp, device=self.device))
+                if self.config.is_ref_device:
+                    print(f"\n[Epoch {epoch+1}] Temperature scheduled: {scheduled_temp:.4f}")
+                
+                # Apply freeze ratio schedule for video encoder
+                scheduled_video_freeze = self._compute_freeze_schedule(epoch)
+                if hasattr(self.video_encoder, 'update_freeze_ratio'):
+                    self.video_encoder.update_freeze_ratio(scheduled_video_freeze)
+                    if self.config.is_ref_device:
+                        print(f"[Epoch {epoch+1}] Video freeze ratio scheduled: {scheduled_video_freeze:.2f}")
+                
+                # Apply freeze ratio schedule for text encoder
+                scheduled_text_freeze = self._compute_text_freeze_schedule(epoch)
+                if hasattr(self.text_encoder, 'update_freeze_ratio'):
+                    self.text_encoder.update_freeze_ratio(scheduled_text_freeze)
+                    if self.config.is_ref_device:
+                        print(f"[Epoch {epoch+1}] Text freeze ratio scheduled: {scheduled_text_freeze:.2f}")
+                
+                # Set epoch for both train and val samplers (ensures deterministic behavior)
+                if hasattr(self.train_loader.sampler, 'set_epoch'):
+                    self.train_loader.sampler.set_epoch(epoch)
+                if hasattr(self.val_loader.sampler, 'set_epoch'):
+                    self.val_loader.sampler.set_epoch(epoch)  # Important for validation stability
 
                 # Training phase
                 train_metrics: dict[str, float] = self._run_epoch(mode=RunMode.TRAIN, epoch=epoch)
+                
+                # Add scheduled values to metrics
+                train_metrics["train/scheduled_temperature"] = scheduled_temp
+                train_metrics["train/scheduled_video_freeze_ratio"] = scheduled_video_freeze
+                train_metrics["train/scheduled_text_freeze_ratio"] = scheduled_text_freeze
                 if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
                     # Let wandb auto-increment steps
                     self.wandb_wrapper.log(train_metrics)
@@ -379,6 +524,13 @@ class VideoContrastiveLearningRunner:
 
         self.video_encoder.train(mode == RunMode.TRAIN)
         self.text_encoder.train(mode == RunMode.TRAIN)
+        
+        # Extra synchronization for validation to ensure all ranks start together
+        if mode == RunMode.VALIDATE:
+            if torch.distributed.is_initialized():
+                torch.distributed.barrier()
+                if self.config.is_ref_device:
+                    print(f"[Validation] All ranks synchronized, starting validation epoch {epoch + 1}")
 
         total_loss: float = 0.0
         epoch_metrics: dict[str, float] = {}
@@ -406,8 +558,19 @@ class VideoContrastiveLearningRunner:
 
         batch_count: int = 0
         for _, batch in enumerate(iterator_obj, start=1): # Use iterator_obj
-            if batch["videos"] is None or batch["encoded_texts"] is None:
+            # For validation, NEVER skip batches to maintain rank synchronization
+            if mode == RunMode.TRAIN and (batch["videos"] is None or batch["encoded_texts"] is None):
                 continue
+            elif mode == RunMode.VALIDATE and (batch["videos"] is None or batch["encoded_texts"] is None):
+                # Create dummy tensors to maintain synchronization across ranks
+                if self.config.is_ref_device:
+                    print(f"Warning: Empty batch in validation at batch {batch_count+1}, using dummy tensors")
+                # Use existing batch structure but with dummy values
+                if batch["videos"] is None:
+                    batch["videos"] = torch.zeros(1, 3, self.config.frames, 224, 224, device=self.device)
+                if batch["encoded_texts"] is None:
+                    batch["encoded_texts"] = {"input_ids": torch.zeros(1, 1, dtype=torch.long, device=self.device),
+                                            "attention_mask": torch.zeros(1, 1, dtype=torch.long, device=self.device)}
 
             step_inputs, paths_or_sids = self._preprocess_inputs(batch)
 
@@ -540,6 +703,8 @@ class VideoContrastiveLearningRunner:
             
             # Log best/worst retrievals using unique texts
             if self.wandb_wrapper.is_initialized():
+                # Calculate global step for consistent wandb logging
+                wandb_step = epoch * len(self.train_loader) + len(self.train_loader)
                 log_best_worst_retrievals(
                     similarity_matrix=similarity_matrix,
                     all_paths=global_paths,
@@ -547,7 +712,8 @@ class VideoContrastiveLearningRunner:
                     ground_truth_indices=ground_truth_indices,
                     epoch=epoch,
                     wandb_wrapper=self.wandb_wrapper,
-                    dataset_obj=dataset # Pass the dataset object
+                    dataset_obj=dataset, # Pass the dataset object
+                    step=wandb_step
                 )
 
             # Save retrieval results with mapping

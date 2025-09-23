@@ -1,0 +1,144 @@
+command:
+  - torchrun
+  - "--nproc_per_node=1"
+  - "--master_port=29500"
+  - "scripts/main.py"
+  - "--base_config"
+  - "config/linear_probing/DeepLVEDP/base_config_DeepLVEDP_cls_token.yaml"
+  - ${args}
+name: "DeepCORO_video_linear_probing_deepLVEDP_cls_token_sweep"
+project: "DeepCORO_video_linear_probing_deepLVEDP_cls_token"
+entity: "mhi_ai"
+method: bayes
+metric:
+  name: best_val_loss
+  goal: minimize
+parameters:
+  # CLS Token specific parameters
+  pooling_mode:
+    values: ["cls_token", "attention+cls_token"]
+  use_cls_token:
+    values: [true]
+  num_attention_heads:
+    values: [8, 16, 24]
+  separate_video_attention:
+    values: [true]
+  normalization_strategy:
+    values: ["post_norm", "pre_norm"]
+  
+  # Separate attention learning rates
+  attention_within_lr:
+    distribution: uniform
+    min: 0.0005
+    max: 0.005
+  attention_across_lr:
+    distribution: uniform
+    min: 0.0005
+    max: 0.003
+  attention_within_weight_decay:
+    distribution: uniform
+    min: 0.000001
+    max: 0.0001
+  attention_across_weight_decay:
+    distribution: uniform
+    min: 0.000001
+    max: 0.0001
+  
+  # Standard parameters
+  aggregate_videos_tokens:
+    values: [false]
+  batch_size:
+    values: [6, 8, 10]  # Smaller batches for hybrid pooling
+  dropout:
+    distribution: uniform
+    min: 0.05
+    max: 0.25
+  dropout_attention:
+    distribution: uniform
+    min: 0.1
+    max: 0.3
+  entity:
+    values: ["mhi_ai"]
+  factor:
+    distribution: uniform
+    min: 0.1
+    max: 0.7
+  head_lr.Outcome:
+    distribution: uniform
+    min: 0.00005
+    max: 0.0002  # Lower for hybrid pooling
+  attention_hidden:
+    values: [128, 256, 512]
+  head_weight_decay.Outcome:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  lr_step_period:
+    values: [4, 6, 8]
+  name:
+    values: ["DeepCORO_video_linear_probing_deepLVEDP_cls_token_sweep"]
+  num_videos:
+    values: [3, 4]
+  num_warmup_percent:
+    distribution: uniform
+    min: 0.05
+    max: 0.15
+  optimizer:
+    values: [AdamW, RAdam]
+  per_video_pool:
+    values: [false]
+  project:
+    values: ["DeepCORO_video_linear_probing_deepIFR_cls_token"]
+  scheduler_name:
+    values: ["cosine_with_warmup", "cosine_with_hard_restarts_with_warmup"]
+  stride:
+    values: [1, 2]
+  video_encoder_lr:
+    distribution: uniform
+    min: 0.000005
+    max: 0.00002  # Conservative for pretrained
+  video_encoder_weight_decay:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  video_freeze_ratio:
+    distribution: uniform
+    min: 0.75
+    max: 0.95
+early_terminate:
+  type: hyperband
+  min_iter: 3
+  eta: 2
+  s: 2
+run_mode: train
+
+# Sweep-specific notes
+notes: |
+  Hyperparameter Sweep for CLS Token Hierarchical Video Processing - DeepIFR
+  
+  Focus Areas:
+  • Learning rate tuning for different model components
+  • Attention mechanism hyperparameters  
+  • Dropout regularization for transformer-style architecture
+  • Batch size optimization for 4D inputs
+  • Video freezing ratios for transfer learning
+  
+  Key Differences from Standard Pooling Sweeps:
+  • Fixed pooling_mode to "cls_token"
+  • aggregate_videos_tokens always false to maintain hierarchical structure
+  • Higher attention learning rates since attention layers train from scratch
+  • Lower video encoder learning rates to preserve pretrained features
+  • Smaller batch sizes due to memory requirements of 4D processing
+  
+  DeepIFR Specific Optimizations:
+  • Dual task optimization: mid_lad_IFRHYPER (regression) + Outcome (classification)
+  • IFR-specific hyperparameter ranges tuned for cardiac vessel analysis
+  • Dataset: df_mid_lad_diagnostic_20172024_alpha.csv
+  • Targets: LAD vessel IFR continuous values and categorical classification
+  
+  Expected Performance Improvements:
+  • Better capture of temporal dependencies within videos
+  • More sophisticated cross-video relationships
+  • Task-adaptive attention patterns for IFR prediction
+  • Superior performance compared to fixed pooling methods
+  • Enhanced LAD vessel assessment capabilities 

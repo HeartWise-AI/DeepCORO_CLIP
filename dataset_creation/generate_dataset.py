@@ -850,7 +850,7 @@ def process_dataset(
         test_ratio = config['train_test_split'].get('test_ratio', 0.2)
         random_state = config['train_test_split'].get('random_state', 42)
         patient_column = config['train_test_split'].get('patient_column', 'CathReport_MRN')
-        separator = config.get('output_settings', {}).get('separator', ',')
+        separator = config.get('output_settings', {}).get('separator', 'α')
         
         # Add patient-based splits
         df_with_splits = assign_patient_splits(

@@ -63,3 +63,4 @@ api_key.json
 
 # Videos
 *.avi
+&.log

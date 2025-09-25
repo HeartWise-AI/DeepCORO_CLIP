@@ -1,5 +1,5 @@
 from typing import List, Optional, Dict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from utils.registry import ConfigRegistry
 from utils.config.heartwise_config import HeartWiseConfig
@@ -74,6 +74,7 @@ class MultitaskConfig(HeartWiseConfig):
     save_best: str
     resume_training: bool
     checkpoint: Optional[str]
+    output_dir: str  # Directory for saving outputs
     
     # Inference parameters
     topk: int
@@ -109,17 +110,22 @@ class MultitaskConfig(HeartWiseConfig):
     mvm_weight_decay: float
     
     # Loss configuration
-    contrastive_loss_type: str
-    captioning_loss_type: str
-    masked_modeling_loss_type: str
-    label_smoothing: float
-    ignore_index: int
+    contrastive_loss_type: str = "siglip"
+    captioning_loss_type: str = "cross_entropy"
+    masked_modeling_loss_type: str = "mse"
+    label_smoothing: float = 0.0
+    ignore_index: int = -100
     
     # Loss weights
-    loss_weights: Dict[str, float]
+    loss_weights: Dict[str, float] = field(default_factory=lambda: {
+        'contrastive': 1.0,
+        'captioning': 1.0,
+        'masked_modeling': 0.1,
+        'distillation': 0.0
+    })
     
     # Loss weight scheduler (optional)
-    use_loss_weight_scheduler: bool
+    use_loss_weight_scheduler: bool = False
     initial_loss_weights: Optional[Dict[str, float]] = None
     final_loss_weights: Optional[Dict[str, float]] = None
     loss_warmup_steps: Optional[int] = None
@@ -128,6 +134,21 @@ class MultitaskConfig(HeartWiseConfig):
     
     # Optional parameters
     view_count: Optional[int] = None
+
+    # Encoder checkpoint path (optional)
+    encoder_path: Optional[str] = None  # Path to pretrained encoder checkpoint
+
+    # RoPE configuration (optional with defaults)
+    use_rope: bool = False
+    rope_base: float = 10000.0
+    rope_temporal_scale: float = 1.0
+    rope_normalize_mode: str = "separate"  # "separate", "max", or "min"
+
+    # Optional overrides for dataset statistics step
+    stats_batch_size: Optional[int] = None
+    stats_num_workers: Optional[int] = None
+    stats_prefetch_factor: Optional[int] = None
+    stats_max_samples: Optional[int] = None
     
     def __post_init__(self):
         # Set default values for list fields

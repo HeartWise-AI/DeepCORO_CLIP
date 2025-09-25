@@ -274,15 +274,6 @@ class CaptioningDecoder(nn.Module):
         # Initialize with BOS token
         input_ids = torch.full((batch_size, 1), bos_token_id, device=device, dtype=torch.long)
         
-        # Debug: Check initialization
-        print(f"\n[DEBUG] CaptioningDecoder.generate:")
-        print(f"  - Batch size: {batch_size}")
-        print(f"  - BOS token ID: {bos_token_id}")
-        print(f"  - EOS token ID: {eos_token_id}")
-        print(f"  - PAD token ID: {pad_token_id}")
-        print(f"  - Max length: {max_length}")
-        print(f"  - Initial input_ids: {input_ids[0].tolist() if batch_size > 0 else 'N/A'}")
-        
         # Generate tokens autoregressively
         # Note: Caching is disabled since MultiheadAttention doesn't support it
         for step in range(max_length - 1):
@@ -336,15 +327,8 @@ class CaptioningDecoder(nn.Module):
             # Append new tokens
             input_ids = torch.cat([input_ids, next_tokens.unsqueeze(-1)], dim=-1)
             
-            # Debug: Check if generating EOS immediately
-            if step < 3:  # Only debug first few steps
-                print(f"  - Step {step}: Generated token {next_tokens[0].item() if batch_size > 0 else 'N/A'}")
-                if next_tokens[0].item() == eos_token_id:
-                    print(f"  - WARNING: Generated EOS at step {step}!")
-            
             # Check if all sequences have reached EOS
             if (input_ids == eos_token_id).any(dim=-1).all():
-                print(f"  - Stopping at step {step}: All sequences reached EOS")
                 break
         
         return input_ids

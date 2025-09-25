@@ -53,7 +53,7 @@ class MultitaskPretrainingProject(BaseProject):
         Returns:
             dict: Dictionary containing training objects
         """
-        # Calculate dataset statistics
+        # Calculate dataset statistics (now using only 1 batch for speed)
         mean, std = calculate_dataset_statistics_ddp(self.config)
 
         train_loader: DataLoader = get_distributed_video_clip_dataloader(
@@ -94,6 +94,11 @@ class MultitaskPretrainingProject(BaseProject):
             token_pooling_mode=self.config.video_pooling_mode,
             attention_pool_heads=self.config.attention_pool_heads,
             attention_pool_dropout=self.config.attention_pool_dropout,
+            encoder_path=getattr(self.config, 'encoder_path', None),
+            use_rope=getattr(self.config, 'use_rope', False),
+            rope_base=getattr(self.config, 'rope_base', 10000.0),
+            rope_temporal_scale=getattr(self.config, 'rope_temporal_scale', 1.0),
+            rope_normalize_mode=getattr(self.config, 'rope_normalize_mode', 'separate'),
         )
         video_encoder = video_encoder.to(self.config.device).float()
 
@@ -173,12 +178,6 @@ class MultitaskPretrainingProject(BaseProject):
                 'weight_decay': self.config.video_weight_decay
             },
             {
-                'params': video_encoder.module.aggregator.parameters(),  # Multihead attention aggregator
-                'lr': self.config.lr * 2.0,  # Higher learning rate for aggregator
-                'name': 'video_aggregator',
-                'weight_decay': self.config.video_weight_decay
-            },
-            {
                 'params': text_encoder.module.parameters(),  # Entire text encoder
                 'lr': getattr(self.config, 'text_lr', 0.00002),  # Lower learning rate for text encoder
                 'name': 'text_encoder',
@@ -202,6 +201,21 @@ class MultitaskPretrainingProject(BaseProject):
                 'name': 'temperature'
             }
         ]
+
+        aggregator_params = [
+            p for p in getattr(video_encoder.module, 'aggregator', nn.Identity()).parameters()
+            if p.requires_grad
+        ]
+        if aggregator_params:
+            param_groups.insert(
+                1,
+                {
+                    'params': aggregator_params,
+                    'lr': self.config.lr * 2.0,
+                    'name': 'video_aggregator',
+                    'weight_decay': self.config.video_weight_decay
+                }
+            )
 
         # Include the temperature parameter in the optimizer
         optimizer_class: torch.optim.Optimizer = getattr(torch.optim, self.config.optimizer)
@@ -236,7 +250,7 @@ class MultitaskPretrainingProject(BaseProject):
         loss_fn: Loss = Loss(
             loss_type=LossRegistry.get('multitask')(
                 loss_weights=loss_weights,
-                contrastive_loss_type=getattr(self.config, 'contrastive_loss_type', 'sigmoid'),
+                contrastive_loss_type=getattr(self.config, 'contrastive_loss_type', 'siglip'),
                 captioning_loss_type=getattr(self.config, 'captioning_loss_type', 'cross_entropy'),
                 masked_modeling_loss_type=getattr(self.config, 'masked_modeling_loss_type', 'mse'),
                 temperature=self.config.temperature,
@@ -282,7 +296,7 @@ class MultitaskPretrainingProject(BaseProject):
     def _setup_inference_objects(
         self,
     ) -> dict[str, Any]:
-        # Calculate dataset statistics
+        # Calculate dataset statistics (now using only 1 batch for speed)
         mean, std = calculate_dataset_statistics_ddp(self.config)
         
         val_loader: DataLoader = get_distributed_video_clip_dataloader(

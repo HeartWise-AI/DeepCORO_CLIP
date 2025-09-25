@@ -132,12 +132,6 @@ class ContrastivePretrainingProject(BaseProject):
                 'weight_decay': self.config.video_weight_decay
             },
             {
-                'params': video_encoder.module.aggregator.parameters(),  # Multihead attention aggregator
-                'lr': self.config.lr * 2.0,  # Higher learning rate for aggregator
-                'name': 'video_aggregator',
-                'weight_decay': self.config.video_weight_decay
-            },
-            {
                 'params': text_encoder.module.parameters(),  # Entire text encoder
                 'lr': 0.00002,  # Lower learning rate for text encoder
                 'name': 'text_encoder',
@@ -149,6 +143,21 @@ class ContrastivePretrainingProject(BaseProject):
                 'name': 'temperature'
             }
         ]
+
+        aggregator_params = [
+            p for p in getattr(video_encoder.module, 'aggregator', nn.Identity()).parameters()
+            if p.requires_grad
+        ]
+        if aggregator_params:
+            param_groups.insert(
+                1,
+                {
+                    'params': aggregator_params,
+                    'lr': self.config.lr * 2.0,  # Higher learning rate for aggregator
+                    'name': 'video_aggregator',
+                    'weight_decay': self.config.video_weight_decay
+                }
+            )
 
         # Include the temperature parameter in the optimizer
         optimizer_class: torch.optim.Optimizer = getattr(torch.optim, self.config.optimizer)
@@ -317,4 +326,3 @@ class ContrastivePretrainingProject(BaseProject):
             raise ValueError(
                 f"Invalid run mode: {self.config.run_mode}, must be one of {RunMode.TRAIN} or {RunMode.INFERENCE}"
             )
-

@@ -115,7 +115,7 @@ def test_multitask_loss():
             "masked_modeling": 0.1,
             "distillation": 0.0,
         },
-        contrastive_loss_type="sigmoid",
+        contrastive_loss_type="siglip",
         captioning_loss_type="cross_entropy",
         masked_modeling_loss_type="mse",
         temperature=0.1,

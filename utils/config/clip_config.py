@@ -94,7 +94,10 @@ class ClipConfig(HeartWiseConfig):
     
     # Optional parameters
     view_count: Optional[int] = None
-    
+
+    # Encoder checkpoint path (optional)
+    encoder_path: Optional[str] = None  # Path to pretrained encoder checkpoint
+
     # RoPE configuration (optional with defaults)
     use_rope: bool = False
     rope_base: float = 10000.0

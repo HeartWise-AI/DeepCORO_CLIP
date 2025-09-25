@@ -176,7 +176,7 @@ mvm_weight_decay: 0.01
 
 # Loss configuration
 loss_name: "multitask"
-contrastive_loss_type: "sigmoid"
+contrastive_loss_type: "siglip"
 captioning_loss_type: "cross_entropy"
 masked_modeling_loss_type: "mse"
 label_smoothing: 0.1

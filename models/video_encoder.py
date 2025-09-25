@@ -3,6 +3,7 @@
 import torch
 import torch.nn as nn
 import math
+from typing import Optional
 from torchvision.models.video import mvit_v2_s, r3d_18
 from torch.amp.autocast_mode import autocast
 
@@ -18,12 +19,12 @@ class VideoEncoder(nn.Module):
     """Video encoder model based on specified backbone."""
 
     def __init__(
-        self, 
-        backbone: str = "mvit", 
-        input_channels: int = 3, 
-        num_frames: int = 16, 
-        pretrained: bool = True, 
-        output_dim: int = 512, 
+        self,
+        backbone: str = "mvit",
+        input_channels: int = 3,
+        num_frames: int = 16,
+        pretrained: bool = True,
+        output_dim: int = 512,
         dropout: float = 0.2,
         num_heads: int = 4,
         freeze_ratio: float = 0.8,
@@ -39,6 +40,7 @@ class VideoEncoder(nn.Module):
         rope_normalize_mode: str = "separate",
         use_cls_token: bool = False,
         multi_video_cls_aggregation: str = "mean",  # "mean", "attention", or "first"
+        encoder_path: Optional[str] = None,  # Path to pretrained encoder checkpoint
     ):
         """Initialize the video encoder.
 
@@ -73,11 +75,22 @@ class VideoEncoder(nn.Module):
         # Store CLS token configuration
         self.use_cls_token = use_cls_token
         self.multi_video_cls_aggregation = multi_video_cls_aggregation
+        self.encoder_path = encoder_path
 
         # 1) Build backbone
-        if backbone == "mvit":
-            # Load the pretrained MViT v2 S
-            self.model: nn.Module = mvit_v2_s(weights="KINETICS400_V1" if pretrained else None)
+        if backbone == "mvit" or backbone == "mvit_rope":
+            # For mvit_rope, always load without pretrained weights initially
+            # We'll load the checkpoint weights later
+            if backbone == "mvit_rope":
+                self.model: nn.Module = mvit_v2_s(weights=None)
+                # Force RoPE to be enabled for mvit_rope
+                self.use_rope = True
+                print(f"[VideoEncoder] Initialized mvit_rope backbone (without pretrained weights)")
+                if encoder_path:
+                    print(f"[VideoEncoder] Will load encoder checkpoint from: {encoder_path}")
+            else:
+                # Load the pretrained MViT v2 S
+                self.model: nn.Module = mvit_v2_s(weights="KINETICS400_V1" if pretrained else None)
             # Start with a sane default. We will try to infer the real value
             # from the last ``nn.Linear`` layer in ``self.model.head``.
             in_features = 768
@@ -176,7 +189,15 @@ class VideoEncoder(nn.Module):
             use_positional_encoding=True,
             aggregator_depth=aggregator_depth
         )
-                
+
+        if not aggregate_videos_tokens:
+            for param in self.aggregator.parameters():
+                param.requires_grad_(False)
+
+        # 3.5) Load encoder checkpoint if provided
+        if self.encoder_path:
+            self._load_encoder_checkpoint()
+
         # 4) Freeze partial layers
         self._freeze_partial_layers()
 
@@ -363,6 +384,58 @@ class VideoEncoder(nn.Module):
         
         print(f"[VideoEncoder] Patched {len(self.model.blocks)} MViT attention blocks for 3D RoPE")
     
+    def _load_encoder_checkpoint(self):
+        """Load encoder checkpoint weights from the specified path."""
+        if not self.encoder_path:
+            return
+
+        import os
+        print(f"[VideoEncoder] ========== ENCODER CHECKPOINT LOADING ==========")
+        print(f"[VideoEncoder] Encoder checkpoint path: {self.encoder_path}")
+
+        if not os.path.exists(self.encoder_path):
+            print(f"[VideoEncoder] ⚠️  WARNING: Encoder checkpoint path does not exist!")
+            print(f"[VideoEncoder] ========================================")
+            return
+
+        print(f"[VideoEncoder] ✅ Encoder checkpoint file found!")
+        print(f"[VideoEncoder] Loading encoder checkpoint weights...")
+        checkpoint = torch.load(self.encoder_path, map_location="cpu")
+
+        # Handle different checkpoint formats
+        if "model_state_dict" in checkpoint:
+            state_dict = checkpoint["model_state_dict"]
+        elif "state_dict" in checkpoint:
+            state_dict = checkpoint["state_dict"]
+        else:
+            state_dict = checkpoint
+
+        # Filter out MVM-specific layers if loading from MVM pretraining
+        encoder_state_dict = {}
+        for k, v in state_dict.items():
+            # Skip MVM decoder, head layers, and mask tokens
+            if not any(skip in k for skip in ["decoder", "mvm", "mask_token", "head"]):
+                # Remove 'module.' prefix if present (from DDP)
+                key = k.replace("module.", "")
+                # Also handle 'model.' prefix
+                key = key.replace("model.", "")
+                encoder_state_dict[key] = v
+
+        # Load the weights
+        try:
+            missing_keys, unexpected_keys = self.model.load_state_dict(encoder_state_dict, strict=False)
+            print(f"[VideoEncoder] ✅ ENCODER CHECKPOINT LOADED SUCCESSFULLY!")
+            print(f"[VideoEncoder] Loaded {len(encoder_state_dict)} parameter tensors")
+            if missing_keys:
+                print(f"[VideoEncoder] Missing keys: {missing_keys[:5]}..." if len(missing_keys) > 5 else f"Missing keys: {missing_keys}")
+            if unexpected_keys:
+                print(f"[VideoEncoder] Unexpected keys: {unexpected_keys[:5]}..." if len(unexpected_keys) > 5 else f"Unexpected keys: {unexpected_keys}")
+            print(f"[VideoEncoder] ========================================")
+        except Exception as e:
+            print(f"[VideoEncoder] ❌ Error loading checkpoint: {e}")
+            print(f"[VideoEncoder] Continuing with randomly initialized weights")
+            print(f"[VideoEncoder] ========================================")
+
     def _freeze_partial_layers(self):
         """
         Freeze a fraction (1 - freeze_ratio) of the backbone's layers
@@ -593,6 +666,5 @@ class VideoEncoder(nn.Module):
             #print(f"feats.shape: {feats.shape}")
 
         return feats
-
 
 

@@ -97,6 +97,26 @@ def stats_collate_fn(batch):
 
 
 def get_stats_dataloader(config: HeartWiseConfig):
+    """Create a lightweight dataloader for the stats pass.
+
+    The main training loader can be fairly heavy (large batch size, many
+    workers, prefetching). Reuse only what we need here to keep the startup
+    latency low, especially when the reference rank is responsible for
+    computing the statistics for every distributed process.
+    """
+
+    stats_batch_size = getattr(config, 'stats_batch_size', None)
+    if stats_batch_size is None or stats_batch_size <= 0:
+        stats_batch_size = max(1, min(getattr(config, 'batch_size', 1), 4))
+
+    stats_num_workers = getattr(config, 'stats_num_workers', None)
+    if stats_num_workers is None or stats_num_workers < 0:
+        stats_num_workers = min(getattr(config, 'num_workers', 0), 2)
+
+    stats_max_samples = getattr(config, 'stats_max_samples', None)
+    if stats_max_samples is None or stats_max_samples <= 0:
+        stats_max_samples = max(stats_batch_size, 32)
+
     stats_dataset = StatsDataset(
         data_filename=config.data_filename,
         split=config.run_mode,
@@ -105,14 +125,21 @@ def get_stats_dataloader(config: HeartWiseConfig):
         num_frames=config.frames,
         backbone=config.model_name,
         stride=config.stride,
+        max_samples=stats_max_samples,
     )
+
+    prefetch_factor = getattr(config, 'stats_prefetch_factor', None)
+    if prefetch_factor is None or prefetch_factor <= 0:
+        prefetch_factor = 1 if stats_num_workers > 0 else None
 
     return DataLoader(
         stats_dataset,
-        batch_size=config.batch_size,
-        num_workers=config.num_workers,
+        batch_size=stats_batch_size,
+        num_workers=stats_num_workers,
         shuffle=False,
         collate_fn=stats_collate_fn,
-        worker_init_fn=seed_worker,
+        worker_init_fn=seed_worker if stats_num_workers > 0 else None,
+        prefetch_factor=prefetch_factor if stats_num_workers > 0 else None,
+        persistent_workers=False,
     )    
     

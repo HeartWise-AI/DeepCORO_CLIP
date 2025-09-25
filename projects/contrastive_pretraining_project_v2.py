@@ -197,12 +197,6 @@ class ContrastivePretrainingProjectV2(BaseProject):
                     'weight_decay': self.config.video_weight_decay
                 },
                 {
-                    'params': video_encoder.module.aggregator.parameters(),
-                    'lr': self.config.lr * 2.0,
-                    'name': 'video_aggregator',
-                    'weight_decay': self.config.video_weight_decay
-                },
-                {
                     'params': video_proj.module.parameters(),
                     'lr': self.config.lr * 5.0,
                     'name': 'video_projection',
@@ -226,6 +220,21 @@ class ContrastivePretrainingProjectV2(BaseProject):
                     'name': 'temperature'
                 }
             ]
+
+            aggregator_params = [
+                p for p in getattr(video_encoder.module, 'aggregator', nn.Identity()).parameters()
+                if p.requires_grad
+            ]
+            if aggregator_params:
+                param_groups.insert(
+                    1,
+                    {
+                        'params': aggregator_params,
+                        'lr': self.config.lr * 2.0,
+                        'name': 'video_aggregator',
+                        'weight_decay': self.config.video_weight_decay
+                    }
+                )
             
             optimizer_class = getattr(torch.optim, self.config.optimizer)
             optimizer = optimizer_class(param_groups, lr=self.config.lr)

@@ -154,7 +154,8 @@ class MultitaskRunner:
         self.global_step = 0  # Global step counter for consistent wandb logging
         self.best_val_loss = float("inf")
         self.best_epoch = -1
-        
+        self._last_caption_log_step = -1
+
         # Memory debugging
         self.memory_log_file = os.path.join(output_dir, "memory_debug.jsonl") if output_dir else "memory_debug.jsonl"
         self.memory_stats = []
@@ -394,10 +395,10 @@ class MultitaskRunner:
                     batch_metrics, batch_outputs = self._train_step(
                         videos, input_ids, attention_mask, texts, batch
                     )
+                    self.global_step += 1  # Keep global_step in sync across ranks
                     
                     # Log step-wise metrics to W&B
                     if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
-                        self.global_step += 1  # Increment global step counter
                         step_log_dict = {
                             "train/step_loss": batch_metrics["total_loss"],
                             "train/step_contrastive_loss": batch_metrics.get("contrastive_loss", 0.0),
@@ -426,8 +427,8 @@ class MultitaskRunner:
                         
                         # Log loss weight if using scheduler
                         if self.loss_weight_scheduler is not None:
-                            current_weights = self.loss_weight_scheduler.get_weights(self.global_step)
-                            for key, value in current_weights.items():
+                            logged_weights = batch_metrics.get("loss_weights", {})
+                            for key, value in logged_weights.items():
                                 step_log_dict[f"loss_weight/{key}"] = value
                         
                         self.wandb_wrapper.log(step_log_dict, step=self.global_step)
@@ -735,26 +736,19 @@ class MultitaskRunner:
                 # Get aggregated video features for contrastive learning using attention pooling if available
                 if hasattr(self.video_encoder.module, 'attention_pool') and self.video_encoder.module.attention_pool is not None:
                     video_features = self.video_encoder.module.attention_pool(video_tokens)  # [B, hidden_size]
-                    if self.current_epoch == 0 and self.global_step == 0:  # Log once at start
-                        print(f"✓ Using ATTENTION POOLING for video features (mode: {self.video_encoder.module.token_pooling_mode})")
+                    # Attention pooling is being used
                 else:
                     video_features = video_tokens.mean(dim=1)  # Fallback to average pooling
-                    if self.current_epoch == 0 and self.global_step == 0:  # Log once at start
-                        has_attr = hasattr(self.video_encoder.module, 'attention_pool')
-                        attr_val = getattr(self.video_encoder.module, 'attention_pool', 'NO_ATTR')
-                        is_none = attr_val is None if has_attr else 'N/A'
-                        print(f"⚠️ Using MEAN POOLING - Debug: has_attr={has_attr}, is_None={is_none}, pooling_mode={getattr(self.video_encoder.module, 'token_pooling_mode', 'NO_MODE')}")
+                    # Mean pooling is being used
             else:
                 video_tokens = self.video_encoder.get_tokens(videos, mode="patch")  # [B, num_tokens, hidden_size]
                 # Get aggregated video features for contrastive learning using attention pooling if available
                 if hasattr(self.video_encoder, 'attention_pool') and self.video_encoder.attention_pool is not None:
                     video_features = self.video_encoder.attention_pool(video_tokens)  # [B, hidden_size]
-                    if self.current_epoch == 0 and self.global_step == 0:  # Log once at start
-                        print(f"✓ Using ATTENTION POOLING for video features (mode: {self.video_encoder.token_pooling_mode})")
+                    # Attention pooling is being used
                 else:
                     video_features = video_tokens.mean(dim=1)  # Fallback to average pooling
-                    if self.current_epoch == 0 and self.global_step == 0:  # Log once at start
-                        print(f"⚠️ Using MEAN POOLING for video features (attention_pool: {hasattr(self.video_encoder, 'attention_pool')})")
+                    # Mean pooling is being used
             
             # Get text features
             text_features = self.text_encoder(input_ids, attention_mask)  # [B, hidden_size]
@@ -789,10 +783,31 @@ class MultitaskRunner:
             masked_target = video_tokens
             masked_mask = mvm_outputs["mask"]
             
-            # Update loss weights if using scheduler
+            # Update loss weights if using scheduler; keep the step in sync across ranks
             if self.loss_weight_scheduler is not None:
-                current_weights = self.loss_weight_scheduler.get_weights(self.global_step)
+                scheduler_step = self.global_step
+                if dist.is_initialized():
+                    step_tensor = torch.tensor([scheduler_step], device=video_features.device, dtype=torch.long)
+                    dist.broadcast(step_tensor, src=0)
+                    scheduler_step = int(step_tensor.item())
+                    self.global_step = scheduler_step
+
+                current_weights = None
+                if not dist.is_initialized() or self.config.is_ref_device:
+                    current_weights = self.loss_weight_scheduler.get_weights(scheduler_step)
+
+                if dist.is_initialized():
+                    weights_container = [current_weights]
+                    dist.broadcast_object_list(weights_container, src=0)
+                    current_weights = weights_container[0]
+                    # Ensure the local scheduler keeps pace with the broadcasted step
+                    self.loss_weight_scheduler.current_step = scheduler_step + 1
+
                 self.loss_fn.loss_type.loss_weights = current_weights
+            else:
+                current_weights = self.loss_fn.loss_type.loss_weights
+
+            current_weights = dict(current_weights)
             
             # Compute multitask loss
             loss_outputs = self.loss_fn.run(
@@ -855,6 +870,9 @@ class MultitaskRunner:
             "captioning_loss": loss_outputs.get("captioning", torch.tensor(0.0)).item(),
             "masked_modeling_loss": loss_outputs.get("masked_modeling", torch.tensor(0.0)).item(),
         }
+
+        if current_weights is not None:
+            metrics["loss_weights"] = dict(current_weights)
         
         # Compute alignment score and embedding norms for training
         with torch.no_grad():
@@ -869,16 +887,16 @@ class MultitaskRunner:
             assert -1.01 <= alignment_score <= 1.01, \
                 f"Alignment score {alignment_score:.4f} out of range [-1, 1]. Check feature normalization!"
             
-            # Log detailed info if alignment is negative
-            if alignment_score < 0:
-                print(f"⚠️ Negative alignment score: {alignment_score:.4f}")
-                # Compute similarity matrix to debug
-                video_norm_debug = F.normalize(video_fp32, dim=1)
-                text_norm_debug = F.normalize(text_fp32, dim=1)
-                similarity = torch.matmul(video_norm_debug, text_norm_debug.t())
-                diagonal_similarities = torch.diagonal(similarity)
-                print(f"   Diagonal similarities range: [{diagonal_similarities.min():.4f}, {diagonal_similarities.max():.4f}]")
-                print(f"   Mean diagonal similarity: {diagonal_similarities.mean():.4f}")
+            # Log detailed info if alignment is negative (commented out to reduce verbosity)
+            # if alignment_score < 0:
+            #     print(f"⚠️ Negative alignment score: {alignment_score:.4f}")
+            #     # Compute similarity matrix to debug
+            #     video_norm_debug = F.normalize(video_fp32, dim=1)
+            #     text_norm_debug = F.normalize(text_fp32, dim=1)
+            #     similarity = torch.matmul(video_norm_debug, text_norm_debug.t())
+            #     diagonal_similarities = torch.diagonal(similarity)
+            #     print(f"   Diagonal similarities range: [{diagonal_similarities.min():.4f}, {diagonal_similarities.max():.4f}]")
+            #     print(f"   Mean diagonal similarity: {diagonal_similarities.mean():.4f}")
             
             metrics["alignment_score"] = alignment_score
             metrics.update(embedding_norms)
@@ -980,21 +998,13 @@ class MultitaskRunner:
             generated_texts = []
             target_texts = []
             
-            # Debug: Check generated IDs
-            print(f"\n[DEBUG] Caption generation in val_step:")
-            print(f"  - Generated IDs shape: {generated_ids.shape if hasattr(generated_ids, 'shape') else 'N/A'}")
-            if hasattr(generated_ids, 'shape') and len(generated_ids) > 0:
-                print(f"  - First generated IDs sample: {generated_ids[0][:20].tolist() if len(generated_ids[0]) > 0 else 'EMPTY'}")
-            
+ 
             if self.tokenizer is not None:
                 for i in range(len(generated_ids)):
                     generated_text = self.tokenizer.decode(
                         generated_ids[i], 
                         skip_special_tokens=True
                     )
-                    if i == 0:  # Debug first sample
-                        print(f"  - First decoded text length: {len(generated_text)}")
-                        print(f"  - First decoded text: '{generated_text[:100]}...' if len > 100 else '{generated_text}'")
                     target_text = self.tokenizer.decode(
                         input_ids[i], 
                         skip_special_tokens=True
@@ -1303,10 +1313,17 @@ class MultitaskRunner:
                 print(f"  - Worst examples length: {len(worst_html)}")
                 print(f"  - Random examples length: {len(random_html)}")
                 
+                # Preserve legacy wandb keys so existing dashboards keep working
+                best_payload = wandb.Html(best_html)
+                worst_payload = wandb.Html(worst_html)
+                random_payload = wandb.Html(random_html)
+
                 self.wandb_wrapper.log({
-                    "captioning/best_examples": wandb.Html(best_html),
-                    "captioning/worst_examples": wandb.Html(worst_html),
-                    "captioning/random_examples": wandb.Html(random_html),
+                    "captioning/best_examples": best_payload,
+                    "captioning/best_example": best_payload,
+                    "captioning/random_examples": random_payload,
+                    "captioning/worst_examples": worst_payload,
+                    "captioning/worst_example": worst_payload,
                     "epoch": epoch,
                 }, step=self.global_step)
                 

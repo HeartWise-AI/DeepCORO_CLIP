@@ -30,12 +30,16 @@ def calculate_dataset_statistics_ddp(config: HeartWiseConfig) -> Tuple[torch.Ten
         assert len(stats_loader) > 0, f"No videos found in the dataset for mode {config.run_mode}"
         
         mean_sum, squared_sum, pixel_count = 0.0, 0.0, 0
-        for batch in tqdm(stats_loader, desc="Calculating statistics"):
+        # Only use first batch for quick statistics
+        for i, batch in enumerate(tqdm(stats_loader, desc="Calculating statistics")):
             batch = batch.float()
             batch = batch.reshape(-1, batch.shape[-1])
             mean_sum += batch.sum(dim=0)
             squared_sum += (batch**2).sum(dim=0)
             pixel_count += batch.shape[0]
+            if i == 0:  # Only process first batch
+                print("Using only first batch for quick statistics calculation")
+                break
             
         mean: torch.Tensor = mean_sum / pixel_count
         std: torch.Tensor = torch.sqrt((squared_sum / pixel_count) - (mean**2))

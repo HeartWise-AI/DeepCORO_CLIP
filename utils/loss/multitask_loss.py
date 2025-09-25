@@ -6,6 +6,7 @@ from typing import Dict, Optional, Any
 
 from utils.registry import LossRegistry
 from utils.enums import LossType
+from utils.loss.losses import InfoNCELoss
 
 
 @LossRegistry.register(LossType.MULTITASK)
@@ -23,7 +24,7 @@ class MultitaskLoss(nn.Module):
     def __init__(
         self,
         loss_weights: Optional[Dict[str, float]] = None,
-        contrastive_loss_type: str = "sigmoid",  # "sigmoid" or "softmax"
+        contrastive_loss_type: str = "siglip",  # "siglip" or "softmax"
         captioning_loss_type: str = "cross_entropy",
         masked_modeling_loss_type: str = "mse",
         temperature: float = 0.1,
@@ -57,13 +58,12 @@ class MultitaskLoss(nn.Module):
     
     def _init_loss_functions(self):
         """Initialize the individual loss functions."""
-        # Contrastive loss
-        if self.contrastive_loss_type == "sigmoid":
-            self.contrastive_loss = self._sigmoid_contrastive_loss
-        elif self.contrastive_loss_type == "softmax":
-            self.contrastive_loss = self._softmax_contrastive_loss
-        else:
-            raise ValueError(f"Unknown contrastive loss type: {self.contrastive_loss_type}")
+        # Always use SigLIP-style contrastive loss (gated similarity + sigmoid)
+        self.contrastive_loss_fn = InfoNCELoss(
+            temperature=self.temperature,
+            use_ddp=True,
+            loss_type='siglip'
+        )
         
         # Captioning loss
         if self.captioning_loss_type == "cross_entropy":
@@ -76,102 +76,6 @@ class MultitaskLoss(nn.Module):
             self.masked_modeling_loss = self._mse_loss
         else:
             raise ValueError(f"Unknown masked modeling loss type: {self.masked_modeling_loss_type}")
-    
-    def _sigmoid_contrastive_loss(
-        self,
-        video_features: torch.Tensor,
-        text_features: torch.Tensor,
-        log_temp: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        Sigmoid contrastive loss (SigLIP-style).
-        
-        Args:
-            video_features: [batch_size, hidden_size]
-            text_features: [batch_size, hidden_size]
-            log_temp: Temperature parameter
-            
-        Returns:
-            Contrastive loss
-        """
-        # Perform the entire loss computation in full precision to avoid
-        # overflow/underflow issues when AMP is enabled. This has negligible
-        # memory overhead because the tensors involved are only of size [B, D]
-        # and [B, B].
-        with autocast('cuda', enabled=False):
-            # Ensure features are 2D
-            if video_features.dim() == 3:
-                video_features = video_features.squeeze(1)
-            if text_features.dim() == 3:
-                text_features = text_features.squeeze(1)
-            
-            # Normalize features in fp32 for numerical stability
-            video_features_fp32 = F.normalize(video_features.float(), dim=-1)
-            text_features_fp32 = F.normalize(text_features.float(), dim=-1)
-            
-            # Compute similarity matrix
-            similarity = torch.matmul(video_features_fp32, text_features_fp32.t())
-            
-            # Apply temperature
-            temp = torch.exp(log_temp.float())
-            logits = similarity / temp
-            
-            # Create labels (diagonal = positive pairs)
-            labels = torch.eye(logits.size(0), device=logits.device)
-            
-            # Sigmoid cross-entropy loss
-            loss_v2t = F.binary_cross_entropy_with_logits(logits, labels)
-            loss_t2v = F.binary_cross_entropy_with_logits(logits.t(), labels)
-            
-            return 0.5 * (loss_v2t + loss_t2v)
-    
-    def _softmax_contrastive_loss(
-        self,
-        video_features: torch.Tensor,
-        text_features: torch.Tensor,
-        log_temp: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        Softmax contrastive loss (CLIP-style).
-        
-        Args:
-            video_features: [batch_size, hidden_size]
-            text_features: [batch_size, hidden_size]
-            log_temp: Temperature parameter
-            
-        Returns:
-            Contrastive loss
-        """
-        # Perform the entire loss computation in full precision to avoid
-        # overflow/underflow issues when AMP is enabled. This has negligible
-        # memory overhead because the tensors involved are only of size [B, D]
-        # and [B, B].
-        with autocast('cuda', enabled=False):
-            # Ensure features are 2D
-            if video_features.dim() == 3:
-                video_features = video_features.squeeze(1)
-            if text_features.dim() == 3:
-                text_features = text_features.squeeze(1)
-            
-            # Normalize features in fp32 for numerical stability
-            video_features_fp32 = F.normalize(video_features.float(), dim=-1)
-            text_features_fp32 = F.normalize(text_features.float(), dim=-1)
-            
-            # Compute similarity matrix
-            similarity = torch.matmul(video_features_fp32, text_features_fp32.t())
-            
-            # Apply temperature
-            temp = torch.exp(log_temp.float())
-            logits = similarity / temp
-            
-            # Create labels
-            labels = torch.arange(logits.size(0), device=logits.device)
-            
-            # Cross-entropy loss
-            loss_v2t = F.cross_entropy(logits, labels)
-            loss_t2v = F.cross_entropy(logits.t(), labels)
-            
-            return 0.5 * (loss_v2t + loss_t2v)
     
     def _cross_entropy_loss(
         self,
@@ -275,8 +179,8 @@ class MultitaskLoss(nn.Module):
         if self.loss_weights["contrastive"] > 0:
             if log_temp is None:
                 log_temp = torch.log(torch.tensor(self.temperature, device=video_features.device))
-            
-            contrastive_loss = self.contrastive_loss(video_features, text_features, log_temp)
+
+            contrastive_loss = self.contrastive_loss_fn(video_features, text_features, log_temp)
             losses["contrastive"] = contrastive_loss
             total_loss += self.loss_weights["contrastive"] * contrastive_loss
         

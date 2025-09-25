@@ -119,6 +119,17 @@ The project includes comprehensive support for hyperparameter optimization using
 ### How to Run Sweeps
 
 ```bash
+# Basic sweep command (NCCL variables are set automatically)
+bash scripts/run_sweep.sh --base_config BASE_CONFIG --sweep_config SWEEP_CONFIG --selected_gpus GPU_IDS --count NUM_RUNS
+
+# With explicit NCCL environment variables for optimal multi-GPU performance
+source .venv/bin/activate && \
+export MASTER_PORT=29505 && \
+export NCCL_P2P_LEVEL=NVL && \
+export NCCL_ALGO=Tree && \
+export NCCL_MIN_NCHANNELS=4 && \
+export NCCL_SHM_DISABLE=0 && \
+export NCCL_NET_GDR_LEVEL=PHB && \
 bash scripts/run_sweep.sh --base_config BASE_CONFIG --sweep_config SWEEP_CONFIG --selected_gpus GPU_IDS --count NUM_RUNS
 ```
 
@@ -130,6 +141,7 @@ bash scripts/run_sweep.sh --base_config BASE_CONFIG --sweep_config SWEEP_CONFIG 
 
 **Notes:**
 - The script automatically sets `run_mode=train` and `use_wandb=true`
+- The script automatically configures NCCL environment variables for multi-GPU training
 - Each agent will try one hyperparameter configuration
 - Results are tracked in real-time on the W&B dashboard
 - Best hyperparameters are highlighted in the sweep summary

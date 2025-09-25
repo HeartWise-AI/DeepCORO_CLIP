@@ -8,16 +8,30 @@ Always activate the virtual environment before running any Python scripts:
 source .venv/bin/activate
 ```
 
+## Running Training
+
+### Direct Multi-GPU Training (without sweep)
+```bash
+# Activate environment and set NCCL variables for optimal multi-GPU performance
+source .venv/bin/activate && \
+export MASTER_PORT=29505 && \
+export NCCL_P2P_LEVEL=NVL && \
+export NCCL_ALGO=Tree && \
+export NCCL_MIN_NCHANNELS=4 && \
+export NCCL_SHM_DISABLE=0 && \
+export NCCL_NET_GDR_LEVEL=PHB && \
+torchrun --nproc_per_node=3 scripts/main.py --base_config config/clip/multitask_config.yaml
+```
+
 ## Running Sweeps
 
 ### Single GPU Training
 ```bash
 # Activate environment first
-source .venv/bin/activate 
+source .venv/bin/activate
 
-#and then
-bash scripts/run_sweep.sh --base_config config/clip/multitask_config.yaml --sweep_config config/clip/sweep_config_multitask.yaml --selected_gpus 0,1 --count 10
-
+# Run sweep (NCCL variables are set automatically in the script)
+bash scripts/run_sweep.sh --base_config config/clip/multitask_config.yaml --sweep_config config/clip/sweep_config_multitask.yaml --selected_gpus 0 --count 10
 ```
 
 ### Multi-GPU Training with Sweep
@@ -25,8 +39,18 @@ bash scripts/run_sweep.sh --base_config config/clip/multitask_config.yaml --swee
 # Activate environment first
 source .venv/bin/activate
 
-# Run sweep on specific GPUs
-bash scripts/run_sweep.sh --base_config config/clip/multitask_config.yaml --sweep_config config/clip/sweep_config_multitask.yaml --selected_gpus 0,1 --count 10
+# Run sweep on multiple GPUs (NCCL variables are set automatically in the script)
+bash scripts/run_sweep.sh --base_config config/clip/multitask_config.yaml --sweep_config config/clip/sweep_config_multitask.yaml --selected_gpus 0,1,2 --count 10
+
+# Alternative: Explicitly set NCCL variables before sweep
+source .venv/bin/activate && \
+export MASTER_PORT=29505 && \
+export NCCL_P2P_LEVEL=NVL && \
+export NCCL_ALGO=Tree && \
+export NCCL_MIN_NCHANNELS=4 && \
+export NCCL_SHM_DISABLE=0 && \
+export NCCL_NET_GDR_LEVEL=PHB && \
+bash scripts/run_sweep.sh --base_config config/clip/multitask_config.yaml --sweep_config config/clip/sweep_config_multitask.yaml --selected_gpus 0,1,2 --count 10
 ```
 
 ### Sweep Arguments
@@ -63,8 +87,16 @@ pytest
 
 ## Notes
 - Always ensure CUDA devices are available before running GPU training
-- The sweep script automatically handles distributed training setup
+- The sweep script automatically handles distributed training setup and NCCL environment variables
 - Monitor GPU memory usage to avoid OOM errors
-- awlays use source .venv/bin/activeate
-- In Python dataclasses, fields with default values must come after fields without
-  defaults.
+- Always use `source .venv/bin/activate` before running any scripts
+- In Python dataclasses, fields with default values must come after fields without defaults
+
+### NCCL Environment Variables
+The following NCCL variables are configured for optimal multi-GPU training performance:
+- `MASTER_PORT=29505`: Port for distributed training communication
+- `NCCL_P2P_LEVEL=NVL`: Peer-to-peer communication level for GPUs
+- `NCCL_ALGO=Tree`: Communication algorithm for collective operations
+- `NCCL_MIN_NCHANNELS=4`: Minimum number of channels for communication
+- `NCCL_SHM_DISABLE=0`: Enables shared memory (faster intra-node communication)
+- `NCCL_NET_GDR_LEVEL=PHB`: GPU Direct RDMA level for network communication

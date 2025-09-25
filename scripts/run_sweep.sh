@@ -37,25 +37,13 @@ COUNT=""
 # Activate virtual environment
 source .venv/bin/activate
 
-# Set NCCL environment variables for better stability with H200s
-export NCCL_DEBUG=INFO
-export NCCL_IB_TIMEOUT=1800  # Reduced to 30 minutes
-export NCCL_SOCKET_TIMEOUT=1800  # Reduced to 30 minutes
-export NCCL_P2P_DISABLE=0
-export NCCL_IB_DISABLE=0
-export NCCL_SOCKET_IFNAME=eth0
-export NCCL_IB_GID_INDEX=3
-export NCCL_IB_HCA=mlx5
-export NCCL_IB_TC=106
-export NCCL_IB_SL=0
-export NCCL_IB_AR_THRESHOLD=4096  # Reduced from 8192
-export NCCL_IB_CUDA_SUPPORT=1
-export NCCL_IB_TIMEOUT_MS=1800000  # 30 minutes in milliseconds
-export NCCL_SOCKET_NTHREADS=2  # Reduced from 4
-export NCCL_NSOCKS_PERTHREAD=2  # Reduced from 4
-export NCCL_BUFFSIZE=1048576  # Reduced to 1MB
-export NCCL_IB_RETRY_CNT=5  # Reduced from 7
-export NCCL_IB_QUEUE_LEN=2048  # Reduced from 4096
+# Set NCCL environment variables for multi-GPU training
+export MASTER_PORT=29505
+export NCCL_P2P_LEVEL=NVL
+export NCCL_ALGO=Tree
+export NCCL_MIN_NCHANNELS=4
+export NCCL_SHM_DISABLE=0
+export NCCL_NET_GDR_LEVEL=PHB
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do

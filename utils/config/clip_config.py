@@ -86,9 +86,8 @@ class ClipConfig(HeartWiseConfig):
     inference_results_path: str
 
     # ===== FIELDS WITH DEFAULTS (OPTIONAL) =====
-    
+
     # Training parameter defaults
-    validation_batch_size: int = 16  # Separate validation batch size
     persistent_workers: bool = False  # Keep DataLoader workers alive
     prefetch_factor: int = 2  # Number of batches to prefetch
     

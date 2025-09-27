@@ -1,18 +1,41 @@
-# Claude Development Guide
+# CLAUDE.md
 
-## Environment Setup
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-### Activating Virtual Environment
-Always activate the virtual environment before running any Python scripts:
+## Project Overview
+
+DeepCORO_CLIP is a deep learning model for echocardiography video interpretation using contrastive learning. It implements three training paradigms:
+1. **CLIP-style contrastive learning** - video-text alignment
+2. **Multitask learning** - combines contrastive, captioning, and masked video modeling (SigLIP 2-inspired)
+3. **Linear probing** - task-specific fine-tuning
+
+## Essential Commands
+
+### Environment Setup
 ```bash
+# ALWAYS activate virtual environment first
 source .venv/bin/activate
+
+# Install dependencies (if needed)
+uv sync
 ```
 
-## Running Training
+### Running Training
 
-### Direct Multi-GPU Training (without sweep)
+#### Standard Training (scripts/runner.sh)
 ```bash
-# Activate environment and set NCCL variables for optimal multi-GPU performance
+# Single GPU training
+bash scripts/runner.sh --base_config config/clip/base_config.yaml --selected_gpus 0 --use_wandb false --run_mode train
+
+# Multi-GPU training with W&B logging
+bash scripts/runner.sh --base_config config/clip/multitask_config.yaml --selected_gpus 0,1,2 --use_wandb true --run_mode train
+
+# Inference mode (single GPU only)
+bash scripts/runner.sh --base_config config/clip/base_config.yaml --selected_gpus 0 --run_mode inference --use_wandb false
+```
+
+#### Direct Multi-GPU Training (torchrun)
+```bash
 source .venv/bin/activate && \
 export MASTER_PORT=29505 && \
 export NCCL_P2P_LEVEL=NVL && \
@@ -23,80 +46,108 @@ export NCCL_NET_GDR_LEVEL=PHB && \
 torchrun --nproc_per_node=3 scripts/main.py --base_config config/clip/multitask_config.yaml
 ```
 
-## Running Sweeps
+### Hyperparameter Sweeps
 
-### Single GPU Training
 ```bash
-# Activate environment first
+# Always activate environment first
 source .venv/bin/activate
 
-# Run sweep (NCCL variables are set automatically in the script)
+# Single GPU sweep
 bash scripts/run_sweep.sh --base_config config/clip/multitask_config.yaml --sweep_config config/clip/sweep_config_multitask.yaml --selected_gpus 0 --count 10
-```
 
-### Multi-GPU Training with Sweep
-```bash
-# Activate environment first
-source .venv/bin/activate
-
-# Run sweep on multiple GPUs (NCCL variables are set automatically in the script)
-bash scripts/run_sweep.sh --base_config config/clip/multitask_config.yaml --sweep_config config/clip/sweep_config_multitask.yaml --selected_gpus 0,1,2 --count 10
-
-# Alternative: Explicitly set NCCL variables before sweep
-source .venv/bin/activate && \
-export MASTER_PORT=29505 && \
-export NCCL_P2P_LEVEL=NVL && \
-export NCCL_ALGO=Tree && \
-export NCCL_MIN_NCHANNELS=4 && \
-export NCCL_SHM_DISABLE=0 && \
-export NCCL_NET_GDR_LEVEL=PHB && \
-bash scripts/run_sweep.sh --base_config config/clip/multitask_config.yaml --sweep_config config/clip/sweep_config_multitask.yaml --selected_gpus 0,1,2 --count 10
-```
-
-### Sweep Arguments
-- `--base_config`: Path to base configuration file (required)
-- `--sweep_config`: Path to sweep configuration file (required) 
-- `--selected_gpus`: Comma-separated GPU IDs to use (required)
-- `--count`: Number of sweep runs to execute (required)
-
-### Example Sweep Commands
-```bash
-# Run 5 agents on GPU 3 with single video config
-bash scripts/run_sweep.sh --base_config config/clip/base_config.yaml --sweep_config config/clip/sweep_config_single_video.yaml --selected_gpus 3 --count 5
-
-# Run 10 agents on GPUs 0,1,2,3 with multitask config
+# Multi-GPU sweep (NCCL variables set automatically)
 bash scripts/run_sweep.sh --base_config config/clip/multitask_config.yaml --sweep_config config/clip/sweep_config_multitask.yaml --selected_gpus 0,1,2,3 --count 10
-```
-
-## Important Commands
-
-### Linting and Type Checking
-```bash
-# Run linter
-npm run lint
-
-# Run type checker
-npm run typecheck
 ```
 
 ### Testing
 ```bash
-# Run tests
+# Run all tests
 pytest
+
+# Test multitask setup specifically
+python test_multitask_setup.py
+
+# Run linter (if available)
+ruff check .
+
+# Format code
+black .
 ```
 
-## Notes
-- Always ensure CUDA devices are available before running GPU training
-- The sweep script automatically handles distributed training setup and NCCL environment variables
-- Monitor GPU memory usage to avoid OOM errors
-- Always use `source .venv/bin/activate` before running any scripts
-- In Python dataclasses, fields with default values must come after fields without defaults
+## High-Level Architecture
 
-### NCCL Environment Variables
-The following NCCL variables are configured for optimal multi-GPU training performance:
-- `MASTER_PORT=29505`: Port for distributed training communication
-- `NCCL_P2P_LEVEL=NVL`: Peer-to-peer communication level for GPUs
-- `NCCL_ALGO=Tree`: Communication algorithm for collective operations
-- `NCCL_MIN_NCHANNELS=4`: Minimum number of channels for communication
-- `NCCL_SHM_DISABLE=0`: Enables shared memory (faster intra-node communication)
-- `NCCL_NET_GDR_LEVEL=PHB`: GPU Direct RDMA level for network communication
+### Core Components
+
+1. **Video Encoder** (`models/video_encoder.py`)
+   - Uses Multiscale Vision Transformer (mVIT) backbone
+   - Configurable output modes via `aggregate` and `per_video_pool` flags:
+     - Study-level: `aggregate=True` → `[B, D]`
+     - Video-level: `aggregate=False, per_video_pool=True` → `[B, N, D]`
+     - Patch-level: `aggregate=False, per_video_pool=False` → `[B, N×L, D]`
+
+2. **Text Encoder** (`models/text_encoder.py`)
+   - BioMedBERT for medical text encoding
+   - Configurable freezing ratio for fine-tuning
+
+3. **Multitask Components** (when using multitask_config.yaml)
+   - **Captioning Decoder** (`models/captioning_decoder.py`): LocCa-style transformer for report generation
+   - **Masked Video Modeling** (`models/masked_video_modeling.py`): Self-supervised learning with 75% masking
+   - **Multitask Loss** (`utils/loss/multitask_loss.py`): Weighted combination of three objectives
+
+### Training Projects
+
+- **ContrastivePretrainingProject** (`projects/contrastive_pretraining_project.py`): Standard CLIP training
+- **MultitaskPretrainingProject** (`projects/multitask_pretraining_project.py`): SigLIP 2-inspired multitask training
+- **LinearProbingProject** (`projects/linear_probing_project.py`): Task-specific fine-tuning
+
+### Configuration Structure
+
+```
+config/
+├── clip/
+│   ├── base_config.yaml              # Standard CLIP training
+│   ├── multitask_config.yaml         # Multitask training
+│   └── sweep_config_*.yaml           # Hyperparameter sweep configs
+└── linear_probing/
+    ├── base_config.yaml               # Linear probing base
+    └── sweep_config.yaml              # Linear probing sweeps
+```
+
+## Key Configuration Parameters
+
+### Multitask Training (config/clip/multitask_config.yaml)
+- `loss_weights`: Balance between contrastive, captioning, and masked_modeling
+- `lr`, `text_lr`, `captioning_lr`, `mvm_lr`: Component-specific learning rates
+- `mask_ratio`: Fraction of patches to mask (default 0.75)
+- `decoder_layers`, `decoder_heads`: Captioning decoder architecture
+- `batch_size`: Reduce if OOM (16 → 12 → 8)
+- `gradient_accumulation_steps`: Increase if using smaller batch sizes
+
+### Memory Management
+- Reduce batch_size if OOM errors
+- Use gradient_accumulation_steps to simulate larger batches
+- Monitor with `nvidia-smi -l 1`
+
+## Important Notes
+
+1. **NCCL Environment Variables**: Required for optimal multi-GPU performance. The sweep script sets these automatically, but manual runs need explicit export.
+
+2. **Python Dataclasses**: Fields with default values must come after fields without defaults.
+
+3. **W&B Integration**: Set `use_wandb=true` for experiment tracking. Login required: `wandb login`
+
+4. **GPU Memory**:
+   - Single video: ~8GB per GPU
+   - Multi-video: ~12GB per GPU
+   - Multitask: ~16-24GB per GPU
+
+5. **Run Modes**:
+   - `train`: Training mode
+   - `val`: Validation (linear probing only)
+   - `test`: Testing (linear probing only)
+   - `inference`: Process data where Split=='inference'
+
+6. **Common Issues**:
+   - OOM: Reduce batch_size or use fewer GPUs
+   - NCCL timeout: Check NCCL environment variables
+   - Import errors: Ensure `.venv` is activated

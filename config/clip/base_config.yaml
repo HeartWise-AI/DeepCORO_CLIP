@@ -2,9 +2,8 @@ pipeline_project: !!str "DeepCORO_clip"
 base_checkpoint_path: !!str outputs
 # Training parameters
 epochs: !!int 30 # Test phase A (5 epochs) and phase B (5 epochs)
-num_workers: !!int 18
+num_workers: !!int 8
 persistent_workers: !!bool true # Keep workers alive between epochs
-prefetch_factor: !!int 2 # Prefetch batches for better pipeline
 debug: !!bool false
 use_amp: !!bool true
 period: !!int 1
@@ -23,7 +22,6 @@ num_videos: !!int 1
 groupby_column: !!str StudyInstanceUID
 shuffle_videos: !!bool true
 batch_size: !!int 24
-validation_batch_size: !!int 32 # Smaller batch for validation to prevent timeouts
 # Seed
 seed: !!int 42
 # Model parameters

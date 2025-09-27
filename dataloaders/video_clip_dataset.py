@@ -426,11 +426,8 @@ def get_distributed_video_clip_dataloader(
         num_replicas=num_replicas, 
         rank=rank
     )
-    # Determine batch size based on split
-    if split in ['val', 'validation', 'test', 'inference']:
-        batch_size = getattr(config, 'validation_batch_size', getattr(config, 'batch_size', 1))
-    else:
-        batch_size = getattr(config, 'batch_size', 1)
+    # Use the same batch size for all splits
+    batch_size = getattr(config, 'batch_size', 1)
     
     # Use deterministic worker init for validation
     if is_validation:

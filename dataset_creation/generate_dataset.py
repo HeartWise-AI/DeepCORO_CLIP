@@ -15,7 +15,8 @@ import sys
 import os
 import argparse
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
+from collections import defaultdict
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
@@ -90,6 +91,77 @@ NON_RCA_VESSELS = [
 ]
 RIGHT_DOMINANCE_DEPENDENT_VESSELS = ["pda_stenosis", "posterolateral_stenosis"]
 LEFT_DOMINANCE_DEPENDENT_VESSELS = ["pda_stenosis", "lvp_stenosis"]
+
+PROMPT_WEIGHTS = {
+    "global_summary": 0.5,
+    "abnormal_focus": 1.0,
+    "lesion_atomic": 0.6,
+    "negative_coverage": 0.6,
+}
+
+
+SEVERITY_BINS: List[Tuple[float, float, str, str]] = [
+    (0.0, 1.0, "none", ""),
+    (1.0, 30.0, "minimal", "<30%"),
+    (30.0, 50.0, "mild", "30-49%"),
+    (50.0, 70.0, "moderate", "50-69%"),
+    (70.0, 90.0, "severe", "70-89%"),
+    (90.0, float("inf"), "critical", "≥90%"),
+]
+
+
+SEVERITY_RANK = {
+    "minimal": 0,
+    "mild": 1,
+    "moderate": 2,
+    "severe": 3,
+    "critical": 4,
+}
+
+
+SEVERITY_DESCRIPTOR = {
+    "minimal": "minimal",
+    "mild": "mild",
+    "moderate": "moderate",
+    "severe": "severe",
+    "critical": "critical/occlusion-range",
+}
+
+
+TOKEN_NAME_MAP = {
+    "prox": "Proximal",
+    "mid": "Mid",
+    "dist": "Distal",
+    "left": "Left",
+    "main": "main",
+    "right": "Right",
+    "lad": "LAD",
+    "lcx": "LCx",
+    "rca": "RCA",
+    "pda": "PDA",
+    "bx": "Ramus",
+    "lvp": "LVP branch",
+    "posterolateral": "Posterolateral branch",
+    "diagonal": "Diagonal branch",
+    "ramus": "Ramus",
+    "marg": "Marginal",
+    "marginal": "Marginal",
+    "septal": "Septal",
+    "s": "Septal",
+    "rv": "RV",
+    "rvg": "RVG",
+    "om": "OM",
+    "lima": "LIMA",
+    "svg": "SVG",
+}
+
+
+NEGATIVE_TERRITORIES = {
+    "Left main": {"left_main", "leftmain"},
+    "LAD territory": {"lad", "diagonal", "d1", "d2", "d3"},
+    "LCx territory": {"lcx", "om", "marg", "lvp", "ramus", "bx"},
+    "RCA territory": {"rca", "rvg", "pda", "posterolateral", "right_marginal"},
+}
 
 # ──────────────────────────────────────────────────────────────────────────
 # Angiographic View Functions
@@ -205,6 +277,285 @@ def format_calcification_value(c: str) -> str:
 def format_ifr_value(v: float) -> str:
     """Format IFR value into descriptive text."""
     return f"IFR {'normal' if v > 0.89 else 'abnormal'} (~{v:.2f})"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Prompt Helper Functions
+# ──────────────────────────────────────────────────────────────────────────
+
+def categorize_stenosis_value(value: Optional[float]) -> Optional[Dict[str, Any]]:
+    if value is None or pd.isna(value):
+        return None
+    value = float(value)
+    for lower, upper, label, range_text in SEVERITY_BINS:
+        if label == "critical":
+            if value >= lower:
+                return {
+                    "severity": label,
+                    "range_text": range_text,
+                    "rank": SEVERITY_RANK.get(label, -1),
+                }
+        elif lower <= value < upper:
+            if label == "none":
+                return None
+            return {
+                "severity": label,
+                "range_text": range_text,
+                "rank": SEVERITY_RANK.get(label, -1),
+            }
+    return None
+
+
+def humanize_vessel_label(label: str) -> str:
+    base = label.replace("_stenosis", "").replace("leftmain", "left_main")
+    tokens = base.split("_")
+    words: List[str] = []
+    for token in tokens:
+        if not token:
+            continue
+        lower = token.lower()
+        if lower in TOKEN_NAME_MAP:
+            words.append(TOKEN_NAME_MAP[lower])
+            continue
+        if lower.startswith("om") and lower[2:].isdigit():
+            words.append(lower.upper())
+            continue
+        if lower.startswith("d") and lower[1:].isdigit():
+            words.append(lower.upper())
+            continue
+        if lower.startswith("rv") and lower[2:].isdigit():
+            words.append(lower.upper())
+            continue
+        if lower == "bx":
+            words.append("Ramus")
+            continue
+        if lower == "lvp":
+            words.append("LVP branch")
+            continue
+        words.append(token.capitalize())
+    cleaned = " ".join(words).strip()
+    if not cleaned:
+        return label
+    return cleaned[0].upper() + cleaned[1:]
+
+
+def _infer_territory(label: str, dominance_name: str) -> Optional[str]:
+    label_base = label.replace("_stenosis", "").replace("leftmain", "left_main").lower()
+    dominance_lower = str(dominance_name or "").lower()
+
+    if "pda" in label_base:
+        if "left" in dominance_lower:
+            return "LCx territory"
+        return "RCA territory"
+    if "posterolateral" in label_base:
+        if "left" in dominance_lower:
+            return "LCx territory"
+        return "RCA territory"
+
+    for territory, tokens in NEGATIVE_TERRITORIES.items():
+        for token in tokens:
+            if token in label_base:
+                return territory
+    return None
+
+
+def _format_name_value_pairs(lesions: List[Dict[str, Any]]) -> str:
+    parts = [f"{lesion['name']} (≈{int(round(lesion['value']))}%)" for lesion in lesions]
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    return ", ".join(parts[:-1]) + f" and {parts[-1]}"
+
+
+def compute_study_context(study_df: pd.DataFrame) -> Dict[str, Any]:
+    context: Dict[str, Any] = {}
+    context["StudyInstanceUID"] = study_df["StudyInstanceUID"].iloc[0] if "StudyInstanceUID" in study_df.columns else None
+    if "SeriesInstanceUID" in study_df.columns:
+        series_ids = study_df["SeriesInstanceUID"].dropna().unique().tolist()
+        context["SeriesInstanceUIDs"] = series_ids if series_ids else [None]
+    else:
+        context["SeriesInstanceUIDs"] = [None]
+
+    if "dominance_name" in study_df.columns:
+        dominance_series = study_df["dominance_name"].dropna()
+        context["dominance_name"] = dominance_series.iloc[0] if not dominance_series.empty else ""
+    else:
+        context["dominance_name"] = ""
+
+    report_series = study_df.get("Report")
+    if report_series is not None:
+        unique_reports = []
+        seen = set()
+        for report in report_series.dropna().tolist():
+            normalized = report.strip()
+            if normalized and normalized not in seen:
+                unique_reports.append(normalized)
+                seen.add(normalized)
+        context["reports"] = unique_reports
+    else:
+        context["reports"] = []
+
+    stenosis_cols = [col for col in study_df.columns if col.endswith("_stenosis")]
+    stenosis_values: Dict[str, float] = {}
+    lesions: List[Dict[str, Any]] = []
+
+    for col in stenosis_cols:
+        numeric = pd.to_numeric(study_df[col], errors='coerce').replace(-1, np.nan)
+        if numeric.empty:
+            continue
+        value = numeric.max(skipna=True)
+        if pd.isna(value):
+            stenosis_values[col] = np.nan
+            continue
+        value = float(value)
+        stenosis_values[col] = value
+        meta = categorize_stenosis_value(value)
+        if meta is None:
+            continue
+        lesions.append({
+            "column": col,
+            "name": humanize_vessel_label(col),
+            "value": value,
+            "range_text": meta["range_text"],
+            "severity": meta["severity"],
+            "severity_rank": meta["rank"],
+            "descriptor": SEVERITY_DESCRIPTOR.get(meta["severity"], meta["severity"]),
+        })
+
+    lesions.sort(key=lambda item: (item["severity_rank"], item["value"]), reverse=True)
+    context["stenosis_values"] = stenosis_values
+    context["lesions"] = lesions
+    return context
+
+
+def build_global_prompt(context: Dict[str, Any]) -> Optional[str]:
+    reports = context.get("reports", [])
+    if reports:
+        return "\n\n".join(reports)
+
+    lesions = [lesion for lesion in context.get("lesions", []) if lesion["severity_rank"] >= 1]
+    if lesions:
+        summary_parts = [f"{lesion['name']} {int(round(lesion['value']))}% stenosis" for lesion in lesions]
+        return "; ".join(summary_parts) + "; other segments not specified."
+
+    return "No significant stenosis documented; other segments not specified."
+
+
+def build_abnormal_prompt(context: Dict[str, Any]) -> str:
+    lesions = context.get("lesions", [])
+    severe_or_worse = [lesion for lesion in lesions if lesion["severity_rank"] >= 3]
+    phrases: List[str] = []
+
+    if severe_or_worse:
+        severe_sorted = sorted(severe_or_worse, key=lambda item: item["value"], reverse=True)
+        for idx, lesion in enumerate(severe_sorted):
+            severity_word = "Critical" if lesion["severity"] == "critical" else "Severe"
+            prefix = severity_word if idx == 0 else f"Additional {severity_word.lower()}"
+            phrases.append(f"{prefix} {lesion['name']} (≈{int(round(lesion['value']))}%)")
+
+        moderate = [lesion for lesion in lesions if lesion["severity_rank"] == 2]
+        if moderate:
+            phrases.append(f"Additional moderate disease in {_format_name_value_pairs(moderate)}")
+
+        mild = [lesion for lesion in lesions if lesion["severity_rank"] == 1]
+        if mild:
+            phrases.append(f"Additional mild disease in {_format_name_value_pairs(mild)}")
+
+        result = "; ".join(phrases)
+        if result and not result.endswith('.'):
+            result += '.'
+        return result
+
+    return "No ≥70% stenosis identified."
+
+
+def build_atomic_prompts(context: Dict[str, Any], max_atomic_prompts: Optional[int] = None) -> List[str]:
+    lesions = [lesion for lesion in context.get("lesions", []) if lesion["severity_rank"] >= 1]
+    if not lesions:
+        return []
+
+    atomic_prompts: List[str] = []
+    for lesion in lesions:
+        prompt = f"{lesion['name']}; {lesion['range_text']} stenosis ({lesion['descriptor']})."
+        atomic_prompts.append(prompt)
+        if max_atomic_prompts is not None and len(atomic_prompts) >= max_atomic_prompts:
+            break
+    return atomic_prompts
+
+
+def build_negative_prompt(context: Dict[str, Any]) -> Optional[str]:
+    dominance = context.get("dominance_name", "")
+    territory_values: Dict[str, List[float]] = defaultdict(list)
+
+    for label, value in context.get("stenosis_values", {}).items():
+        territory = _infer_territory(label, dominance)
+        if territory is None or pd.isna(value):
+            continue
+        territory_values[territory].append(float(value))
+
+    statements: List[str] = []
+    for territory in ["Left main", "LAD territory", "LCx territory", "RCA territory"]:
+        values = territory_values.get(territory, [])
+        if not values:
+            statements.append(f"{territory}: not specified.")
+            continue
+        max_value = max(values)
+        if max_value >= 50:
+            continue
+        threshold_text = "≤30%" if max_value <= 30 else "≤49%"
+        statements.append(f"{territory}: no ≥50% stenosis identified ({threshold_text}).")
+
+    if not statements:
+        return None
+
+    return " ".join(statements)
+
+
+def generate_siglip_prompt_rows(df: pd.DataFrame, max_atomic_prompts: Optional[int] = None) -> pd.DataFrame:
+    if "StudyInstanceUID" not in df.columns:
+        raise ValueError("StudyInstanceUID column is required to generate prompts")
+
+    prompt_rows: List[Dict[str, Any]] = []
+
+    for study_uid, study_df in df.groupby("StudyInstanceUID"):
+        context = compute_study_context(study_df)
+        series_ids = context.get("SeriesInstanceUIDs", [None])
+        if not series_ids:
+            series_ids = [None]
+
+        prompts: List[Tuple[str, str, float]] = []
+
+        global_prompt = build_global_prompt(context)
+        if global_prompt:
+            prompts.append((global_prompt, "global_summary", PROMPT_WEIGHTS["global_summary"]))
+
+        abnormal_prompt = build_abnormal_prompt(context)
+        if abnormal_prompt:
+            prompts.append((abnormal_prompt, "abnormal_focus", PROMPT_WEIGHTS["abnormal_focus"]))
+
+        atomic_prompts = build_atomic_prompts(context, max_atomic_prompts=max_atomic_prompts)
+        for atomic_text in atomic_prompts:
+            prompts.append((atomic_text, "lesion_atomic", PROMPT_WEIGHTS["lesion_atomic"]))
+
+        negative_prompt = build_negative_prompt(context)
+        if negative_prompt:
+            prompts.append((negative_prompt, "negative_coverage", PROMPT_WEIGHTS["negative_coverage"]))
+
+        for series_id in series_ids:
+            for text, prompt_type, weight in prompts:
+                prompt_rows.append({
+                    "StudyInstanceUID": study_uid,
+                    "SeriesInstanceUID": series_id,
+                    "prompt_text": text,
+                    "prompt_type": prompt_type,
+                    "prompt_weight": weight,
+                })
+
+    if not prompt_rows:
+        return pd.DataFrame(columns=["StudyInstanceUID", "SeriesInstanceUID", "prompt_text", "prompt_type", "prompt_weight"])
+
+    return pd.DataFrame(prompt_rows)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -888,7 +1239,7 @@ def process_dataset(
     if config.get('sampling', {}).get('enabled', False):
         n_samples = config['sampling'].get('n_per_group', 9)
         label_col = config['sampling'].get('label_column', 'status')
-        
+
         # If splits are enabled, only sample from train set
         if 'Split' in df_with_reports.columns:
             sample_source = df_with_reports[df_with_reports['Split'] == 'train']
@@ -906,7 +1257,26 @@ def process_dataset(
             sample_path = samples_dir / f"sample_{label}.csv"
             sample_df.to_csv(sample_path, index=False)
             logger.info(f"Saved {len(sample_df)} {label} samples to {sample_path}")
-    
+
+    # Generate SIGLIP-ready prompt dataset if requested
+    siglip_cfg = config.get('siglip_prompts', {})
+    if siglip_cfg.get('enabled', False):
+        prompt_df = generate_siglip_prompt_rows(
+            df_with_reports,
+            max_atomic_prompts=siglip_cfg.get('max_atomic_prompts')
+        )
+
+        prompt_output_name = siglip_cfg.get('output_filename', 'siglip_prompts_sample.parquet')
+        prompt_output_path = output_path / prompt_output_name
+        prompt_df.to_parquet(prompt_output_path, index=False)
+        logger.info(f"Saved SIGLIP prompt dataset to {prompt_output_path} ({len(prompt_df)} rows)")
+
+        sample_rows = siglip_cfg.get('print_rows', 5)
+        if sample_rows and len(prompt_df) > 0:
+            sample_preview = prompt_df.head(int(sample_rows))
+            print("SIGLIP prompt sample:")
+            print(sample_preview)
+
     # Save configuration used
     config_output_path = output_path / "processing_config.yaml"
     with open(config_output_path, 'w') as f:
@@ -944,6 +1314,12 @@ def create_default_config() -> Dict[str, Any]:
             'enabled': True,
             'n_per_group': 9,
             'label_column': 'status'
+        },
+        'siglip_prompts': {
+            'enabled': False,
+            'max_atomic_prompts': None,
+            'output_filename': 'siglip_prompts_sample.parquet',
+            'print_rows': 5
         },
         'output_settings': {
             'separator': 'α',

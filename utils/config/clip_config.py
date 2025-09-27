@@ -44,7 +44,7 @@ class ClipConfig(HeartWiseConfig):
     aggregator_depth: int
     
     # Video pooling configuration
-    video_pooling_mode: str  # 'mean' or 'attention'
+    video_pooling_mode: str  # 'mean', 'attention', or 'cls_token'
     attention_pool_heads: int
     attention_pool_dropout: float
     
@@ -97,6 +97,9 @@ class ClipConfig(HeartWiseConfig):
 
     # Encoder checkpoint path (optional)
     encoder_path: Optional[str] = None  # Path to pretrained encoder checkpoint
+
+    # CLS token configuration
+    use_cls_token: bool = False
 
     # RoPE configuration (optional with defaults)
     use_rope: bool = False

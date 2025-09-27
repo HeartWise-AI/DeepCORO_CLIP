@@ -87,6 +87,7 @@ class ContrastivePretrainingProject(BaseProject):
             token_pooling_mode=getattr(self.config, 'video_pooling_mode', 'mean'),
             attention_pool_heads=getattr(self.config, 'attention_pool_heads', 8),
             attention_pool_dropout=getattr(self.config, 'attention_pool_dropout', 0.1),
+            use_cls_token=getattr(self.config, 'use_cls_token', False),
             # RoPE parameters
             use_rope=getattr(self.config, 'use_rope', False),
             rope_base=getattr(self.config, 'rope_base', 10000.0),
@@ -144,13 +145,31 @@ class ContrastivePretrainingProject(BaseProject):
             }
         ]
 
+        insert_idx = 1
+
+        attention_pool_params = [
+            p for p in getattr(video_encoder.module, 'attention_pool', nn.Identity()).parameters()
+            if p.requires_grad
+        ]
+        if attention_pool_params:
+            param_groups.insert(
+                insert_idx,
+                {
+                    'params': attention_pool_params,
+                    'lr': self.config.lr * 2.0,
+                    'name': 'video_attention_pool',
+                    'weight_decay': self.config.video_weight_decay
+                }
+            )
+            insert_idx += 1
+
         aggregator_params = [
             p for p in getattr(video_encoder.module, 'aggregator', nn.Identity()).parameters()
             if p.requires_grad
         ]
         if aggregator_params:
             param_groups.insert(
-                1,
+                insert_idx,
                 {
                     'params': aggregator_params,
                     'lr': self.config.lr * 2.0,  # Higher learning rate for aggregator

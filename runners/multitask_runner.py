@@ -731,25 +731,38 @@ class MultitaskRunner:
         with torch.amp.autocast('cuda', enabled=amp_enabled):
             # Get video features (token-level for captioning and masked modeling) - compute once
             # Handle DistributedDataParallel wrapper
-            if hasattr(self.video_encoder, 'module'):
-                video_tokens = self.video_encoder.module.get_tokens(videos, mode="patch")  # [B, num_tokens, hidden_size]
-                # Get aggregated video features for contrastive learning using attention pooling if available
-                if hasattr(self.video_encoder.module, 'attention_pool') and self.video_encoder.module.attention_pool is not None:
-                    video_features = self.video_encoder.module.attention_pool(video_tokens)  # [B, hidden_size]
-                    # Attention pooling is being used
-                else:
-                    video_features = video_tokens.mean(dim=1)  # Fallback to average pooling
-                    # Mean pooling is being used
+            video_encoder = self.video_encoder.module if hasattr(self.video_encoder, 'module') else self.video_encoder
+            video_outputs = video_encoder.get_tokens(videos, mode="patch", return_dict=True)
+            video_tokens = video_outputs["patch_tokens"]  # [B, num_tokens, hidden_size]
+            per_video_tokens = video_outputs["per_video_tokens"]  # [B, num_clips, hidden_size]
+
+            clip_mask: Optional[torch.Tensor] = None
+            single_clip_tokens: torch.Tensor
+            if getattr(self.config, 'multi_video', False) and per_video_tokens.dim() == 3 and per_video_tokens.shape[1] > 1:
+                per_video_tokens, clip_mask, single_clip_tokens = self._regularize_multi_video_tokens(per_video_tokens)
             else:
-                video_tokens = self.video_encoder.get_tokens(videos, mode="patch")  # [B, num_tokens, hidden_size]
-                # Get aggregated video features for contrastive learning using attention pooling if available
-                if hasattr(self.video_encoder, 'attention_pool') and self.video_encoder.attention_pool is not None:
-                    video_features = self.video_encoder.attention_pool(video_tokens)  # [B, hidden_size]
-                    # Attention pooling is being used
+                # Fallback: treat the only clip as both multi and single view
+                single_clip_tokens = per_video_tokens[:, 0, :]
+
+            aggregator_module = getattr(video_encoder, 'aggregator', None)
+            if aggregator_module is not None:
+                video_features = aggregator_module(per_video_tokens, mask=clip_mask)
+            else:
+                if clip_mask is not None:
+                    valid = (~clip_mask).unsqueeze(-1)
+                    summed = (per_video_tokens * valid).sum(dim=1)
+                    denom = valid.sum(dim=1).clamp(min=1)
+                    video_features = summed / denom
                 else:
-                    video_features = video_tokens.mean(dim=1)  # Fallback to average pooling
-                    # Mean pooling is being used
-            
+                    video_features = per_video_tokens.mean(dim=1)
+
+            if aggregator_module is not None and getattr(self.config, 'multi_video', False):
+                single_tokens = single_clip_tokens.unsqueeze(1)
+                single_mask = torch.zeros(single_tokens.shape[0], 1, dtype=torch.bool, device=single_tokens.device)
+                single_view_features = aggregator_module(single_tokens, mask=single_mask)
+            else:
+                single_view_features = video_features
+
             # Get text features
             text_features = self.text_encoder(input_ids, attention_mask)  # [B, hidden_size]
             
@@ -820,15 +833,34 @@ class MultitaskRunner:
                 masked_mask=masked_mask,
                 log_temp=self.log_temp,
             )
-        
+
+        loss_outputs = dict(loss_outputs)
         total_loss = loss_outputs["total"]
-        
+
+        consistency_term = torch.zeros_like(total_loss)
+        if (
+            getattr(self.config, 'multi_video', False)
+            and getattr(self.config, 'consistency_loss_weight', 0.0) > 0
+        ):
+            consistency_weight = torch.tensor(
+                self.config.consistency_loss_weight,
+                device=video_features.device,
+                dtype=video_features.dtype,
+            )
+            normalized_multi = F.normalize(video_features, dim=-1)
+            normalized_single = F.normalize(single_view_features, dim=-1)
+            consistency_raw = (1 - F.cosine_similarity(normalized_multi, normalized_single, dim=-1)).mean()
+            consistency_term = consistency_raw * consistency_weight
+            loss_outputs["consistency"] = consistency_term
+
+        combined_loss = total_loss + consistency_term
+
         # Backward pass
         if self.scaler is not None:
-            self.scaler.scale(total_loss).backward()
+            self.scaler.scale(combined_loss).backward()
             self.scaler.unscale_(self.optimizer)
         else:
-            total_loss.backward()
+            combined_loss.backward()
         
         # Gradient clipping and norm logging
         grad_norm = None
@@ -865,11 +897,14 @@ class MultitaskRunner:
         
         # Prepare metrics
         metrics = {
-            "total_loss": total_loss.item(),
+            "total_loss": combined_loss.item(),
             "contrastive_loss": loss_outputs.get("contrastive", torch.tensor(0.0)).item(),
             "captioning_loss": loss_outputs.get("captioning", torch.tensor(0.0)).item(),
             "masked_modeling_loss": loss_outputs.get("masked_modeling", torch.tensor(0.0)).item(),
         }
+
+        if "consistency" in loss_outputs:
+            metrics["consistency_loss"] = loss_outputs["consistency"].item()
 
         if current_weights is not None:
             metrics["loss_weights"] = dict(current_weights)
@@ -916,6 +951,69 @@ class MultitaskRunner:
         }
         
         return metrics, outputs
+
+    def _regularize_multi_video_tokens(
+        self,
+        per_video_tokens: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Apply set-robust augmentations to multi-video tokens.
+
+        Returns the masked tokens, a boolean mask (True = dropped), and the
+        selected single-clip token used for consistency regularization.
+        """
+
+        B, N, D = per_video_tokens.shape
+        device = per_video_tokens.device
+
+        shuffle_views = getattr(self.config, 'shuffle_clip_order', True)
+        if shuffle_views and N > 1:
+            permutations = torch.stack(
+                [torch.randperm(N, device=device) for _ in range(B)],
+                dim=0,
+            )
+            per_video_tokens = per_video_tokens.gather(
+                1,
+                permutations.unsqueeze(-1).expand(-1, -1, D),
+            )
+
+        max_views_cfg = getattr(self.config, 'max_clip_views', None)
+        max_views = max_views_cfg if max_views_cfg is not None else N
+        max_views = max(1, min(N, max_views))
+        min_views_cfg = getattr(self.config, 'min_clip_views', 1)
+        min_views = max(1, min(min_views_cfg, max_views))
+
+        keep_counts = torch.full((B,), fill_value=max_views, dtype=torch.long, device=device)
+        if max_views > min_views:
+            random_counts = torch.randint(min_views, max_views + 1, (B,), device=device)
+            keep_counts = random_counts
+
+        single_prob = getattr(self.config, 'single_clip_probability', 0.0)
+        if max_views > min_views and single_prob > 0:
+            single_mask = torch.rand(B, device=device) < single_prob
+            keep_counts = torch.where(
+                single_mask,
+                torch.full_like(keep_counts, min_views),
+                keep_counts,
+            )
+
+        keep_counts = keep_counts.clamp(min=1, max=N)
+
+        mask = torch.ones(B, N, dtype=torch.bool, device=device)
+        for b in range(B):
+            count = keep_counts[b].item()
+            mask[b, :count] = False
+
+        drop_prob = getattr(self.config, 'clip_dropout_prob', 0.0)
+        if drop_prob > 0 and N > 1:
+            dropout_mask = torch.rand(B, N, device=device) < drop_prob
+            dropout_mask[:, 0] = False
+            mask = mask | (dropout_mask & (~mask))
+            mask[:, 0] = False
+
+        single_clip_tokens = per_video_tokens[:, 0, :]
+        masked_tokens = per_video_tokens.masked_fill(mask.unsqueeze(-1), 0.0)
+
+        return masked_tokens, mask, single_clip_tokens
     
     def _val_step(
         self, 
@@ -942,20 +1040,13 @@ class MultitaskRunner:
             amp_enabled = self.scaler is not None
             with torch.amp.autocast('cuda', enabled=amp_enabled):
                 # Get video features - compute once and reuse
-                if hasattr(self.video_encoder, 'module'):
-                    video_tokens = self.video_encoder.module.get_tokens(videos, mode="patch")
-                    # Use attention pooling if available for contrastive features
-                    if hasattr(self.video_encoder.module, 'attention_pool') and self.video_encoder.module.attention_pool is not None:
-                        video_features = self.video_encoder.module.attention_pool(video_tokens)
-                    else:
-                        video_features = video_tokens.mean(dim=1)  # Fallback to average pooling
-                else:
-                    video_tokens = self.video_encoder.get_tokens(videos, mode="patch")
-                    # Use attention pooling if available for contrastive features
-                    if hasattr(self.video_encoder, 'attention_pool') and self.video_encoder.attention_pool is not None:
-                        video_features = self.video_encoder.attention_pool(video_tokens)
-                    else:
-                        video_features = video_tokens.mean(dim=1)  # Fallback to average pooling
+                video_encoder = self.video_encoder.module if hasattr(self.video_encoder, 'module') else self.video_encoder
+                video_outputs = video_encoder.get_tokens(videos, mode="patch", return_dict=True)
+                video_tokens = video_outputs["patch_tokens"]
+                video_features = video_outputs["study_features"]
+                if video_features is None:
+                    per_video_tokens = video_outputs["per_video_tokens"]
+                    video_features = per_video_tokens.mean(dim=1)
                 
                 # Get text features
                 text_features = self.text_encoder(input_ids, attention_mask)

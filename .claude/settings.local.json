@@ -24,7 +24,9 @@
       "Bash(export NCCL_MIN_NCHANNELS=4)",
       "Bash(export NCCL_SHM_DISABLE=0)",
       "Bash(export NCCL_NET_GDR_LEVEL=PHB)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(jupyter nbconvert:*)",
+      "mcp__ide__executeCode"
     ],
     "deny": [],
     "ask": []

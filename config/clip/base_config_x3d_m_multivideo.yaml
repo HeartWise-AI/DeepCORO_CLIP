@@ -42,6 +42,10 @@ warm_restart_tmult: !!int 2
 # Model architecture parameters
 num_heads: !!int 8
 aggregator_depth: !!int 2
+video_pooling_mode: !!str cls_token
+attention_pool_heads: !!int 8
+attention_pool_dropout: !!float 0.1
+use_cls_token: !!bool true
 temperature: !!float 0.07928054730507551
 dropout: !!float 0.0993431288332216
 video_freeze_ratio: !!float 0.9

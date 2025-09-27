@@ -14,7 +14,7 @@ class PhaseConfig:
     epochs: int
     text_freeze_layers: Optional[int] = None  # None means all frozen, -1 means all unfrozen
     video_freeze_ratio: float = 0.0
-    logit_scale_trainable: bool = False
+    temperature_trainable: bool = False
     text_lr_multiplier: float = 1.0
     video_lr_multiplier: float = 1.0
 
@@ -194,7 +194,7 @@ def create_two_optimizer_setup(
     text_encoder: nn.Module,
     video_proj: Optional[nn.Module] = None,
     text_proj: Optional[nn.Module] = None,
-    logit_scale: Optional[nn.Parameter] = None,
+    log_temp: Optional[nn.Parameter] = None,
     config: Any = None,
 ) -> Tuple[torch.optim.Optimizer, torch.optim.Optimizer]:
     """Create two separate optimizers for video and text encoders with LLRD.
@@ -204,7 +204,7 @@ def create_two_optimizer_setup(
         text_encoder: Text encoder model (PubMedBERT)
         video_proj: Video projection head (optional)
         text_proj: Text projection head (optional)
-        logit_scale: Temperature parameter (optional)
+        log_temp: Log-temperature parameter (optional)
         config: Configuration object
         
     Returns:
@@ -300,12 +300,12 @@ def create_two_optimizer_setup(
                 "weight_decay": 0.05,
             })
     
-    # Add logit scale to video optimizer if provided
-    if logit_scale is not None:
+    # Add temperature parameter to video optimizer if provided
+    if log_temp is not None:
         video_param_groups.append({
-            "params": [logit_scale],
-            "lr": config.logit_scale_lr if hasattr(config, 'logit_scale_lr') else 0.01,
-            "name": "logit_scale",
+            "params": [log_temp],
+            "lr": getattr(config, 'temperature_lr', 0.01),
+            "name": "temperature",
             "weight_decay": 0.0,
         })
     
@@ -331,7 +331,7 @@ class PhasedTrainingScheduler:
         text_encoder: nn.Module,
         video_optimizer: torch.optim.Optimizer,
         text_optimizer: torch.optim.Optimizer,
-        logit_scale: Optional[nn.Parameter] = None,
+        log_temp: Optional[nn.Parameter] = None,
     ):
         """
         Args:
@@ -341,7 +341,7 @@ class PhasedTrainingScheduler:
             text_encoder: Text encoder model
             video_optimizer: Video optimizer
             text_optimizer: Text optimizer
-            logit_scale: Temperature parameter
+            log_temp: Temperature parameter
         """
         self.phases = phases
         self.total_steps = total_steps
@@ -349,7 +349,7 @@ class PhasedTrainingScheduler:
         self.text_encoder = text_encoder
         self.video_optimizer = video_optimizer
         self.text_optimizer = text_optimizer
-        self.logit_scale = logit_scale
+        self.log_temp = log_temp
         
         # Calculate epoch boundaries for phases
         self.phase_epochs = []
@@ -406,9 +406,9 @@ class PhasedTrainingScheduler:
         if hasattr(self.video_encoder, 'update_freeze_ratio'):
             self.video_encoder.update_freeze_ratio(phase.video_freeze_ratio)
         
-        # Update logit scale trainability
-        if self.logit_scale is not None:
-            self.logit_scale.requires_grad = phase.logit_scale_trainable
+        # Update temperature trainability
+        if self.log_temp is not None:
+            self.log_temp.requires_grad = phase.temperature_trainable
         
         # Update learning rates
         for param_group in self.text_optimizer.param_groups:
@@ -421,50 +421,30 @@ class PhasedTrainingScheduler:
             "phase_name": phase.name,
             "text_freeze_layers": phase.text_freeze_layers,
             "video_freeze_ratio": phase.video_freeze_ratio,
-            "logit_scale_trainable": phase.logit_scale_trainable,
+            "temperature_trainable": phase.temperature_trainable,
             "text_lr_mult": phase.text_lr_multiplier,
             "video_lr_mult": phase.video_lr_multiplier,
         }
 
 
-def initialize_logit_scale(
-    initial_value: float = None,
+def initialize_log_temperature(
+    initial_temperature: float,
     device: torch.device = None,
 ) -> nn.Parameter:
-    """Initialize logit scale (temperature) parameter.
-    
+    """Initialize learnable temperature parameter stored in log-space.
+
     Args:
-        initial_value: Initial temperature value (default: 1/0.07)
+        initial_temperature: Starting temperature value (must be positive)
         device: Device to create parameter on
-        
+
     Returns:
-        Logit scale parameter
+        Log-temperature parameter
     """
-    if initial_value is None:
-        # ln(1/0.07) ≈ 2.659
-        initial_value = math.log(1.0 / 0.07)
-    
-    logit_scale = nn.Parameter(
-        torch.tensor([initial_value], dtype=torch.float32, device=device)
+    if initial_temperature <= 0:
+        raise ValueError("Temperature must be positive to compute log-temperature.")
+
+    log_temperature = nn.Parameter(
+        torch.tensor([math.log(initial_temperature)], dtype=torch.float32, device=device)
     )
-    
-    return logit_scale
 
-
-def clamp_logit_scale(
-    logit_scale: nn.Parameter,
-    min_value: float = 0.0,
-    max_value: float = None,
-) -> None:
-    """Clamp logit scale to prevent instability.
-    
-    Args:
-        logit_scale: Logit scale parameter
-        min_value: Minimum value (default: 0.0)
-        max_value: Maximum value (default: ln(50) ≈ 3.912)
-    """
-    if max_value is None:
-        max_value = math.log(50.0)  # ln(50) ≈ 3.912
-    
-    with torch.no_grad():
-        logit_scale.clamp_(min_value, max_value)
+    return log_temperature

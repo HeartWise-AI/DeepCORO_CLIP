@@ -8,6 +8,12 @@ metric:
 
 parameters:
   # Learning rates for different components
+  aggregator_depth:
+    values: [1, 2, 4]
+  
+  num_heads:
+    values: [8, 16]
+  
   lr:
     distribution: log_uniform_values
     min: 0.00001
@@ -15,8 +21,8 @@ parameters:
   
   text_lr:
     distribution: log_uniform_values
-    min: 0.000005
-    max: 0.00005
+    min: 0.00001
+    max: 0.0001
   
   captioning_lr:
     distribution: log_uniform_values
@@ -52,8 +58,8 @@ parameters:
   # Model architecture parameters
   temperature:
     distribution: log_uniform_values
-    min: 0.01
-    max: 0.2
+    min: 0.05
+    max: 0.15
   
   dropout:
     distribution: uniform
@@ -62,12 +68,12 @@ parameters:
   
   video_freeze_ratio:
     distribution: uniform
-    min: 0.5
+    min: 0.8
     max: 0.95
   
   text_freeze_ratio:
     distribution: uniform
-    min: 0.7
+    min: 0.8
     max: 0.95
   
   # Captioning decoder parameters
@@ -81,7 +87,7 @@ parameters:
     values: [1024, 2048, 3072]
   
   max_generation_length:
-    values: [64, 128, 256]
+    values: [256, 512, 1024]
   
   # Masked video modeling parameters
   mvm_decoder_hidden_size:
@@ -116,19 +122,16 @@ parameters:
   
   # Training parameters
   batch_size:
-    values: [20, 24]
+    values: [16, 20]
   
   gradient_accumulation_steps:
-    values: [1, 2, 4]
+    values: [1, 2]
   
   # Optimizer parameters
   num_warmup_percent:
     distribution: uniform
     min: 0.05
     max: 0.2
-  
-  max_grad_norm:
-    values: [0.5, 1.0, 2.0]
   
   # Loss configuration
   label_smoothing:
@@ -142,6 +145,10 @@ parameters:
   
   stride:
     values: [1, 2, 3]
+
+  scheduler_name:
+    values: ["linear_warmup", "cosine_with_warmup", "cosine_with_hard_restarts_with_warmup"]
+
 
 command:
   - python

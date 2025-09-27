@@ -3,13 +3,13 @@
 import torch
 import torch.nn as nn
 import math
-from typing import Optional
+from typing import Optional, Dict
 from torchvision.models.video import mvit_v2_s, r3d_18
 from torch.amp.autocast_mode import autocast
 
 from utils.registry import ModelRegistry
 from models.video_aggregator import EnhancedVideoAggregator
-from models.attention_pool import AttentionPool
+from models.attention_pool import AttentionPool, AttentionPoolWithCLS
 from models.rope_3d import Rope3D
 
 
@@ -73,7 +73,7 @@ class VideoEncoder(nn.Module):
         self.rope_normalize_mode = rope_normalize_mode
         
         # Store CLS token configuration
-        self.use_cls_token = use_cls_token
+        self.use_cls_token = use_cls_token or token_pooling_mode == "cls_token"
         self.multi_video_cls_aggregation = multi_video_cls_aggregation
         self.encoder_path = encoder_path
 
@@ -190,10 +190,6 @@ class VideoEncoder(nn.Module):
             aggregator_depth=aggregator_depth
         )
 
-        if not aggregate_videos_tokens:
-            for param in self.aggregator.parameters():
-                param.requires_grad_(False)
-
         # 3.5) Load encoder checkpoint if provided
         if self.encoder_path:
             self._load_encoder_checkpoint()
@@ -215,6 +211,13 @@ class VideoEncoder(nn.Module):
                 dropout=attention_pool_dropout
             )
             print(f"[VideoEncoder.__init__] Created AttentionPool with mode='{self.token_pooling_mode}'")
+        elif self.token_pooling_mode == "cls_token":
+            self.attention_pool = AttentionPoolWithCLS(
+                embed_dim=output_dim,
+                num_heads=attention_pool_heads,
+                dropout=attention_pool_dropout
+            )
+            print(f"[VideoEncoder.__init__] Created AttentionPoolWithCLS for mode='{self.token_pooling_mode}'")
         else:
             print(f"[VideoEncoder.__init__] NOT creating AttentionPool, mode='{self.token_pooling_mode}'")
 
@@ -491,11 +494,33 @@ class VideoEncoder(nn.Module):
     def embedding_dim(self) -> int:
         """Get the embedding dimension."""
         return self._embedding_dim
-    def get_tokens(self, x: torch.Tensor, mode: str = "patch"):
+
+    def get_tokens(self, x: torch.Tensor, mode: str = "patch", return_dict: bool = False) -> torch.Tensor | Dict[str, torch.Tensor]:
+        """Return patch tokens while keeping study-level aggregation available."""
+        prev_apply = self._apply_aggregator
+        prev_per_video = self._per_video_pool
         self._apply_aggregator = False
         self._per_video_pool = (mode == "video")
-        return self.forward(x)
-    
+        features = self._compute_feature_dict(x, compute_aggregated=True)
+        self._apply_aggregator = prev_apply
+        self._per_video_pool = prev_per_video
+
+        if return_dict:
+            return {
+                "patch_tokens": features["patch_tokens"],
+                "per_video_tokens": features["per_video_tokens"],
+                "token_grid": features["token_grid"],
+                "study_features": features["study_features"],
+            }
+
+        if mode == "video":
+            per_video = features["per_video_tokens"]
+            if per_video.dim() == 3 and per_video.shape[1] == 1:
+                return per_video.squeeze(1)
+            return per_video
+
+        return features["patch_tokens"]
+
     def _extract_backbone_features(self, x: torch.Tensor) -> torch.Tensor:
         """Return token-level features from the underlying video backbone.
 
@@ -537,134 +562,76 @@ class VideoEncoder(nn.Module):
 
         return feats  # [B*N, L, F]
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Expects shape: [B, N, T, H, W, C]
-            B= batch size,
-            N= # of segments or videos per study,
-            T= #frames,
-            H= height,
-            W= width,
-            C= channels=3
-        We'll reorder => [B,N,C,T,H,W], flatten => [B*N, C, T, H, W],
-        pass through the backbone, then aggregator => [B, output_dim].
-        """
-
+    def _compute_feature_dict(self, x: torch.Tensor, compute_aggregated: bool) -> Dict[str, torch.Tensor]:
         if x.ndim == 5:
-            # Received [B, T, H, W, C] => treat as single video per study.
-            x = x.unsqueeze(1)  # -> [B, 1, T, H, W, C]
-
+            x = x.unsqueeze(1)
         if x.ndim == 7:
-            # Workaround for unexpected 7D input.
-            # The method expects 6D [B, D1, D2, T_actual, H_actual, W_actual, C_actual]
-            # and D1, D2 should be combined into the 'N' dimension.
             s = x.shape
             x = x.view(s[0], s[1] * s[2], s[3], s[4], s[5], s[6])
-            # Now x should be 6D: [B, N_combined, T, H, W, C]
-        
-        # Reorder last dimensio n (C) to after N => [B, N, C, T, H, W]
-        x = x.permute(0, 1, 5, 2, 3, 4)  # Now shape: [B, N, 3, T, H, W]
 
+        x = x.permute(0, 1, 5, 2, 3, 4)
         B, N, C, T, H, W = x.shape
+        x = x.view(B * N, C, T, H, W)
 
-        # Flatten => [B*N, 3, T, H, W]
-        x = x.view(B*N, C, T, H, W)
-
-        # ------------------------------------------------------------------
-        # 1) Backbone ⇨ token sequences (before projection)
-        # ------------------------------------------------------------------
-        token_feats = self._extract_backbone_features(x)  # [B*N, L, in_features]
-
-        # ------------------------------------------------------------------
-        # 2) Linear projection (shared across all tokens)
-        # ------------------------------------------------------------------
-        # ``nn.Sequential`` modules in ``self.proj`` operate on the last dim, so
-        # we can call them directly on a 3-D tensor.
-        token_feats = self.proj(token_feats)  # [B*N, L, output_dim]
-
-        # ------------------------------------------------------------------
-        # 3) Reshape → [B, N*L, output_dim] so that the aggregator treats every
-        #    patch token from every segment as an element in the sequence.
-        # ------------------------------------------------------------------
-        BNL, L, D_out = token_feats.shape  # BNL = B * N
+        token_feats = self._extract_backbone_features(x)
+        token_feats = self.proj(token_feats)
+        _, L, D_out = token_feats.shape
         token_feats = token_feats.view(B, N, L, D_out)
-        
-        # ------------------------------------------------------------------
-        # 3.5) Handle CLS tokens for multi-video scenarios
-        # ------------------------------------------------------------------
-        if self.use_cls_token and hasattr(self, 'cls_token') and self.backbone == "mvit":
-            # Extract CLS tokens if they exist (first token of each video)
-            # MViT may have CLS tokens in some configurations
-            cls_tokens = token_feats[:, :, 0:1, :]  # [B, N, 1, D_out]
-            
-            if N > 1 and self.multi_video_cls_aggregation != "none":
-                # Multi-video: aggregate CLS tokens across videos
-                if self.multi_video_cls_aggregation == "mean":
-                    # Average CLS tokens across videos
-                    aggregated_cls = cls_tokens.mean(dim=1)  # [B, 1, D_out]
-                elif self.multi_video_cls_aggregation == "attention" and self.attention_pool is not None:
-                    # Use attention pooling over CLS tokens
-                    cls_for_pool = cls_tokens.squeeze(2)  # [B, N, D_out]
-                    aggregated_cls = self.attention_pool(cls_for_pool)  # [B, D_out]
-                    aggregated_cls = aggregated_cls.unsqueeze(1).unsqueeze(1)  # [B, 1, 1, D_out]
-                elif self.multi_video_cls_aggregation == "first":
-                    # Use only the first video's CLS token
-                    aggregated_cls = cls_tokens[:, 0:1, :, :]  # [B, 1, 1, D_out]
-                else:
-                    aggregated_cls = cls_tokens  # Keep all CLS tokens
-                
-                # Option: Replace token_feats with aggregated CLS for study-level representation
-                # This is useful when you want a single representation per study
-                # Uncomment if needed:
-                # token_feats = aggregated_cls  # Use aggregated CLS as the representation
 
-#       print(f"token_feats.shape: {token_feats.shape}")
-        if self._apply_aggregator:
-            # Before passing to aggregator, convert to exactly N tokens. This
-            # preserves backward-compatibility with existing training code &
-            # tests that expect a study-level pooling over videos rather than
-            # patches.
-            if self.token_pooling_mode == "attention" and self.attention_pool is not None:
-                # Apply attention pooling to each video's tokens separately
-                B, N, L, D_out = token_feats.shape
-                feats_list = []
-                for i in range(N):
-                    video_tokens = token_feats[:, i, :, :]  # [B, L, D_out]
-                    pooled = self.attention_pool(video_tokens)  # [B, D_out]
-                    feats_list.append(pooled.unsqueeze(1))  # [B, 1, D_out]
-                feats = torch.cat(feats_list, dim=1)  # [B, N, D_out]
-            else:
-                feats = token_feats.mean(dim=2)  # [B, N, D_out]
+        per_video = self._pool_video_tokens(token_feats)
+        patch_tokens = token_feats.reshape(B, N * L, D_out)
 
-            orig_dtype = feats.dtype
-            with autocast('cuda', enabled=False):
-                out = self.aggregator(feats.float())
-            return out.to(orig_dtype)
+        study_features = None
+        if compute_aggregated and self.aggregator is not None:
+            study_features = self._aggregate_video_features(per_video)
 
-        # Aggregator disabled → return either per-video or per-patch tokens
-        if self._per_video_pool:
-            #print("Per-video pooling") 
-            #print(f"token_feats.shape: {token_feats.shape}")
-            if self.token_pooling_mode == "attention" and self.attention_pool is not None:
-                # Apply attention pooling to each video's tokens separately
-                B, N, L, D_out = token_feats.shape
-                feats_list = []
-                for i in range(N):
-                    video_tokens = token_feats[:, i, :, :]  # [B, L, D_out]
-                    pooled = self.attention_pool(video_tokens)  # [B, D_out]
-                    feats_list.append(pooled.unsqueeze(1))  # [B, 1, D_out]
-                feats = torch.cat(feats_list, dim=1)  # [B, N, D_out]
-            else:
-                feats = token_feats.mean(dim=2)  # [B, N, D_out]
-            # If N=1 (single video), squeeze to get [B, D_out] instead of [B, 1, D_out]
-            if N == 1:
-                feats = feats.squeeze(1)  # [B, D_out]
-            #print(f"feats.shape: {feats.shape}")
+        return {
+            "token_grid": token_feats,
+            "per_video_tokens": per_video,
+            "patch_tokens": patch_tokens,
+            "study_features": study_features,
+        }
+
+    def _pool_video_tokens(self, token_feats: torch.Tensor) -> torch.Tensor:
+        B, N, L, _ = token_feats.shape
+        if self.attention_pool is not None:
+            pooled = []
+            for i in range(N):
+                video_tokens = token_feats[:, i, :, :]
+                pooled.append(self.attention_pool(video_tokens).unsqueeze(1))
+            return torch.cat(pooled, dim=1)
+        return token_feats.mean(dim=2)
+
+    def _aggregate_video_features(
+        self,
+        per_video: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        orig_dtype = per_video.dtype
+        with autocast('cuda', enabled=False):
+            aggregated = self.aggregator(per_video.float(), mask=mask)
+        return aggregated.to(orig_dtype)
+
+    def forward(self, x: torch.Tensor, return_tokens: bool = False, token_mode: str = "patch") -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        features = self._compute_feature_dict(x, compute_aggregated=self._apply_aggregator)
+
+        if self._apply_aggregator and features["study_features"] is not None:
+            primary = features["study_features"]
+        elif self._per_video_pool:
+            primary = features["per_video_tokens"]
+            if primary.dim() == 3 and primary.shape[1] == 1:
+                primary = primary.squeeze(1)
         else:
-            #print("Per-patch pooling")
-            feats = token_feats.reshape(B, N * L, D_out)  # [B, N_tokens, D]
-            #print(f"feats.shape: {feats.shape}")
+            primary = features["patch_tokens"]
 
-        return feats
+        if not return_tokens:
+            return primary
 
+        if token_mode == "video":
+            tokens = features["per_video_tokens"]
+        elif token_mode == "grid":
+            tokens = features["token_grid"]
+        else:
+            tokens = features["patch_tokens"]
 
+        return primary, tokens

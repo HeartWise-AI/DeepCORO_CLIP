@@ -266,7 +266,18 @@ class VideoContrastiveLearningRunner:
                 
                 # Apply temperature schedule
                 scheduled_temp = self._compute_temperature_schedule(epoch)
-                self.log_temp = torch.log(torch.tensor(scheduled_temp, device=self.device))
+                scheduled_log_temp = torch.log(
+                    torch.tensor(
+                        [scheduled_temp],
+                        device=self.device,
+                        dtype=self.log_temp.dtype if self.log_temp is not None else torch.float32,
+                    )
+                )
+                if isinstance(self.log_temp, torch.nn.Parameter):
+                    with torch.no_grad():
+                        self.log_temp.data.copy_(scheduled_log_temp)
+                else:
+                    self.log_temp = scheduled_log_temp
                 if self.config.is_ref_device:
                     print(f"\n[Epoch {epoch+1}] Temperature scheduled: {scheduled_temp:.4f}")
                 

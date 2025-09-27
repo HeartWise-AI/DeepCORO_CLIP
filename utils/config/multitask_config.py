@@ -101,14 +101,22 @@ class MultitaskConfig(HeartWiseConfig):
     mask_ratio: float
     mask_token_learnable: bool
     norm_predict_loss: bool
-    
+
     # Learning rates for different components
     text_lr: float
     captioning_lr: float
     captioning_weight_decay: float
     mvm_lr: float
     mvm_weight_decay: float
-    
+
+    # Multi-video regularization defaults
+    min_clip_views: int = 1
+    max_clip_views: Optional[int] = None
+    clip_dropout_prob: float = 0.3
+    single_clip_probability: float = 0.3
+    consistency_loss_weight: float = 0.2
+    shuffle_clip_order: bool = True
+
     # Loss configuration
     contrastive_loss_type: str = "siglip"
     captioning_loss_type: str = "cross_entropy"

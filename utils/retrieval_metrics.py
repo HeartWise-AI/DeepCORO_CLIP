@@ -63,6 +63,8 @@ def compute_mrr(
         
         num_videos = similarity_matrix.size(0)
         num_texts = similarity_matrix.size(1)
+
+        similarity_matrix = torch.nan_to_num(similarity_matrix, nan=0.0, posinf=1e4, neginf=-1e4)
         
         # Handle edge case where we have only one unique text
         if num_texts == 1:

@@ -111,7 +111,7 @@ class ClipConfig(HeartWiseConfig):
     temperature_start: float = 1.0  # Starting temperature for scheduling
     temperature_end: float = 0.1  # Target temperature for scheduling
     temperature_warmup_epochs: int = 0  # Number of epochs for temperature warmup
-    
+
     # Video freeze scheduling parameters (optional with defaults)
     video_freeze_schedule: str = "constant"  # "linear", "step", or "constant"  
     video_freeze_start: float = 0.95  # Starting freeze ratio for scheduling
@@ -127,6 +127,22 @@ class ClipConfig(HeartWiseConfig):
     # Device and distributed info are now inherited from HeartWiseConfig
     # No local definition of device, world_size, is_ref_device, 
     # __post_init__ for device setup, or set_gpu_info_in_place needed here.
+
+    # SigLIP dataset manifests (optional)
+    siglip_texts_path: Optional[str] = None
+    siglip_edges_path: Optional[str] = None
+    siglip_video_id_column: str = "video_id"
+    siglip_text_id_column: str = "text_id"
+    siglip_prompt_text_column: str = "prompt_text"
+    siglip_prompt_type_column: str = "prompt_type"
+    siglip_soft_weight_column: str = "soft_weight"
+    siglip_edge_weight_column: str = "weight"
+    siglip_negatives_per_video: int = 0
+    siglip_negative_weight: float = 1.0
+    siglip_pos_samples_per_video: int = 1
+    siglip_round_robin_sampling: bool = False
+    siglip_debug_batches: int = 0
+    siglip_debug_every: int = 0
 
     def __post_init__(self):
         # Set default values for list fields

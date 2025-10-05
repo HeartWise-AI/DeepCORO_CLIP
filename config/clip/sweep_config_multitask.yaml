@@ -1,4 +1,4 @@
-name: 'DeepCORO_Multitask_Sweep'
+name: 'DeepCORO_Multitask_Sweep_MVIT2S_ROPE'
 project: 'DeepCORO_Multitask'
 entity: 'mhi_ai'
 method: bayes
@@ -7,154 +7,184 @@ metric:
   name: val/total_loss
 
 parameters:
-  # Learning rates for different components
-  aggregator_depth:
-    values: [1, 2, 4]
-  
-  num_heads:
-    values: [8, 16]
-  
+  # Core contrastive learning parameters (based on working config)
+  epochs:
+    value: 10
+
   lr:
     distribution: log_uniform_values
-    min: 0.00001
-    max: 0.0001
-  
+    min: 0.00005
+    max: 0.0002
+
   text_lr:
     distribution: log_uniform_values
-    min: 0.00001
-    max: 0.0001
-  
-  captioning_lr:
-    distribution: log_uniform_values
-    min: 0.00001
-    max: 0.0001
-  
-  mvm_lr:
-    distribution: log_uniform_values
-    min: 0.000001
-    max: 0.00001
-  
-  # Weight decay parameters
-  video_weight_decay:
-    distribution: log_uniform_values
-    min: 0.000001
-    max: 0.0001
-  
-  text_weight_decay:
-    distribution: log_uniform_values
-    min: 0.0000001
-    max: 0.00001
-  
-  captioning_weight_decay:
+    min: 0.00005
+    max: 0.0002
+
+  # Temperature for contrastive learning (CLIP-style sharp distribution)
+  # CLIP uses temp ≈ 0.07-0.15 for strong alignment signal
+  # Sharp temperature = strong gradients = better contrastive learning
+  temperature_start:
     distribution: uniform
-    min: 0.001
-    max: 0.1
-  
-  mvm_weight_decay:
-    distribution: uniform
-    min: 0.001
-    max: 0.1
-  
-  # Model architecture parameters
-  temperature:
-    distribution: log_uniform_values
-    min: 0.05
+    min: 0.07
     max: 0.15
-  
-  dropout:
+
+  temperature_end:
     distribution: uniform
-    min: 0.0
-    max: 0.3
-  
+    min: 0.07
+    max: 0.15
+
+  temperature_schedule:
+    values: ["constant", "linear"]
+
+  # Freeze ratios (reduced to allow encoder adaptation without destroying features)
   video_freeze_ratio:
     distribution: uniform
-    min: 0.8
-    max: 0.95
-  
+    min: 0.7
+    max: 0.9
+
   text_freeze_ratio:
     distribution: uniform
-    min: 0.8
-    max: 0.95
-  
-  # Captioning decoder parameters
-  decoder_layers:
-    values: [4, 6, 8]
-  
-  decoder_heads:
-    values: [4, 8, 12]
-  
-  decoder_intermediate_size:
-    values: [1024, 2048, 3072]
-  
-  max_generation_length:
-    values: [256, 512, 1024]
-  
-  # Masked video modeling parameters
-  mvm_decoder_hidden_size:
-    values: [128, 256, 512]
-  
-  mvm_decoder_layers:
-    values: [1, 2, 3]
-  
-  mvm_decoder_heads:
-    values: [4, 8]
-  
-  mask_ratio:
-    distribution: uniform
-    min: 0.5
+    min: 0.8  
     max: 0.9
-  
-  # Loss weights for multitask learning
+
+
+  # Aggregation parameters
+  aggregator_depth:
+    values: [1, 2]
+
+  attention_pool_heads:
+    values: [8, 16]
+
+  attention_pool_dropout:
+    distribution: uniform
+    min: 0.05
+    max: 0.15
+
+  # Video pooling configuration
+  use_cls_token:
+    values: [true, false]
+
+  video_pooling_mode:
+    values: ["cls_token", "attention"]
+
+  # Auxiliary task learning rates (increased for captioning to match higher loss weight)
+  captioning_lr:
+    distribution: log_uniform_values
+    min: 0.00005
+    max: 0.0002
+
+  mvm_lr:
+    distribution: log_uniform_values
+    min: 0.00001
+    max: 0.00005
+
+  # Weight decay
+  video_weight_decay:
+    distribution: log_uniform_values
+    min: 0.00001
+    max: 0.0001
+
+  text_weight_decay:
+    distribution: log_uniform_values
+    min: 0.000001
+    max: 0.00001
+
+  captioning_weight_decay:
+    distribution: uniform
+    min: 0.01
+    max: 0.05
+
+  mvm_weight_decay:
+    distribution: uniform
+    min: 0.01
+    max: 0.05
+
+  # Loss weights (CONTRASTIVE DOMINANT - match CLIP philosophy)
+  # Contrastive must be primary objective for proper alignment
   loss_weights.contrastive:
     distribution: uniform
-    min: 0.5
-    max: 2.0
-  
+    min: 1.5
+    max: 3.0
+
   loss_weights.captioning:
     distribution: uniform
-    min: 0.5
-    max: 2.0
-  
-  loss_weights.masked_modeling:
-    distribution: log_uniform_values
-    min: 0.01
+    min: 0.2
     max: 0.5
-  
+
+  loss_weights.masked_modeling:
+    distribution: uniform
+    min: 0.05
+    max: 0.2
+
+  # Patch-level contrastive weight (DISABLED - creates gradient interference)
+  # Do not sweep - always 0 to eliminate conflicting objectives
+  # patch_contrastive_weight: 0.0  (removed from sweep)
+
+  # Lightweight auxiliary task architectures
+  decoder_layers:
+    values: [4, 6]
+
+  decoder_heads:
+    values: [4, 8]
+
+  decoder_intermediate_size:
+    values: [1024, 2048]
+
+  max_generation_length:
+    value: 256
+
+  mvm_decoder_hidden_size:
+    values: [128, 256]
+
+  mvm_decoder_layers:
+    values: [1, 2]
+
+  mvm_decoder_heads:
+    values: [4, 8]
+
+  mask_ratio:
+    distribution: uniform
+    min: 0.6
+    max: 0.8
+
   # Training parameters
   batch_size:
     values: [16, 20]
-  
+
   gradient_accumulation_steps:
     values: [1, 2]
-  
-  # Optimizer parameters
+
   num_warmup_percent:
     distribution: uniform
-    min: 0.05
+    min: 0.1
     max: 0.2
-  
-  # Loss configuration
+
   label_smoothing:
     distribution: uniform
     min: 0.0
-    max: 0.2
-  
+    max: 0.1
+
   # Data parameters
   frames:
-    values: [16]
-  
-  stride:
-    values: [1, 2, 3]
+    value: 16
 
+  stride:
+    values: [1, 2]
+
+  # Scheduler (cosine with hard restarts worked well)
   scheduler_name:
-    values: ["linear_warmup", "cosine_with_warmup", "cosine_with_hard_restarts_with_warmup"]
+    values: ["cosine_with_warmup", "cosine_with_hard_restarts_with_warmup"]
+
+  num_hard_restarts_cycles:
+    values: [1, 2]
 
 
 command:
   - python
   - -m
   - torch.distributed.run
-  - --nproc_per_node=3
+  - --nproc_per_node=2
   - --master_port=29500
   - scripts/main.py
   - --base_config

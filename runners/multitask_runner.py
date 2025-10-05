@@ -94,7 +94,7 @@ class MultitaskRunner:
             masked_video_modeling: MaskedVideoModeling model
             optimizer: Optimizer instance
             scaler: GradScaler for automatic mixed precision
-            log_temp: Logarithm of temperature used in contrastive loss
+            log_temp: Log-space temperature parameter (following CLIP/SigLIP convention)
             lr_scheduler: Learning rate scheduler
             loss_fn: Multitask loss function
             output_dir: Directory where checkpoints and outputs will be saved
@@ -370,6 +370,8 @@ class MultitaskRunner:
         total_contrastive_loss = 0.0
         total_captioning_loss = 0.0
         total_masked_modeling_loss = 0.0
+        total_stenosis_mse_loss = 0.0
+        total_critical_bce_loss = 0.0
         num_batches = 0
         
         # For contrastive learning metrics
@@ -408,7 +410,13 @@ class MultitaskRunner:
                             "train/step": self.global_step,
                             "train/epoch": epoch,
                         }
-                        
+
+                        # Add stenosis losses if present
+                        if "stenosis_mse_loss" in batch_metrics:
+                            step_log_dict["train/step_stenosis_mse_loss"] = batch_metrics["stenosis_mse_loss"]
+                        if "critical_bce_loss" in batch_metrics:
+                            step_log_dict["train/step_critical_bce_loss"] = batch_metrics["critical_bce_loss"]
+
                         # Add per-component gradient norms
                         for key, value in batch_metrics.items():
                             if key.startswith("grad_norm_"):
@@ -421,9 +429,10 @@ class MultitaskRunner:
                                 group_name = param_group.get('name', f'group_{i}')
                                 step_log_dict[f"lr/{group_name}"] = param_group['lr']
                         
-                        # Log temperature
+                        # Log temperature (exponentiate from log-space)
                         if self.log_temp is not None:
                             step_log_dict["train/temperature"] = torch.exp(self.log_temp).item()
+                            step_log_dict["train/log_temp"] = self.log_temp.item()
                         
                         # Log loss weight if using scheduler
                         if self.loss_weight_scheduler is not None:
@@ -449,6 +458,13 @@ class MultitaskRunner:
                             "val/step": self.global_step,
                             "val/epoch": epoch,
                         }
+
+                        # Add stenosis losses if present
+                        if "stenosis_mse_loss" in batch_metrics:
+                            val_step_log_dict["val/step_stenosis_mse_loss"] = batch_metrics["stenosis_mse_loss"]
+                        if "critical_bce_loss" in batch_metrics:
+                            val_step_log_dict["val/step_critical_bce_loss"] = batch_metrics["critical_bce_loss"]
+
                         self.wandb_wrapper.log(val_step_log_dict, step=self.global_step)
                 
                 # Accumulate metrics
@@ -456,6 +472,8 @@ class MultitaskRunner:
                 total_contrastive_loss += batch_metrics.get("contrastive_loss", 0.0)
                 total_captioning_loss += batch_metrics.get("captioning_loss", 0.0)
                 total_masked_modeling_loss += batch_metrics.get("masked_modeling_loss", 0.0)
+                total_stenosis_mse_loss += batch_metrics.get("stenosis_mse_loss", 0.0)
+                total_critical_bce_loss += batch_metrics.get("critical_bce_loss", 0.0)
                 num_batches += 1
                 
                 # Store features for metrics - detach and move to CPU to save GPU memory
@@ -514,6 +532,8 @@ class MultitaskRunner:
             total_contrastive_gathered = DistributedUtils.gather_loss([total_contrastive_loss], self.device)
             total_captioning_gathered = DistributedUtils.gather_loss([total_captioning_loss], self.device)
             total_mvm_gathered = DistributedUtils.gather_loss([total_masked_modeling_loss], self.device)
+            total_stenosis_mse_gathered = DistributedUtils.gather_loss([total_stenosis_mse_loss], self.device)
+            total_critical_bce_gathered = DistributedUtils.gather_loss([total_critical_bce_loss], self.device)
             
             # Gather batch counts
             batch_count_tensor = torch.tensor([num_batches], dtype=torch.float32, device=self.device)
@@ -527,6 +547,8 @@ class MultitaskRunner:
                 "contrastive_loss": total_contrastive_gathered / total_batches,
                 "captioning_loss": total_captioning_gathered / total_batches,
                 "masked_modeling_loss": total_mvm_gathered / total_batches,
+                "stenosis_mse_loss": total_stenosis_mse_gathered / total_batches,
+                "critical_bce_loss": total_critical_bce_gathered / total_batches,
             }
         else:
             # Single GPU - compute averages normally
@@ -535,6 +557,8 @@ class MultitaskRunner:
                 "contrastive_loss": total_contrastive_loss / num_batches,
                 "captioning_loss": total_captioning_loss / num_batches,
                 "masked_modeling_loss": total_masked_modeling_loss / num_batches,
+                "stenosis_mse_loss": total_stenosis_mse_loss / num_batches if num_batches > 0 else 0.0,
+                "critical_bce_loss": total_critical_bce_loss / num_batches if num_batches > 0 else 0.0,
             }
         
         # Track feature accumulation for debugging
@@ -675,7 +699,12 @@ class MultitaskRunner:
             print(f"  - Contrastive: {metrics.get('contrastive_loss', 0.0):.4f}")
             print(f"  - Captioning: {metrics.get('captioning_loss', 0.0):.4f}")
             print(f"  - MVM: {metrics.get('masked_modeling_loss', 0.0):.4f}")
-            
+
+            # Add stenosis losses (always show if enabled in config)
+            if getattr(self.config, 'use_stenosis_loss', True):
+                print(f"  - Stenosis MSE: {metrics.get('stenosis_mse_loss', 0.0):.4f}")
+                print(f"  - Critical BCE: {metrics.get('critical_bce_loss', 0.0):.4f}")
+
             if 'Recall@1' in metrics:
                 print(f"\nRetrieval Metrics:")
                 for k in [1, 5, 10, 50]:
@@ -821,8 +850,32 @@ class MultitaskRunner:
                 current_weights = self.loss_fn.loss_type.loss_weights
 
             current_weights = dict(current_weights)
-            
-            # Compute multitask loss
+
+            # Decode generated and target texts for stenosis-aware loss
+            generated_texts = None
+            target_texts = None
+            if self.tokenizer is not None and getattr(self.config, 'use_stenosis_loss', True):
+                try:
+                    # Decode generated captions (argmax from logits)
+                    generated_ids = caption_logits.argmax(dim=-1)  # [B, seq_len-1]
+                    generated_texts = self.tokenizer.batch_decode(
+                        generated_ids,
+                        skip_special_tokens=True,
+                        clean_up_tokenization_spaces=True
+                    )
+
+                    # Decode target captions
+                    target_texts = self.tokenizer.batch_decode(
+                        caption_targets,
+                        skip_special_tokens=True,
+                        clean_up_tokenization_spaces=True
+                    )
+                except Exception:
+                    # If decoding fails, skip stenosis loss for this batch
+                    generated_texts = None
+                    target_texts = None
+
+            # Compute multitask loss (patch features removed - gradient interference fix)
             loss_outputs = self.loss_fn.run(
                 video_features=video_features,
                 text_features=text_features,
@@ -831,7 +884,11 @@ class MultitaskRunner:
                 masked_pred=masked_pred,
                 masked_target=masked_target,
                 masked_mask=masked_mask,
-                log_temp=self.log_temp,
+                log_temp=self.log_temp,  # Already in log-space
+                # patch_features removed - was creating gradient conflict with study-level contrastive
+                # Stenosis-aware loss inputs
+                generated_texts=generated_texts,
+                target_texts=target_texts,
             )
 
         loss_outputs = dict(loss_outputs)
@@ -905,6 +962,12 @@ class MultitaskRunner:
 
         if "consistency" in loss_outputs:
             metrics["consistency_loss"] = loss_outputs["consistency"].item()
+
+        # Add stenosis-aware loss metrics if present
+        if "stenosis_mse" in loss_outputs:
+            metrics["stenosis_mse_loss"] = loss_outputs["stenosis_mse"].item()
+        if "critical_bce" in loss_outputs:
+            metrics["critical_bce_loss"] = loss_outputs["critical_bce"].item()
 
         if current_weights is not None:
             metrics["loss_weights"] = dict(current_weights)
@@ -1120,7 +1183,10 @@ class MultitaskRunner:
                     masked_pred=masked_pred,
                     masked_target=masked_target,
                     masked_mask=masked_mask,
-                    log_temp=self.log_temp,
+                    log_temp=self.log_temp,  # Already in log-space
+                    # Stenosis-aware loss inputs
+                    generated_texts=generated_texts if generated_texts else None,
+                    target_texts=target_texts if target_texts else None,
                 )
             
             total_loss = loss_outputs["total"]
@@ -1132,6 +1198,12 @@ class MultitaskRunner:
                 "captioning_loss": loss_outputs.get("captioning", torch.tensor(0.0)).item(),
                 "masked_modeling_loss": loss_outputs.get("masked_modeling", torch.tensor(0.0)).item(),
             }
+
+            # Include stenosis-aware auxiliary losses for aggregation/logging
+            if "stenosis_mse" in loss_outputs:
+                metrics["stenosis_mse_loss"] = loss_outputs["stenosis_mse"].item()
+            if "critical_bce" in loss_outputs:
+                metrics["critical_bce_loss"] = loss_outputs["critical_bce"].item()
             
             # Prepare outputs
             outputs = {
@@ -1518,9 +1590,10 @@ class MultitaskRunner:
                     group_name = param_group.get('name', f'group_{i}')
                     train_log_dict[f"lr/{group_name}"] = param_group['lr']
             
-            # Log temperature
+            # Log temperature (exponentiate from log-space)
             if self.log_temp is not None:
                 train_log_dict["train/temperature"] = torch.exp(self.log_temp).item()
+                train_log_dict["train/log_temp"] = self.log_temp.item()
             
             # Combine and log
             log_dict = {**train_log_dict, **val_log_dict}
@@ -1540,7 +1613,7 @@ class MultitaskRunner:
             "optimizer": self.optimizer.state_dict(),
             "scheduler": self.lr_scheduler.state_dict() if self.lr_scheduler else None,
             "scaler": self.scaler.state_dict() if self.scaler else None,
-            "train/temperature": self.log_temp.data.clone(),
+            "train/log_temp": self.log_temp.data.clone(),
             "metrics": metrics,
         }
         
@@ -1624,25 +1697,29 @@ class MultitaskRunner:
         # Prepare data for CSV
         predictions_data = []
         for i, video_path in enumerate(video_paths):
+            # Get ground truth index in unique texts
+            ground_truth_idx = text_to_idx.get(texts[i], -1) if i < len(texts) else -1
+
             row = {
                 'epoch': epoch,
                 'video_path': video_path,
                 'ground_truth_text': texts[i] if i < len(texts) else "",
                 'predicted_text': generated_texts[i] if i < len(generated_texts) else "",
+                'ground_truth_idx': ground_truth_idx,
             }
-            
+
             # Add top-5 retrieval results (indices and scores only)
             for k in range(min(5, len(unique_texts))):
                 if k < topk_indices.shape[1]:
                     idx = topk_indices[i, k].item()
                     score = topk_values[i, k].item()
-                    
+
                     row[f'top{k+1}_idx'] = idx
                     row[f'top{k+1}_score'] = score
                 else:
                     row[f'top{k+1}_idx'] = -1
                     row[f'top{k+1}_score'] = 0.0
-            
+
             predictions_data.append(row)
         
         # Create DataFrame and save to CSV

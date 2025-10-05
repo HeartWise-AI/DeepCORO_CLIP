@@ -1,0 +1,4 @@
+# Example configuration fragment enabling multi-positive SigLIP sampling.
+# Merge/override this with your base training config.
+siglip_pos_samples_per_video: 3
+siglip_round_robin_sampling: true

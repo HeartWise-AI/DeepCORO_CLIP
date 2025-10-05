@@ -1,9 +1,9 @@
 import os
 import torch
-import pathlib
 
 import pandas as pd
 from torch.utils.data import DataLoader
+from pathlib import Path
 
 from utils.seed import seed_worker
 from utils.video import load_video
@@ -43,14 +43,32 @@ class StatsDataset(torch.utils.data.Dataset):
                 self.outcome = self.outcome[: self.max_samples]
             print(f"Limited dataset to {self.max_samples} samples")
 
+    def _read_metadata_csv(self, csv_path: str | Path) -> pd.DataFrame:
+        csv_path = Path(csv_path)
+        if not csv_path.exists():
+            raise FileNotFoundError(f"Stats dataset CSV not found at {csv_path}")
+
+        try:
+            df_alpha = pd.read_csv(csv_path, sep="α", engine="python")
+            if df_alpha.shape[1] > 1:
+                return df_alpha
+        except Exception:
+            pass
+
+        return pd.read_csv(csv_path)
+
     def load_data(self, split, target_label):
-        data = pd.read_csv(self.filename, sep="α", engine="python")
+        data = self._read_metadata_csv(self.filename)
 
         filename_index = data.columns.get_loc(self.datapoint_loc_label)
         split_index = data.columns.get_loc("Split")
         target_index = None
         if target_label is not None:
-            target_index = data.columns.get_loc(target_label[0])
+            first_label = target_label[0]
+            if first_label in data.columns:
+                target_index = data.columns.get_loc(first_label)
+            else:
+                target_index = None
 
         fnames = []
         outcome = []

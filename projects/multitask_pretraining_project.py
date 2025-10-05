@@ -161,12 +161,14 @@ class MultitaskPretrainingProject(BaseProject):
             device_ids=[self.config.device], 
         )
 
-        # Make temperature a trainable parameter
+        # Initialize temperature in log-space following CLIP convention
+        # CLIP: log(0.07) ≈ -2.659, log(0.1) ≈ -2.303
+        # Store as log(temperature) to prevent negative values during optimization
         log_temperature: nn.Parameter = nn.Parameter(
             torch.log(
                 torch.tensor(
-                    [self.config.temperature], 
-                    dtype=torch.float32, 
+                    [self.config.temperature],
+                    dtype=torch.float32,
                     device=self.config.device
                 )
             )
@@ -199,7 +201,7 @@ class MultitaskPretrainingProject(BaseProject):
                 'weight_decay': getattr(self.config, 'mvm_weight_decay', 0.01)
             },
             {
-                'params': [log_temperature],  # Temperature parameter
+                'params': [log_temperature],  # Temperature parameter (log-space)
                 'lr': self.config.lr,
                 'name': 'temperature'
             }
@@ -267,7 +269,7 @@ class MultitaskPretrainingProject(BaseProject):
             'masked_modeling': 0.1,
             'distillation': 0.0,
         })
-        
+
         loss_fn: Loss = Loss(
             loss_type=LossRegistry.get('multitask')(
                 loss_weights=loss_weights,
@@ -277,6 +279,7 @@ class MultitaskPretrainingProject(BaseProject):
                 temperature=self.config.temperature,
                 label_smoothing=getattr(self.config, 'label_smoothing', 0.1),
                 ignore_index=getattr(self.config, 'ignore_index', -100),
+                patch_contrastive_weight=getattr(self.config, 'patch_contrastive_weight', 0.4),
             )
         )
 
@@ -361,7 +364,7 @@ class MultitaskPretrainingProject(BaseProject):
         
         checkpoint: dict[str, Any] = self._load_checkpoint(self.config.checkpoint)
         video_encoder.module.load_state_dict(checkpoint["video_encoder"], weight_only=True)
-        log_temp: float = checkpoint["train/temperature"]
+        log_temp: float = checkpoint["train/log_temp"]
 
         return {
             "val_loader": val_loader,
@@ -395,7 +398,7 @@ class MultitaskPretrainingProject(BaseProject):
         if "scaler" in checkpoint:
             training_setup["scaler"].load_state_dict(checkpoint["scaler"])
         if "train/temperature" in checkpoint:
-            training_setup["log_temp"].data.copy_(checkpoint["train/temperature"])
+            training_setup["log_temp"].data.copy_(checkpoint["train/log_temp"])
         
         return training_setup
         

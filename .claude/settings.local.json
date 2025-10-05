@@ -26,7 +26,10 @@
       "Bash(export NCCL_NET_GDR_LEVEL=PHB)",
       "Bash(git add:*)",
       "Bash(jupyter nbconvert:*)",
-      "mcp__ide__executeCode"
+      "mcp__ide__executeCode",
+      "Bash(git push:*)",
+      "Read(//media/data1/ravram/DeepCORO_CLIP_ENCODER/datasets/**)",
+      "Bash(python3:*)"
     ],
     "deny": [],
     "ask": []

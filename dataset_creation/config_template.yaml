@@ -9,7 +9,6 @@ filters:
   # Multiple statuses example:
   status: 
     - "diagnostic"
-  #  - "POST_PCI"
   # Available values: "diagnostic", "PCI", "POST_PCI"
   
   # Main structures to include in the dataset

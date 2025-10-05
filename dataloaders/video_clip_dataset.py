@@ -4,11 +4,12 @@ import torch
 import random
 import pathlib
 import collections
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 from torch.utils.data import DataLoader
 
 from utils.seed import seed_worker
@@ -60,6 +61,35 @@ class VideoClipDataset(torch.utils.data.Dataset):
         self.seed = seed
         self.multi_video_mode = kwargs.pop("multi_video", False)
 
+        # SigLIP negatives configuration
+        self.siglip_negatives_per_video: int = int(kwargs.pop("siglip_negatives_per_video", 0))
+        self.siglip_pos_samples_per_video: int = max(1, int(kwargs.pop("siglip_pos_samples_per_video", 1)))
+        self.siglip_round_robin_sampling: bool = bool(kwargs.pop("siglip_round_robin_sampling", False))
+
+        # Placeholders populated after metadata loading
+        self.video_positive_texts: List[List[Dict[str, Any]]] = []
+        self.video_ids: List[Optional[str]] = []
+        self.video_path_to_idx: Dict[str, int] = {}
+        self.main_structures: List[str] = []
+        self.video_negative_pool: List[List[Dict[str, Any]]] = []
+        self._siglip_pos_cursors: List[int] = []
+
+        # Optional SigLIP resources (videos/texts/edges manifest)
+        self.siglip_texts_path: Optional[str] = kwargs.pop("siglip_texts_path", None)
+        self.siglip_edges_path: Optional[str] = kwargs.pop("siglip_edges_path", None)
+        self.siglip_video_id_column: str = kwargs.pop("siglip_video_id_column", "video_id")
+        self.siglip_text_id_column: str = kwargs.pop("siglip_text_id_column", "text_id")
+        self.siglip_prompt_text_column: str = kwargs.pop("siglip_prompt_text_column", "prompt_text")
+        self.siglip_prompt_type_column: str = kwargs.pop("siglip_prompt_type_column", "prompt_type")
+        self.siglip_soft_weight_column: str = kwargs.pop("siglip_soft_weight_column", "soft_weight")
+        self.siglip_edge_weight_column: str = kwargs.pop("siglip_edge_weight_column", "weight")
+        self.siglip_enabled: bool = bool(self.siglip_texts_path and self.siglip_edges_path)
+
+        if self.siglip_enabled and self.multi_video_mode:
+            raise ValueError(
+                "SigLIP multiprompt sampling is not supported when multi_video=True."
+            )
+
         # Early validation for multi-video mode
         if self.multi_video_mode and (self.groupby_column is None or not self.groupby_column):
             raise ValueError(
@@ -77,6 +107,14 @@ class VideoClipDataset(torch.utils.data.Dataset):
             print(f"[VideoClipDataset] seed={self.seed} for random video sampling")
         else:
             print(f"[VideoClipDataset] no seed for random video sampling")
+
+        # SigLIP resources
+        self._siglip_text_lookup: Dict[str, Dict[str, Any]] = {}
+        self._siglip_video_to_texts: Dict[str, List[Dict[str, Any]]] = {}
+        self._siglip_tree_to_texts: Dict[str, List[Dict[str, Any]]] = collections.defaultdict(list)
+        self._siglip_all_text_entries: List[Dict[str, Any]] = []
+        if self.siglip_enabled:
+            self._load_siglip_resources()
 
         if self.split != "inference":
             target_label = (
@@ -115,11 +153,109 @@ class VideoClipDataset(torch.utils.data.Dataset):
             # in single-video mode, expose it as the list of file names.
             self.study_ids = [str(f) for f in self.fnames]
 
+    def _read_metadata_csv(self, csv_path: Path | str) -> pd.DataFrame:
+        csv_path = Path(csv_path)
+        if not csv_path.exists():
+            raise FileNotFoundError(f"Dataset CSV not found at {csv_path}")
+
+        try:
+            df_alpha = pd.read_csv(csv_path, sep="α", engine="python")
+            if df_alpha.shape[1] > 1:
+                return df_alpha
+        except Exception:
+            pass
+
+        return pd.read_csv(csv_path)
+
+    def _load_siglip_resources(self) -> None:
+        texts_path = Path(self.siglip_texts_path).expanduser().resolve()
+        edges_path = Path(self.siglip_edges_path).expanduser().resolve()
+
+        if not texts_path.exists():
+            raise FileNotFoundError(f"SigLIP texts.csv not found at {texts_path}")
+        if not edges_path.exists():
+            raise FileNotFoundError(f"SigLIP edges.csv not found at {edges_path}")
+
+        texts_df = pd.read_csv(texts_path)
+        edges_df = pd.read_csv(edges_path)
+
+        required_text_cols = {self.siglip_text_id_column, self.siglip_prompt_text_column}
+        missing_text_cols = required_text_cols - set(texts_df.columns)
+        if missing_text_cols:
+            raise ValueError(
+                f"texts.csv is missing required columns: {sorted(missing_text_cols)}"
+            )
+
+        required_edge_cols = {self.siglip_video_id_column, self.siglip_text_id_column}
+        missing_edge_cols = required_edge_cols - set(edges_df.columns)
+        if missing_edge_cols:
+            raise ValueError(
+                f"edges.csv is missing required columns: {sorted(missing_edge_cols)}"
+            )
+
+        self._siglip_text_lookup.clear()
+        self._siglip_tree_to_texts.clear()
+        self._siglip_all_text_entries.clear()
+        for _, row in texts_df.iterrows():
+            text_id = str(row[self.siglip_text_id_column])
+            tags = self._parse_tags(row.get("tags", ""))
+            tree = tags.get("tree")
+            text_info = {
+                "text_id": text_id,
+                "prompt_text": row[self.siglip_prompt_text_column],
+                "prompt_type": row.get(self.siglip_prompt_type_column),
+                "soft_weight": float(row.get(self.siglip_soft_weight_column, 1.0)),
+                "tree": tree,
+                "tags": tags,
+            }
+            self._siglip_text_lookup[text_id] = text_info
+            if tree:
+                self._siglip_tree_to_texts[tree].append(text_info)
+            self._siglip_all_text_entries.append(text_info)
+
+        self._siglip_video_to_texts = collections.defaultdict(list)
+        for _, row in edges_df.iterrows():
+            video_id = str(row[self.siglip_video_id_column])
+            text_id = str(row[self.siglip_text_id_column])
+            text_info = self._siglip_text_lookup.get(text_id)
+            if not text_info:
+                continue
+            entry = dict(text_info)
+            entry["edge_weight"] = float(row.get(self.siglip_edge_weight_column, 1.0))
+            self._siglip_video_to_texts[video_id].append(entry)
+
+        print(
+            f"[VideoClipDataset] Loaded SigLIP resources: "
+            f"{len(self._siglip_text_lookup)} texts, "
+            f"{len(self._siglip_video_to_texts)} videos with positives"
+        )
+
+    @staticmethod
+    def _parse_tags(tag_str: Any) -> Dict[str, str]:
+        tags: Dict[str, str] = {}
+        if isinstance(tag_str, str):
+            for kv in tag_str.split("|"):
+                if ":" in kv:
+                    key, value = kv.split(":", 1)
+                    tags[key.strip()] = value.strip()
+        return tags
+
+    @staticmethod
+    def _infer_tree_from_structure(main_structure: Optional[str]) -> Optional[str]:
+        if not isinstance(main_structure, str):
+            return None
+        lower = main_structure.lower()
+        if "left" in lower:
+            return "left"
+        if "right" in lower:
+            return "right"
+        return None
+
     def _init_multi_video(self):
         self.study_to_videos = collections.defaultdict(list)
         self.study_to_text = {}
         csv_path = self.folder / self.filename
-        df = pd.read_csv(csv_path, sep="α", engine="python")
+        df = self._read_metadata_csv(csv_path)
         df_split = df[df["Split"].str.lower() == self.split.lower()].copy()
         missing_studies = 0
         # Determine the text column name
@@ -157,7 +293,7 @@ class VideoClipDataset(torch.utils.data.Dataset):
 
     def load_data(self, split, target_label):
         file_path = os.path.join(self.folder, self.filename)
-        data = pd.read_csv(file_path, sep="α", engine="python")
+        data = self._read_metadata_csv(file_path)
 
         print(f"\nAvailable splits in dataset:")
         print(data["Split"].value_counts())
@@ -167,14 +303,24 @@ class VideoClipDataset(torch.utils.data.Dataset):
 
         target_index = None
         if target_label is not None:
-            target_index = data.columns.get_loc(target_label[0])
+            first_label = target_label[0]
+            if first_label in data.columns:
+                target_index = data.columns.get_loc(first_label)
+            elif not self.siglip_enabled:
+                raise KeyError(f"Target label '{first_label}' not found in dataset columns")
 
-        fnames = []
-        outcome = []
+        fnames: List[str] = []
+        outcome: List[Any] = []
+        self.video_ids = []
+        self.video_positive_texts = []
+        self.video_path_to_idx = {}
+        self.main_structures = []
+        self.video_negative_pool = []
 
         total_rows = 0
         valid_files = 0
         split_matches = 0
+        self._siglip_pos_cursors = []
 
         for _, row in data.iterrows():
             total_rows += 1
@@ -186,13 +332,50 @@ class VideoClipDataset(torch.utils.data.Dataset):
             else:
                 full_path = file_name
 
-            if os.path.exists(full_path):
-                valid_files += 1
-                if split in ["all", file_mode]:
-                    split_matches += 1
-                    fnames.append(full_path)
-                    if target_index is not None:
-                        outcome.append(row.iloc[target_index])
+            if not os.path.exists(full_path):
+                continue
+
+            valid_files += 1
+            if split not in ["all", file_mode]:
+                continue
+
+            video_id_val = row.get(self.siglip_video_id_column) if self.siglip_enabled else row.get("video_id")
+            video_id_str = str(video_id_val) if video_id_val is not None and pd.notna(video_id_val) else None
+
+            main_structure = str(row.get("main_structure", ""))
+
+            if self.siglip_enabled:
+                positives_raw = self._siglip_video_to_texts.get(video_id_str or "", [])
+                if not positives_raw:
+                    continue  # Skip videos without positives in SigLIP mode
+                positives = [dict(p) for p in positives_raw]
+                positive_ids = {p.get("text_id") for p in positives if p.get("text_id") is not None}
+                tree = self._infer_tree_from_structure(main_structure)
+                neg_candidates: List[Dict[str, Any]] = []
+                if tree and tree in self._siglip_tree_to_texts:
+                    neg_candidates = [dict(t) for t in self._siglip_tree_to_texts[tree] if t.get("text_id") not in positive_ids]
+                if not neg_candidates:
+                    neg_candidates = [dict(t) for t in self._siglip_all_text_entries if t.get("text_id") not in positive_ids]
+
+                self.video_positive_texts.append(positives)
+                self.video_negative_pool.append(neg_candidates)
+                fallback_text = positives[0].get("prompt_text", "") if positives else ""
+                outcome.append(fallback_text)
+                self._siglip_pos_cursors.append(0)
+            else:
+                if target_index is not None:
+                    outcome.append(row.iloc[target_index])
+                else:
+                    outcome.append("")
+                self.video_positive_texts.append([])
+                self.video_negative_pool.append([])
+                self._siglip_pos_cursors.append(0)
+
+            fnames.append(full_path)
+            self.video_ids.append(video_id_str)
+            self.video_path_to_idx[full_path] = len(fnames) - 1
+            self.main_structures.append(main_structure)
+            split_matches += 1
 
         print(f"\nDataset loading statistics for split '{split}':")
         print(f"Total rows in CSV: {total_rows}")
@@ -231,6 +414,36 @@ class VideoClipDataset(torch.utils.data.Dataset):
 
         return valid_indices
 
+    def _sample_siglip_positive_entries(self, idx: int) -> List[Dict[str, Any]]:
+        positives = []
+        if 0 <= idx < len(self.video_positive_texts):
+            positives = self.video_positive_texts[idx]
+
+        if not positives:
+            return []
+
+        k = max(1, self.siglip_pos_samples_per_video)
+
+        if len(positives) == 1 or k == 1 and not self.siglip_round_robin_sampling:
+            chosen = random.choice(positives)
+            return [dict(chosen)]
+
+        if self.siglip_round_robin_sampling:
+            cursor = self._siglip_pos_cursors[idx] if idx < len(self._siglip_pos_cursors) else 0
+            samples: List[Dict[str, Any]] = []
+            take = min(k, len(positives))
+            for offset in range(take):
+                pos = positives[(cursor + offset) % len(positives)]
+                samples.append(dict(pos))
+            if idx < len(self._siglip_pos_cursors):
+                self._siglip_pos_cursors[idx] = (cursor + take) % len(positives)
+            return samples
+
+        if len(positives) <= k:
+            return [dict(p) for p in positives]
+
+        return [dict(p) for p in random.sample(positives, k)]
+
     def __getitem__(self, index: int) -> tuple:
         if self.multi_video_mode:
             sid = self.study_ids[index]
@@ -258,6 +471,11 @@ class VideoClipDataset(torch.utils.data.Dataset):
                         backbone=self.backbone,
                         stride=self.stride,
                     )
+                    if np.isnan(arr).any():
+                        print(f"Warning: NaN frames detected in {vp}; replacing with zeros")
+                        arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+                    else:
+                        arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
                 except Exception as e:
                     print(f"Warning: {vp} load error: {e}")
                     arr = np.zeros((16 if self.backbone.lower() == "mvit" else self.num_frames, self.resize, self.resize, 3), dtype=np.float32)
@@ -279,6 +497,7 @@ class VideoClipDataset(torch.utils.data.Dataset):
         else:
             actual_idx = self.valid_indices[index]
             video_fname = self.fnames[actual_idx]
+            video_id = self.video_ids[actual_idx] if actual_idx < len(self.video_ids) else None
 
             try:
                 video = load_video(
@@ -293,32 +512,69 @@ class VideoClipDataset(torch.utils.data.Dataset):
                     backbone=self.backbone,
                     stride=self.stride,
                 )
+                if np.isnan(video).any():
+                    print(f"Warning: NaN frames detected in {video_fname}; replacing with zeros")
+                video = np.nan_to_num(video, nan=0.0, posinf=0.0, neginf=0.0)
 
                 if self.backbone.lower() == "mvit" and video.shape[0] != 16:
                     raise ValueError(f"Expected 16 frames for MViT, got {video.shape[0]}")
- 
-                encoded = None
-                if self.split != "inference" and self.target_label is not None and self.target_index is not None:
-                    text = self.outcome[actual_idx]
-                    if not isinstance(text, str):
-                        text = str(text)
-                    encoded = self.tokenizer(
-                        text,
-                        padding="max_length",
-                        max_length=512,
-                        truncation=True,
-                        return_tensors="pt",
-                    )
-                    encoded = {k: v.squeeze(0) for k, v in encoded.items()}
-                    # If you want them on GPU, do it in the training loop, not here
-                else:
-                    print("No target label or target index")
-                    encoded = None
 
-                # Get raw text for captioning
-                raw_text = self.outcome[actual_idx] if self.split != "inference" and self.target_label is not None else ""
-                if not isinstance(raw_text, str):
-                    raw_text = str(raw_text)
+                if self.siglip_enabled:
+                    positive_entries = self._sample_siglip_positive_entries(actual_idx)
+                    encodings: List[Dict[str, torch.Tensor]] = []
+                    text_ids: List[Optional[str]] = []
+                    raw_texts: List[str] = []
+
+                    for entry in positive_entries:
+                        text = str(entry.get("prompt_text", ""))
+                        encoding = self.tokenizer(
+                            text,
+                            padding="max_length",
+                            max_length=512,
+                            truncation=True,
+                            return_tensors="pt",
+                        )
+                        encodings.append({k: v.squeeze(0) for k, v in encoding.items()})
+                        text_ids.append(entry.get("text_id"))
+                        raw_texts.append(text)
+
+                    if not encodings:
+                        empty_encoding = self.tokenizer(
+                            "",
+                            padding="max_length",
+                            max_length=512,
+                            truncation=True,
+                            return_tensors="pt",
+                        )
+                        encodings = [{k: v.squeeze(0) for k, v in empty_encoding.items()}]
+                        text_ids = [None]
+                        raw_texts = [""]
+
+                    payload = {
+                        "_multi_pos": True,
+                        "encodings": encodings,
+                        "text_ids": text_ids,
+                        "raw_texts": raw_texts,
+                    }
+                    primary_text = raw_texts[0] if raw_texts else ""
+                    return video, payload, video_fname, primary_text
+                else:
+                    encoded = None
+                    raw_text = ""
+                    if self.split != "inference" and self.target_label is not None and self.target_index is not None:
+                        text = self.outcome[actual_idx]
+                        if not isinstance(text, str):
+                            text = str(text)
+                        encoded = self.tokenizer(
+                            text,
+                            padding="max_length",
+                            max_length=512,
+                            truncation=True,
+                            return_tensors="pt",
+                        )
+                        encoded = {k: v.squeeze(0) for k, v in encoded.items()}
+                        raw_text = text
+
                 return video, encoded, video_fname, raw_text
 
             except Exception as e:
@@ -329,6 +585,19 @@ class VideoClipDataset(torch.utils.data.Dataset):
         if self.multi_video_mode:
             return [self.study_to_text.get(sid, "") for sid in filtered_ids]
         else:
+            if self.siglip_enabled:
+                reports = []
+                for path in filtered_ids:
+                    idx = self.video_path_to_idx.get(str(path))
+                    if idx is None or idx >= len(self.video_positive_texts):
+                        reports.append("")
+                        continue
+                    positives = self.video_positive_texts[idx]
+                    if positives:
+                        reports.append(positives[0].get("prompt_text", ""))
+                    else:
+                        reports.append("")
+                return reports
             reports = []
             for path in filtered_ids:
                 try:
@@ -353,6 +622,66 @@ class VideoClipDataset(torch.utils.data.Dataset):
         else:
             return [sid] if sid in self.fnames else []
 
+    def sample_negative_pack(self, paths: List[str], k: int) -> Optional[Dict[str, torch.Tensor]]:
+        if not self.siglip_enabled or k <= 0:
+            return None
+
+        if not hasattr(self, 'tokenizer'):
+            self.tokenizer = get_tokenizer()
+
+        neg_text_batches: List[str] = []
+        valid_mask_rows: List[List[float]] = []
+
+        for path in paths:
+            idx = self.video_path_to_idx.get(str(path))
+            pool = []
+            if idx is not None and idx < len(self.video_negative_pool):
+                pool = self.video_negative_pool[idx]
+
+            selected: List[Dict[str, Any]] = []
+            if pool:
+                if len(pool) >= k:
+                    selected = random.sample(pool, k)
+                else:
+                    selected = pool.copy()
+                    if len(selected) < k and self._siglip_all_text_entries:
+                        filler = random.choices(self._siglip_all_text_entries, k=k - len(selected))
+                        selected.extend([dict(entry) for entry in filler])
+
+            texts = [entry.get("prompt_text", "") for entry in selected[:k]]
+            mask = [1.0] * len(texts)
+
+            if len(texts) < k:
+                deficit = k - len(texts)
+                texts.extend(["" for _ in range(deficit)])
+                mask.extend([0.0 for _ in range(deficit)])
+
+            neg_text_batches.extend(texts)
+            valid_mask_rows.append(mask)
+
+        if not neg_text_batches:
+            return None
+
+        encoded = self.tokenizer(
+            neg_text_batches,
+            padding="max_length",
+            max_length=512,
+            truncation=True,
+            return_tensors="pt",
+        )
+
+        B = len(paths)
+        K = k
+        input_ids = encoded["input_ids"].view(B, K, -1)
+        attention_mask = encoded["attention_mask"].view(B, K, -1)
+        valid_mask_tensor = torch.tensor(valid_mask_rows, dtype=torch.float32)
+
+        return {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "valid_mask": valid_mask_tensor,
+        }
+
 def custom_collate_fn(batch):
     """Custom collate function to handle video and text data.
     Args:
@@ -361,24 +690,79 @@ def custom_collate_fn(batch):
         For multi-video: videos: Tensor (B, N, F, H, W, C), encoded_texts: dict, paths: List[sid], reports: List[str]
         For single-video: videos: Tensor (B, F, H, W, C), encoded_texts: dict, paths: List[path], reports: List[str]
     """
-    videos, encoded_texts, paths, raw_texts = zip(*batch)
+    videos, encoded_payloads, paths, raw_texts = zip(*batch)
     import numpy as np
     import torch
-    if isinstance(videos[0], np.ndarray) and videos[0].ndim == 5:
-        # Multi-video mode: (N, F, H, W, C)
-        videos = torch.from_numpy(np.stack(videos, axis=0))  # (B, N, F, H, W, C)
-    else:
-        # Single-video mode: produce shape (B, F, H, W, C)
-        videos = torch.stack([torch.from_numpy(v) for v in videos])
-    if encoded_texts[0] is not None:
+
+    multi_pos_mode = (
+        isinstance(encoded_payloads[0], dict)
+        and encoded_payloads[0] is not None
+        and encoded_payloads[0].get("_multi_pos", False)
+    )
+
+    if multi_pos_mode:
+        flattened_videos: List[torch.Tensor] = []
+        flattened_input_ids: List[torch.Tensor] = []
+        flattened_attention: List[torch.Tensor] = []
+        flattened_paths: List[str] = []
+        flattened_reports: List[str] = []
+
+        for video_arr, payload, path in zip(videos, encoded_payloads, paths):
+            encodings: List[Dict[str, torch.Tensor]] = payload.get("encodings", [])
+            raw_list: List[str] = payload.get("raw_texts", [])
+
+            if not encodings:
+                continue
+
+            video_tensor = torch.from_numpy(video_arr).float()
+
+            for idx, encoding in enumerate(encodings):
+                flattened_videos.append(video_tensor.clone())
+                flattened_input_ids.append(encoding["input_ids"].clone())
+                flattened_attention.append(encoding["attention_mask"].clone())
+                flattened_paths.append(path)
+                flattened_reports.append(raw_list[idx] if idx < len(raw_list) else "")
+
+        if not flattened_videos:
+            combined_texts = {
+                "input_ids": torch.zeros((0, 1), dtype=torch.long),
+                "attention_mask": torch.zeros((0, 1), dtype=torch.long),
+            }
+            return {
+                "videos": torch.zeros((0,) + videos[0].shape, dtype=torch.float32),
+                "encoded_texts": combined_texts,
+                "paths": [],
+                "reports": [],
+            }
+
+        videos_tensor = torch.stack(flattened_videos)
         combined_texts = {
-            "input_ids": torch.stack([text["input_ids"] for text in encoded_texts]),
-            "attention_mask": torch.stack([text["attention_mask"] for text in encoded_texts]),
+            "input_ids": torch.stack(flattened_input_ids),
+            "attention_mask": torch.stack(flattened_attention),
+        }
+
+        return {
+            "videos": videos_tensor,
+            "encoded_texts": combined_texts,
+            "paths": flattened_paths,
+            "reports": flattened_reports,
+        }
+
+    if isinstance(videos[0], np.ndarray) and videos[0].ndim == 5:
+        videos_tensor = torch.from_numpy(np.stack(videos, axis=0)).float()
+    else:
+        videos_tensor = torch.stack([torch.from_numpy(v).float() for v in videos])
+
+    if encoded_payloads[0] is not None:
+        combined_texts = {
+            "input_ids": torch.stack([text["input_ids"] for text in encoded_payloads]),
+            "attention_mask": torch.stack([text["attention_mask"] for text in encoded_payloads]),
         }
     else:
         combined_texts = None
+
     return {
-        "videos": videos,
+        "videos": videos_tensor,
         "encoded_texts": combined_texts,
         "paths": list(paths),
         "reports": list(raw_texts)
@@ -418,6 +802,17 @@ def get_distributed_video_clip_dataloader(
         video_transforms=None if is_validation else getattr(config, 'video_transforms', None),  # No transforms for validation
         resize=getattr(config, 'resize', 224),
         max_length=getattr(config, 'max_length', 250),
+        siglip_texts_path=getattr(config, 'siglip_texts_path', None),
+        siglip_edges_path=getattr(config, 'siglip_edges_path', None),
+        siglip_video_id_column=getattr(config, 'siglip_video_id_column', 'video_id'),
+        siglip_text_id_column=getattr(config, 'siglip_text_id_column', 'text_id'),
+        siglip_prompt_text_column=getattr(config, 'siglip_prompt_text_column', 'prompt_text'),
+        siglip_prompt_type_column=getattr(config, 'siglip_prompt_type_column', 'prompt_type'),
+        siglip_soft_weight_column=getattr(config, 'siglip_soft_weight_column', 'soft_weight'),
+        siglip_edge_weight_column=getattr(config, 'siglip_edge_weight_column', 'weight'),
+        siglip_negatives_per_video=getattr(config, 'siglip_negatives_per_video', 0),
+        siglip_pos_samples_per_video=getattr(config, 'siglip_pos_samples_per_video', 1),
+        siglip_round_robin_sampling=getattr(config, 'siglip_round_robin_sampling', False),
     )
     # Create a sampler for distributed training
     sampler = DistributedUtils.DS.DistributedSampler(

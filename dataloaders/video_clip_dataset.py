@@ -415,7 +415,7 @@ class VideoClipDataset(torch.utils.data.Dataset):
         return valid_indices
 
     def _sample_siglip_positive_entries(self, idx: int) -> List[Dict[str, Any]]:
-        positives = []
+        positives: List[Dict[str, Any]] = []
         if 0 <= idx < len(self.video_positive_texts):
             positives = self.video_positive_texts[idx]
 
@@ -424,25 +424,41 @@ class VideoClipDataset(torch.utils.data.Dataset):
 
         k = max(1, self.siglip_pos_samples_per_video)
 
-        if len(positives) == 1 or k == 1 and not self.siglip_round_robin_sampling:
-            chosen = random.choice(positives)
-            return [dict(chosen)]
-
-        if self.siglip_round_robin_sampling:
+        if len(positives) == 1 or (k == 1 and not self.siglip_round_robin_sampling):
+            chosen = [random.choice(positives)]
+        elif self.siglip_round_robin_sampling:
             cursor = self._siglip_pos_cursors[idx] if idx < len(self._siglip_pos_cursors) else 0
-            samples: List[Dict[str, Any]] = []
             take = min(k, len(positives))
-            for offset in range(take):
-                pos = positives[(cursor + offset) % len(positives)]
-                samples.append(dict(pos))
+            chosen = [positives[(cursor + offset) % len(positives)] for offset in range(take)]
             if idx < len(self._siglip_pos_cursors):
                 self._siglip_pos_cursors[idx] = (cursor + take) % len(positives)
-            return samples
+        elif len(positives) <= k:
+            chosen = list(positives)
+        else:
+            chosen = random.sample(positives, k)
 
-        if len(positives) <= k:
-            return [dict(p) for p in positives]
+        entries: List[Dict[str, Any]] = []
+        for pos in chosen:
+            prompt_text = str(pos.get("prompt_text", ""))
+            encoding = self.tokenizer(
+                prompt_text,
+                padding="max_length",
+                max_length=512,
+                truncation=True,
+                return_tensors="pt",
+            )
+            entries.append(
+                {
+                    "text_id": pos.get("text_id"),
+                    "prompt_text": prompt_text,
+                    "prompt_type": pos.get("prompt_type"),
+                    "soft_weight": float(pos.get("soft_weight", 1.0)),
+                    "tags": pos.get("tags"),
+                    "encoding": {k: v.squeeze(0) for k, v in encoding.items()},
+                }
+            )
 
-        return [dict(p) for p in random.sample(positives, k)]
+        return entries
 
     def __getitem__(self, index: int) -> tuple:
         if self.multi_video_mode:
@@ -521,42 +537,31 @@ class VideoClipDataset(torch.utils.data.Dataset):
 
                 if self.siglip_enabled:
                     positive_entries = self._sample_siglip_positive_entries(actual_idx)
-                    encodings: List[Dict[str, torch.Tensor]] = []
-                    text_ids: List[Optional[str]] = []
-                    raw_texts: List[str] = []
-
-                    for entry in positive_entries:
-                        text = str(entry.get("prompt_text", ""))
-                        encoding = self.tokenizer(
-                            text,
-                            padding="max_length",
-                            max_length=512,
-                            truncation=True,
-                            return_tensors="pt",
-                        )
-                        encodings.append({k: v.squeeze(0) for k, v in encoding.items()})
-                        text_ids.append(entry.get("text_id"))
-                        raw_texts.append(text)
-
-                    if not encodings:
-                        empty_encoding = self.tokenizer(
-                            "",
-                            padding="max_length",
-                            max_length=512,
-                            truncation=True,
-                            return_tensors="pt",
-                        )
-                        encodings = [{k: v.squeeze(0) for k, v in empty_encoding.items()}]
-                        text_ids = [None]
-                        raw_texts = [""]
+                    if not positive_entries:
+                        positive_entries = [
+                            {
+                                "text_id": None,
+                                "prompt_text": "",
+                                "prompt_type": None,
+                                "soft_weight": 1.0,
+                                "tags": None,
+                                "encoding": {
+                                    k: v.squeeze(0)
+                                    for k, v in self.tokenizer(
+                                        "",
+                                        padding="max_length",
+                                        max_length=512,
+                                        truncation=True,
+                                        return_tensors="pt",
+                                    ).items()
+                                },
+                            }
+                        ]
 
                     payload = {
-                        "_multi_pos": True,
-                        "encodings": encodings,
-                        "text_ids": text_ids,
-                        "raw_texts": raw_texts,
+                        "positive_entries": positive_entries,
                     }
-                    primary_text = raw_texts[0] if raw_texts else ""
+                    primary_text = positive_entries[0].get("prompt_text", "") if positive_entries else ""
                     return video, payload, video_fname, primary_text
                 else:
                     encoded = None
@@ -683,69 +688,100 @@ class VideoClipDataset(torch.utils.data.Dataset):
         }
 
 def custom_collate_fn(batch):
-    """Custom collate function to handle video and text data.
-    Args:
-        batch: List of tuples (video, encoded_text, path_or_sid, raw_text)
-    Returns:
-        For multi-video: videos: Tensor (B, N, F, H, W, C), encoded_texts: dict, paths: List[sid], reports: List[str]
-        For single-video: videos: Tensor (B, F, H, W, C), encoded_texts: dict, paths: List[path], reports: List[str]
-    """
-    videos, encoded_payloads, paths, raw_texts = zip(*batch)
+    """Custom collate function to handle video and text data."""
+    videos, payloads, paths, raw_texts = zip(*batch)
     import numpy as np
     import torch
 
     multi_pos_mode = (
-        isinstance(encoded_payloads[0], dict)
-        and encoded_payloads[0] is not None
-        and encoded_payloads[0].get("_multi_pos", False)
+        isinstance(payloads[0], dict)
+        and payloads[0] is not None
+        and "positive_entries" in payloads[0]
     )
 
     if multi_pos_mode:
-        flattened_videos: List[torch.Tensor] = []
-        flattened_input_ids: List[torch.Tensor] = []
-        flattened_attention: List[torch.Tensor] = []
-        flattened_paths: List[str] = []
-        flattened_reports: List[str] = []
+        videos_tensor = torch.stack([torch.from_numpy(v).float() for v in videos])
 
-        for video_arr, payload, path in zip(videos, encoded_payloads, paths):
-            encodings: List[Dict[str, torch.Tensor]] = payload.get("encodings", [])
-            raw_list: List[str] = payload.get("raw_texts", [])
+        text_id_to_idx: Dict[str, int] = {}
+        input_ids_list: List[torch.Tensor] = []
+        attention_mask_list: List[torch.Tensor] = []
+        text_meta: List[Dict[str, Any]] = []
 
-            if not encodings:
-                continue
+        for payload in payloads:
+            for entry in payload.get("positive_entries", []):
+                text_id = str(entry.get("text_id"))
+                if text_id is None:
+                    continue
+                if text_id not in text_id_to_idx:
+                    idx = len(text_id_to_idx)
+                    text_id_to_idx[text_id] = idx
+                    encoding = entry["encoding"]
+                    input_ids_list.append(encoding["input_ids"].clone())
+                    attention_mask_list.append(encoding["attention_mask"].clone())
+                    text_meta.append(
+                        {
+                            "text_id": text_id,
+                            "prompt_text": entry.get("prompt_text", ""),
+                            "prompt_type": entry.get("prompt_type"),
+                            "soft_weight": float(entry.get("soft_weight", 1.0)),
+                            "tags": entry.get("tags"),
+                        }
+                    )
 
-            video_tensor = torch.from_numpy(video_arr).float()
+        if not text_id_to_idx:
+            # Fallback: create a single blank entry
+            text_id_to_idx["__blank__"] = 0
+            input_ids_list.append(payloads[0]["positive_entries"][0]["encoding"]["input_ids"].clone())
+            attention_mask_list.append(payloads[0]["positive_entries"][0]["encoding"]["attention_mask"].clone())
+            text_meta.append(
+                {
+                    "text_id": "__blank__",
+                    "prompt_text": "",
+                    "prompt_type": None,
+                    "soft_weight": 1.0,
+                    "tags": None,
+                }
+            )
 
-            for idx, encoding in enumerate(encodings):
-                flattened_videos.append(video_tensor.clone())
-                flattened_input_ids.append(encoding["input_ids"].clone())
-                flattened_attention.append(encoding["attention_mask"].clone())
-                flattened_paths.append(path)
-                flattened_reports.append(raw_list[idx] if idx < len(raw_list) else "")
+        input_ids = torch.stack(input_ids_list, dim=0)
+        attention_mask = torch.stack(attention_mask_list, dim=0)
 
-        if not flattened_videos:
-            combined_texts = {
-                "input_ids": torch.zeros((0, 1), dtype=torch.long),
-                "attention_mask": torch.zeros((0, 1), dtype=torch.long),
-            }
-            return {
-                "videos": torch.zeros((0,) + videos[0].shape, dtype=torch.float32),
-                "encoded_texts": combined_texts,
-                "paths": [],
-                "reports": [],
-            }
+        B = len(videos)
+        M = input_ids.size(0)
+        positive_mask = torch.zeros(B, M, dtype=torch.float32)
+        positive_weights = torch.zeros(B, M, dtype=torch.float32)
 
-        videos_tensor = torch.stack(flattened_videos)
-        combined_texts = {
-            "input_ids": torch.stack(flattened_input_ids),
-            "attention_mask": torch.stack(flattened_attention),
-        }
+        for vid_idx, payload in enumerate(payloads):
+            for entry in payload.get("positive_entries", []):
+                text_id = str(entry.get("text_id"))
+                if text_id is None:
+                    continue
+                col = text_id_to_idx.get(text_id)
+                if col is None:
+                    continue
+                positive_mask[vid_idx, col] = 1.0
+                positive_weights[vid_idx, col] = float(entry.get("soft_weight", 1.0))
+
+        reports = []
+        for payload, fallback in zip(payloads, raw_texts):
+            positives = payload.get("positive_entries", [])
+            if positives:
+                reports.append(positives[0].get("prompt_text", fallback))
+            else:
+                reports.append(fallback)
 
         return {
             "videos": videos_tensor,
-            "encoded_texts": combined_texts,
-            "paths": flattened_paths,
-            "reports": flattened_reports,
+            "encoded_texts": {
+                "input_ids": input_ids,
+                "attention_mask": attention_mask,
+            },
+            "positive_mask": positive_mask,
+            "positive_weights": positive_weights,
+            "text_ids": [tid if tid != "__blank__" else None for tid in text_id_to_idx.keys()],
+            "text_metadata": text_meta,
+            "paths": list(paths),
+            "reports": reports,
         }
 
     if isinstance(videos[0], np.ndarray) and videos[0].ndim == 5:
@@ -753,7 +789,12 @@ def custom_collate_fn(batch):
     else:
         videos_tensor = torch.stack([torch.from_numpy(v).float() for v in videos])
 
-    if encoded_payloads[0] is not None:
+    encoded_payloads = payloads
+    if (
+        encoded_payloads[0] is not None
+        and isinstance(encoded_payloads[0], dict)
+        and "input_ids" in encoded_payloads[0]
+    ):
         combined_texts = {
             "input_ids": torch.stack([text["input_ids"] for text in encoded_payloads]),
             "attention_mask": torch.stack([text["attention_mask"] for text in encoded_payloads]),
@@ -765,7 +806,7 @@ def custom_collate_fn(batch):
         "videos": videos_tensor,
         "encoded_texts": combined_texts,
         "paths": list(paths),
-        "reports": list(raw_texts)
+        "reports": list(raw_texts),
     }
 
 def get_distributed_video_clip_dataloader(

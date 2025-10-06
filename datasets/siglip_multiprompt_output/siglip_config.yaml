@@ -6,9 +6,7 @@ filters:
   main_structures:
   - Left Coronary
   - Right Coronary
-  normal_report_ratio: 0.05
-  status:
-  - diagnostic
+  normal_report_ratio: 1.0
 parallel_workers: 1
 train_test_split:
   enabled: true

@@ -1,0 +1,17 @@
+filters:
+  main_structures:
+    - "Left Coronary"
+    - "Right Coronary"
+  contrast_agent_class: 1
+  normal_report_ratio: 1.0
+train_test_split:
+  enabled: true
+  train_ratio: 0.7
+  val_ratio: 0.1
+  test_ratio: 0.2
+  random_state: 42
+  patient_column: CathReport_MRN
+apply_mappings: true
+assign_status: true
+cap_per_video: null
+parallel_workers: 1

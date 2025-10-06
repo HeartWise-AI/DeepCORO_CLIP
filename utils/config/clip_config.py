@@ -143,6 +143,8 @@ class ClipConfig(HeartWiseConfig):
     siglip_round_robin_sampling: bool = False
     siglip_debug_batches: int = 0
     siglip_debug_every: int = 0
+    siglip_debug_sample_count: int = 3
+    early_stop_patience: int = 0
 
     def __post_init__(self):
         # Set default values for list fields

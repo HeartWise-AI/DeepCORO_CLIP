@@ -18,12 +18,14 @@ siglip_prompt_text_column: !!str prompt_text
 siglip_prompt_type_column: !!str prompt_type
 siglip_soft_weight_column: !!str soft_weight
 siglip_edge_weight_column: !!str weight
-siglip_negatives_per_video: !!int 2
-siglip_negative_weight: !!float 0.5
-siglip_pos_samples_per_video: !!int 1
-siglip_round_robin_sampling: !!bool false
-siglip_debug_batches: !!int 5
-siglip_debug_every: !!int 5
+siglip_negatives_per_video: !!int 0
+siglip_negative_weight: !!float 0.2
+siglip_pos_samples_per_video: !!int 3
+siglip_round_robin_sampling: !!bool true
+siglip_debug_batches: !!int 0
+siglip_debug_every: !!int 0
+siglip_debug_sample_count: !!int 3
+early_stop_patience: !!int 5
 root: !!str "."
 target_label: !!str positive_text_ids
 datapoint_loc_label: !!str FileName
@@ -44,8 +46,8 @@ pretrained: !!bool true
 # Two-optimizer setup with LLRD
 use_two_optimizers: !!bool true
 text_lr: !!float 1e-5 # Base LR for text encoder top layer (PubMedBERT)
-video_lr: !!float 2e-4 # Base LR for video encoder top layer (MViT)
-proj_lr: !!float 1e-3 # LR for projection heads (2-layer MLPs)
+video_lr: !!float 1e-5 # Base LR for video encoder top layer (MViT)
+proj_lr: !!float 3e-4 # LR for projection heads (2-layer MLPs)
 text_llrd_factor: !!float 0.8 # Layer-wise decay for text encoder
 video_llrd_factor: !!float 0.8 # Layer-wise decay for video encoder
 # Phased training configuration
@@ -62,34 +64,34 @@ optimizer: !!str AdamW
 scheduler_name: !!str cosine_with_warmup
 attention_pool_heads: !!int 8
 attention_pool_dropout: !!float 0.1
-lr: !!float 0.00004332747818653401
+lr: !!float 0.0005
 lr_step_period: !!int 20
 factor: !!float 0.13812670163892532
 loss_name: !!str siglip_ddp
-video_weight_decay: !!float 0.0000016079117752547095
-text_weight_decay: !!float 2.244018692672616e-7
+video_weight_decay: !!float 0.000001
+text_weight_decay: !!float 0.000001
 gradient_accumulation_steps: !!int 1 # No accumulation for testing
-num_warmup_percent: !!float 0.05
+num_warmup_percent: !!float 0.0
 num_hard_restarts_cycles: !!int 1
 warm_restart_tmult: !!int 2
-max_grad_norm: !!float 1
+max_grad_norm: !!float 0.5
 # Model architecture parameters
-num_heads: !!int 16
-aggregator_depth: !!int 4
+num_heads: !!int 8
+aggregator_depth: !!int 2
 dropout: !!float 0.18001280576136858
-video_freeze_ratio: !!float 0.80
-text_freeze_ratio: !!float 0.80
+video_freeze_ratio: !!float 0.75
+text_freeze_ratio: !!float 0.75
 temperature_schedule: !!str "constant" # Phased training can also adjust this
 temperature_start: !!float 0.09987526709233796 # Starting point if scheduling is enabled
 # Video freeze scheduling (disabled when using phased training)
-video_freeze_schedule: !!str "constant" # Phased training controls freezing
-video_freeze_start: !!float 0.0 # Controlled by phases
-video_freeze_end: !!float 0.0 # Controlled by phases
+video_freeze_schedule: !!str "none"
+video_freeze_start: !!float 0.0
+video_freeze_end: !!float 0.0
 # Text freeze scheduling (disabled when using phased training)
-text_freeze_schedule: !!str "constant" # Phased training controls freezing
-text_freeze_start: !!float 0.95 # Controlled by phases
-text_freeze_end: !!float 0.95 # Controlled by phases
-text_freeze_warmup_epochs: !!int 0 # Disabled - phased training handles this
+text_freeze_schedule: !!str "none"
+text_freeze_start: !!float 0.0
+text_freeze_end: !!float 0.0
+text_freeze_warmup_epochs: !!int 0
 # Checkpointing
 resume_training: !!bool false
 checkpoint: !!str outputs/deepCORO_CLIP/DeepCORO_Clip_Sweep_Learnable_Temp_Full_mvit_b12_f16_RAdam_lr0.0001_20250114-190320_2o5xoevj/checkpoints/latest.pt

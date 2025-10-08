@@ -132,6 +132,9 @@ class TestVideoUtils(unittest.TestCase):
         cmd_args = mock_run.call_args[0][0]
         self.assertEqual(cmd_args[0], "ffmpeg")
         self.assertEqual(cmd_args[2], self.test_avi_path)
+        run_kwargs = mock_run.call_args.kwargs
+        self.assertIn("env", run_kwargs)
+        self.assertEqual(run_kwargs["env"].get("CUDA_VISIBLE_DEVICES"), "0")
 
     @patch('subprocess.run')
     @patch('tempfile.mkstemp')
@@ -157,6 +160,10 @@ class TestVideoUtils(unittest.TestCase):
         
         # Verify temp file was deleted
         mock_unlink.assert_called_once_with(temp_path)
+        self.assertTrue(mock_run.called)
+        run_kwargs = mock_run.call_args.kwargs
+        self.assertIn("env", run_kwargs)
+        self.assertEqual(run_kwargs["env"].get("CUDA_VISIBLE_DEVICES"), "0")
 
     def test_load_video_basic(self):
         """Test basic load_video functionality."""
@@ -244,6 +251,7 @@ class TestVideoUtils(unittest.TestCase):
             (True, np.zeros((32, 32, 3), dtype=np.uint8)) for _ in range(3)
         ] + [(False, None)]
         mock_instance.isOpened.return_value = True
+        mock_instance.open.return_value = True
         
         # Load video requesting 5 frames
         video = load_video(
@@ -261,6 +269,7 @@ class TestVideoUtils(unittest.TestCase):
         # Mock VideoCapture to fail on open
         mock_instance = MagicMock()
         mock_cap.return_value = mock_instance
+        mock_instance.open.return_value = False
         mock_instance.isOpened.return_value = False
         
         # Should raise ValueError
@@ -274,6 +283,7 @@ class TestVideoUtils(unittest.TestCase):
         mock_instance = MagicMock()
         mock_cap.return_value = mock_instance
         mock_instance.isOpened.return_value = True
+        mock_instance.open.return_value = True
         mock_instance.read.return_value = (False, None)
         
         # Should raise ValueError
@@ -327,6 +337,7 @@ class TestVideoUtils(unittest.TestCase):
         mock_instance = MagicMock()
         mock_cap.return_value = mock_instance
         mock_instance.isOpened.return_value = True
+        mock_instance.open.return_value = True
         
         # Create some test frames
         frames = []
@@ -354,6 +365,7 @@ class TestVideoUtils(unittest.TestCase):
         mock_instance = MagicMock()
         mock_cap.return_value = mock_instance
         mock_instance.isOpened.return_value = True
+        mock_instance.open.return_value = True
         
         # Create some test frames
         frames = []
@@ -397,6 +409,7 @@ class TestVideoUtils(unittest.TestCase):
         mock_instance = MagicMock()
         mock_cap.return_value = mock_instance
         mock_instance.isOpened.return_value = True
+        mock_instance.open.return_value = True
         
         # Create grayscale frames (3D array for the whole video)
         frames = []
@@ -423,6 +436,7 @@ class TestVideoUtils(unittest.TestCase):
         mock_instance = MagicMock()
         mock_cap.return_value = mock_instance
         mock_instance.isOpened.return_value = True
+        mock_instance.open.return_value = True
         
         # Create invalid shape (5D tensor)
         frames = []

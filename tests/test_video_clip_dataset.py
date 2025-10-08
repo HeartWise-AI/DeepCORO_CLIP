@@ -69,6 +69,7 @@ class TestVideoClipDataset(unittest.TestCase):
         mock_cap = MagicMock()
         mock_cap.isOpened.return_value = True
         mock_cap.release.return_value = None
+        mock_cap.open.return_value = True
         self.mock_video_capture.return_value = mock_cap
         
     def tearDown(self):
@@ -162,6 +163,7 @@ class TestVideoClipDataset(unittest.TestCase):
         mock_cap = MagicMock()
         mock_cap.isOpened.side_effect = [True, False]  # First video ok, second fails
         mock_cap.release.return_value = None
+        mock_cap.open.return_value = True
         self.mock_video_capture.return_value = mock_cap
         
         dataset = VideoClipDataset(
@@ -194,7 +196,7 @@ class TestVideoClipDataset(unittest.TestCase):
         )
         
         # Test successful item retrieval
-        video, encoded, path = dataset[0]
+        video, encoded, path, raw_text = dataset[0]
         
         # Check the types and shapes
         self.assertIsInstance(video, np.ndarray)
@@ -203,6 +205,7 @@ class TestVideoClipDataset(unittest.TestCase):
         self.assertIn("input_ids", encoded)
         self.assertIn("attention_mask", encoded)
         self.assertIsInstance(path, str)
+        self.assertIsInstance(raw_text, str)
         
         # Test with MVit backbone (should force 16 frames)
         # Create a new dataset with mvit backbone
@@ -226,7 +229,7 @@ class TestVideoClipDataset(unittest.TestCase):
         self.mock_load_video.side_effect = mock_load_video_side_effect
         
         # Get item from MVit dataset, should receive 16 frames
-        video, _, _ = dataset_mvit[0]
+        video, _, _, _ = dataset_mvit[0]
         self.assertEqual(video.shape[0], 16)
         
         # Test the error case where video shape doesn't match backbone requirements
@@ -272,13 +275,15 @@ class TestVideoClipDataset(unittest.TestCase):
             (
                 np.zeros((32, 224, 224, 3), dtype=np.float32),
                 {"input_ids": torch.zeros(512), "attention_mask": torch.ones(512)},
-                "video1.mp4"
+                "video1.mp4",
+                "report 1",
             ),
             (
                 np.ones((32, 224, 224, 3), dtype=np.float32),
                 {"input_ids": torch.ones(512), "attention_mask": torch.ones(512)},
-                "video2.mp4"
-            )
+                "video2.mp4",
+                "report 2",
+            ),
         ]
         
         # Apply collate function
@@ -298,23 +303,27 @@ class TestVideoClipDataset(unittest.TestCase):
         self.assertEqual(collated["encoded_texts"]["input_ids"].shape, torch.Size([2, 512]))
         
         self.assertEqual(len(collated["paths"]), 2)
+        self.assertEqual(collated["reports"], ["report 1", "report 2"])
         
         # Test with None encoded_texts
         batch_with_none = [
             (
                 np.zeros((32, 224, 224, 3), dtype=np.float32),
                 None,
-                "video1.mp4"
+                "video1.mp4",
+                "report 1",
             ),
             (
                 np.ones((32, 224, 224, 3), dtype=np.float32),
                 None,
-                "video2.mp4"
-            )
+                "video2.mp4",
+                "report 2",
+            ),
         ]
-        
+
         collated = custom_collate_fn(batch_with_none)
         self.assertIsNone(collated["encoded_texts"])
+        self.assertEqual(collated["reports"], ["report 1", "report 2"])
 
 
 if __name__ == '__main__':

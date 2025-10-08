@@ -9,7 +9,7 @@ from torch.optim import Optimizer
 from torch.amp import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
-from typing import Callable, Dict, Tuple, List, Any, Optional
+from typing import Callable, Dict, Tuple, List, Any, Optional, Set
 
 from tqdm import tqdm
 
@@ -552,6 +552,50 @@ class VideoContrastiveLearningRunner:
 
         return out_list
 
+    def _gather_nested_lists(
+        self, local_nested: list[list[str]], world_size: int, device: torch.device
+    ) -> list[list[str]]:
+        """
+        Gathers nested string lists (list of list of str) across ranks.
+
+        :param local_nested: Nested list on current rank.
+        :param world_size: Number of participating ranks.
+        :param device: CUDA device for temporary tensors.
+        :return: Combined nested list from all ranks.
+        """
+        if self.config.world_size < 2:
+            return local_nested
+
+        import pickle
+
+        local_bytes: bytes = pickle.dumps(local_nested)
+        local_size = torch.tensor([len(local_bytes)], dtype=torch.long, device=device)
+
+        sizes_list: list[torch.Tensor] = [torch.zeros_like(local_size) for _ in range(world_size)]
+        DistributedUtils.dist.all_gather(sizes_list, local_size)
+        sizes: list[int] = [s.item() for s in sizes_list]
+        max_size: int = max(sizes) if sizes else 0
+
+        buffer = torch.zeros(max_size, dtype=torch.uint8, device=device)
+        if local_size.item() > 0:
+            buffer[: local_size.item()] = torch.tensor(
+                list(local_bytes), dtype=torch.uint8, device=device
+            )
+
+        gathered_buffers: list[torch.Tensor] = [
+            torch.zeros(max_size, dtype=torch.uint8, device=device) for _ in range(world_size)
+        ]
+        DistributedUtils.dist.all_gather(gathered_buffers, buffer)
+
+        combined: list[list[str]] = []
+        for size, buf in zip(sizes, gathered_buffers):
+            if size == 0:
+                continue
+            valid_bytes = buf[:size].cpu().numpy().tobytes()
+            combined.extend(pickle.loads(valid_bytes))
+
+        return combined
+
     def _run_epoch(
         self, 
         mode: str, 
@@ -593,7 +637,7 @@ class VideoContrastiveLearningRunner:
         all_video_embeddings_local: List[torch.Tensor] = []
         all_text_embeddings_local: List[torch.Tensor] = []
         all_paths_local: List[str] = []
-        all_ground_truth_reports_local: List[str] = []
+        all_positive_texts_local: List[List[str]] = []
 
         tqdm_desc = f"[GPU {self.device}] Running {mode} Epoch {epoch + 1}"
         
@@ -685,8 +729,41 @@ class VideoContrastiveLearningRunner:
             # all_paths_local will store these identifiers directly.
             all_paths_local.extend(paths_or_sids)
 
-            batch_reports = batch.get("reports", [])
-            all_ground_truth_reports_local.extend(batch_reports)
+            paths_list: List[str] = list(batch.get('paths', []))
+            batch_reports: List[str] = list(batch.get("reports", []))
+            positive_mask_batch = batch.get('positive_mask')
+            text_metadata_batch = batch.get('text_metadata')
+
+            batch_positive_texts: List[List[str]] = []
+            if (
+                isinstance(positive_mask_batch, torch.Tensor)
+                and isinstance(text_metadata_batch, list)
+                and positive_mask_batch.numel() > 0
+            ):
+                mask_cpu = positive_mask_batch.detach().cpu()
+                meta_list = text_metadata_batch
+                for row_idx in range(mask_cpu.size(0)):
+                    prompts: List[str] = []
+                    active_cols = (mask_cpu[row_idx] > 0).nonzero(as_tuple=False).flatten().tolist()
+                    for col in active_cols:
+                        if col < len(meta_list):
+                            prompt_text = meta_list[col].get('prompt_text', '')
+                            if prompt_text:
+                                prompts.append(prompt_text)
+                    if not prompts and row_idx < len(batch_reports):
+                        fallback_prompt = batch_reports[row_idx]
+                        if fallback_prompt:
+                            prompts.append(fallback_prompt)
+                    batch_positive_texts.append(prompts)
+            else:
+                for report_text in batch_reports:
+                    prompts = [report_text] if report_text else []
+                    batch_positive_texts.append(prompts)
+
+            if len(batch_positive_texts) < len(paths_list):
+                batch_positive_texts.extend([] for _ in range(len(paths_list) - len(batch_positive_texts)))
+
+            all_positive_texts_local.extend(batch_positive_texts)
 
             # accumulate metrics
             for k, v in batch_metrics.items():
@@ -730,9 +807,11 @@ class VideoContrastiveLearningRunner:
         global_paths: list[str] = self._gather_strings_across_gpus(
             all_paths_local, self.world_size, device=local_video_feats.device
         )
-        global_reports: list[str] = self._gather_strings_across_gpus(
-            all_ground_truth_reports_local, self.world_size, device=local_video_feats.device
+        global_positive_texts: list[list[str]] = self._gather_nested_lists(
+            all_positive_texts_local, self.world_size, device=local_video_feats.device
         )
+        primary_reports: list[str] = [texts[0] if texts else "" for texts in global_positive_texts]
+        joined_reports: list[str] = [" | ".join(texts) if texts else "" for texts in global_positive_texts]
 
         # Optionally compute NxM retrieval metrics on rank 0
         retrieval_metrics: dict[str, float] = {}
@@ -742,16 +821,50 @@ class VideoContrastiveLearningRunner:
             )
             
             # Step 1: Deduplicate texts and create mapping
-            unique_texts: List[str] = sorted(set(global_reports))
+            flattened_texts: List[str] = [
+                text for texts in global_positive_texts for text in texts if text
+            ]
+            unique_texts: List[str] = sorted(set(flattened_texts))
+            if not unique_texts:
+                unique_texts = [""]
             text_to_index: Dict[str, int] = {text: idx for idx, text in enumerate(unique_texts)}
             
-            # Step 2: Get ground truth indices for each video
+            # Step 2: Resolve ground-truth index sets for each video
+            ground_truth_index_sets: List[List[int]] = []
+            primary_indices: List[int] = []
+            for vid_idx, texts in enumerate(global_positive_texts):
+                indices_for_video: List[int] = []
+                seen: Set[int] = set()
+                for text in texts:
+                    mapped_idx = text_to_index.get(text)
+                    if mapped_idx is not None and mapped_idx not in seen:
+                        indices_for_video.append(mapped_idx)
+                        seen.add(mapped_idx)
+
+                if not indices_for_video:
+                    fallback_text = primary_reports[vid_idx]
+                    mapped_idx = text_to_index.get(fallback_text)
+                    if mapped_idx is None:
+                        raise ValueError(
+                            "Missing ground-truth text in mapping: "
+                            f"'{fallback_text}' for identifier '{global_paths[vid_idx]}'"
+                        )
+                    indices_for_video.append(mapped_idx)
+
+                ground_truth_index_sets.append(indices_for_video)
+                primary_indices.append(indices_for_video[0])
+
             ground_truth_indices: torch.Tensor = torch.tensor(
-                [text_to_index[text] for text in global_reports],
-                device=self.device
+                primary_indices,
+                device=self.device,
+                dtype=torch.long
             )
+            ground_truth_indices_cpu: torch.Tensor = ground_truth_indices.detach().cpu()
             
-            print(f"[DEBUG rank={self.device}] Found {len(unique_texts)} unique texts out of {len(global_reports)} total.")
+            total_positives = sum(len(texts) for texts in global_positive_texts)
+            print(
+                f"[DEBUG rank={self.device}] Found {len(unique_texts)} unique texts out of {total_positives} total positive assignments."
+            )
             
             # Step 3: Encode unique texts
             unique_text_embeddings_list: List[torch.Tensor] = [] # Renamed list
@@ -803,14 +916,15 @@ class VideoContrastiveLearningRunner:
             )
             
             # Log best/worst retrievals using unique texts
-            if self.wandb_wrapper.is_initialized():
+            if self.config.is_ref_device and self.wandb_wrapper.is_initialized():
                 # Calculate global step for consistent wandb logging
                 wandb_step = epoch * len(self.train_loader) + len(self.train_loader)
                 log_best_worst_retrievals(
                     similarity_matrix=similarity_matrix,
                     all_paths=global_paths,
                     unique_texts=unique_texts,
-                    ground_truth_indices=ground_truth_indices,
+                    ground_truth_indices=ground_truth_indices_cpu,
+                    ground_truth_texts=global_positive_texts,
                     epoch=epoch,
                     wandb_wrapper=self.wandb_wrapper,
                     dataset_obj=dataset, # Pass the dataset object
@@ -821,22 +935,26 @@ class VideoContrastiveLearningRunner:
             save_retrieval_results(
                 similarity_matrix=similarity_matrix,
                 all_identifiers=global_paths, # Pass SIDs or file paths
-                all_ground_truth_reports=global_reports,
+                all_ground_truth_reports=joined_reports,
                 report_to_global_index=text_to_index,
                 epoch=epoch,
                 output_dir=self.output_dir,
-                dataset_obj=dataset # Pass the dataset object
+                dataset_obj=dataset, # Pass the dataset object
+                ground_truth_index_sets=ground_truth_index_sets,
             )
-            print(f"ground_truth_indices={ground_truth_indices}")
+            print(f"[DEBUG rank={self.device}] Ground truth index set sizes: {[len(s) for s in ground_truth_index_sets[:10]]}")
+
             # Compute retrieval metrics using ground truth indices
             recall_metrics: Dict[str, float] = compute_recall_at_k( # Ensure it's a Dict
-                similarity_matrix, ground_truth_indices, k_values=self.config.recall_k
+                similarity_matrix, ground_truth_index_sets, k_values=self.config.recall_k
             )
-            mrr_score_dict: Dict[str, float] = compute_mrr(similarity_matrix, ground_truth_indices) # Assign to dict
-            map_score: float = compute_map(similarity_matrix, ground_truth_indices) # Assuming this returns float
-            median_rank_score: float = compute_median_rank(similarity_matrix, ground_truth_indices) # Assuming this returns float
+            mrr_score_dict: Dict[str, float] = compute_mrr(
+                similarity_matrix, ground_truth_index_sets
+            )
+            map_score: float = compute_map(similarity_matrix, ground_truth_index_sets)
+            median_rank_score: float = compute_median_rank(similarity_matrix, ground_truth_index_sets)
             ndcg_scores_dict: Dict[str, float] = compute_ndcg_at_k( # Assign to dict
-                similarity_matrix, ground_truth_indices, k_values=self.config.ndcg_k
+                similarity_matrix, ground_truth_index_sets, k_values=self.config.ndcg_k
             )
 
             retrieval_metrics.update(recall_metrics)
@@ -877,6 +995,19 @@ class VideoContrastiveLearningRunner:
             })
             for k_val in self.config.ndcg_k:
                 retrieval_metrics[f"NDCG@{k_val}"] = 0.0
+
+        if self.config.is_ref_device:
+            flat_texts = [text for texts in global_positive_texts for text in texts if text]
+            unique_prompt_count = len(set(flat_texts))
+            videos_with_prompts = sum(1 for texts in global_positive_texts if texts)
+            videos_without_prompts = len(global_positive_texts) - videos_with_prompts
+            mean_loss = (total_loss / batch_count) if batch_count > 0 else float("nan")
+            print(
+                f"[DEBUG rank={self.device}] Epoch {epoch + 1} {mode} summary | "
+                f"videos={len(global_positive_texts)} | with_prompts={videos_with_prompts} | "
+                f"without_prompts={videos_without_prompts} | total_prompts={len(flat_texts)} | "
+                f"unique_prompts={unique_prompt_count} | mean_loss={mean_loss:.4f}"
+            )
 
         epoch_metrics.update(retrieval_metrics)
 

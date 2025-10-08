@@ -83,6 +83,7 @@ LABELS_TO_VESSEL_NAMES = {
     "lima_or_svg_stenosis": "the LIMA or SVG graft",
 }
 
+
 RCA_VESSELS = ["prox_rca_stenosis", "mid_rca_stenosis", "dist_rca_stenosis"]
 NON_RCA_VESSELS = [
     "left_main_stenosis", "prox_lad_stenosis", "mid_lad_stenosis", "dist_lad_stenosis",

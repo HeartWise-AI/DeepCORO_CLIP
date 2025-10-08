@@ -75,6 +75,12 @@ DeepCORO_CLIP is a deep learning model for echocardiography video interpretation
    ffmpeg -version
    ```
 
+   Conversions default to GPU `0` via `CUDA_VISIBLE_DEVICES`. Set `FFMPEG_GPU_DEVICE` if you need another adapter:
+
+   ```bash
+   export FFMPEG_GPU_DEVICE=2
+   ```
+
 ## 📄 Configuration Files
 
 The project uses configuration files located in the `config/` directory:
@@ -111,6 +117,19 @@ The project uses configuration files located in the `config/` directory:
 2. **Linear Probing** (`config/linear_probing/sweep_config.yaml`):
    - Hyperparameter optimization for linear probing tasks
    - Task-specific parameter ranges
+
+## 🧪 Quick SigLIP Sample (2000 Videos)
+
+- A 2k-video subset lives in `datasets/siglip_multiprompt_sample_2000/`.
+- The default CLIP base config points to that subset and trims epochs to 5 for fast smoke tests.
+- Regenerate it from the full export with:
+  ```bash
+  python dataset_creation/sample_siglip_dataset.py \
+    --source-dir datasets/siglip_multiprompt_output \
+    --output-dir datasets/siglip_multiprompt_sample_2000 \
+    --train 1400 --val 200 --test 400
+  ```
+  The generated `siglip_config.yaml` documents the `sample_limits` (1400 train / 200 val / 400 test).
 
 ## 🔬 Hyperparameter Optimization with W&B Sweeps
 

@@ -1,5 +1,4 @@
 import os
-import cv2
 import torch
 import random
 import pathlib
@@ -15,7 +14,7 @@ from torch.utils.data import DataLoader
 from utils.seed import seed_worker
 from utils.ddp import DistributedUtils
 from models.text_encoder import get_tokenizer
-from utils.video import load_video, format_mean_std
+from utils.video import load_video, format_mean_std, create_video_capture
 from utils.config.heartwise_config import HeartWiseConfig
 
 
@@ -399,10 +398,14 @@ class VideoClipDataset(torch.utils.data.Dataset):
 
         for idx, fname in enumerate(self.fnames):
             try:
-                cap = cv2.VideoCapture(fname)
-                if not cap.isOpened():
+                cap = create_video_capture(fname)
+                if cap is None:
                     raise ValueError(f"Unable to open video {fname}")
-                cap.release()
+                try:
+                    if not cap.isOpened():
+                        raise ValueError(f"Unable to open video {fname}")
+                finally:
+                    cap.release()
                 valid_indices.append(idx)
             except Exception as e:
                 print(f"Warning: Failed to load video {fname}: {str(e)}")

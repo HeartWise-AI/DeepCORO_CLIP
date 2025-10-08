@@ -2,115 +2,168 @@ import math
 import torch
 import torch.nn as nn
 
-from typing import List
+from typing import Iterable, List, Sequence, Set, Union
 
-def compute_recall_at_k(similarity_matrix: torch.Tensor, global_gt_indices: torch.Tensor, k_values: List[int] = [1, 5]) -> dict[str, float]:
+
+def _normalize_ground_truth_sets(
+    ground_truth_indices: Union[torch.Tensor, Sequence, Iterable],
+    num_queries: int,
+) -> List[Set[int]]:
     """
-    Compute recall@k for video->text retrieval.
-    
-    Args:
-        similarity_matrix: Tensor of shape (n_videos, n_unique_texts) containing similarity scores.
-        global_gt_indices: Tensor of shape (n_videos,) containing the index of the 
-                         correct text for each video in the unique texts list.
-        k_values: List of k values to compute recall for
-        
-    Returns:
-        Dictionary containing recall scores for each k value
+    Convert ground-truth specifications into a list of integer index sets.
+
+    Accepts tensors (1D or 2D), iterables of indices, or iterables of iterables.
+    Each query is represented by a set of acceptable text indices.
     """
-    # Ensure global_gt_indices is a tensor
-    if not isinstance(global_gt_indices, torch.Tensor):
-        if isinstance(global_gt_indices, (int, float)):
-            # Single value - expand to match batch size
-            global_gt_indices = torch.tensor([global_gt_indices] * similarity_matrix.shape[0], 
-                                            device=similarity_matrix.device, dtype=torch.long)
+    gt_sets: List[Set[int]] = []
+
+    if isinstance(ground_truth_indices, torch.Tensor):
+        if ground_truth_indices.ndim == 1:
+            gt_sets = [{int(idx)} for idx in ground_truth_indices.tolist()]
+        elif ground_truth_indices.ndim == 2:
+            gt_sets = [
+                {int(x) for x in row if x is not None and int(x) >= 0}
+                for row in ground_truth_indices.tolist()
+            ]
         else:
-            global_gt_indices = torch.tensor(global_gt_indices, device=similarity_matrix.device, dtype=torch.long)
-    
+            raise ValueError(
+                "ground_truth_indices tensor must be 1D or 2D for multi-label support"
+            )
+    elif isinstance(ground_truth_indices, (list, tuple)):
+        for entry in ground_truth_indices:
+            if isinstance(entry, (list, tuple, set)):
+                normalized = {
+                    int(x)
+                    for x in entry
+                    if x is not None and int(x) >= 0
+                }
+                gt_sets.append(normalized)
+            elif entry is None:
+                gt_sets.append(set())
+            else:
+                gt_sets.append({int(entry)})
+    else:
+        raise TypeError(
+            f"Unsupported ground_truth_indices type: {type(ground_truth_indices)}"
+        )
+
+    if len(gt_sets) < num_queries:
+        gt_sets.extend([set() for _ in range(num_queries - len(gt_sets))])
+    elif len(gt_sets) > num_queries:
+        gt_sets = gt_sets[:num_queries]
+
+    cleaned: List[Set[int]] = []
+    for gt in gt_sets:
+        cleaned.append({idx for idx in gt if idx is not None and idx >= 0})
+
+    if not cleaned:
+        cleaned = [set() for _ in range(num_queries)]
+
+    return cleaned
+
+
+def compute_recall_at_k(
+    similarity_matrix: torch.Tensor,
+    global_gt_indices: Union[torch.Tensor, Sequence[Sequence[int]], Sequence[int]],
+    k_values: List[int] = [1, 5],
+) -> dict[str, float]:
+    """
+    Compute recall@k for video→text retrieval with multi-label support.
+    """
+    gt_sets = _normalize_ground_truth_sets(global_gt_indices, similarity_matrix.size(0))
+
     metrics = {}
     num_candidates = similarity_matrix.size(1)
     for k in k_values:
-        # If there are fewer candidates than k, adjust k to avoid the error.
         if num_candidates < k:
-            print(f"Warning: similarity matrix has only {num_candidates} candidates; adjusting Recall@{k} to Recall@{num_candidates}.")
+            print(
+                f"Warning: similarity matrix has only {num_candidates} candidates; "
+                f"adjusting Recall@{k} to Recall@{num_candidates}."
+            )
             k_use = num_candidates
         else:
             k_use = k
-        # Get the indices of the top-k candidates.
-        v2t_topk = torch.topk(similarity_matrix, k_use, dim=1)[1]  # shape: [n_videos, k_use]
-        # Compare with ground truth indices.
-        v2t_correct = (v2t_topk == global_gt_indices.unsqueeze(1))
-        recall = (v2t_correct.sum(dim=1) > 0).float().mean().item()
-        metrics[f"Recall@{k}"] = recall
+
+        v2t_topk = torch.topk(similarity_matrix, k_use, dim=1)[1]
+
+        hits = []
+        for row_idx in range(v2t_topk.size(0)):
+            gt = gt_sets[row_idx] if row_idx < len(gt_sets) else set()
+            if not gt:
+                hits.append(0.0)
+                continue
+            topk_indices = v2t_topk[row_idx].tolist()
+            hits.append(1.0 if any(idx in gt for idx in topk_indices) else 0.0)
+
+        metrics[f"Recall@{k}"] = float(sum(hits) / len(hits)) if hits else 0.0
     return metrics
 
 
-
 def compute_mrr(
-    similarity_matrix: torch.Tensor, 
-    global_gt_indices: torch.Tensor
+    similarity_matrix: torch.Tensor,
+    global_gt_indices: Union[torch.Tensor, Sequence[Sequence[int]], Sequence[int]],
 ) -> dict[str, float]:
-    """Compute Mean Reciprocal Rank for video-to-text retrieval.
-    
-    Args:
-        similarity_matrix: [num_videos, num_unique_texts]
-        global_gt_indices: [num_videos] with indices of correct texts
-    """
+    """Compute Mean Reciprocal Rank for video-to-text retrieval."""
     try:
-        # Ensure we have the right dimensions
         if similarity_matrix.dim() != 2:
-            print(f"Warning: similarity_matrix has {similarity_matrix.dim()} dimensions, expected 2")
+            print(
+                f"Warning: similarity_matrix has {similarity_matrix.dim()} "
+                "dimensions, expected 2"
+            )
             return {"MRR_V2T": 0.0}
-        
+
         num_videos = similarity_matrix.size(0)
         num_texts = similarity_matrix.size(1)
 
-        similarity_matrix = torch.nan_to_num(similarity_matrix, nan=0.0, posinf=1e4, neginf=-1e4)
-        
-        # Handle edge case where we have only one unique text
+        similarity_matrix = torch.nan_to_num(
+            similarity_matrix, nan=0.0, posinf=1e4, neginf=-1e4
+        )
+
         if num_texts == 1:
-            # All videos point to the same text, MRR is 1.0
             return {"MRR_V2T": 1.0}
-        
-        # Ensure global_gt_indices is 1D tensor
-        if not isinstance(global_gt_indices, torch.Tensor):
-            global_gt_indices = torch.tensor(global_gt_indices, device=similarity_matrix.device)
-        
-        # Flatten if needed
-        if global_gt_indices.dim() > 1:
-            global_gt_indices = global_gt_indices.flatten()
-        
-        # Ensure we have the right number of indices
-        if global_gt_indices.size(0) != num_videos:
-            print(f"Warning: global_gt_indices size {global_gt_indices.size(0)} doesn't match num_videos {num_videos}")
-            global_gt_indices = global_gt_indices[:num_videos]
-        
-        # Clamp indices to valid range
-        global_gt_indices = global_gt_indices.clamp(0, num_texts - 1)
-        
-        # Compute MRR
+
+        gt_sets = _normalize_ground_truth_sets(global_gt_indices, num_videos)
+
+        ranking = torch.argsort(similarity_matrix, dim=1, descending=True)
         mrr_values = []
         for i in range(num_videos):
-            gt_idx = global_gt_indices[i].item()
-            target_score = similarity_matrix[i, gt_idx]
-            rank = (similarity_matrix[i] >= target_score).sum().item()
-            mrr_values.append(1.0 / rank)
-        
+            gt_set = gt_sets[i] if i < len(gt_sets) else set()
+            if not gt_set:
+                mrr_values.append(0.0)
+                continue
+
+            best_rank = None
+            for gt_idx in gt_set:
+                matches = (ranking[i] == gt_idx).nonzero(as_tuple=True)[0]
+                if matches.numel() > 0:
+                    candidate_rank = matches[0].item() + 1  # 1-based
+                    if best_rank is None or candidate_rank < best_rank:
+                        best_rank = candidate_rank
+
+            if best_rank is None or best_rank <= 0:
+                mrr_values.append(0.0)
+            else:
+                mrr_values.append(1.0 / best_rank)
+
         v2t_mrr = sum(mrr_values) / len(mrr_values) if mrr_values else 0.0
-        
         return {"MRR_V2T": v2t_mrr}
-        
+
     except Exception as e:
         print(f"Error in compute_mrr: {e}")
         print(f"similarity_matrix shape: {similarity_matrix.shape}")
-        print(f"global_gt_indices shape: {global_gt_indices.shape if isinstance(global_gt_indices, torch.Tensor) else 'not tensor'}")
+        if isinstance(global_gt_indices, torch.Tensor):
+            print(f"global_gt_indices shape: {global_gt_indices.shape}")
+        else:
+            print("global_gt_indices is not a tensor")
         return {"MRR_V2T": 0.0}
+
 
 def compute_similarity_matrix(video_features: torch.Tensor, text_features: torch.Tensor) -> torch.Tensor:
     normalized_video: torch.Tensor = nn.functional.normalize(video_features, dim=1)
     normalized_text: torch.Tensor = nn.functional.normalize(text_features, dim=1)
     return torch.matmul(normalized_video, normalized_text.T)
 
-# Normalize embeddings
+
 def compute_embedding_norms(video_features: torch.Tensor, text_features: torch.Tensor) -> dict:
     """Compute L2 norms of video and text embeddings."""
     video_norms: torch.Tensor = torch.norm(video_features, dim=1).mean().item()
@@ -124,92 +177,75 @@ def compute_alignment_score(
     all_video_embeddings: torch.Tensor = None,
     all_text_embeddings: torch.Tensor = None,
     global_ground_truth_indices_tensor: torch.Tensor = None,
-)-> float:
+) -> float:
     """
     Compute average cosine similarity of positive pairs.
-
-    Parameters:
-    - video_features: torch.Tensor (batch local video embeddings)
-    - text_features: torch.Tensor (batch local text embeddings)
-    - all_video_embeddings: torch.Tensor of all validation video embeddings [N_videos, dim] (optional)
-    - all_text_embeddings: torch.Tensor of all global text embeddings [N_texts, dim] (optional)
-    - global_ground_truth_indices_tensor: torch.Tensor of global GT indices for each video (optional)
-
-    If all_video_embeddings, all_text_embeddings, and global_ground_truth_indices_tensor
-    are provided, compute global alignment using global embeddings.
-
-    Otherwise, compute local alignment score assuming a one-to-one mapping between
-    video_features[i] and text_features[i].
     """
     if (
         all_video_embeddings is not None
         and all_text_embeddings is not None
         and global_ground_truth_indices_tensor is not None
     ):
-        # Global alignment scenario (for validation)
-        correct_text_embeddings: torch.Tensor = all_text_embeddings[global_ground_truth_indices_tensor]
-        normalized_video: torch.Tensor = nn.functional.normalize(all_video_embeddings, dim=1)
-        normalized_text: torch.Tensor = nn.functional.normalize(correct_text_embeddings, dim=1)
+        correct_text_embeddings: torch.Tensor = all_text_embeddings[
+            global_ground_truth_indices_tensor
+        ]
+        normalized_video: torch.Tensor = nn.functional.normalize(
+            all_video_embeddings, dim=1
+        )
+        normalized_text: torch.Tensor = nn.functional.normalize(
+            correct_text_embeddings, dim=1
+        )
         alignment_scores: torch.Tensor = (normalized_video * normalized_text).sum(dim=1)
         return alignment_scores.mean().item()
     else:
-        # Local alignment scenario (for training)
         normalized_video: torch.Tensor = nn.functional.normalize(video_features, dim=1)
         normalized_text: torch.Tensor = nn.functional.normalize(text_features, dim=1)
         alignment_scores: torch.Tensor = (normalized_video * normalized_text).sum(dim=1)
         return alignment_scores.mean().item()
 
+
 def compute_ndcg_at_k(
-    similarity_matrix: torch.Tensor, 
-    global_gt_indices: torch.Tensor, 
-    k_values: List[int]
+    similarity_matrix: torch.Tensor,
+    global_gt_indices: Union[torch.Tensor, Sequence[Sequence[int]], Sequence[int]],
+    k_values: List[int],
 ) -> dict[str, float]:
     """
-    Compute NDCG@k for each query and average over all queries.
-    Simplified assumption: one correct answer per query.
-
-    Args:
-        similarity_matrix (torch.Tensor): [num_queries, num_candidates]
-        global_gt_indices (torch.Tensor): [num_queries], each entry is the index of the correct text
-        k (int): Rank cutoff
-
-    Returns:
-        float: Average NDCG@k over all queries.
+    Compute NDCG@k for each query with multi-label support.
     """
     num_queries: int = similarity_matrix.size(0)
     num_candidates: int = similarity_matrix.size(1)
     if num_queries == 0:
-        return 0.0
+        return {}
 
-    # Sort candidates by similarity in descending order
-    sorted_indices: torch.Tensor = torch.argsort(similarity_matrix, dim=1, descending=True)
+    gt_sets = _normalize_ground_truth_sets(global_gt_indices, num_queries)
+    sorted_indices: torch.Tensor = torch.argsort(
+        similarity_matrix, dim=1, descending=True
+    )
 
     metrics: dict[str, float] = {}
     for k in k_values:
-        # Adjust k if it's larger than number of candidates
         effective_k: int = min(k, num_candidates)
-        
-        ndcg_values: list[float] = []
+        ndcg_values: List[float] = []
+
         for i in range(num_queries):
-            correct_idx: int = global_gt_indices[i].item()
-            # Find the rank of the correct index
-            ranking: torch.Tensor = (sorted_indices[i] == correct_idx).nonzero(as_tuple=True)[0]
-            if ranking.numel() == 0:
-                # Correct item not found (should not happen if all candidates included)
+            gt_set = gt_sets[i] if i < len(gt_sets) else set()
+            if not gt_set:
                 ndcg_values.append(0.0)
                 continue
 
-            # If multiple matches (duplicate texts), take the first one
-            rank: int = ranking[0].item() if ranking.numel() > 1 else ranking.item()
-            if rank < effective_k:
-                # DCG = 1 / log2(rank+2)
-                dcg: float = 1.0 / math.log2(rank + 2)
-            else:
-                dcg: float = 0.0
+            dcg = 0.0
+            for rank_idx in range(effective_k):
+                candidate_idx = sorted_indices[i, rank_idx].item()
+                if candidate_idx in gt_set:
+                    dcg += 1.0 / math.log2(rank_idx + 2)
 
-            # Ideal DCG (IDCG) = 1 since there's only one relevant doc at best rank
-            idcg: float = 1.0
-            ndcg_values.append(dcg / idcg)
+            ideal_hits = min(len(gt_set), effective_k)
+            if ideal_hits == 0:
+                ndcg_values.append(0.0)
+                continue
+
+            idcg = sum(1.0 / math.log2(r + 2) for r in range(ideal_hits))
+            ndcg_values.append(dcg / idcg if idcg > 0 else 0.0)
 
         metrics[f"NDCG@{k}_V2T"] = float(torch.tensor(ndcg_values).mean().item())
 
@@ -217,60 +253,72 @@ def compute_ndcg_at_k(
 
 
 def compute_median_rank(
-    similarity_matrix: torch.Tensor, 
-    global_gt_indices: torch.Tensor
+    similarity_matrix: torch.Tensor,
+    global_gt_indices: Union[torch.Tensor, Sequence[Sequence[int]], Sequence[int]],
 ) -> int:
     """
-    Compute the median rank of the correct item over all queries.
-    Lower is better.
+    Compute the median rank of the best-matching relevant item over all queries.
     """
     num_queries = similarity_matrix.size(0)
+    num_candidates = similarity_matrix.size(1)
     if num_queries == 0:
         return 0
 
     sorted_indices = torch.argsort(similarity_matrix, dim=1, descending=True)
+    gt_sets = _normalize_ground_truth_sets(global_gt_indices, num_queries)
     ranks = []
     for i in range(num_queries):
-        correct_idx = global_gt_indices[i].item()
-        ranking = (sorted_indices[i] == correct_idx).nonzero(as_tuple=True)[0]
-        if ranking.numel() == 0:
-            # Not found, assign large rank
-            ranks.append(similarity_matrix.size(1))
-        else:
-            # If multiple matches (duplicate texts), take the first one
-            rank_idx = ranking[0].item() if ranking.numel() > 1 else ranking.item()
-            rank = rank_idx + 1  # +1 because ranks are 1-based
-            ranks.append(rank)
+        gt_set = gt_sets[i] if i < len(gt_sets) else set()
+        if not gt_set:
+            ranks.append(num_candidates)
+            continue
 
-    ranks = torch.tensor(ranks, dtype=torch.float)
-    median_rank = int(ranks.median().item())  # Convert to int before returning
-    return median_rank
+        best_rank = None
+        for gt_idx in gt_set:
+            ranking = (sorted_indices[i] == gt_idx).nonzero(as_tuple=True)[0]
+            if ranking.numel() > 0:
+                candidate_rank = ranking[0].item() + 1  # 1-based
+                if best_rank is None or candidate_rank < best_rank:
+                    best_rank = candidate_rank
+
+        ranks.append(best_rank if best_rank is not None else num_candidates)
+
+    ranks_tensor = torch.tensor(ranks, dtype=torch.float)
+    return int(ranks_tensor.median().item())
 
 
-def compute_map(similarity_matrix: torch.Tensor, global_gt_indices: torch.Tensor) -> float:
+def compute_map(
+    similarity_matrix: torch.Tensor,
+    global_gt_indices: Union[torch.Tensor, Sequence[Sequence[int]], Sequence[int]],
+) -> float:
     """
-    Compute mean average precision (MAP).
-    Assuming exactly one relevant doc per query.
-    AP = 1/rank_of_correct_item
-    MAP = average of AP over all queries
+    Compute mean average precision with support for multiple relevant items.
     """
     num_queries = similarity_matrix.size(0)
     if num_queries == 0:
         return 0.0
 
     sorted_indices = torch.argsort(similarity_matrix, dim=1, descending=True)
-    aps = []
+    gt_sets = _normalize_ground_truth_sets(global_gt_indices, num_queries)
+    aps: List[float] = []
+
     for i in range(num_queries):
-        correct_idx = global_gt_indices[i].item()
-        ranking = (sorted_indices[i] == correct_idx).nonzero(as_tuple=True)[0]
-        if ranking.numel() == 0:
-            # Correct not found, AP=0
+        gt_set = gt_sets[i] if i < len(gt_sets) else set()
+        if not gt_set:
             aps.append(0.0)
+            continue
+
+        hits = 0
+        precision_sum = 0.0
+        for rank_idx, cand_idx_tensor in enumerate(sorted_indices[i], start=1):
+            cand_idx = cand_idx_tensor.item()
+            if cand_idx in gt_set:
+                hits += 1
+                precision_sum += hits / rank_idx
+
+        if hits > 0:
+            aps.append(precision_sum / hits)
         else:
-            # If multiple matches (duplicate texts), take the first one
-            rank_idx = ranking[0].item() if ranking.numel() > 1 else ranking.item()
-            rank = rank_idx + 1
-            ap = 1.0 / rank
-            aps.append(ap)
+            aps.append(0.0)
 
     return float(torch.tensor(aps).mean().item())

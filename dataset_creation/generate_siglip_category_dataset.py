@@ -15,6 +15,7 @@ Implements correct SigLIP paradigm:
 import argparse
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple, Set
+from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import pandas as pd
 import numpy as np
@@ -135,6 +136,18 @@ def parse_tags(tag_str: str) -> Dict[str, str]:
     return tags
 
 
+def extract_tree_from_tags(tag_str: str) -> Optional[str]:
+    """Return left/right tree hint from canonical tag string."""
+    if not isinstance(tag_str, str):
+        return None
+    for kv in tag_str.split("|"):
+        if kv.startswith("tree:"):
+            tree = kv.split(":", 1)[1].strip().lower()
+            if tree in {"left", "right"}:
+                return tree
+    return None
+
+
 def build_canonical_tags(**kwargs) -> str:
     """
     Build canonical tag string from key-value pairs.
@@ -224,6 +237,11 @@ def _collect_prompts_for_study(study_id: str, study_df: pd.DataFrame) -> List[Di
         prompts.extend(generate_lesion_atomic_prompts(row, relevant_vessels, main_structure))
         prompts.extend(generate_abnormal_focus_prompts(row, relevant_vessels, main_structure))
         prompts.extend(generate_negative_coverage_prompts(row, relevant_vessels, main_structure))
+
+        if not prompts:
+            fallback_prompt = create_system_normal_prompt(main_structure)
+            if fallback_prompt is not None:
+                prompts.append(fallback_prompt)
 
         for prompt in prompts:
             raw_records.append({
@@ -382,15 +400,35 @@ def generate_lesion_atomic_prompts(row: pd.Series, relevant_vessels: List[str], 
     for vessel_col in relevant_vessels:
         details = get_vessel_details(row, vessel_col)
 
-        # Skip if no stenosis data
-        if details["stenosis"] is None or details["stenosis"] < 30:
-            # Only include <30 if stented
-            if not details["has_stent"]:
-                continue
+        if details["stenosis"] is None:
+            continue
 
+        stenosis_value = float(details["stenosis"])
+        is_zero_stenosis = abs(stenosis_value) < 1e-3
         vessel_name = details["display_name"]
         segment = details["segment"]
-        bin_label = discretize_stenosis(details["stenosis"])
+
+        # Explicit normal case (no disease and no hardware)
+        if (
+            is_zero_stenosis
+            and not details["has_stent"]
+            and not details["is_cto"]
+        ):
+            normal_text = f"{vessel_name}; no angiographic stenosis (normal)."
+            normal_tags = build_canonical_tags(
+                category="normal",
+                segment=segment,
+                tree=tree
+            )
+            prompts.append({
+                "prompt_text": normal_text,
+                "prompt_type": "lesion_atomic",
+                "tags": normal_tags,
+                "soft_weight": PROMPT_TYPE_WEIGHTS["lesion_atomic"]
+            })
+            continue
+
+        bin_label = discretize_stenosis(stenosis_value)
 
         # Build prompt text
         if details["is_cto"]:
@@ -573,11 +611,27 @@ def generate_negative_coverage_prompts(row: pd.Series, relevant_vessels: List[st
                     max_stenosis = max(max_stenosis, stenosis)
 
         # Generate negative statement if max stenosis < 30%
-        if has_data and max_stenosis < 30:
-            # Format territory name for display
+        if has_data:
             territory_display = territory_key.replace("_", " ").title()
-            text = f"{territory_display}: all lesions <30%."
-            tags = build_canonical_tags(category="stenosis", territory=territory_key, bin="<30", tree=tree)
+
+            if abs(max_stenosis) < 1e-3:
+                text = f"{territory_display}: no angiographic stenosis detected."
+                tags = build_canonical_tags(
+                    category="normal",
+                    territory=territory_key,
+                    bin="0",
+                    tree=tree
+                )
+            elif max_stenosis < 30:
+                text = f"{territory_display}: all lesions <30%."
+                tags = build_canonical_tags(
+                    category="stenosis",
+                    territory=territory_key,
+                    bin="<30",
+                    tree=tree
+                )
+            else:
+                continue
 
             prompts.append({
                 "prompt_text": text,
@@ -587,6 +641,23 @@ def generate_negative_coverage_prompts(row: pd.Series, relevant_vessels: List[st
             })
 
     return prompts
+
+
+def create_system_normal_prompt(main_structure: str) -> Optional[Dict[str, Any]]:
+    """Create a fallback prompt stating that the coronary system is angiographically normal."""
+    tree = get_tree(main_structure)
+    if tree not in {"left", "right"}:
+        return None
+
+    system = "Left Coronary" if tree == "left" else "Right Coronary"
+    text = f"{system}: no angiographic stenosis."
+    tags = build_canonical_tags(category="normal", tree=tree)
+    return {
+        "prompt_text": text,
+        "prompt_type": "negative_coverage",
+        "tags": tags,
+        "soft_weight": PROMPT_TYPE_WEIGHTS["negative_coverage"],
+    }
 
 
 def generate_global_summary_prompts(study_df: pd.DataFrame, main_structure: str) -> Optional[Dict[str, Any]]:
@@ -622,10 +693,25 @@ def generate_global_summary_prompts(study_df: pd.DataFrame, main_structure: str)
     if not findings:
         text = f"{system}: No significant stenosis documented; segments not specified."
     else:
-        # Sort by severity
         findings.sort(key=lambda x: x[0], reverse=True)
-        parts = [desc for _, desc in findings[:5]]  # Limit to top 5
-        text = f"{system}: " + "; ".join(parts) + "; other segments not specified."
+        unique_descriptions: List[str] = []
+        seen_descriptions: set[str] = set()
+        for _, desc in findings:
+            if desc in seen_descriptions:
+                continue
+            seen_descriptions.add(desc)
+            unique_descriptions.append(desc)
+            if len(unique_descriptions) >= 5:
+                break
+
+        if not unique_descriptions:
+            text = f"{system}: No significant stenosis documented; segments not specified."
+        else:
+            text = (
+                f"{system}: "
+                + "; ".join(unique_descriptions)
+                + "; other segments not specified."
+            )
 
     tags = build_canonical_tags(category="summary", tree=tree)
 
@@ -795,10 +881,51 @@ def build_edges(
         }
         return empty_edges, videos_debug, stats
 
+    fallback_records = (
+        raw_prompts_df[raw_prompts_df["video_id"].notna()]
+        .copy()
+    )
+    fallback_records["tag_dict"] = fallback_records["tags"].apply(parse_tags)
+    fallback_records["tree"] = fallback_records["tag_dict"].apply(lambda d: d.get("tree"))
+
+    def fallback_priority(row: pd.Series) -> int:
+        prompt_type = row.get("prompt_type")
+        tag_dict = row.get("tag_dict") or {}
+        category = tag_dict.get("category")
+        bin_val = tag_dict.get("bin")
+        text_lower = str(row.get("prompt_text", "")).lower()
+
+        if prompt_type == "lesion_atomic":
+            if category == "stenosis" and bin_val == "<30":
+                return 0  # mild disease
+            if category == "normal":
+                return 1  # angiographically normal
+        if prompt_type == "negative_coverage" and "no angiographic stenosis" in text_lower:
+            return 2  # system-level normal
+        return 99
+
+    fallback_records = fallback_records[
+        fallback_records["tree"].isin(["left", "right"])
+    ]
+    fallback_records["fallback_priority"] = fallback_records.apply(fallback_priority, axis=1)
+    fallback_records = fallback_records[fallback_records["fallback_priority"] < 99]
+
+    fallback_map: Dict[str, pd.Series] = {}
+    if not fallback_records.empty:
+        fallback_sorted = fallback_records.sort_values(
+            by=["fallback_priority", "prompt_type", "text_id"]
+        )
+        for vid, group in fallback_sorted.groupby("video_id"):
+            fallback_map[vid] = group.iloc[0]
+
     candidate = raw_prompts_df[
         raw_prompts_df["prompt_type"].isin(["lesion_atomic", "abnormal_focus"])
     ].copy()
-    candidate = candidate[candidate["tags"].notna() & candidate["text_id"].notna()]
+    candidate = candidate[
+        candidate["tags"].notna()
+        & candidate["text_id"].notna()
+        & candidate["video_id"].notna()
+    ]
 
     candidate["tag_dict"] = candidate["tags"].apply(parse_tags)
     candidate["tree"] = candidate["tag_dict"].apply(lambda d: d.get("tree"))
@@ -807,8 +934,8 @@ def build_edges(
     candidate["bin"] = candidate["tag_dict"].apply(lambda d: d.get("bin"))
     candidate = candidate[candidate["tree"].isin(["left", "right"])]
 
-    # One entry per study/text pair to avoid duplicate assignments
-    candidate = candidate.drop_duplicates(subset=["study_id", "text_id"])
+    # Keep at most one record per video/text pair so each video retains its own prompts
+    candidate = candidate.drop_duplicates(subset=["video_id", "text_id"])
 
     cat_priority_map = {"in_stent": 0, "cto": 0, "stenosis": 1, "medina": 2, "calcification": 3, "thrombus": 3}
     bin_priority_map = {"<30": 5, "30-49": 4, "50-69": 3, "70-89": 2, ">=90": 1}
@@ -821,70 +948,71 @@ def build_edges(
     videos_ext = videos_df.copy()
     videos_ext["tree"] = videos_ext["main_structure"].apply(get_tree)
     videos_ext = videos_ext[videos_ext["tree"].isin(["left", "right"])]
+    video_tree_map = videos_ext.set_index("video_id")["tree"].to_dict()
 
     edges_records: List[Dict[str, Any]] = []
     assignment_records: List[Dict[str, Any]] = []
+    counts: Dict[str, int] = defaultdict(int)
 
-    unique_groups = candidate[['study_id', 'tree']].drop_duplicates()
+    candidate_sorted = candidate.sort_values(
+        by=["category_priority", "prompt_priority", "bin_priority", "text_id"],
+        ascending=[True, True, True, True]
+    )
 
-    group_iter = candidate.groupby(["study_id", "tree"], sort=False)
-    for (study_id, tree), group in tqdm(group_iter, total=len(unique_groups), desc="Assigning positive edges"):
-        tree_videos = videos_ext[
-            (videos_ext["study_id"] == study_id) & (videos_ext["tree"] == tree)
-        ]["video_id"].tolist()
-
-        if not tree_videos:
-            continue
-
-        group_sorted = group.sort_values(
-            by=["category_priority", "prompt_priority", "bin_priority", "text_id"],
-            ascending=[True, True, True, True]
+    if cap_per_video is not None:
+        candidate_sorted = (
+            candidate_sorted.groupby("video_id", group_keys=False)
+            .head(cap_per_video)
         )
 
-        counts = {vid: 0 for vid in tree_videos}
-        assigned_per_video = {vid: set() for vid in tree_videos}
-        cursor = 0
+    for row in candidate_sorted.itertuples(index=False):
+        vid = row.video_id
+        video_tree = video_tree_map.get(vid)
+        if not video_tree or row.tree != video_tree:
+            continue
 
-        group_rows = list(group_sorted.itertuples(index=False))
+        weight = float(getattr(row, "soft_weight", 1.0))
+        edges_records.append({
+            "video_id": vid,
+            "text_id": row.text_id,
+            "weight": weight
+        })
+        assignment_records.append({
+            "video_id": vid,
+            "text_id": row.text_id,
+            "prompt_type": row.prompt_type,
+            "category": row.category,
+            "weight": weight
+        })
+        counts[vid] += 1
 
-        for row in group_rows:
-            max_checks = len(tree_videos) if tree_videos else 0
-            assigned = False
-
-            for _ in range(max_checks):
-                vid = tree_videos[cursor % len(tree_videos)]
-                cursor += 1
-
-                if row.text_id in assigned_per_video[vid]:
-                    continue
-                if cap_per_video is not None and counts[vid] >= cap_per_video:
-                    continue
-
-                weight = float(getattr(row, "soft_weight", 1.0))
-                edges_records.append({
-                    "video_id": vid,
-                    "text_id": row.text_id,
-                    "weight": weight
-                })
-                assignment_records.append({
-                    "video_id": vid,
-                    "text_id": row.text_id,
-                    "prompt_type": row.prompt_type,
-                    "category": row.category,
-                    "weight": weight
-                })
-                counts[vid] += 1
-                assigned_per_video[vid].add(row.text_id)
-                assigned = True
-                break
-
-            if not assigned:
-                logger.debug(
-                    "No assignment made for study %s tree %s text %s",
-                    study_id,
-                    tree,
-                    row.text_id,
-                )
+    for vid in videos_ext["video_id"]:
+        if counts.get(vid, 0) > 0:
+            continue
+        fallback = fallback_map.get(vid)
+        if fallback is None:
+            continue
+        video_tree = video_tree_map.get(vid)
+        if video_tree != fallback.get("tree"):
+            continue
+        fallback_text_id = fallback.get("text_id")
+        if not isinstance(fallback_text_id, str):
+            continue
+        weight = float(fallback.get("soft_weight", 1.0))
+        edges_records.append({
+            "video_id": vid,
+            "text_id": fallback_text_id,
+            "weight": weight
+        })
+        tag_dict = fallback.get("tag_dict") or {}
+        assignment_records.append({
+            "video_id": vid,
+            "text_id": fallback_text_id,
+            "prompt_type": fallback.get("prompt_type"),
+            "category": tag_dict.get("category"),
+            "weight": weight
+        })
+        counts[vid] = 1
 
     edges_df = pd.DataFrame(edges_records)
     if not edges_df.empty:
@@ -894,6 +1022,27 @@ def build_edges(
 
     videos_debug = videos_df.copy()
     if not edges_df.empty:
+        video_tree_map = videos_df.set_index("video_id")["main_structure"].map(get_tree).to_dict()
+        text_tree_map = texts_df.set_index("text_id")["tags"].map(extract_tree_from_tags).to_dict()
+
+        edges_df["video_tree"] = edges_df["video_id"].map(video_tree_map)
+        edges_df["text_tree"] = edges_df["text_id"].map(text_tree_map)
+
+        before_filter = len(edges_df)
+        edges_df = edges_df[
+            edges_df["video_tree"].notna()
+            & edges_df["text_tree"].notna()
+            & (edges_df["video_tree"] == edges_df["text_tree"])
+        ].copy()
+        dropped = before_filter - len(edges_df)
+        if dropped > 0:
+            logger.warning(
+                "Dropped %d edges due to coronary tree mismatch between video and text",
+                dropped,
+            )
+
+        edges_df = edges_df.drop(columns=["video_tree", "text_tree"])
+
         pos_map = (
             edges_df.groupby("video_id")["text_id"]
             .apply(lambda vals: "|".join(sorted(set(vals))))

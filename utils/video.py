@@ -8,10 +8,45 @@ import torchvision.transforms as v2
 from pathlib import Path
 from typing import (
     Any,
+    Dict,
     List,
     Optional,
     Union
 )
+
+
+def _get_timeout_from_env(var_name: str, default: int) -> int:
+    """Parse timeout override from environment variables."""
+    raw_value = os.environ.get(var_name)
+    if raw_value is None:
+        return default
+    try:
+        return int(raw_value)
+    except ValueError:
+        return default
+
+
+DEFAULT_VIDEO_OPEN_TIMEOUT_MS = _get_timeout_from_env("VIDEO_OPEN_TIMEOUT_MS", 15000)
+DEFAULT_VIDEO_READ_TIMEOUT_MS = _get_timeout_from_env("VIDEO_READ_TIMEOUT_MS", 15000)
+DEFAULT_FFMPEG_GPU_DEVICE = (os.environ.get("FFMPEG_GPU_DEVICE", "0") or "").strip() or None
+
+
+def get_ffmpeg_environment(gpu_device: Optional[str] = None) -> Dict[str, str]:
+    """
+    Build an environment for ffmpeg subprocesses constrained to the requested GPU.
+
+    Args:
+        gpu_device: Optional device id string. Defaults to env FFMPEG_GPU_DEVICE (-> '1').
+
+    Returns:
+        Environment dict for subprocess.run
+    """
+    env = os.environ.copy()
+    device = gpu_device if gpu_device is not None else DEFAULT_FFMPEG_GPU_DEVICE
+    if device:
+        env["CUDA_VISIBLE_DEVICES"] = str(device)
+        env.setdefault("NV_GPU", str(device))
+    return env
 
 
 def cleanup_temp_video(video_path):
@@ -45,17 +80,61 @@ def convert_video_for_wandb(video_path):
     os.close(temp_fd)
 
     try:
-        # Convert to MP4 using ffmpeg
+        # Convert to MP4 using ffmpeg on the designated GPU
         subprocess.run(
             ["ffmpeg", "-i", video_path, "-c:v", "libx264", "-preset", "fast", "-y", temp_path],
             check=True,
             capture_output=True,
+            env=get_ffmpeg_environment(),
         )
         return temp_path, True
     except subprocess.CalledProcessError as e:
         print(f"Warning: Failed to convert video {video_path}: {e.stderr.decode()}")
         os.unlink(temp_path)
         return video_path, False
+
+
+def _configure_capture_timeouts(
+    cap: cv2.VideoCapture,
+    open_timeout_ms: Optional[int],
+    read_timeout_ms: Optional[int],
+) -> None:
+    """Apply timeout configuration to a VideoCapture handle."""
+    if open_timeout_ms is not None and hasattr(cv2, "CAP_PROP_OPEN_TIMEOUT_MSEC"):
+        cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, float(open_timeout_ms))
+    if read_timeout_ms is not None and hasattr(cv2, "CAP_PROP_READ_TIMEOUT_MSEC"):
+        cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, float(read_timeout_ms))
+
+
+def create_video_capture(
+    video_path: str,
+    open_timeout_ms: Optional[int] = None,
+    read_timeout_ms: Optional[int] = None,
+) -> Optional[cv2.VideoCapture]:
+    """
+    Create a VideoCapture handle with ffmpeg timeouts to avoid long blocking reads.
+
+    Returns:
+        Configured VideoCapture instance or None if opening fails.
+    """
+    open_timeout = (
+        DEFAULT_VIDEO_OPEN_TIMEOUT_MS if open_timeout_ms is None else open_timeout_ms
+    )
+    read_timeout = (
+        DEFAULT_VIDEO_READ_TIMEOUT_MS if read_timeout_ms is None else read_timeout_ms
+    )
+
+    cap = cv2.VideoCapture()
+    _configure_capture_timeouts(cap, open_timeout, read_timeout)
+
+    api_preference = cv2.CAP_FFMPEG if hasattr(cv2, "CAP_FFMPEG") else 0
+    opened = cap.open(video_path, api_preference) if api_preference else cap.open(video_path)
+    if not opened:
+        cap.release()
+        return None
+
+    _configure_capture_timeouts(cap, open_timeout, read_timeout)
+    return cap
 
 
 def load_video(
@@ -69,6 +148,8 @@ def load_video(
     rand_augment: bool = False,
     backbone: str = "default",
     stride: int = 1,
+    open_timeout_ms: Optional[int] = None,
+    read_timeout_ms: Optional[int] = None,
 ) -> np.ndarray:
     """
     Load and process a video with optional resizing, normalization, and augmentations.
@@ -99,28 +180,34 @@ def load_video(
         if video.ndim < 3 or video.ndim > 4:
             raise ValueError(f"Invalid .npy file: Expected 3D or 4D array, got {video.ndim}D: {video_path}")
     else:
-        cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
-            raise ValueError(f"Failed to open video file: {video_path}")
+        cap = create_video_capture(
+            video_path,
+            open_timeout_ms=open_timeout_ms,
+            read_timeout_ms=read_timeout_ms,
+        )
+        if cap is None or not cap.isOpened():
+            raise ValueError(f"Failed to open video file within timeout: {video_path}")
 
         # Randomly choose stride between 1 and specified stride
         actual_stride = np.random.randint(1, stride + 1) if stride > 1 else 1
 
         frames = []
         frame_count = 0
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            if frame_count % actual_stride == 0:
-                if frame.ndim == 3:
-                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                frames.append(frame)
-            frame_count += 1
-        cap.release()
+        try:
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                if frame_count % actual_stride == 0:
+                    if frame.ndim == 3:
+                        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    frames.append(frame)
+                frame_count += 1
+        finally:
+            cap.release()
 
         if not frames:
-            raise ValueError(f"No frames could be read from video: {video_path}")
+            raise ValueError(f"No frames could be read from video within timeout: {video_path}")
 
         video = np.stack(frames, axis=0)
     

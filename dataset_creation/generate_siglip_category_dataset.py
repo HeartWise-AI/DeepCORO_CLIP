@@ -15,7 +15,7 @@ Implements correct SigLIP paradigm:
 import argparse
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple, Set
-from collections import defaultdict
+from collections import defaultdict, Counter
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import pandas as pd
 import numpy as np
@@ -1084,6 +1084,70 @@ def build_edges(
         stats["category_counts"] = {}
 
     return edges_df[["video_id", "text_id", "weight"]], videos_debug, stats
+
+
+def write_debug_outputs(
+    output_path: Path,
+    config: Dict[str, Any],
+    videos_df: pd.DataFrame,
+    texts_df: pd.DataFrame,
+    edges_df: pd.DataFrame,
+    raw_prompts_df: pd.DataFrame,
+) -> None:
+    """Persist optional debugging artifacts for quick sanity checks."""
+    debug_cfg = config.get("debug_outputs", {})
+    if not debug_cfg.get("enabled", True):
+        return
+
+    sample_size = int(debug_cfg.get("video_sample_size", 25))
+    summary_rows = int(debug_cfg.get("summary_limit", 1000))
+
+    try:
+        counts = edges_df.groupby("video_id")["text_id"].size()
+        counts_summary = counts.describe().to_frame(name="edges_per_video")
+        counts_summary.loc["total_edges"] = len(edges_df)
+        counts_summary.loc["unique_videos"] = counts.index.nunique()
+        counts_summary.to_csv(output_path / "debug_edges_per_video_summary.csv")
+    except Exception as exc:
+        logger.warning("Failed to write edges per video summary: %s", exc)
+
+    try:
+        merged_edges = edges_df.merge(
+            texts_df[["text_id", "prompt_type", "prompt_text", "tags"]],
+            on="text_id",
+            how="left",
+        ).merge(
+            videos_df[["video_id", "Split", "main_structure"]],
+            on="video_id",
+            how="left",
+        )
+        sample = (
+            merged_edges.sort_values(["Split", "video_id"])
+            .groupby("Split", group_keys=False)
+            .head(sample_size)
+        )
+        sample.to_csv(output_path / "debug_video_text_samples.csv", index=False)
+    except Exception as exc:
+        logger.warning("Failed to write SigLIP debug samples: %s", exc)
+
+    try:
+        prompt_counts = (
+            raw_prompts_df["prompt_type"]
+            .value_counts()
+            .rename_axis("prompt_type")
+            .reset_index(name="count")
+        )
+        prompt_counts.to_csv(output_path / "debug_prompt_type_counts.csv", index=False)
+
+        tag_counter: Counter[str] = Counter()
+        for tags in raw_prompts_df["tags"].dropna():
+            tag_counter.update(str(tags).split("|"))
+        tag_series = pd.DataFrame(
+            tag_counter.most_common(summary_rows), columns=["tag", "count"]
+        )
+        tag_series.to_csv(output_path / "debug_tag_frequency.csv", index=False)
+    except Exception as exc:
+        logger.warning("Failed to write prompt/tag debug summaries: %s", exc)
 def process_siglip_dataset(
     input_path: str,
     output_dir: str,
@@ -1292,6 +1356,15 @@ def process_siglip_dataset(
     videos_debug_df.to_csv(videos_debug_path, index=False)
     logger.info(f"Saved debug positives to {videos_debug_path}")
 
+    write_debug_outputs(
+        output_path=output_path,
+        config=config,
+        videos_df=videos_df,
+        texts_df=texts_df,
+        edges_df=edges_df,
+        raw_prompts_df=raw_prompts_df,
+    )
+
     # Print statistics
     print("\n" + "="*60)
     print("SigLIP DATASET GENERATION SUMMARY")
@@ -1385,7 +1458,12 @@ def create_default_config() -> Dict[str, Any]:
         'apply_mappings': True,
         'assign_status': True,
         'cap_per_video': None,
-        'parallel_workers': 1
+        'parallel_workers': 1,
+        'debug_outputs': {
+            'enabled': True,
+            'video_sample_size': 25,
+            'summary_limit': 1000
+        }
     }
 
 

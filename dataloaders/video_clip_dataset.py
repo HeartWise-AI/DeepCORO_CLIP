@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple, Set
 from torch.utils.data import DataLoader
 
 from utils.seed import seed_worker
@@ -16,12 +16,19 @@ from utils.ddp import DistributedUtils
 from models.text_encoder import get_tokenizer
 from utils.video import load_video, format_mean_std, create_video_capture
 from utils.config.heartwise_config import HeartWiseConfig
+from utils.samplers import ClassAwareDistributedBatchSampler
+
+_INIT_LOG_KEYS: Set[Tuple[str, str, bool]] = set()
+_STATS_LOG_KEYS: Set[Tuple[str, str]] = set()
 
 
 class VideoClipDataset(torch.utils.data.Dataset):
     """
     Unified dataset class for single- and multi-video (grouped) video-text pairs.
     """
+
+    _shared_tokenizer = None
+    _tokenizer_init_logged = False
 
     def __init__(
         self,
@@ -66,11 +73,12 @@ class VideoClipDataset(torch.utils.data.Dataset):
         self.siglip_round_robin_sampling: bool = bool(kwargs.pop("siglip_round_robin_sampling", False))
 
         # Placeholders populated after metadata loading
-        self.video_positive_texts: List[List[Dict[str, Any]]] = []
+        self.video_positive_texts: List[List[Tuple[str, float]]] = []
         self.video_ids: List[Optional[str]] = []
         self.video_path_to_idx: Dict[str, int] = {}
         self.main_structures: List[str] = []
-        self.video_negative_pool: List[List[Dict[str, Any]]] = []
+        self.video_negative_pool: List[List[str]] = []
+        self.labels: List[str] = []
         self._siglip_pos_cursors: List[int] = []
 
         # Optional SigLIP resources (videos/texts/edges manifest)
@@ -109,11 +117,17 @@ class VideoClipDataset(torch.utils.data.Dataset):
 
         # SigLIP resources
         self._siglip_text_lookup: Dict[str, Dict[str, Any]] = {}
-        self._siglip_video_to_texts: Dict[str, List[Dict[str, Any]]] = {}
+        self._siglip_video_to_text_ids: Dict[str, List[Tuple[str, float]]] = collections.defaultdict(list)
         self._siglip_tree_to_texts: Dict[str, List[Dict[str, Any]]] = collections.defaultdict(list)
         self._siglip_all_text_entries: List[Dict[str, Any]] = []
+        self._siglip_text_label_lookup: Dict[str, str] = {}
         if self.siglip_enabled:
             self._load_siglip_resources()
+
+        init_key = (str(self.filename), str(self.split).lower(), bool(self.multi_video_mode))
+        should_log_init = init_key not in _INIT_LOG_KEYS
+        if should_log_init:
+            _INIT_LOG_KEYS.add(init_key)
 
         if self.split != "inference":
             target_label = (
@@ -125,32 +139,46 @@ class VideoClipDataset(torch.utils.data.Dataset):
             self.external_test_location = kwargs.pop("external_test_location", None)
 
             if self.multi_video_mode:
-                print("Initializing multi-video mode")
+                if should_log_init:
+                    print("Initializing multi-video mode")
                 self._init_multi_video()
             else:
-                print("Initializing single-video mode")
+                if should_log_init:
+                    print("Initializing single-video mode")
                 self.fnames, self.outcome, self.target_index = self.load_data(
                     self.split, self.target_label
                 )
 
-            # Initialize tokenizer only once
-            if not hasattr(self, 'tokenizer'):
+            if VideoClipDataset._shared_tokenizer is None:
                 try:
-                    self.tokenizer = get_tokenizer()
-                    print("Tokenizer initialized successfully")
+                    VideoClipDataset._shared_tokenizer = get_tokenizer()
+                    if not VideoClipDataset._tokenizer_init_logged:
+                        print("Tokenizer initialized successfully")
+                        VideoClipDataset._tokenizer_init_logged = True
                 except Exception as e:
                     print(f"Error initializing tokenizer: {str(e)}")
                     raise RuntimeError("Failed to initialize tokenizer") from e
+            if VideoClipDataset._shared_tokenizer is None:
+                raise RuntimeError("Failed to obtain tokenizer instance")
+            self.tokenizer = VideoClipDataset._shared_tokenizer
 
         if self.debug_mode and not self.multi_video_mode:
             print("Validating all videos in single-video mode with groupby_column", self.groupby_column)
             self.valid_indices = self._validate_all_videos()
         elif not self.multi_video_mode:
-            print("Initializing single-video mode")
             self.valid_indices = list(range(len(self.fnames)))
             # For compatibility with unit tests that access `study_ids` even
             # in single-video mode, expose it as the list of file names.
             self.study_ids = [str(f) for f in self.fnames]
+
+        if self.multi_video_mode:
+            self.labels_indexed = list(self.labels)
+        else:
+            indices = getattr(self, "valid_indices", list(range(len(self.labels))))
+            if self.labels:
+                self.labels_indexed = [self.labels[idx] for idx in indices]
+            else:
+                self.labels_indexed = []
 
     def _read_metadata_csv(self, csv_path: Path | str) -> pd.DataFrame:
         csv_path = Path(csv_path)
@@ -199,34 +227,45 @@ class VideoClipDataset(torch.utils.data.Dataset):
             text_id = str(row[self.siglip_text_id_column])
             tags = self._parse_tags(row.get("tags", ""))
             tree = tags.get("tree")
+            prompt_type_val = row.get(self.siglip_prompt_type_column)
+            prompt_text_val = row.get(self.siglip_prompt_text_column)
+            is_abnormal = self._is_abnormal_prompt(prompt_type_val, prompt_text_val)
             text_info = {
                 "text_id": text_id,
-                "prompt_text": row[self.siglip_prompt_text_column],
-                "prompt_type": row.get(self.siglip_prompt_type_column),
+                "prompt_text": prompt_text_val,
+                "prompt_type": prompt_type_val,
                 "soft_weight": float(row.get(self.siglip_soft_weight_column, 1.0)),
                 "tree": tree,
                 "tags": tags,
+                "is_abnormal": is_abnormal,
             }
             self._siglip_text_lookup[text_id] = text_info
+            self._siglip_text_label_lookup[text_id] = "abnormal" if is_abnormal else "normal"
             if tree:
                 self._siglip_tree_to_texts[tree].append(text_info)
             self._siglip_all_text_entries.append(text_info)
 
-        self._siglip_video_to_texts = collections.defaultdict(list)
-        for _, row in edges_df.iterrows():
-            video_id = str(row[self.siglip_video_id_column])
-            text_id = str(row[self.siglip_text_id_column])
-            text_info = self._siglip_text_lookup.get(text_id)
-            if not text_info:
-                continue
-            entry = dict(text_info)
-            entry["edge_weight"] = float(row.get(self.siglip_edge_weight_column, 1.0))
-            self._siglip_video_to_texts[video_id].append(entry)
+        self._siglip_video_to_text_ids.clear()
+        edge_video_col = self.siglip_video_id_column
+        edge_text_col = self.siglip_text_id_column
+        edge_weight_col = self.siglip_edge_weight_column
+
+        for video_id, group in edges_df.groupby(edge_video_col):
+            video_key = str(video_id)
+            pairs: List[Tuple[str, float]] = []
+            for _, row in group.iterrows():
+                text_id = str(row[edge_text_col])
+                if text_id not in self._siglip_text_lookup:
+                    continue
+                weight = float(row.get(edge_weight_col, 1.0))
+                pairs.append((text_id, weight))
+            if pairs:
+                self._siglip_video_to_text_ids[video_key] = pairs
 
         print(
             f"[VideoClipDataset] Loaded SigLIP resources: "
             f"{len(self._siglip_text_lookup)} texts, "
-            f"{len(self._siglip_video_to_texts)} videos with positives"
+            f"{len(self._siglip_video_to_text_ids)} videos with positives"
         )
 
     @staticmethod
@@ -238,6 +277,57 @@ class VideoClipDataset(torch.utils.data.Dataset):
                     key, value = kv.split(":", 1)
                     tags[key.strip()] = value.strip()
         return tags
+
+    @staticmethod
+    def _is_abnormal_prompt(prompt_type: Optional[str], prompt_text: Optional[str]) -> bool:
+        """
+        Best-effort heuristic to determine if a prompt describes an abnormal finding.
+        """
+        type_str = str(prompt_type or "").lower()
+        text_str = str(prompt_text or "").lower()
+
+        if not type_str and not text_str:
+            return True  # default to abnormal when information is missing
+
+        if "abnormal" in type_str:
+            return True
+        if "negative" in type_str:
+            return False
+
+        negative_keywords = (
+            "no angiographic stenosis",
+            "no significant stenosis",
+            "no significant obstructive",
+            "no stenosis",
+            "patent",
+            "normal",
+            "without restenosis",
+        )
+        if any(keyword in text_str for keyword in negative_keywords):
+            return False
+
+        positive_keywords = (
+            "stenosis",
+            "occlusion",
+            "occluded",
+            "thrombus",
+            "dissection",
+            "aneurysm",
+            "calcification",
+            "calcified",
+            "stent",
+            "restens",
+            "plaque",
+            "%",
+        )
+        if any(keyword in text_str for keyword in positive_keywords):
+            return True
+
+        # Fall back on prompt type cues
+        if type_str in {"global_summary", "lesion_atomic"}:
+            return True
+
+        return False
 
     @staticmethod
     def _infer_tree_from_structure(main_structure: Optional[str]) -> Optional[str]:
@@ -284,6 +374,7 @@ class VideoClipDataset(torch.utils.data.Dataset):
         self.study_ids = sorted([k for k in self.study_to_videos.keys() if k is not None])
         print(f"[VideoClipDataset] Found {len(self.study_ids)} studies in split='{self.split}'")
         print(f"[VideoClipDataset] Missing {missing_studies} studies in split='{self.split}'")
+        self.labels = ["unknown"] * len(self.study_ids)
 
     def __len__(self):
         if self.multi_video_mode:
@@ -294,8 +385,12 @@ class VideoClipDataset(torch.utils.data.Dataset):
         file_path = os.path.join(self.folder, self.filename)
         data = self._read_metadata_csv(file_path)
 
-        print(f"\nAvailable splits in dataset:")
-        print(data["Split"].value_counts())
+        stats_key = (os.path.abspath(file_path), str(split).lower())
+        log_stats = stats_key not in _STATS_LOG_KEYS
+        if log_stats:
+            _STATS_LOG_KEYS.add(stats_key)
+            print(f"\nAvailable splits in dataset:")
+            print(data["Split"].value_counts())
 
         filename_index = data.columns.get_loc(self.datapoint_loc_label)
         split_index = data.columns.get_loc("Split")
@@ -315,6 +410,7 @@ class VideoClipDataset(torch.utils.data.Dataset):
         self.video_path_to_idx = {}
         self.main_structures = []
         self.video_negative_pool = []
+        self.labels = []
 
         total_rows = 0
         valid_files = 0
@@ -344,21 +440,49 @@ class VideoClipDataset(torch.utils.data.Dataset):
             main_structure = str(row.get("main_structure", ""))
 
             if self.siglip_enabled:
-                positives_raw = self._siglip_video_to_texts.get(video_id_str or "", [])
-                if not positives_raw:
+                pairs = self._siglip_video_to_text_ids.get(video_id_str or "", [])
+                if not pairs:
                     continue  # Skip videos without positives in SigLIP mode
-                positives = [dict(p) for p in positives_raw]
-                positive_ids = {p.get("text_id") for p in positives if p.get("text_id") is not None}
-                tree = self._infer_tree_from_structure(main_structure)
-                neg_candidates: List[Dict[str, Any]] = []
-                if tree and tree in self._siglip_tree_to_texts:
-                    neg_candidates = [dict(t) for t in self._siglip_tree_to_texts[tree] if t.get("text_id") not in positive_ids]
-                if not neg_candidates:
-                    neg_candidates = [dict(t) for t in self._siglip_all_text_entries if t.get("text_id") not in positive_ids]
 
-                self.video_positive_texts.append(positives)
-                self.video_negative_pool.append(neg_candidates)
-                fallback_text = positives[0].get("prompt_text", "") if positives else ""
+                valid_pairs: List[Tuple[str, float]] = []
+                positive_ids: Set[str] = set()
+                fallback_text = ""
+
+                for text_id, edge_weight in pairs:
+                    base = self._siglip_text_lookup.get(text_id)
+                    if not base:
+                        continue
+                    valid_pairs.append((text_id, edge_weight))
+                    if text_id is not None:
+                        positive_ids.add(text_id)
+                    if not fallback_text:
+                        fallback_text = str(base.get("prompt_text", ""))
+
+                if not valid_pairs:
+                    continue
+
+                tree = self._infer_tree_from_structure(main_structure)
+                neg_candidates_ids: List[str] = []
+                if tree and tree in self._siglip_tree_to_texts:
+                    neg_candidates_ids = [
+                        t.get("text_id")
+                        for t in self._siglip_tree_to_texts[tree]
+                        if t.get("text_id") not in positive_ids
+                    ]
+                if not neg_candidates_ids:
+                    neg_candidates_ids = [
+                        t.get("text_id")
+                        for t in self._siglip_all_text_entries
+                        if t.get("text_id") not in positive_ids
+                    ]
+
+                has_abnormal = any(
+                    self._siglip_text_label_lookup.get(text_id, "abnormal") == "abnormal"
+                    for text_id, _ in valid_pairs
+                )
+                self.labels.append("abnormal" if has_abnormal else "normal")
+                self.video_positive_texts.append(valid_pairs)
+                self.video_negative_pool.append(neg_candidates_ids)
                 outcome.append(fallback_text)
                 self._siglip_pos_cursors.append(0)
             else:
@@ -369,6 +493,7 @@ class VideoClipDataset(torch.utils.data.Dataset):
                 self.video_positive_texts.append([])
                 self.video_negative_pool.append([])
                 self._siglip_pos_cursors.append(0)
+                self.labels.append("unknown")
 
             fnames.append(full_path)
             self.video_ids.append(video_id_str)
@@ -376,11 +501,12 @@ class VideoClipDataset(torch.utils.data.Dataset):
             self.main_structures.append(main_structure)
             split_matches += 1
 
-        print(f"\nDataset loading statistics for split '{split}':")
-        print(f"Total rows in CSV: {total_rows}")
-        print(f"Valid files found: {valid_files}")
-        print(f"Matching split '{split}': {split_matches}")
-        print(f"Final dataset size: {len(fnames)}")
+        if log_stats:
+            print(f"\nDataset loading statistics for split '{split}':")
+            print(f"Total rows in CSV: {total_rows}")
+            print(f"Valid files found: {valid_files}")
+            print(f"Matching split '{split}': {split_matches}")
+            print(f"Final dataset size: {len(fnames)}")
 
         if len(fnames) == 0:
             raise ValueError(
@@ -418,7 +544,7 @@ class VideoClipDataset(torch.utils.data.Dataset):
         return valid_indices
 
     def _sample_siglip_positive_entries(self, idx: int) -> List[Dict[str, Any]]:
-        positives: List[Dict[str, Any]] = []
+        positives: List[Tuple[str, float]] = []
         if 0 <= idx < len(self.video_positive_texts):
             positives = self.video_positive_texts[idx]
 
@@ -428,21 +554,24 @@ class VideoClipDataset(torch.utils.data.Dataset):
         k = max(1, self.siglip_pos_samples_per_video)
 
         if len(positives) == 1 or (k == 1 and not self.siglip_round_robin_sampling):
-            chosen = [random.choice(positives)]
+            chosen_pairs = [random.choice(positives)]
         elif self.siglip_round_robin_sampling:
             cursor = self._siglip_pos_cursors[idx] if idx < len(self._siglip_pos_cursors) else 0
             take = min(k, len(positives))
-            chosen = [positives[(cursor + offset) % len(positives)] for offset in range(take)]
+            chosen_pairs = [positives[(cursor + offset) % len(positives)] for offset in range(take)]
             if idx < len(self._siglip_pos_cursors):
                 self._siglip_pos_cursors[idx] = (cursor + take) % len(positives)
         elif len(positives) <= k:
-            chosen = list(positives)
+            chosen_pairs = list(positives)
         else:
-            chosen = random.sample(positives, k)
+            chosen_pairs = random.sample(positives, k)
 
         entries: List[Dict[str, Any]] = []
-        for pos in chosen:
-            prompt_text = str(pos.get("prompt_text", ""))
+        for text_id, edge_weight in chosen_pairs:
+            base = self._siglip_text_lookup.get(text_id)
+            if not base:
+                continue
+            prompt_text = str(base.get("prompt_text", ""))
             encoding = self.tokenizer(
                 prompt_text,
                 padding="max_length",
@@ -452,11 +581,13 @@ class VideoClipDataset(torch.utils.data.Dataset):
             )
             entries.append(
                 {
-                    "text_id": pos.get("text_id"),
+                    "text_id": text_id,
                     "prompt_text": prompt_text,
-                    "prompt_type": pos.get("prompt_type"),
-                    "soft_weight": float(pos.get("soft_weight", 1.0)),
-                    "tags": pos.get("tags"),
+                    "prompt_type": base.get("prompt_type"),
+                    "soft_weight": float(base.get("soft_weight", 1.0)),
+                    "tags": base.get("tags"),
+                    "edge_weight": edge_weight,
+                    "is_abnormal": bool(base.get("is_abnormal", False)),
                     "encoding": {k: v.squeeze(0) for k, v in encoding.items()},
                 }
             )
@@ -602,7 +733,9 @@ class VideoClipDataset(torch.utils.data.Dataset):
                         continue
                     positives = self.video_positive_texts[idx]
                     if positives:
-                        reports.append(positives[0].get("prompt_text", ""))
+                        text_id = positives[0][0]
+                        base = self._siglip_text_lookup.get(text_id, {})
+                        reports.append(str(base.get("prompt_text", "")))
                     else:
                         reports.append("")
                 return reports
@@ -646,18 +779,35 @@ class VideoClipDataset(torch.utils.data.Dataset):
             if idx is not None and idx < len(self.video_negative_pool):
                 pool = self.video_negative_pool[idx]
 
-            selected: List[Dict[str, Any]] = []
+            selected_ids: List[str] = []
             if pool:
                 if len(pool) >= k:
-                    selected = random.sample(pool, k)
+                    selected_ids = random.sample(pool, k)
                 else:
-                    selected = pool.copy()
-                    if len(selected) < k and self._siglip_all_text_entries:
-                        filler = random.choices(self._siglip_all_text_entries, k=k - len(selected))
-                        selected.extend([dict(entry) for entry in filler])
+                    selected_ids = list(pool)
 
-            texts = [entry.get("prompt_text", "") for entry in selected[:k]]
-            mask = [1.0] * len(texts)
+            if len(selected_ids) < k and self._siglip_all_text_entries:
+                deficit = k - len(selected_ids)
+                filler_entries = random.choices(self._siglip_all_text_entries, k=deficit)
+                for entry in filler_entries:
+                    tid = entry.get("text_id")
+                    if isinstance(tid, str):
+                        selected_ids.append(tid)
+                    else:
+                        selected_ids.append("")
+
+            selected_ids = selected_ids[:k]
+
+            texts: List[str] = []
+            mask: List[float] = []
+            for text_id in selected_ids:
+                base = self._siglip_text_lookup.get(text_id)
+                if base:
+                    texts.append(str(base.get("prompt_text", "")))
+                    mask.append(1.0)
+                else:
+                    texts.append("")
+                    mask.append(0.0)
 
             if len(texts) < k:
                 deficit = k - len(texts)
@@ -727,6 +877,8 @@ def custom_collate_fn(batch):
                             "prompt_text": entry.get("prompt_text", ""),
                             "prompt_type": entry.get("prompt_type"),
                             "soft_weight": float(entry.get("soft_weight", 1.0)),
+                            "edge_weight": float(entry.get("edge_weight", 1.0)),
+                            "is_abnormal": bool(entry.get("is_abnormal", False)),
                             "tags": entry.get("tags"),
                         }
                     )
@@ -742,6 +894,8 @@ def custom_collate_fn(batch):
                     "prompt_text": "",
                     "prompt_type": None,
                     "soft_weight": 1.0,
+                    "edge_weight": 1.0,
+                    "is_abnormal": False,
                     "tags": None,
                 }
             )
@@ -763,7 +917,9 @@ def custom_collate_fn(batch):
                 if col is None:
                     continue
                 positive_mask[vid_idx, col] = 1.0
-                positive_weights[vid_idx, col] = float(entry.get("soft_weight", 1.0))
+                edge_weight = float(entry.get("edge_weight", 1.0))
+                soft_weight = float(entry.get("soft_weight", 1.0))
+                positive_weights[vid_idx, col] = edge_weight * soft_weight
 
         reports = []
         for payload, fallback in zip(payloads, raw_texts):
@@ -858,13 +1014,35 @@ def get_distributed_video_clip_dataloader(
         siglip_pos_samples_per_video=getattr(config, 'siglip_pos_samples_per_video', 1),
         siglip_round_robin_sampling=getattr(config, 'siglip_round_robin_sampling', False),
     )
-    # Create a sampler for distributed training
-    sampler = DistributedUtils.DS.DistributedSampler(
-        video_dataset, 
-        shuffle=shuffle, 
-        num_replicas=num_replicas, 
-        rank=rank
-    )
+    sampler = None
+    world_size = num_replicas if num_replicas is not None else 1
+    rank_value = rank if rank is not None else 0
+    if (
+        split.lower() == "train"
+        and getattr(config, "siglip_use_class_aware_sampler", False)
+    ):
+        try:
+            sampler = ClassAwareDistributedBatchSampler(
+                dataset=video_dataset,
+                batch_size=getattr(config, 'batch_size', 1),
+                abnormal_ratio=getattr(config, "siglip_abnormal_ratio", 0.5),
+                drop_last=drop_last,
+                world_size=world_size,
+                rank=rank_value,
+                seed=getattr(config, "siglip_sampler_seed", 42),
+            )
+        except ValueError as exc:
+            if getattr(config, "is_ref_device", False):
+                print(f"[ClassAwareSampler] Falling back to DistributedSampler: {exc}")
+            sampler = None
+
+    if sampler is None:
+        sampler = DistributedUtils.DS.DistributedSampler(
+            video_dataset,
+            shuffle=shuffle,
+            num_replicas=num_replicas,
+            rank=rank,
+        )
     # Use the same batch size for all splits
     batch_size = getattr(config, 'batch_size', 1)
     

@@ -111,6 +111,7 @@ class ClipConfig(HeartWiseConfig):
     temperature_start: float = 1.0  # Starting temperature for scheduling
     temperature_end: float = 0.1  # Target temperature for scheduling
     temperature_warmup_epochs: int = 0  # Number of epochs for temperature warmup
+    learnable_temperature: bool = False  # If True, temperature becomes trainable and schedule is ignored
 
     # Video freeze scheduling parameters (optional with defaults)
     video_freeze_schedule: str = "constant"  # "linear", "step", or "constant"  
@@ -144,6 +145,11 @@ class ClipConfig(HeartWiseConfig):
     siglip_debug_batches: int = 0
     siglip_debug_every: int = 0
     siglip_debug_sample_count: int = 3
+    siglip_use_weighted_loss: bool = False
+    siglip_abnormal_margin: float = 0.0
+    siglip_use_class_aware_sampler: bool = False
+    siglip_abnormal_ratio: float = 0.5
+    siglip_sampler_seed: int = 42
     early_stop_patience: int = 0
 
     def __post_init__(self):

@@ -3,7 +3,7 @@ filters:
     - "Left Coronary"
     - "Right Coronary"
   contrast_agent_class: 1
-  normal_report_ratio: 1.0
+  normal_report_ratio: 0.05
 train_test_split:
   enabled: true
   train_ratio: 0.7

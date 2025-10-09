@@ -22,7 +22,7 @@ filters:
   # Normal report ratio - percentage of normal reports to keep per vessel type
   # This helps balance the dataset by limiting excessive normal reports
   # Examples: 0.05 = 5%, 0.1 = 10%, 0.15 = 15%, 0.0 = 0%, 1.0 = 100%
-  normal_report_ratio: 1
+  normal_report_ratio: 0.05
 
 # Report generation settings
 report_settings:

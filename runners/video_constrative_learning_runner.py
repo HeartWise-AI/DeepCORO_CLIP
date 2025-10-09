@@ -32,6 +32,7 @@ from utils.wandb_logger import (
     save_retrieval_results,
 )
 from utils.loss.typing import Loss
+from utils.loss.weighted_siglip import WeightedSigLIPLoss
 from utils.wandb_wrapper import WandbWrapper
 from models.video_encoder import VideoEncoder
 from models.text_encoder import TextEncoder
@@ -116,6 +117,9 @@ class VideoContrastiveLearningRunner:
         
         # Store initial temperature for scheduling
         self.initial_log_temp = log_temp.clone() if log_temp is not None else torch.log(torch.tensor(config.temperature))
+        self.use_weighted_siglip: bool = bool(getattr(self.config, "siglip_use_weighted_loss", False))
+        self.weighted_siglip_loss = WeightedSigLIPLoss() if self.use_weighted_siglip else None
+        self.siglip_abnormal_margin: float = float(getattr(self.config, "siglip_abnormal_margin", 0.0))
         
     def _should_debug_batch(self) -> bool:
         debug_batches = max(0, getattr(self.config, 'siglip_debug_batches', 0))
@@ -288,22 +292,37 @@ class VideoContrastiveLearningRunner:
                     device_ids=self.device
                 )
                 
-                # Apply temperature schedule
-                scheduled_temp = self._compute_temperature_schedule(epoch)
-                scheduled_log_temp = torch.log(
-                    torch.tensor(
-                        [scheduled_temp],
-                        device=self.device,
-                        dtype=self.log_temp.dtype if self.log_temp is not None else torch.float32,
+                learnable_temp = getattr(self.config, "learnable_temperature", False)
+                if not learnable_temp:
+                    scheduled_temp = self._compute_temperature_schedule(epoch)
+                    scheduled_log_temp = torch.log(
+                        torch.tensor(
+                            [scheduled_temp],
+                            device=self.device,
+                            dtype=self.log_temp.dtype if self.log_temp is not None else torch.float32,
+                        )
                     )
-                )
-                if isinstance(self.log_temp, torch.nn.Parameter):
-                    with torch.no_grad():
-                        self.log_temp.data.copy_(scheduled_log_temp)
+                    if isinstance(self.log_temp, torch.nn.Parameter):
+                        with torch.no_grad():
+                            self.log_temp.data.copy_(scheduled_log_temp)
+                    else:
+                        self.log_temp = scheduled_log_temp
+                    if self.config.is_ref_device:
+                        print(f"\n[Epoch {epoch+1}] Temperature scheduled: {scheduled_temp:.4f}")
                 else:
-                    self.log_temp = scheduled_log_temp
-                if self.config.is_ref_device:
-                    print(f"\n[Epoch {epoch+1}] Temperature scheduled: {scheduled_temp:.4f}")
+                    if self.log_temp is None:
+                        self.log_temp = torch.nn.Parameter(
+                            torch.log(
+                                torch.tensor(
+                                    [self.config.temperature],
+                                    dtype=torch.float32,
+                                    device=self.device,
+                                )
+                            )
+                        )
+                    scheduled_temp = float(torch.exp(self.log_temp.detach()).item())
+                    if self.config.is_ref_device:
+                        print(f"\n[Epoch {epoch+1}] Temperature (learnable): {scheduled_temp:.4f}")
                 
                 # Apply freeze ratio schedule for video encoder
                 scheduled_video_freeze = self._compute_freeze_schedule(epoch)
@@ -330,6 +349,9 @@ class VideoContrastiveLearningRunner:
                 
                 # Add scheduled values to metrics
                 train_metrics["train/scheduled_temperature"] = scheduled_temp
+                train_metrics["train/temperature"] = scheduled_temp
+                current_log_temp = float(self.log_temp.detach().item()) if self.log_temp is not None else float(math.log(scheduled_temp))
+                train_metrics["train/log_temp"] = current_log_temp
                 train_metrics["train/scheduled_video_freeze_ratio"] = scheduled_video_freeze
                 train_metrics["train/scheduled_text_freeze_ratio"] = scheduled_text_freeze
                 if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
@@ -672,9 +694,11 @@ class VideoContrastiveLearningRunner:
                     paths = list(batch.get('paths', []))
                     reports = list(batch.get('reports', []))
                     positive_mask_batch = batch.get('positive_mask')
+                    positive_weights_batch = batch.get('positive_weights')
                     text_metadata_batch = batch.get('text_metadata')
                     dataset: VideoClipDataset = dataloader.dataset  # type: ignore
                     mask_cpu = positive_mask_batch.detach().cpu() if isinstance(positive_mask_batch, torch.Tensor) else None
+                    weight_cpu = positive_weights_batch.detach().cpu() if isinstance(positive_weights_batch, torch.Tensor) else None
                     meta_list = text_metadata_batch if isinstance(text_metadata_batch, list) else None
                     for idx, path in enumerate(paths[:sample_cap]):
                         entry: Dict[str, Any] = {
@@ -690,12 +714,23 @@ class VideoContrastiveLearningRunner:
                             row = mask_cpu[idx]
                             prompt_texts = []
                             prompt_ids = []
+                            prompt_weights: List[float] = []
                             for col in (row > 0).nonzero(as_tuple=False).flatten().tolist():
                                 if col < len(meta_list):
                                     prompt_ids.append(meta_list[col].get('text_id'))
                                     prompt_texts.append(meta_list[col].get('prompt_text', ''))
+                                    if weight_cpu is not None:
+                                        prompt_weights.append(float(weight_cpu[idx, col].item()))
                             entry['prompt_ids'] = prompt_ids
                             entry['prompts'] = prompt_texts
+                            if prompt_weights:
+                                entry['positive_weights'] = prompt_weights
+                                entry['positive_weight_stats'] = {
+                                    'min': float(torch.tensor(prompt_weights).min().item()),
+                                    'max': float(torch.tensor(prompt_weights).max().item()),
+                                    'mean': float(torch.tensor(prompt_weights).mean().item()),
+                                }
+                            entry['negative_weight'] = float(getattr(self.config, 'siglip_negative_weight', 1.0))
                         sample_info.append(entry)
                     if sample_info:
                         step_inputs['debug_sample_info'] = sample_info
@@ -1213,7 +1248,13 @@ class VideoContrastiveLearningRunner:
         if text_emb is not None:
             text_emb = text_emb.float()
 
+        logits_matrix = None
+        pos_weights_for_loss = None
+        alignment_logprob_tensor: Optional[torch.Tensor] = None
+        alignment_prob_tensor: Optional[torch.Tensor] = None
+        alignment_cosine_tensor: Optional[torch.Tensor] = None
         if positive_mask is not None and text_emb is not None:
+            targets = positive_mask
             video_norm = F.normalize(video_emb, dim=1)
             text_norm = F.normalize(text_emb, dim=1)
             similarity = torch.matmul(video_norm, text_norm.t())
@@ -1221,20 +1262,56 @@ class VideoContrastiveLearningRunner:
             temp_value = torch.exp(self.log_temp.float())
             logits_matrix = gated / temp_value
 
-            targets = positive_mask
-            negative_weight = getattr(self.config, 'siglip_negative_weight', 1.0)
-            weight_matrix = torch.full_like(targets, negative_weight)
-            if positive_weights is not None:
-                weight_matrix = torch.where(targets > 0, positive_weights, weight_matrix)
+            if self.siglip_abnormal_margin > 0 and text_metadata:
+                abnormal_vector = logits_matrix.new_tensor(
+                    [
+                        1.0 if (meta and meta.get("is_abnormal", False)) else 0.0
+                        for meta in text_metadata
+                    ]
+                )
+                if torch.count_nonzero(abnormal_vector) > 0:
+                    logits_matrix = logits_matrix + abnormal_vector.unsqueeze(0) * self.siglip_abnormal_margin
 
-            loss_sum = F.binary_cross_entropy_with_logits(
-                logits_matrix,
-                targets,
-                weight=weight_matrix,
-                reduction='sum'
-            )
-            denom = max(1.0, float(targets.sum().item()))
-            clip_loss = loss_sum / denom
+            if self.use_weighted_siglip and self.weighted_siglip_loss is not None:
+                pos_weights_for_loss = targets
+                if positive_weights is not None and torch.count_nonzero(positive_weights) > 0:
+                    pos_weights_for_loss = targets * positive_weights
+                clip_loss = self.weighted_siglip_loss(
+                    logits=logits_matrix,
+                    positive_weights=pos_weights_for_loss,
+                )
+            else:
+                negative_weight = getattr(self.config, 'siglip_negative_weight', 1.0)
+                weight_matrix = torch.full_like(targets, negative_weight)
+                if positive_weights is not None:
+                    weight_matrix = torch.where(targets > 0, positive_weights, weight_matrix)
+
+                loss_sum = F.binary_cross_entropy_with_logits(
+                    logits_matrix,
+                    targets,
+                    weight=weight_matrix,
+                    reduction='sum'
+                )
+                denom = max(1.0, float(targets.sum().item()))
+                clip_loss = loss_sum / denom
+
+            with torch.no_grad():
+                logprob_matrix = F.log_softmax(logits_matrix, dim=1)
+                pos_weight_mask = None
+                if positive_weights is not None and torch.count_nonzero(positive_weights) > 0:
+                    pos_weight_mask = positive_weights * targets
+                else:
+                    pos_weight_mask = targets
+                row_sums = pos_weight_mask.sum(dim=1)
+                valid_rows = row_sums > 0
+                if valid_rows.any():
+                    normalized_weights = torch.zeros_like(pos_weight_mask)
+                    normalized_weights[valid_rows] = pos_weight_mask[valid_rows] / row_sums[valid_rows].unsqueeze(1)
+                    alignment_logprob_tensor = (logprob_matrix * normalized_weights).sum(dim=1)[valid_rows].mean()
+                    alignment_prob_tensor = alignment_logprob_tensor.exp()
+                pos_logits = similarity[targets.bool()]
+                if pos_logits.numel() > 0:
+                    alignment_cosine_tensor = pos_logits.mean()
         else:
             with autocast_ctx:
                 clip_loss = self.loss_fn.run(
@@ -1242,12 +1319,26 @@ class VideoContrastiveLearningRunner:
                     text_features=text_emb,
                     log_temp=self.log_temp,
                 )
+            if text_emb is not None:
+                video_norm = F.normalize(video_emb, dim=1)
+                text_norm = F.normalize(text_emb, dim=1)
+                similarity = torch.matmul(video_norm, text_norm.t())
+                alignment_cosine_tensor = torch.diag(similarity).mean()
+                use_siglip = "siglip" in str(getattr(self.config, "loss_name", "")).lower()
+                logits_base = similarity
+                if use_siglip:
+                    logits_base = similarity * torch.sigmoid(similarity)
+                tau_value = torch.exp(self.log_temp.float())
+                logits_matrix = logits_base / tau_value
+                logprob_matrix = F.log_softmax(logits_matrix, dim=1)
+                alignment_logprob_tensor = torch.diag(logprob_matrix).mean()
+                alignment_prob_tensor = alignment_logprob_tensor.exp()
 
         debug_enabled = self.config.is_ref_device and self._should_debug_batch()
         debug_payload: Dict[str, Any] = {}
         if debug_enabled:
             with torch.no_grad():
-                if positive_mask is not None and text_emb is not None:
+                if positive_mask is not None and text_emb is not None and logits_matrix is not None:
                     pos_logits = logits_matrix[positive_mask.bool()]
                     neg_logits = logits_matrix[~positive_mask.bool()]
                     debug_payload.update(
@@ -1261,6 +1352,17 @@ class VideoContrastiveLearningRunner:
                             'batch_size': int(video_emb.size(0)),
                         }
                     )
+                    if positive_weights is not None:
+                        pos_weight_vals = positive_weights[positive_mask.bool()]
+                        if pos_weight_vals.numel() > 0:
+                            debug_payload.update(
+                                {
+                                    'pos_weight_mean': float(pos_weight_vals.mean().item()),
+                                    'pos_weight_min': float(pos_weight_vals.min().item()),
+                                    'pos_weight_max': float(pos_weight_vals.max().item()),
+                                }
+                            )
+                    debug_payload['neg_weight'] = float(getattr(self.config, 'siglip_negative_weight', 1.0))
                 else:
                     sim_matrix = torch.matmul(
                         F.normalize(video_emb.float(), dim=1),
@@ -1305,6 +1407,13 @@ class VideoContrastiveLearningRunner:
                 grad_norms = self._collect_grad_norms(self.optimizer.param_groups)
 
         if (self.step + 1) % self.config.gradient_accumulation_steps == 0:
+            if (
+                isinstance(self.log_temp, torch.nn.Parameter)
+                and self.log_temp.grad is not None
+                and torch.distributed.is_initialized()
+            ):
+                torch.distributed.all_reduce(self.log_temp.grad, op=torch.distributed.ReduceOp.AVG)
+
             if amp_enabled:
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
@@ -1364,36 +1473,61 @@ class VideoContrastiveLearningRunner:
                 text_fp32 = text_emb.float()
                 embedding_norms = compute_embedding_norms(video_fp32, text_fp32)
                 if positive_mask is not None:
-                    video_norm = F.normalize(video_fp32, dim=1)
-                    text_norm = F.normalize(text_fp32, dim=1)
-                    cos_matrix = torch.matmul(video_norm, text_norm.t())
-                    pos_cos = cos_matrix[positive_mask.bool()]
-                    alignment_value = float(pos_cos.mean().item()) if pos_cos.numel() > 0 else 0.0
+                    if alignment_cosine_tensor is None:
+                        video_norm = F.normalize(video_fp32, dim=1)
+                        text_norm = F.normalize(text_fp32, dim=1)
+                        cos_matrix = torch.matmul(video_norm, text_norm.t())
+                        pos_cos = cos_matrix[positive_mask.bool()]
+                        if pos_cos.numel() > 0:
+                            alignment_cosine_tensor = pos_cos.mean()
+                    if alignment_prob_tensor is None and logits_matrix is not None:
+                        logprob_matrix = F.log_softmax(logits_matrix.detach(), dim=1)
+                        if positive_weights is not None and torch.count_nonzero(positive_weights) > 0:
+                            pos_weight_mask = positive_weights * positive_mask
+                        else:
+                            pos_weight_mask = positive_mask
+                        row_sums = pos_weight_mask.sum(dim=1)
+                        valid_rows = row_sums > 0
+                        if valid_rows.any():
+                            normalized_weights = torch.zeros_like(pos_weight_mask)
+                            normalized_weights[valid_rows] = pos_weight_mask[valid_rows] / row_sums[valid_rows].unsqueeze(1)
+                            alignment_logprob_tensor = (logprob_matrix * normalized_weights).sum(dim=1)[valid_rows].mean()
+                            alignment_prob_tensor = alignment_logprob_tensor.exp()
                 else:
-                    alignment_score = compute_alignment_score(video_fp32, text_fp32)
-                    alignment_value = (
-                        alignment_score.detach().item()
-                        if torch.is_tensor(alignment_score)
-                        else alignment_score
-                    )
+                    if alignment_cosine_tensor is None:
+                        video_norm = F.normalize(video_fp32, dim=1)
+                        text_norm = F.normalize(text_fp32, dim=1)
+                        similarity = torch.matmul(video_norm, text_norm.t())
+                        alignment_cosine_tensor = torch.diag(similarity).mean()
+                    if alignment_prob_tensor is None and logits_matrix is not None:
+                        logprob_matrix = F.log_softmax(logits_matrix.detach(), dim=1)
+                        alignment_logprob_tensor = torch.diag(logprob_matrix).mean()
+                        alignment_prob_tensor = alignment_logprob_tensor.exp()
             else:
                 text_fp32 = torch.empty(0, device=video_fp32.device)
                 embedding_norms = {}
-                alignment_value = 0.0
 
         lr_metrics = {
             f"lr/{pg.get('name', str(i))}": pg["lr"]
             for i, pg in enumerate(self.optimizer.param_groups)
         }
 
+        alignment_score_scalar: float
         batch_metrics = {
             "loss": total_loss.detach().item(),
             "temperature": self.log_temp.exp().detach().item(),
             "contrastive/clip_loss": clip_loss.detach().item(),
             **embedding_norms,
-            "alignment_score": alignment_value,
             **lr_metrics,
         }
+        if alignment_prob_tensor is not None:
+            batch_metrics["alignment_score"] = float(alignment_prob_tensor.detach().item())
+            batch_metrics["alignment_logprob"] = float(alignment_logprob_tensor.detach().item())
+        else:
+            alignment_score_scalar = float(alignment_cosine_tensor.detach().item()) if alignment_cosine_tensor is not None else 0.0
+            batch_metrics["alignment_score"] = alignment_score_scalar
+        if alignment_cosine_tensor is not None:
+            batch_metrics["alignment_cosine"] = float(alignment_cosine_tensor.detach().item())
 
         embeddings = {
             "video_embeddings": video_fp32,
@@ -1421,6 +1555,9 @@ class VideoContrastiveLearningRunner:
         :param attention_mask: Attention mask for text.
         :return: (batch_metrics, embeddings) similar to _train_step, but without backprop.
         """
+        alignment_logprob_tensor: Optional[torch.Tensor] = None
+        alignment_prob_tensor: Optional[torch.Tensor] = None
+        alignment_cosine_tensor: Optional[torch.Tensor] = None
         with torch.no_grad():
             with torch.amp.autocast("cuda"):
                 video_features = self.video_encoder(videos)
@@ -1444,7 +1581,9 @@ class VideoContrastiveLearningRunner:
             if text_features is not None:
                 text_features = text_features.float()
 
+            logits_matrix = None
             if positive_mask is not None and text_features is not None:
+                targets = positive_mask
                 video_norm = F.normalize(video_features, dim=1)
                 text_norm = F.normalize(text_features, dim=1)
                 similarity = torch.matmul(video_norm, text_norm.t())
@@ -1452,49 +1591,123 @@ class VideoContrastiveLearningRunner:
                 temp_value = torch.exp(self.log_temp.float())
                 logits_matrix = gated / temp_value
 
-                targets = positive_mask
-                negative_weight = getattr(self.config, 'siglip_negative_weight', 1.0)
-                weight_matrix = torch.full_like(targets, negative_weight)
-                if positive_weights is not None:
-                    weight_matrix = torch.where(targets > 0, positive_weights, weight_matrix)
-                loss_sum = F.binary_cross_entropy_with_logits(
-                    logits_matrix,
-                    targets,
-                    weight=weight_matrix,
-                    reduction='sum'
-                )
-                denom = max(1.0, float(targets.sum().item()))
-                loss = loss_sum / denom
+                if self.siglip_abnormal_margin > 0 and text_metadata:
+                    abnormal_vector = logits_matrix.new_tensor(
+                        [
+                            1.0 if (meta and meta.get("is_abnormal", False)) else 0.0
+                            for meta in text_metadata
+                        ]
+                    )
+                    if torch.count_nonzero(abnormal_vector) > 0:
+                        logits_matrix = logits_matrix + abnormal_vector.unsqueeze(0) * self.siglip_abnormal_margin
+
+                if self.use_weighted_siglip and self.weighted_siglip_loss is not None:
+                    pos_weights = targets
+                    if positive_weights is not None and torch.count_nonzero(positive_weights) > 0:
+                        pos_weights = targets * positive_weights
+                    loss = self.weighted_siglip_loss(
+                        logits=logits_matrix,
+                        positive_weights=pos_weights,
+                    )
+                else:
+                    negative_weight = getattr(self.config, 'siglip_negative_weight', 1.0)
+                    weight_matrix = torch.full_like(targets, negative_weight)
+                    if positive_weights is not None:
+                        weight_matrix = torch.where(targets > 0, positive_weights, weight_matrix)
+                    loss_sum = F.binary_cross_entropy_with_logits(
+                        logits_matrix,
+                        targets,
+                        weight=weight_matrix,
+                        reduction='sum'
+                    )
+                    denom = max(1.0, float(targets.sum().item()))
+                    loss = loss_sum / denom
+
+                logprob_matrix = F.log_softmax(logits_matrix, dim=1)
+                if positive_weights is not None and torch.count_nonzero(positive_weights) > 0:
+                    pos_weight_mask = positive_weights * targets
+                else:
+                    pos_weight_mask = targets
+                row_sums = pos_weight_mask.sum(dim=1)
+                valid_rows = row_sums > 0
+                if valid_rows.any():
+                    normalized_weights = torch.zeros_like(pos_weight_mask)
+                    normalized_weights[valid_rows] = pos_weight_mask[valid_rows] / row_sums[valid_rows].unsqueeze(1)
+                    alignment_logprob_tensor = (logprob_matrix * normalized_weights).sum(dim=1)[valid_rows].mean()
+                    alignment_prob_tensor = alignment_logprob_tensor.exp()
+
+                pos_cos = similarity[targets.bool()]
+                if pos_cos.numel() > 0:
+                    alignment_cosine_tensor = pos_cos.mean()
             else:
                 loss = self.loss_fn.run(
                     video_features=video_features,
                     text_features=text_features,
                     log_temp=self.log_temp,
                 )
+                if text_features is not None:
+                    video_norm = F.normalize(video_features, dim=1)
+                    text_norm = F.normalize(text_features, dim=1)
+                    similarity = torch.matmul(video_norm, text_norm.t())
+                    alignment_cosine_tensor = torch.diag(similarity).mean()
+                    use_siglip = "siglip" in str(getattr(self.config, "loss_name", "")).lower()
+                    logits_base = similarity
+                    if use_siglip:
+                        logits_base = similarity * torch.sigmoid(similarity)
+                    tau_value = torch.exp(self.log_temp.float())
+                    logits_matrix = logits_base / tau_value
+                    logprob_matrix = F.log_softmax(logits_matrix, dim=1)
+                    alignment_logprob_tensor = torch.diag(logprob_matrix).mean()
+                    alignment_prob_tensor = alignment_logprob_tensor.exp()
 
             video_fp32 = video_features.float()
             if text_features is not None:
                 text_fp32 = text_features.float()
                 embedding_norms = compute_embedding_norms(video_fp32, text_fp32)
                 if positive_mask is not None:
-                    video_norm = F.normalize(video_fp32, dim=1)
-                    text_norm = F.normalize(text_fp32, dim=1)
-                    cos_matrix = torch.matmul(video_norm, text_norm.t())
-                    pos_cos = cos_matrix[positive_mask.bool()]
-                    alignment_value = float(pos_cos.mean().item()) if pos_cos.numel() > 0 else 0.0
+                    if alignment_cosine_tensor is None:
+                        video_norm = F.normalize(video_fp32, dim=1)
+                        text_norm = F.normalize(text_fp32, dim=1)
+                        cos_matrix = torch.matmul(video_norm, text_norm.t())
+                        pos_cos = cos_matrix[positive_mask.bool()]
+                        if pos_cos.numel() > 0:
+                            alignment_cosine_tensor = pos_cos.mean()
+                    if alignment_prob_tensor is None and logits_matrix is not None:
+                        logprob_matrix = F.log_softmax(logits_matrix.detach(), dim=1)
+                        if positive_weights is not None and torch.count_nonzero(positive_weights) > 0:
+                            pos_weight_mask = positive_weights * positive_mask
+                        else:
+                            pos_weight_mask = positive_mask
+                        row_sums = pos_weight_mask.sum(dim=1)
+                        valid_rows = row_sums > 0
+                        if valid_rows.any():
+                            normalized_weights = torch.zeros_like(pos_weight_mask)
+                            normalized_weights[valid_rows] = pos_weight_mask[valid_rows] / row_sums[valid_rows].unsqueeze(1)
+                            alignment_logprob_tensor = (logprob_matrix * normalized_weights).sum(dim=1)[valid_rows].mean()
+                            alignment_prob_tensor = alignment_logprob_tensor.exp()
                 else:
-                    alignment_score = compute_alignment_score(video_fp32, text_fp32)
-                    alignment_value = (
-                        alignment_score.detach().item()
-                        if torch.is_tensor(alignment_score)
-                        else alignment_score
-                    )
+                    if alignment_cosine_tensor is None:
+                        video_norm = F.normalize(video_fp32, dim=1)
+                        text_norm = F.normalize(text_fp32, dim=1)
+                        similarity = torch.matmul(video_norm, text_norm.t())
+                        alignment_cosine_tensor = torch.diag(similarity).mean()
+                    if alignment_prob_tensor is None and logits_matrix is not None:
+                        logprob_matrix = F.log_softmax(logits_matrix.detach(), dim=1)
+                        alignment_logprob_tensor = torch.diag(logprob_matrix).mean()
+                        alignment_prob_tensor = alignment_logprob_tensor.exp()
             else:
                 text_fp32 = torch.empty(0, device=video_fp32.device)
                 embedding_norms = {}
-                alignment_value = 0.0
 
-        metrics = {"alignment_score": alignment_value, **embedding_norms}
+        metrics: Dict[str, float] = {}
+        if alignment_prob_tensor is not None:
+            metrics["alignment_score"] = float(alignment_prob_tensor.detach().item())
+            metrics["alignment_logprob"] = float(alignment_logprob_tensor.detach().item())
+        else:
+            metrics["alignment_score"] = float(alignment_cosine_tensor.detach().item()) if alignment_cosine_tensor is not None else 0.0
+        if alignment_cosine_tensor is not None:
+            metrics["alignment_cosine"] = float(alignment_cosine_tensor.detach().item())
+        metrics.update(embedding_norms)
 
         return (
             {

@@ -85,7 +85,7 @@ def _write_config(output_dir: Path, sizes: Dict[str, int], random_state: int) ->
         "  main_structures:",
         "  - Left Coronary",
         "  - Right Coronary",
-        "  normal_report_ratio: 1.0",
+        "  normal_report_ratio: 0.05",
         "parallel_workers: 1",
         "train_test_split:",
         "  enabled: true",

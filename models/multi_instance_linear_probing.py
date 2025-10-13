@@ -342,12 +342,13 @@ class MultiInstanceLinearProbing(nn.Module):
         """Hierarchical cls_token pooling for 4D inputs [B, N, L, D]."""
         B, N, L, D = x.shape
         
-        # Step 1: Apply cls_token within each video (across L tokens)
+        # --- AGRÉGATION INTRA-VIDÉO ---
+        # Pour chaque vidéo, on ajoute un cls_token puis on applique une self-attention
+        # Le cls_token de chaque vidéo va résumer l'information de cette vidéo
         x_reshaped = x.view(B * N, L, D)
         cls_tokens_video = self.cls_token.expand(B * N, -1, -1)
         x_with_cls_video = torch.cat([cls_tokens_video, x_reshaped], dim=1)
         
-        # Apply within-video attention
         attention_layer = (self.cls_attention_within if self.separate_video_attention 
                           else self.cls_attention)
         norm_layer = (self.cls_norm_within if self.separate_video_attention 
@@ -355,7 +356,7 @@ class MultiInstanceLinearProbing(nn.Module):
         
         if self.normalization_strategy == "pre_norm":
             x_with_cls_video = norm_layer(x_with_cls_video)
-            
+        
         video_attn_out, _ = attention_layer(
             query=x_with_cls_video,
             key=x_with_cls_video,
@@ -364,32 +365,35 @@ class MultiInstanceLinearProbing(nn.Module):
         
         if self.normalization_strategy == "post_norm":
             video_attn_out = norm_layer(video_attn_out)
-            
+        
+        # On récupère le cls_token de chaque vidéo comme résumé
         video_representations = video_attn_out[:, 0, :].view(B, N, D)
         video_representations = self.cls_dropout(video_representations)
         
-        # Step 2: Apply cls_token across videos (across N video representations)
+        # --- AGRÉGATION INTER-VIDÉO ---
+        # On concatène tous les cls_token vidéos, puis on ajoute un cls_token global
+        # On applique une self-attention entre ce cls_token global et tous les cls_token vidéos
+        # Le cls_token global va résumer l'information de toutes les vidéos du patient/examen
         cls_tokens_sample = self.cls_token.expand(B, -1, -1)
         x_with_cls_sample = torch.cat([cls_tokens_sample, video_representations], dim=1)
         
-        # Handle edge case: all videos masked
+        # Gestion du masquage (cas où certaines vidéos sont invalides)
         if mask is not None:
             cls_mask = torch.ones(B, 1, dtype=torch.bool, device=x.device)
             extended_mask = torch.cat([cls_mask, mask], dim=1)
             
-            # Check for samples with all videos masked
+            # Vérifie si tous les vidéos sont masqués pour certains échantillons
             if (~extended_mask[:, 1:]).all(dim=1).any():
-                # Fallback: return zeros for samples with no valid videos
+                # Fallback: retourne des zéros pour ces échantillons
                 all_masked_samples = (~extended_mask[:, 1:]).all(dim=1)
                 fallback_output = torch.zeros(B, D, dtype=x.dtype, device=x.device)
                 if all_masked_samples.all():
                     return fallback_output
-                    
+            
             key_padding_mask = ~extended_mask
         else:
             key_padding_mask = None
         
-        # Apply across-video attention
         attention_layer = (self.cls_attention_across if self.separate_video_attention 
                           else self.cls_attention)
         norm_layer = (self.cls_norm_across if self.separate_video_attention 
@@ -397,7 +401,7 @@ class MultiInstanceLinearProbing(nn.Module):
         
         if self.normalization_strategy == "pre_norm":
             x_with_cls_sample = norm_layer(x_with_cls_sample)
-            
+        
         sample_attn_out, _ = attention_layer(
             query=x_with_cls_sample,
             key=x_with_cls_sample,
@@ -407,7 +411,8 @@ class MultiInstanceLinearProbing(nn.Module):
         
         if self.normalization_strategy == "post_norm":
             sample_attn_out = norm_layer(sample_attn_out)
-            
+        
+        # On récupère le cls_token global comme résumé de toutes les vidéos
         cls_output = sample_attn_out[:, 0, :]
         return self.cls_dropout(cls_output)
 
@@ -429,27 +434,32 @@ class MultiInstanceLinearProbing(nn.Module):
             all_masked_samples = (~extended_mask[:, 1:]).all(dim=1)
             if all_masked_samples.all():
                 return torch.zeros(B, D, dtype=x.dtype, device=x.device)
-                
+            
         key_padding_mask = ~extended_mask
         
-        attention_layer = self.cls_attention
-        norm_layer = self.cls_norm
-        
-        if self.normalization_strategy == "pre_norm":
-            x_with_cls = norm_layer(x_with_cls)
+        if self.pooling_mode == "cls_token":
+            # Si on utilise uniquement cls_token, on prend juste le token CLS
+            return x_with_cls[:, 0]  # [B, D]
+        else:
+            # Si on utilise attention+cls_token, on utilise l'attention
+            attention_layer = self.cls_attention
+            norm_layer = self.cls_norm
             
-        attn_out, _ = attention_layer(
-            query=x_with_cls,
-            key=x_with_cls, 
-            value=x_with_cls,
-            key_padding_mask=key_padding_mask
-        )
-        
-        if self.normalization_strategy == "post_norm":
-            attn_out = norm_layer(attn_out)
+            if self.normalization_strategy == "pre_norm":
+                x_with_cls = norm_layer(x_with_cls)
             
-        cls_output = attn_out[:, 0, :]
-        return self.cls_dropout(cls_output)
+            attn_out, _ = attention_layer(
+                query=x_with_cls,
+                key=x_with_cls, 
+                value=x_with_cls,
+                key_padding_mask=key_padding_mask
+            )
+            
+            if self.normalization_strategy == "post_norm":
+                attn_out = norm_layer(attn_out)
+            
+            cls_output = attn_out[:, 0, :]
+            return self.cls_dropout(cls_output)
 
     def _mean_pooling(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """Masked mean pooling."""

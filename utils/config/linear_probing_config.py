@@ -17,6 +17,7 @@ class LinearProbingConfig(HeartWiseConfig):
     epochs: int
     seed: int
     output_dir: str
+    tag: str  # wandb tag
     
     # Training parameters
     head_lr: Dict[str, float] # learning rate for heads

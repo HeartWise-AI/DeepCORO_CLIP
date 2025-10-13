@@ -115,6 +115,9 @@ export NCCL_DEBUG=WARNING
 export CUDA_VISIBLE_DEVICES=$SELECTED_GPUS
 export OMP_NUM_THREADS=1
 
+# Add project root to PYTHONPATH
+export PYTHONPATH=$PYTHONPATH:/volume/Deep_CORO_Multi_Instance_clstoken_new
+
 # Run the training
 torchrun \
     --nproc_per_node=$NUM_GPUS \

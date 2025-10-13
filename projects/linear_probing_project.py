@@ -207,7 +207,8 @@ class LinearProbingProject(BaseProject):
         # Distribute MIL model
         mil_model = DistributedUtils.DDP(
             mil_model, 
-            device_ids=[self.config.device]
+            device_ids=[self.config.device],
+            find_unused_parameters=True
         )
         
         # Wrap both models

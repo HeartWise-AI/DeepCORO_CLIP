@@ -16,8 +16,10 @@ from collections import defaultdict
 from sklearn.metrics import (
     roc_auc_score, 
     average_precision_score, 
-    confusion_matrix
+    confusion_matrix,
+    r2_score
 )
+from sklearn.metrics import r2_score  # Explicit import for r2_score
 from utils.loss.typing import Loss
 from utils.ddp import DistributedUtils
 from utils.registry import RunnerRegistry
@@ -114,13 +116,17 @@ class LinearProbingRunner:
                 # Let wandb auto-increment steps
                 self.wandb_wrapper.log(train_metrics)
                 print(f"[DEBUG] rank={self.device} => Logged train metrics to W&B")
-            
-            # Sync before validation
+
+            # Sync after training, before validation
             DistributedUtils.sync_process_group(
                 world_size=self.world_size,
                 device_ids=self.device
             )
-            
+
+            # Step the learning rate scheduler after optimizer step (per-epoch schedulers)
+            if self.lr_scheduler and (not self.scheduler_per_iteration):
+                self.lr_scheduler.step()
+
             # Validation phase
             val_metrics = self._run_epoch(
                 mode=RunMode.VALIDATION, 
@@ -164,14 +170,11 @@ class LinearProbingRunner:
                 device_ids=self.device
             )
             
-            if self.lr_scheduler and (not self.scheduler_per_iteration):
-                self.lr_scheduler.step()
-                
             if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
                 val_metrics['best_val_loss'] = self.best_val_loss
                 self.wandb_wrapper.log(val_metrics)
                 print(f"[DEBUG] rank={self.device} => Logged val metrics to W&B")  
-                
+            
             # Sync after logging
             DistributedUtils.sync_process_group(
                 world_size=self.world_size,
@@ -416,8 +419,13 @@ class LinearProbingRunner:
             self.optimizer.zero_grad()
                 
         # Forward pass with autocast for mixed precision
-        with torch.amp.autocast('cuda', enabled=self.config.use_amp):
+        with torch.amp.autocast('cuda', enabled=self.config.use_amp, dtype=torch.float16):
             try:
+                # Convert inputs to float16 if AMP is enabled
+                if self.config.use_amp:
+                    batch_video = batch_video.to(dtype=torch.float16)
+                    batch_targets = {k: v.to(dtype=torch.float16) for k, v in batch_targets.items()}
+                
                 outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
                     batch_video, 
                     video_indices=video_indices
@@ -453,7 +461,8 @@ class LinearProbingRunner:
             if self.scaler:
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
-            
+            else:
+                self.optimizer.step()
             # Step the learning rate scheduler after optimizer step
             if self.lr_scheduler and self.scheduler_per_iteration:
                 self.lr_scheduler.step()
@@ -484,13 +493,19 @@ class LinearProbingRunner:
     ) -> dict[str, dict[str, torch.Tensor]]:                
         # Forward pass with autocast for mixed precision
         with torch.no_grad():
-            try:
-                outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
-                    batch_video,
-                    video_indices=video_indices
-                )
-            except Exception as e:
-                raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")
+            with torch.amp.autocast('cuda', enabled=self.config.use_amp, dtype=torch.float16):
+                try:
+                    # Convert inputs to float16 if AMP is enabled
+                    if self.config.use_amp:
+                        batch_video = batch_video.to(dtype=torch.float16)
+                        batch_targets = {k: v.to(dtype=torch.float16) for k, v in batch_targets.items()}
+                    
+                    outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
+                        batch_video,
+                        video_indices=video_indices
+                    )
+                except Exception as e:
+                    raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")
 
         try:
             losses: dict[str, torch.Tensor] = self.loss_fn.run(
@@ -723,6 +738,14 @@ def compute_regression_metrics(
             outputs=preds,
             targets=targets
         ).item()
+
+        # Calculate R² score
+        try:
+            r2 = r2_score(targets.detach().cpu().float().numpy().squeeze(), preds.detach().cpu().float().numpy().squeeze())
+            metrics[f"{mode}/{head_name}_r2"] = r2
+        except Exception as e:
+            print(f"Could not compute R² score for {head_name}: {e}")
+            metrics[f"{mode}/{head_name}_r2"] = np.nan
 
     # Convert tensors to numpy arrays
     preds_np = preds.detach().cpu().float().numpy().squeeze()

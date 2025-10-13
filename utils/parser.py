@@ -30,6 +30,7 @@ class BaseParser:
         wandb_group.add_argument('--name', type=str, help="Wandb name.")
         wandb_group.add_argument('--project', type=str, help="Wandb project name.")
         wandb_group.add_argument('--entity', type=str, help="Wandb entity name.")
+        wandb_group.add_argument('--tag', type=str, help="Wandb tag.")
 
     def _add_common_arguments(self):
         """Adds the common arguments."""

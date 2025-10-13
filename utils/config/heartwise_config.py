@@ -63,17 +63,24 @@ class HeartWiseConfig:
         
         # Prepare data_parameters, ensuring all fields required by __init__ are present.
         data_parameters: Dict[str, Any] = {}
+        missing_fields = []
+        
+        # Check all required fields except device-related ones
         for field_name in registered_config.__dataclass_fields__:
+            if field_name in ['device', 'world_size', 'is_ref_device']:
+                continue
             if field_name in yaml_data:
                 data_parameters[field_name] = yaml_data[field_name]
+            else:
+                missing_fields.append(field_name)
         
-        # Provide default values for device-related fields if not in YAML
-        if 'device' not in data_parameters:
-            data_parameters['device'] = 0
-        if 'world_size' not in data_parameters:
-            data_parameters['world_size'] = 1
-        if 'is_ref_device' not in data_parameters:
-            data_parameters['is_ref_device'] = True
+        if missing_fields:
+            raise ValueError(f"Missing required fields in YAML file: {', '.join(missing_fields)}")
+        
+        # Provide default values for device-related fields
+        data_parameters['device'] = 0
+        data_parameters['world_size'] = 1
+        data_parameters['is_ref_device'] = True
 
         return registered_config(**data_parameters)
 

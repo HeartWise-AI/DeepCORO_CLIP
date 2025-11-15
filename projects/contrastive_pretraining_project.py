@@ -47,8 +47,32 @@ class ContrastivePretrainingProject(BaseProject):
         Returns:
             dict: Dictionary containing training objects
         """
-        # Calculate dataset statistics
-        mean, std = calculate_dataset_statistics_ddp(self.config)
+        cached_mean = getattr(self.config, "data_mean", None)
+        cached_std = getattr(self.config, "data_std", None)
+        if cached_mean is not None and cached_std is not None:
+            mean = torch.tensor(cached_mean, dtype=torch.float32)
+            std = torch.tensor(cached_std, dtype=torch.float32)
+            if self.config.is_ref_device:
+                print("\n=== Using cached dataset statistics ===")
+                print(f"Mean: {mean.tolist()}")
+                print(f"Std:  {std.tolist()}")
+                print("===========================\n")
+        else:
+            mean, std = calculate_dataset_statistics_ddp(self.config)
+
+        is_distributed = DistributedUtils.is_initialized()
+        world_size = DistributedUtils.get_world_size() if is_distributed else 1
+        global_rank = DistributedUtils.get_rank() if is_distributed else 0
+        force_cpu = isinstance(self.config.device, str) and self.config.device == "cpu"
+        use_cuda = torch.cuda.is_available() and not force_cpu
+        default_local_rank = int(self.config.device) if isinstance(self.config.device, int) else 0
+        if use_cuda:
+            local_rank = DistributedUtils.get_local_rank() if is_distributed else default_local_rank
+            torch.cuda.set_device(local_rank)
+            device = torch.device(f"cuda:{local_rank}")
+        else:
+            local_rank = 0
+            device = torch.device("cpu")
 
         train_loader: DataLoader = get_distributed_video_clip_dataloader(
             self.config, 
@@ -56,8 +80,8 @@ class ContrastivePretrainingProject(BaseProject):
             mean=mean.tolist(),
             std=std.tolist(),
             shuffle=True,
-            num_replicas=self.config.world_size,
-            rank=self.config.device,
+            num_replicas=world_size,
+            rank=global_rank,
             drop_last=True,
         )
         val_loader: DataLoader = get_distributed_video_clip_dataloader(
@@ -66,9 +90,9 @@ class ContrastivePretrainingProject(BaseProject):
             mean=mean.tolist(),
             std=std.tolist(),
             shuffle=False,
-            num_replicas=self.config.world_size,
-            rank=self.config.device,
-            drop_last=False,
+            num_replicas=world_size,
+            rank=global_rank,
+            drop_last=True,
         )
 
         # Create models
@@ -85,7 +109,7 @@ class ContrastivePretrainingProject(BaseProject):
             num_heads=self.config.num_heads,
             aggregator_depth=self.config.aggregator_depth,
         )
-        video_encoder = video_encoder.to(self.config.device).float()
+        video_encoder = video_encoder.to(device).float()
 
         text_encoder: TextEncoder = ModelRegistry.get(
             name="text_encoder"
@@ -93,16 +117,7 @@ class ContrastivePretrainingProject(BaseProject):
             freeze_ratio=self.config.text_freeze_ratio,
             dropout=self.config.dropout,
         )
-        text_encoder = text_encoder.to(self.config.device).float()
-
-        video_encoder = DistributedUtils.DDP(
-            video_encoder, 
-            device_ids=[self.config.device], 
-        )
-        text_encoder = DistributedUtils.DDP(
-            text_encoder, 
-            device_ids=[self.config.device], 
-        )
+        text_encoder = text_encoder.to(device).float()
 
         # Make temperature a trainable parameter directly on the device
         log_temperature: nn.Parameter = nn.Parameter(
@@ -110,10 +125,37 @@ class ContrastivePretrainingProject(BaseProject):
                 torch.tensor(
                     [self.config.temperature], 
                     dtype=torch.float32, 
-                    device=self.config.device
+                    device=device,
                 )
             )
         )
+        video_encoder.register_parameter("log_temperature", log_temperature)
+
+        self._synchronize_trainable_params(video_encoder, module_name="video_encoder")
+        self._synchronize_trainable_params(text_encoder, module_name="text_encoder")
+
+        if DistributedUtils.is_initialized():
+            vid_params = sum(p.numel() for p in video_encoder.parameters())
+            txt_params = sum(p.numel() for p in text_encoder.parameters())
+            print(f"[Rank {global_rank}] video params={vid_params}, text params={txt_params}")
+
+        ddp_device_ids = [local_rank] if device.type == "cuda" else None
+        ddp_output_device = local_rank if device.type == "cuda" else None
+        video_encoder = DistributedUtils.DDP(
+            video_encoder,
+            device_ids=ddp_device_ids,
+            output_device=ddp_output_device,
+            broadcast_buffers=False,
+            find_unused_parameters=True,
+        )
+        text_encoder = DistributedUtils.DDP(
+            text_encoder,
+            device_ids=ddp_device_ids,
+            output_device=ddp_output_device,
+            broadcast_buffers=False,
+            find_unused_parameters=True,
+        )
+        log_temperature = video_encoder.module.log_temperature
 
         # Different learning rates for different components
         param_groups = [
@@ -205,6 +247,20 @@ class ContrastivePretrainingProject(BaseProject):
     )->dict[str, Any]:
         # Calculate dataset statistics
         mean, std = calculate_dataset_statistics_ddp(self.config)
+
+        is_distributed = DistributedUtils.is_initialized()
+        world_size = DistributedUtils.get_world_size() if is_distributed else 1
+        global_rank = DistributedUtils.get_rank() if is_distributed else 0
+        force_cpu = isinstance(self.config.device, str) and self.config.device == "cpu"
+        use_cuda = torch.cuda.is_available() and not force_cpu
+        default_local_rank = int(self.config.device) if isinstance(self.config.device, int) else 0
+        if use_cuda:
+            local_rank = DistributedUtils.get_local_rank() if is_distributed else default_local_rank
+            torch.cuda.set_device(local_rank)
+            device = torch.device(f"cuda:{local_rank}")
+        else:
+            local_rank = 0
+            device = torch.device("cpu")
         
         val_loader: DataLoader = get_distributed_video_clip_dataloader(
             self.config, 
@@ -212,9 +268,9 @@ class ContrastivePretrainingProject(BaseProject):
             mean=mean.tolist(),
             std=std.tolist(),
             shuffle=False,
-            num_replicas=self.config.world_size,
-            rank=self.config.device,
-            drop_last=False,
+            num_replicas=world_size,
+            rank=global_rank,
+            drop_last=True,
         )
         
         # Create models
@@ -231,16 +287,42 @@ class ContrastivePretrainingProject(BaseProject):
             num_heads=self.config.num_heads,
             aggregator_depth=self.config.aggregator_depth,
         )        
-        video_encoder = video_encoder.to(self.config.device).float()
-        
-        video_encoder = DistributedUtils.DDP(
-            video_encoder, 
-            device_ids=[self.config.device], 
+        video_encoder = video_encoder.to(device).float()
+        log_temperature: nn.Parameter = nn.Parameter(
+            torch.log(
+                torch.tensor(
+                    [self.config.temperature],
+                    dtype=torch.float32,
+                    device=device,
+                )
+            )
         )
+        video_encoder.register_parameter("log_temperature", log_temperature)
+        self._synchronize_trainable_params(video_encoder, module_name="video_encoder")
+        
+        ddp_device_ids = [local_rank] if device.type == "cuda" else None
+        ddp_output_device = local_rank if device.type == "cuda" else None
+        video_encoder = DistributedUtils.DDP(
+            video_encoder,
+            device_ids=ddp_device_ids,
+            output_device=ddp_output_device,
+            broadcast_buffers=False,
+            find_unused_parameters=True,
+        )
+        log_temperature = video_encoder.module.log_temperature
         
         checkpoint: dict[str, Any] = self._load_checkpoint(self.config.checkpoint)
-        video_encoder.module.load_state_dict(checkpoint["video_encoder"], weight_only=True)
-        log_temp: float = checkpoint["train/temperature"]
+        video_state = checkpoint["video_encoder"]
+        has_log_temp = "log_temperature" in video_state
+        video_encoder.module.load_state_dict(video_state, strict=has_log_temp)
+        if not has_log_temp and "train/temperature" in checkpoint:
+            temp_tensor = torch.tensor(
+                checkpoint["train/temperature"],
+                dtype=log_temperature.dtype,
+                device=log_temperature.device,
+            )
+            log_temperature.data.copy_(temp_tensor.log())
+        log_temp: torch.Tensor = video_encoder.module.log_temperature
 
         return {
             "val_loader": val_loader,
@@ -248,6 +330,48 @@ class ContrastivePretrainingProject(BaseProject):
             "log_temp": log_temp,
             "output_dir": self.config.inference_results_path,
         }
+    def _synchronize_trainable_params(self, module: nn.Module, module_name: str) -> None:
+        """
+        Ensure every rank exposes the same set of trainable parameters before wrapping
+        the module with DistributedDataParallel. This avoids mismatches when partial
+        freezing logic toggles different subsets across ranks (e.g., due to sweep
+        overrides or floating-point rounding).
+        """
+        if not DistributedUtils.is_initialized():
+            return
+
+        params = list(module.parameters())
+        if not params:
+            return
+
+        # Build a binary mask indicating which parameters require gradients.
+        if torch.cuda.is_available():
+            local_rank = DistributedUtils.get_local_rank()
+            device = torch.device(f"cuda:{local_rank}")
+        else:
+            device = torch.device("cpu")
+        mask = torch.tensor(
+            [1 if p.requires_grad else 0 for p in params],
+            dtype=torch.int32,
+            device=device,
+        )
+
+        # All-reduce with MAX so a parameter stays trainable if it is enabled on any rank.
+        DistributedUtils.dist.all_reduce(mask, op=DistributedUtils.dist.ReduceOp.MAX)
+        mask_list = mask.tolist()
+
+        changed = False
+        for desired, param in zip(mask_list, params):
+            desired_bool = bool(desired)
+            if param.requires_grad != desired_bool:
+                param.requires_grad = desired_bool
+                changed = True
+
+        if changed and self.config.is_ref_device:
+            print(
+                f"[DDP Sync] Normalized trainable mask for {module_name} "
+                "across ranks to keep DDP initialization consistent."
+            )
 
     def _update_training_setup_with_checkpoint(
         self, 
@@ -255,12 +379,20 @@ class ContrastivePretrainingProject(BaseProject):
         checkpoint: dict[str, Any]
     )->dict[str, Any]:
         print(f"Resuming from checkpoint: {checkpoint.keys()}")
-        training_setup["video_encoder"].module.load_state_dict(checkpoint["video_encoder"])
+        video_state = checkpoint["video_encoder"]
+        has_log_temp = "log_temperature" in video_state
+        training_setup["video_encoder"].module.load_state_dict(video_state, strict=has_log_temp)
         training_setup["text_encoder"].module.load_state_dict(checkpoint["text_encoder"])
         training_setup["optimizer"].load_state_dict(checkpoint["optimizer"])
         training_setup["lr_scheduler"].load_state_dict(checkpoint["scheduler"])
         training_setup["scaler"].load_state_dict(checkpoint["scaler"])
-        training_setup["log_temp"].data.copy_(checkpoint["train/temperature"])
+        if not has_log_temp and "train/temperature" in checkpoint:
+            temp_tensor = torch.tensor(
+                checkpoint["train/temperature"],
+                dtype=training_setup["log_temp"].dtype,
+                device=training_setup["log_temp"].device,
+            )
+            training_setup["log_temp"].data.copy_(temp_tensor.log())
         return training_setup
         
     def run(self):
@@ -301,4 +433,3 @@ class ContrastivePretrainingProject(BaseProject):
             raise ValueError(
                 f"Invalid run mode: {self.config.run_mode}, must be one of {RunMode.TRAIN} or {RunMode.INFERENCE}"
             )
-

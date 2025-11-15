@@ -108,13 +108,20 @@ class VideoEncoder(nn.Module):
             use_positional_encoding=True,
             aggregator_depth=aggregator_depth
         )
-                
+
         # 4) Freeze partial layers
         self._freeze_partial_layers()
+
+        # 5) Auxiliary classifier to predict the main coronary tree
+        self.tree_classifier = nn.Sequential(
+            nn.LayerNorm(output_dim),
+            nn.Linear(output_dim, 1),
+        )
 
         # Whether to apply the internal aggregator in the forward pass.
         self._apply_aggregator: bool = aggregate_videos_tokens
         self._per_video_pool: bool = per_video_pool
+        self._warned_non_finite: bool = False  # Emit at most one warning per process
 
         # ------------------------------------------------------------------
         # Monkey-patch `forward_features` on the instance *once*.
@@ -211,7 +218,30 @@ class VideoEncoder(nn.Module):
 
         return feats  # [B*N, L, F]
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        *,
+        return_tree_logits: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        """
+        Run the video branch in full precision even when global AMP is enabled.
+        This prevents half-precision overflow inside the backbone/projection,
+        which previously manifested as NaNs in the contrastive loss.
+        """
+        if x.is_cuda and torch.is_autocast_enabled():
+            with autocast("cuda", enabled=False):
+                out = self._forward_impl(x.float())
+        else:
+            out = self._forward_impl(x)
+
+        if not return_tree_logits:
+            return out
+
+        tree_logits = self.classify_main_structure(out)
+        return out, tree_logits
+
+    def _forward_impl(self, x: torch.Tensor) -> torch.Tensor:
         """
         Expects shape: [B, N, T, H, W, C]
             B= batch size,
@@ -236,13 +266,13 @@ class VideoEncoder(nn.Module):
             x = x.view(s[0], s[1] * s[2], s[3], s[4], s[5], s[6])
             # Now x should be 6D: [B, N_combined, T, H, W, C]
         
-        # Reorder last dimensio n (C) to after N => [B, N, C, T, H, W]
+        # Reorder last dimension (C) to after N => [B, N, C, T, H, W]
         x = x.permute(0, 1, 5, 2, 3, 4)  # Now shape: [B, N, 3, T, H, W]
 
         B, N, C, T, H, W = x.shape
 
         # Flatten => [B*N, 3, T, H, W]
-        x = x.view(B*N, C, T, H, W)
+        x = x.view(B * N, C, T, H, W)
 
         # ------------------------------------------------------------------
         # 1) Backbone ⇨ token sequences (before projection)
@@ -254,7 +284,7 @@ class VideoEncoder(nn.Module):
         # ------------------------------------------------------------------
         # ``nn.Sequential`` modules in ``self.proj`` operate on the last dim, so
         # we can call them directly on a 3-D tensor.
-        token_feats = self.proj(token_feats)  # [B*N, L, output_dim]
+        token_feats = self.proj(token_feats.float())  # [B*N, L, output_dim]
 
         # ------------------------------------------------------------------
         # 3) Reshape → [B, N*L, output_dim] so that the aggregator treats every
@@ -263,7 +293,6 @@ class VideoEncoder(nn.Module):
         BNL, L, D_out = token_feats.shape  # BNL = B * N
         token_feats = token_feats.view(B, N, L, D_out)
 
-#       print(f"token_feats.shape: {token_feats.shape}")
         if self._apply_aggregator:
             # Before passing to aggregator, convert to exactly N tokens. This
             # preserves backward-compatibility with existing training code &
@@ -271,23 +300,41 @@ class VideoEncoder(nn.Module):
             # patches.
             feats = token_feats.mean(dim=2)  # [B, N, D_out]
 
-            orig_dtype = feats.dtype
-            with autocast('cuda', enabled=False):
+            with autocast("cuda", enabled=False):
                 out = self.aggregator(feats.float())
-            return out.to(orig_dtype)
+            return self._sanitize_tensor(out, context="aggregated tokens")
 
         # Aggregator disabled → return either per-video or per-patch tokens
         if self._per_video_pool:
-            #print("Per-video pooling") 
-            #print(f"token_feats.shape: {token_feats.shape}")
             feats = token_feats.mean(dim=2)  # [B, N, D_out]
-            #print(f"feats.shape: {feats.shape}")
         else:
-            #print("Per-patch pooling")
             feats = token_feats.reshape(B, N * L, D_out)  # [B, N_tokens, D]
-            #print(f"feats.shape: {feats.shape}")
 
-        return feats
+        return self._sanitize_tensor(feats, context="token features")
 
+    def _sanitize_tensor(self, tensor: torch.Tensor, *, context: str) -> torch.Tensor:
+        """
+        Replace NaN/inf values with zeros and emit a one-time warning so that
+        downstream normalization never encounters non-finite inputs.
+        """
+        if torch.isfinite(tensor).all():
+            return tensor
 
+        if not self._warned_non_finite:
+            print(
+                f"[VideoEncoder] Detected non-finite values in {context}; "
+                "replacing them with zeros to keep training stable."
+            )
+            self._warned_non_finite = True
 
+        return torch.nan_to_num(tensor, nan=0.0, posinf=0.0, neginf=0.0)
+
+    def classify_main_structure(self, embeddings: torch.Tensor) -> torch.Tensor:
+        """Predict logits for the left/right coronary tree from embeddings."""
+        if embeddings.ndim == 1:
+            embeddings = embeddings.unsqueeze(0)
+        elif embeddings.ndim > 2:
+            embeddings = embeddings.view(-1, embeddings.shape[-1])
+        with autocast("cuda", enabled=False):
+            logits = self.tree_classifier(embeddings.float())
+        return logits.squeeze(-1)

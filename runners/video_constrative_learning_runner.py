@@ -7,7 +7,7 @@ from torch.optim import Optimizer
 from torch.cuda.amp import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
-from typing import Callable, Dict, Tuple, List, Any
+from typing import Callable, Dict, Tuple, List, Any, Optional
 
 from tqdm import tqdm
 
@@ -29,13 +29,17 @@ from utils.wandb_logger import (
     log_gradient_norms,
     save_retrieval_results,
 )
+from utils.semantic_metrics import compute_siglip_semantic_metrics
 from utils.loss.typing import Loss
+from utils.loss.siglip_pairwise import SiglipPairwiseLoss
+from utils.loss.multi_positive_infonce import MultiPositiveInfoNCELoss
 from utils.wandb_wrapper import WandbWrapper
 from models.video_encoder import VideoEncoder
 from models.text_encoder import TextEncoder
 from dataloaders.video_clip_dataset import VideoClipDataset
 import itertools
 from torch.nn.utils import clip_grad_norm_
+import torch.nn.functional as F
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -107,6 +111,45 @@ class VideoContrastiveLearningRunner:
         self.highest_alignment_epoch: int = -1
         self.log_temp: torch.Tensor = log_temp
         self.step: int = 0  # Initialize step counter for gradient accumulation
+        self.siglip_active: bool = bool(
+            isinstance(train_loader.dataset, VideoClipDataset)
+            and getattr(train_loader.dataset, "siglip_enabled", False)
+        )
+        self.siglip_severity_weighting: bool = bool(
+            getattr(self.config, "siglip_enable_severity_weighting", False)
+        )
+        self.siglip_loss_mode: str = str(getattr(self.config, "loss_name", "") or "").lower()
+        self.use_siglip_pairwise = self.siglip_active and self.siglip_loss_mode == "siglip_ddp"
+        self.use_siglip_infonce = self.siglip_active and self.siglip_loss_mode == "infonce_loss_ddp"
+        self.siglip_pairwise_loss = (
+            SiglipPairwiseLoss(
+                positive_weight=float(
+                    getattr(self.config, "siglip_positive_loss_weight", 1.0) or 1.0
+                ),
+                negative_weight=float(
+                    getattr(self.config, "siglip_negative_loss_weight", 1.0) or 1.0
+                ),
+                use_positive_weights=self.siglip_severity_weighting,
+                auto_positive_weight=bool(
+                    getattr(self.config, "siglip_auto_positive_loss_weight", False)
+                ),
+            )
+            if self.use_siglip_pairwise
+            else None
+        )
+        self.multi_positive_loss = (
+            MultiPositiveInfoNCELoss()
+            if self.use_siglip_infonce
+            else None
+        )
+        self.tree_loss_weight: float = float(getattr(self.config, "main_structure_loss_weight", 0.0) or 0.0)
+        self.tree_loss_fn: nn.Module = nn.BCEWithLogitsLoss()
+        self._last_grad_norm: float = 0.0
+        self._last_video_grad_norm: float = 0.0
+        self._last_text_grad_norm: float = 0.0
+        self.progress_log_interval: int = max(
+            1, int(getattr(self.config, "progress_log_interval", 200))
+        )
 
         # For simplicity: check the config for a known scheduler_name
         # If it includes "_warmup" or is from HF, we treat it as per-iteration
@@ -403,13 +446,15 @@ class VideoContrastiveLearningRunner:
         iterator_obj: Any = dataloader # Use Any for iterator_obj as it can be DataLoader or tqdm
         if self.config.is_ref_device or (self.device == 0):
             iterator_obj = tqdm(dataloader, desc=tqdm_desc)
-
         batch_count: int = 0
         for _, batch in enumerate(iterator_obj, start=1): # Use iterator_obj
             if batch["videos"] is None or batch["encoded_texts"] is None:
                 continue
 
             step_inputs, paths_or_sids = self._preprocess_inputs(batch)
+            siglip_payload = self._build_siglip_payload(dataset, paths_or_sids)
+            if siglip_payload is not None:
+                step_inputs["siglip_batch"] = siglip_payload
 
             batch_metrics, embeddings = step_fn(**step_inputs)
 
@@ -434,18 +479,41 @@ class VideoContrastiveLearningRunner:
             # accumulate metrics
             for k, v in batch_metrics.items():
                 epoch_metrics[k] = epoch_metrics.get(k, 0.0) + float(v)
+                if (
+                    self.wandb_wrapper.is_initialized()
+                    and self.config.is_ref_device
+                    and (mode == RunMode.TRAIN or mode == RunMode.VALIDATE)
+                ):
+                    mode_name = mode.value if isinstance(mode, RunMode) else str(mode)
+                    wandb_key = f"{mode_name}/{k}"
+                    self.wandb_wrapper.log({wandb_key: float(v)})
 
             total_loss += float(batch_metrics["loss"])
             batch_count += 1
 
+
             if (self.config.is_ref_device or (self.device == 0)) and mode == RunMode.TRAIN:
-                if hasattr(iterator_obj, 'set_postfix'): # Check if it's the tqdm instance
-                    iterator_obj.set_postfix(
-                        {
-                            f"{mode}_loss": f"{batch_metrics['loss']:.4f}", # Use mode variable
-                            "avg_loss": f"{(total_loss / batch_count):.4f}",
-                        }
+                postfix_data = {
+                    f"{mode}_loss": f"{batch_metrics['loss']:.4f}", # Use mode variable
+                    "avg_loss": f"{(total_loss / batch_count):.4f}",
+                    "grad_v": f"{self._last_video_grad_norm:.2f}",
+                    "grad_t": f"{self._last_text_grad_norm:.2f}",
+                }
+                if "train/Recall@5" in batch_metrics:
+                    postfix_data["recall@5"] = f"{batch_metrics['train/Recall@5']:.3f}"
+                iterator_obj.set_postfix(postfix_data)
+                if hasattr(iterator_obj, 'set_postfix_str'):
+                    iterator_obj.set_postfix_str(
+                        " | ".join(f"{k}:{v}" for k, v in postfix_data.items())
                     )
+                if batch_count % self.progress_log_interval == 0:
+                    log_line = (
+                        f"[Epoch {epoch + 1} | Step {batch_count}] "
+                        + " | ".join(f"{k}={v}" for k, v in postfix_data.items())
+                    )
+                    tqdm.write(log_line)
+                    if hasattr(iterator_obj, 'write'):
+                        iterator_obj.write(log_line)
 
         if 'batch_metrics' in locals():
             del batch_metrics
@@ -479,144 +547,218 @@ class VideoContrastiveLearningRunner:
 
         # Optionally compute NxM retrieval metrics on rank 0
         retrieval_metrics: dict[str, float] = {}
-        if mode == "val" and self.config.is_ref_device:
+        if mode == RunMode.VALIDATE and len(global_video_feats) > 0:
             print(
                 f"[DEBUG rank={self.device}] Starting retrieval computation with {global_video_feats.shape[0]} videos."
             )
-            
-            # Step 1: Deduplicate texts and create mapping
-            unique_texts: List[str] = sorted(set(global_reports))
-            text_to_index: Dict[str, int] = {text: idx for idx, text in enumerate(unique_texts)}
-            
-            # Step 2: Get ground truth indices for each video
-            ground_truth_indices: torch.Tensor = torch.tensor(
-                [text_to_index[text] for text in global_reports],
-                device=self.device
-            )
-            
-            print(f"[DEBUG rank={self.device}] Found {len(unique_texts)} unique texts out of {len(global_reports)} total.")
-            
-            # Step 3: Encode unique texts
-            unique_text_embeddings_list: List[torch.Tensor] = [] # Renamed list
-            batch_size: int = 64  # Process in batches to avoid OOM
-            
-            self.text_encoder.eval()
-            with torch.no_grad():
-                for start_idx in range(0, len(unique_texts), batch_size):
-                    end_idx = min(start_idx + batch_size, len(unique_texts))
-                    text_batch = unique_texts[start_idx:end_idx]
-                    
-                    # Tokenize batch, Handle both DDP and non-DDP cases for text encoder
-                    tokenizer = (
-                        self.text_encoder.module.tokenizer 
-                        if hasattr(self.text_encoder, "module") 
-                        else self.text_encoder.tokenizer
-                    )
-                    encoded = tokenizer(
-                        text_batch,
-                        padding=True,
-                        truncation=True,
-                        return_tensors="pt"
-                    ).to(self.device)
-                    # Get embeddings
-                    text_embs = self.text_encoder(
-                        encoded["input_ids"],
-                        encoded["attention_mask"]
-                    )
-                    unique_text_embeddings_list.append(text_embs) # Append to renamed list
-            
-            # Concatenate all batches into a new tensor variable
-            unique_text_embeddings_tensor: torch.Tensor = torch.cat(unique_text_embeddings_list, dim=0)
-            
-            # Step 4: Normalize embeddings
-            global_video_feats_norm: torch.Tensor = nn.functional.normalize(global_video_feats, dim=1)
-            unique_text_embeddings_norm: torch.Tensor = nn.functional.normalize(unique_text_embeddings_tensor, dim=1) # Use normalized tensor
-            
-            # Step 5: Compute NxM similarity matrix
-            similarity_matrix: torch.Tensor = torch.matmul(global_video_feats_norm, unique_text_embeddings_norm.t()) # Use normalized embeddings
-            print(
-                f"[DEBUG rank={self.device}] Computed NxM sim matrix with shape={similarity_matrix.shape}"
-            )
-            
-            # Log best/worst retrievals using unique texts
-            if self.wandb_wrapper.is_initialized():
-                log_best_worst_retrievals(
-                    similarity_matrix=similarity_matrix,
-                    all_paths=global_paths,
-                    unique_texts=unique_texts,
-                    ground_truth_indices=ground_truth_indices,
-                    epoch=epoch,
-                    wandb_wrapper=self.wandb_wrapper,
-                    dataset_obj=dataset # Pass the dataset object
+
+        text_segments: Optional[List[Optional[str]]] = None
+
+        if mode == RunMode.VALIDATE:
+            if self.config.is_ref_device and len(global_video_feats) > 0:
+                # Check if we're using SigLIP-style multi-positive training
+                all_text_ids: List[str] = []
+                use_siglip_texts = (
+                    hasattr(dataset, 'siglip_enabled') and
+                    dataset.siglip_enabled and
+                    dataset.siglip is not None and
+                    hasattr(dataset.siglip, 'text_lookup') and
+                    len(dataset.siglip.text_lookup) > 0
                 )
 
-            # Save retrieval results with mapping
-            save_retrieval_results(
-                similarity_matrix=similarity_matrix,
-                all_identifiers=global_paths, # Pass SIDs or file paths
-                all_ground_truth_reports=global_reports,
-                report_to_global_index=text_to_index,
-                epoch=epoch,
-                output_dir=self.output_dir,
-                dataset_obj=dataset # Pass the dataset object
-            )
-            print(f"ground_truth_indices={ground_truth_indices}")
-            # Compute retrieval metrics using ground truth indices
-            recall_metrics: Dict[str, float] = compute_recall_at_k( # Ensure it's a Dict
-                similarity_matrix, ground_truth_indices, k_values=self.config.recall_k
-            )
-            mrr_score_dict: Dict[str, float] = compute_mrr(similarity_matrix, ground_truth_indices) # Assign to dict
-            map_score: float = compute_map(similarity_matrix, ground_truth_indices) # Assuming this returns float
-            median_rank_score: float = compute_median_rank(similarity_matrix, ground_truth_indices) # Assuming this returns float
-            ndcg_scores_dict: Dict[str, float] = compute_ndcg_at_k( # Assign to dict
-                similarity_matrix, ground_truth_indices, k_values=self.config.ndcg_k
-            )
+                if use_siglip_texts:
+                    # SigLIP mode: Load all unique texts from texts.csv
+                    print(f"[DEBUG rank={self.device}] Using SigLIP mode - loading all texts from texts.csv")
 
-            retrieval_metrics.update(recall_metrics)
-            retrieval_metrics.update(mrr_score_dict) # Update with dict
-            retrieval_metrics.update(ndcg_scores_dict) # Update with dict
-            retrieval_metrics["MAP"] = map_score 
-            retrieval_metrics["MedianRank_V2T"] = median_rank_score
-            
-            # Save unique texts and their indices
-            df_texts: pd.DataFrame = pd.DataFrame({
-                "Index": range(len(unique_texts)),
-                "Text": unique_texts
-            })
-            texts_csv_path: str = os.path.join(self.output_dir, f"val_unique_texts.csv")
-            df_texts.to_csv(texts_csv_path, index=False)
-            print(f"[DEBUG rank={self.device}] Saved {len(unique_texts)} unique texts to {texts_csv_path}")
-            
-            # Also save text embeddings for future use
-            embeddings_path: str = os.path.join(self.output_dir, f"val_text_embeddings_epoch_{epoch}.pt")
-            torch.save({
-                'text_embeddings': unique_text_embeddings_tensor.cpu(), # Save the concatenated tensor
-                'text_to_index': text_to_index,
-                'unique_texts': unique_texts
-            }, embeddings_path)
-            print(f"[DEBUG rank={self.device}] Saved text embeddings to {embeddings_path}")
-            
-            print(
-                f"[DEBUG rank={self.device}] Completed retrieval metrics & logging for val at epoch={epoch}"
-            )
+                    # Get all text IDs and their corresponding prompt texts
+                    all_text_ids = sorted(dataset.siglip.text_lookup.keys())
+                    unique_texts: List[str] = [
+                        dataset.siglip.text_lookup[tid].get("prompt_text", "")
+                        for tid in all_text_ids
+                    ]
+                    text_segments = [
+                        (dataset.siglip.text_lookup[tid].get("segment") if dataset.siglip else None)
+                        for tid in all_text_ids
+                    ]
+                    text_id_to_index: Dict[str, int] = {tid: idx for idx, tid in enumerate(all_text_ids)}
+                    # Also create text_to_index for save_retrieval_results compatibility
+                    text_to_index: Dict[str, int] = {text: idx for idx, text in enumerate(unique_texts)}
+
+                    print(f"[DEBUG rank={self.device}] Found {len(unique_texts)} unique texts out of {len(all_text_ids)} text IDs.")
+
+                    # Step 2: Build ground truth matrix (videos x texts) with multiple positives per video
+                    ground_truth_matrix = torch.zeros(
+                        len(global_video_feats),
+                        len(unique_texts),
+                        dtype=torch.float32,
+                        device=self.device
+                    )
+
+                    # For each video, mark all its positive texts
+                    for video_idx, video_path in enumerate(global_paths):
+                        # Get the dataset index for this video
+                        dataset_idx = dataset.video_path_to_idx.get(str(video_path))
+                        if dataset_idx is None:
+                            continue
+
+                        # Get positive text IDs for this video
+                        if dataset_idx < len(dataset.video_positive_texts):
+                            positive_pairs = dataset.video_positive_texts[dataset_idx]
+                            for text_id, weight in positive_pairs:
+                                if text_id in text_id_to_index:
+                                    text_idx = text_id_to_index[text_id]
+                                    ground_truth_matrix[video_idx, text_idx] = 1.0
+
+                    # For single-positive metrics, use the first positive for each video
+                    ground_truth_indices: torch.Tensor = torch.zeros(
+                        len(global_video_feats), dtype=torch.long, device=self.device
+                    )
+                    for video_idx in range(len(global_video_feats)):
+                        positive_indices = torch.where(ground_truth_matrix[video_idx] > 0)[0]
+                        if len(positive_indices) > 0:
+                            ground_truth_indices[video_idx] = positive_indices[0]
+
+                elif len(global_reports) > 0:
+                    # Original mode: Use concatenated reports per video
+                    unique_texts: List[str] = sorted(set(global_reports))
+                    if len(unique_texts) == 0:
+                        print(f"[DEBUG rank={self.device}] No unique texts found; skipping retrieval metrics.")
+                        retrieval_metrics = self._zero_retrieval_metrics()
+                        unique_texts = []
+                    else:
+                        text_to_index: Dict[str, int] = {text: idx for idx, text in enumerate(unique_texts)}
+                        text_segments = [None for _ in unique_texts]
+
+                        # Step 2: Get ground truth indices for each video
+                        ground_truth_indices: torch.Tensor = torch.tensor(
+                            [text_to_index[text] for text in global_reports],
+                            device=self.device
+                        )
+                        ground_truth_matrix = None  # Not used in this mode
+
+                        print(f"[DEBUG rank={self.device}] Found {len(unique_texts)} unique texts out of {len(global_reports)} total.")
+                        all_text_ids = list(unique_texts)
+                else:
+                        print(f"[DEBUG rank={self.device}] No reports or SigLIP texts found; skipping retrieval metrics.")
+                        retrieval_metrics = self._zero_retrieval_metrics()
+                        unique_texts = []
+                        all_text_ids = []
+                        text_segments = None
+
+                # Continue with encoding if we have texts
+                if len(unique_texts) > 0:
+                    
+                    # Step 3: Encode unique texts
+                    unique_text_embeddings_list: List[torch.Tensor] = []
+                    batch_size: int = 64  # Process in batches to avoid OOM
+                    
+                    self.text_encoder.eval()
+                    with torch.no_grad():
+                        for start_idx in range(0, len(unique_texts), batch_size):
+                            end_idx = min(start_idx + batch_size, len(unique_texts))
+                            text_batch = unique_texts[start_idx:end_idx]
+                            
+                            tokenizer = (
+                                self.text_encoder.module.tokenizer 
+                                if hasattr(self.text_encoder, "module") 
+                                else self.text_encoder.tokenizer
+                            )
+                            encoded = tokenizer(
+                                text_batch,
+                                padding=True,
+                                truncation=True,
+                                return_tensors="pt"
+                            ).to(self.device)
+                            text_embs = self.text_encoder(
+                                encoded["input_ids"],
+                                encoded["attention_mask"]
+                            )
+                            unique_text_embeddings_list.append(text_embs)
+                    
+                    if len(unique_text_embeddings_list) == 0:
+                        print(f"[DEBUG rank={self.device}] No text embeddings produced; skipping retrieval metrics.")
+                        retrieval_metrics = self._zero_retrieval_metrics()
+                    else:
+                        unique_text_embeddings_tensor: torch.Tensor = torch.cat(unique_text_embeddings_list, dim=0)
+                        
+                        # Step 4: Normalize embeddings
+                        global_video_feats_norm: torch.Tensor = nn.functional.normalize(global_video_feats, dim=1)
+                        unique_text_embeddings_norm: torch.Tensor = nn.functional.normalize(unique_text_embeddings_tensor, dim=1)
+                        
+                        # Step 5: Compute NxM similarity matrix
+                        similarity_matrix: torch.Tensor = torch.matmul(global_video_feats_norm, unique_text_embeddings_norm.t())
+                        print(
+                            f"[DEBUG rank={self.device}] Computed NxM sim matrix with shape={similarity_matrix.shape}"
+                        )
+
+                        semantic_metrics = compute_siglip_semantic_metrics(
+                            similarity_matrix=similarity_matrix.detach().cpu(),
+                            sample_identifiers=global_paths,
+                            dataset=dataset,
+                            all_text_ids=all_text_ids,
+                            top_tree_k=5,
+                            top_segment_k=15,
+                        )
+                        retrieval_metrics.update(semantic_metrics)
+                        
+                        if self.wandb_wrapper.is_initialized():
+                            log_best_worst_retrievals(
+                                similarity_matrix=similarity_matrix,
+                                all_paths=global_paths,
+                                unique_texts=unique_texts,
+                                ground_truth_indices=ground_truth_indices,
+                                epoch=epoch,
+                                wandb_wrapper=self.wandb_wrapper,
+                                dataset_obj=dataset
+                            )
+
+            # Save retrieval results with mapping
+                        save_retrieval_results(
+                            similarity_matrix=similarity_matrix,
+                            all_identifiers=global_paths,
+                            all_ground_truth_reports=global_reports,
+                            report_to_global_index=text_to_index,
+                            epoch=epoch,
+                            output_dir=self.output_dir,
+                            dataset_obj=dataset,
+                            ground_truth_indices_override=ground_truth_indices,
+                            top_k_predictions=int(getattr(self.config, "topk", 5) or 5),
+                            text_segments=text_segments,
+                        )
+                        # Compute retrieval metrics (use ground_truth_matrix if available for multi-positive)
+                        if use_siglip_texts and 'ground_truth_matrix' in locals():
+                            recall_metrics: Dict[str, float] = compute_recall_at_k(
+                                similarity_matrix,
+                                ground_truth_matrix=ground_truth_matrix,
+                                k_values=self.config.recall_k
+                            )
+                        else:
+                            recall_metrics: Dict[str, float] = compute_recall_at_k(
+                                similarity_matrix, ground_truth_indices, k_values=self.config.recall_k
+                            )
+                        mrr_score_dict: Dict[str, float] = compute_mrr(similarity_matrix, ground_truth_indices)
+                        map_score: float = compute_map(similarity_matrix, ground_truth_indices)
+                        median_rank_score: float = compute_median_rank(similarity_matrix, ground_truth_indices)
+                        ndcg_scores_dict: Dict[str, float] = compute_ndcg_at_k(
+                            similarity_matrix, ground_truth_indices, k_values=self.config.ndcg_k
+                        )
+
+                        retrieval_metrics.update(recall_metrics)
+                        retrieval_metrics.update(mrr_score_dict)
+                        retrieval_metrics.update(ndcg_scores_dict)
+                        retrieval_metrics["MAP"] = map_score
+                        retrieval_metrics["MedianRank_V2T"] = median_rank_score
+            else:
+                retrieval_metrics = self._zero_retrieval_metrics()
         else:
-            # Non-zero ranks: placeholders for the same metrics
-            for k_val in self.config.recall_k:
-                retrieval_metrics[f"Recall@{k_val}"] = 0.0
-            retrieval_metrics.update({
-                "MRR": 0.0,
-                "MAP": 0.0,
-                "MedianRank_V2T": 0.0,
-            })
-            for k_val in self.config.ndcg_k:
-                retrieval_metrics[f"NDCG@{k_val}"] = 0.0
+            retrieval_metrics = {}
 
         epoch_metrics.update(retrieval_metrics)
-
         # 4) reduce final epoch metrics across ranks
         gathered_metrics: dict[str, float] = {}
+        mode_prefix = mode.value if isinstance(mode, RunMode) else str(mode)
         for k, v in epoch_metrics.items():
-            gathered_metrics[f"{mode}/{k}"] = self._maybe_reduce_metric(k, v)
+            gathered_metrics[f"{mode_prefix}/{k}"] = self._maybe_reduce_metric(k, v)
 
         return gathered_metrics
 
@@ -634,6 +776,19 @@ class VideoContrastiveLearningRunner:
             return t.item()
         else:
             return val
+
+    def _zero_retrieval_metrics(self) -> dict[str, float]:
+        metrics: dict[str, float] = {}
+        for k_val in self.config.recall_k:
+            metrics[f"Recall@{k_val}"] = 0.0
+        metrics.update({
+            "MRR": 0.0,
+            "MAP": 0.0,
+            "MedianRank_V2T": 0.0,
+        })
+        for k_val in self.config.ndcg_k:
+            metrics[f"NDCG@{k_val}"] = 0.0
+        return metrics
 
     def _save_checkpoint(self, epoch: int, metrics: dict, is_best: bool = False, is_highest_alignment: bool = False):
         """
@@ -744,6 +899,126 @@ class VideoContrastiveLearningRunner:
         if "scheduler" in checkpoint and checkpoint["scheduler"] and scheduler is not None:
             scheduler.load_state_dict(checkpoint["scheduler"])
 
+    def _build_siglip_payload(
+        self,
+        dataset: VideoClipDataset,
+        sample_ids: List[str],
+    ) -> Optional[dict]:
+        if not getattr(dataset, "siglip_enabled", False):
+            return None
+        if not hasattr(dataset, "build_siglip_batch"):
+            return None
+        siglip_batch = dataset.build_siglip_batch(sample_ids)
+        if not siglip_batch:
+            return None
+        payload = {}
+        for key in ("input_ids", "attention_mask", "positive_mask", "positive_weights"):
+            tensor = siglip_batch.get(key)
+            if tensor is None:
+                continue
+            payload[key] = tensor.to(self.device, non_blocking=True)
+        return payload
+
+    def _compute_siglip_pairwise_loss(
+        self,
+        video_embeddings: torch.Tensor,
+        siglip_batch: dict,
+    ) -> torch.Tensor:
+        siglip_text = self.text_encoder(
+            siglip_batch["input_ids"],
+            siglip_batch["attention_mask"],
+        )
+        video_norm = F.normalize(video_embeddings, dim=1)
+        text_norm = F.normalize(siglip_text, dim=1)
+        logits = torch.matmul(video_norm, text_norm.t())
+        temp = torch.exp(self.log_temp.float())
+        logits = logits / temp
+        pos_mask: torch.Tensor = siglip_batch["positive_mask"]
+        pos_weights: torch.Tensor = siglip_batch["positive_weights"]
+        weights = pos_weights if self.siglip_severity_weighting else None
+        return self.siglip_pairwise_loss(logits, pos_mask, weights)
+
+    def _compute_siglip_infonce_loss(
+        self,
+        video_embeddings: torch.Tensor,
+        text_embeddings: torch.Tensor,
+        siglip_batch: dict,
+    ) -> torch.Tensor:
+        video_norm = F.normalize(video_embeddings, dim=1)
+        text_norm = F.normalize(text_embeddings, dim=1)
+        logits = torch.matmul(video_norm, text_norm.t())
+        temp = torch.exp(self.log_temp.float())
+        logits = logits / temp
+        pos_mask: torch.Tensor = siglip_batch["positive_mask"]
+        pos_weights: torch.Tensor = siglip_batch["positive_weights"]
+        weights = pos_weights if self.siglip_severity_weighting else None
+        return self.multi_positive_loss(logits, pos_mask, weights)
+
+    def _compute_tree_losses(
+        self,
+        video_embeddings: torch.Tensor,
+        main_structure: Optional[torch.Tensor],
+        tree_logits: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
+        zero = video_embeddings.new_tensor(0.0)
+        if (
+            main_structure is None
+            or self.tree_loss_weight <= 0
+            or main_structure.numel() == 0
+        ):
+            return zero, zero, None, None
+
+        valid_mask = main_structure >= 0
+        if not valid_mask.any():
+            return zero, zero, None, None
+
+        logits: torch.Tensor
+        if tree_logits is not None:
+            logits = tree_logits[valid_mask]
+        else:
+            encoder = self.video_encoder
+            if hasattr(encoder, "module"):
+                encoder = encoder.module
+            if not hasattr(encoder, "classify_main_structure"):
+                return zero, zero, None, None
+            logits = encoder.classify_main_structure(video_embeddings[valid_mask])
+        logits = logits.view(-1)
+        targets = main_structure[valid_mask].float()
+        tree_loss = self.tree_loss_fn(logits, targets)
+        probs = torch.sigmoid(logits.detach())
+        targets_detached = targets.detach()
+        return tree_loss, tree_loss * self.tree_loss_weight, probs, targets_detached
+
+    @staticmethod
+    def _binary_auc(
+        probs: Optional[torch.Tensor],
+        targets: Optional[torch.Tensor],
+    ) -> Optional[float]:
+        if probs is None or targets is None:
+            return None
+        if probs.numel() == 0 or targets.numel() == 0:
+            return None
+        targets = targets.float()
+        pos = (targets > 0.5).sum()
+        neg = targets.numel() - pos
+        if pos == 0 or neg == 0:
+            return None
+        sorted_indices = torch.argsort(probs)
+        sorted_targets = targets[sorted_indices]
+        neg_cumulative = torch.cumsum((sorted_targets <= 0.5).float(), dim=0)
+        auc = neg_cumulative[sorted_targets > 0.5].sum() / (pos * neg)
+        return float(auc.item())
+
+    @staticmethod
+    def _grad_norm_from_params(params: list[torch.nn.Parameter]) -> float:
+        total = 0.0
+        for p in params:
+            if p.grad is None:
+                continue
+            param_norm = p.grad.detach().data.norm(2)
+            total += float(param_norm.item() ** 2)
+        return total ** 0.5
+
     def _preprocess_inputs(self, batch: dict) -> tuple[dict, list[str]]:
         """
         Moves raw batch data (videos, texts) to GPU and returns a dictionary suitable
@@ -752,10 +1027,14 @@ class VideoContrastiveLearningRunner:
         :param batch: Dictionary containing 'videos', 'encoded_texts', and 'paths'.
         :return: (step_inputs, paths_or_sids)
         """
+        main_structure = batch.get("main_structure")
+        if main_structure is not None:
+            main_structure = main_structure.to(self.device)
         return {
             "videos": batch["videos"].to(self.device).float(),
             "input_ids": batch["encoded_texts"]["input_ids"].to(self.device),
             "attention_mask": batch["encoded_texts"]["attention_mask"].to(self.device),
+            "main_structure": main_structure,
         }, batch["paths"]
 
     def _train_step(
@@ -763,6 +1042,8 @@ class VideoContrastiveLearningRunner:
         videos: torch.Tensor,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
+        main_structure: Optional[torch.Tensor] = None,
+        siglip_batch: Optional[dict] = None,
     ) -> tuple[dict, dict]:
         """
         One training iteration: forward → backward → (optional) clip → optimizer step →
@@ -788,14 +1069,52 @@ class VideoContrastiveLearningRunner:
         # ------------------------------------------------------------------
         # 1. forward
         # ------------------------------------------------------------------
+        need_tree_logits = (
+            main_structure is not None
+            and self.tree_loss_weight > 0
+        )
+
         with autocast_ctx:
-            video_emb = self.video_encoder(videos)
-            text_emb  = self.text_encoder(input_ids, attention_mask)
-            loss      = self.loss_fn.run(
-                video_features=video_emb,
-                text_features=text_emb,
-                log_temp=self.log_temp,
+            video_output = self.video_encoder(
+                videos,
+                return_tree_logits=need_tree_logits,
             )
+            if need_tree_logits:
+                video_emb, tree_logits = video_output
+            else:
+                video_emb = video_output
+                tree_logits = None
+            text_emb  = self.text_encoder(input_ids, attention_mask)
+            if siglip_batch and self.siglip_active:
+                if self.use_siglip_pairwise and self.siglip_pairwise_loss is not None:
+                    contrastive_loss = self._compute_siglip_pairwise_loss(
+                        video_embeddings=video_emb,
+                        siglip_batch=siglip_batch,
+                    )
+                elif self.use_siglip_infonce and self.multi_positive_loss is not None:
+                    contrastive_loss = self._compute_siglip_infonce_loss(
+                        video_embeddings=video_emb,
+                        text_embeddings=text_emb,
+                        siglip_batch=siglip_batch,
+                    )
+                else:
+                    contrastive_loss = self.loss_fn.run(
+                        video_features=video_emb,
+                        text_features=text_emb,
+                        log_temp=self.log_temp,
+                    )
+            else:
+                contrastive_loss = self.loss_fn.run(
+                    video_features=video_emb,
+                    text_features=text_emb,
+                    log_temp=self.log_temp,
+                )
+            tree_loss_raw, tree_loss_weighted, tree_probs, tree_targets = self._compute_tree_losses(
+                video_embeddings=video_emb,
+                main_structure=main_structure,
+                tree_logits=tree_logits,
+            )
+            loss = contrastive_loss + tree_loss_weighted
 
         # Scale loss by gradient accumulation steps
         scaled_loss = loss / self.config.gradient_accumulation_steps
@@ -809,18 +1128,26 @@ class VideoContrastiveLearningRunner:
             scaled_loss.backward()
 
         # ------------------------------------------------------------------
-        # 3. (optional) gradient clipping
+        # 3. (optional) gradient clipping + norm tracking
         # ------------------------------------------------------------------
         max_norm = getattr(self.config, "max_grad_norm", 5.0)  # 0 or None → disabled
-        if max_norm and (self.step + 1) % self.config.gradient_accumulation_steps == 0:
-            # Gather all trainable parameters once (store in __init__ if you prefer)
-            params = itertools.chain(
-                self.video_encoder.parameters(),
-                self.text_encoder.parameters(),
-            )
-            if amp_enabled:
-                self.scaler.unscale_(self.optimizer)  # Unscale before clipping
-            clip_grad_norm_(params, max_norm=max_norm)
+        video_params = [p for p in self.video_encoder.parameters() if p.requires_grad]
+        text_params = [p for p in self.text_encoder.parameters() if p.requires_grad]
+        params_list = video_params + text_params
+
+        if amp_enabled:
+            self.scaler.unscale_(self.optimizer)
+
+        video_grad_norm = self._grad_norm_from_params(video_params)
+        text_grad_norm = self._grad_norm_from_params(text_params)
+        grad_norm_val: float = (video_grad_norm ** 2 + text_grad_norm ** 2) ** 0.5
+
+        if max_norm and max_norm > 0 and (self.step + 1) % self.config.gradient_accumulation_steps == 0:
+            clip_grad_norm_(params_list, max_norm=max_norm)
+
+        self._last_grad_norm = grad_norm_val
+        self._last_video_grad_norm = video_grad_norm
+        self._last_text_grad_norm = text_grad_norm
 
         # ------------------------------------------------------------------
         # 4. optimizer step
@@ -875,9 +1202,17 @@ class VideoContrastiveLearningRunner:
             for i, pg in enumerate(self.optimizer.param_groups)
         }
 
+        tree_auc = self._binary_auc(tree_probs, tree_targets)
+
         batch_metrics = {
             "loss": loss.detach().item(),
+            "contrastive_loss": contrastive_loss.detach().item(),
+            "tree_loss": tree_loss_raw.detach().item(),
+            "tree_auc": tree_auc if tree_auc is not None else float("nan"),
             "temperature": self.log_temp.exp().detach().item(),
+            "grad_norm": grad_norm_val,
+            "grad_norm/video": video_grad_norm,
+            "grad_norm/text": text_grad_norm,
             "alignment_score": alignment_score,
             **embedding_norms,
             **lr_metrics,
@@ -894,7 +1229,9 @@ class VideoContrastiveLearningRunner:
         self, 
         videos: torch.Tensor, 
         input_ids: torch.Tensor, 
-        attention_mask: torch.Tensor
+        attention_mask: torch.Tensor,
+        main_structure: Optional[torch.Tensor] = None,
+        siglip_batch: Optional[dict] = None,
     ) -> tuple[dict, dict]:
         """
         Performs a single validation step (forward pass + metric computation).
@@ -904,24 +1241,66 @@ class VideoContrastiveLearningRunner:
         :param attention_mask: Attention mask for text.
         :return: (batch_metrics, embeddings) similar to _train_step, but without backprop.
         """
+        need_tree_logits = (
+            main_structure is not None
+            and self.tree_loss_weight > 0
+        )
+
         with torch.no_grad():
             with torch.amp.autocast("cuda"):
-                video_features = self.video_encoder(videos)
-                text_features = self.text_encoder(input_ids, attention_mask)
-                loss = self.loss_fn.run(
-                    video_features=video_features, 
-                    text_features=text_features, 
-                    log_temp=self.log_temp
+                video_output = self.video_encoder(
+                    videos,
+                    return_tree_logits=need_tree_logits,
                 )
+                if need_tree_logits:
+                    video_features, tree_logits = video_output
+                else:
+                    video_features = video_output
+                    tree_logits = None
+                text_features = self.text_encoder(input_ids, attention_mask)
+                if siglip_batch and self.siglip_active:
+                    if self.use_siglip_pairwise and self.siglip_pairwise_loss is not None:
+                        contrastive_loss = self._compute_siglip_pairwise_loss(
+                            video_embeddings=video_features,
+                            siglip_batch=siglip_batch,
+                        )
+                    elif self.use_siglip_infonce and self.multi_positive_loss is not None:
+                        contrastive_loss = self._compute_siglip_infonce_loss(
+                            video_embeddings=video_features,
+                            text_embeddings=text_features,
+                            siglip_batch=siglip_batch,
+                        )
+                    else:
+                        contrastive_loss = self.loss_fn.run(
+                            video_features=video_features,
+                            text_features=text_features,
+                            log_temp=self.log_temp
+                        )
+                else:
+                    contrastive_loss = self.loss_fn.run(
+                        video_features=video_features, 
+                        text_features=text_features, 
+                        log_temp=self.log_temp
+                    )
+                tree_loss_raw, tree_loss_weighted, tree_probs, tree_targets = self._compute_tree_losses(
+                    video_embeddings=video_features,
+                    main_structure=main_structure,
+                    tree_logits=tree_logits,
+                )
+                loss = contrastive_loss + tree_loss_weighted
 
             embedding_norms = compute_embedding_norms(video_features, text_features)
             alignment_score = compute_alignment_score(video_features, text_features)
 
         metrics = {"alignment_score": alignment_score, **embedding_norms}
+        tree_auc = self._binary_auc(tree_probs, tree_targets)
 
         return (
             {
                 "loss": loss.detach().item(),
+                "contrastive_loss": contrastive_loss.detach().item(),
+                "tree_loss": tree_loss_raw.detach().item(),
+                "tree_auc": tree_auc if tree_auc is not None else float("nan"),
                 "temperature": self.log_temp.exp().detach().item(),
                 **{
                     k: v.detach().item() if torch.is_tensor(v) else v

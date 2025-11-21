@@ -1,3 +1,4 @@
+import math
 import os
 import pandas as pd
 
@@ -42,6 +43,14 @@ from torch.nn.utils import clip_grad_norm_
 import torch.nn.functional as F
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+
+class NonFiniteLossError(RuntimeError):
+    """Raised when a non-finite loss or tensor value is detected during training."""
+
+    def __init__(self, message: str, diagnostics: Optional[Dict[str, Any]] = None):
+        super().__init__(message)
+        self.diagnostics: Dict[str, Any] = diagnostics or {}
 
 @RunnerRegistry.register("DeepCORO_clip")
 @RunnerRegistry.register("DeepCORO_clip_test")
@@ -110,7 +119,7 @@ class VideoContrastiveLearningRunner:
         self.highest_alignment_score: float = float("-inf")
         self.highest_alignment_epoch: int = -1
         self.log_temp: torch.Tensor = log_temp
-        self.step: int = 0  # Initialize step counter for gradient accumulation
+        self.step: int = 0  # Step counter for logging/diagnostics
         self.siglip_active: bool = bool(
             isinstance(train_loader.dataset, VideoClipDataset)
             and getattr(train_loader.dataset, "siglip_enabled", False)
@@ -150,11 +159,27 @@ class VideoContrastiveLearningRunner:
         self.progress_log_interval: int = max(
             1, int(getattr(self.config, "progress_log_interval", 200))
         )
+        if getattr(self.config, "gradient_accumulation_steps", 1) != 1:
+            if self.config.is_ref_device:
+                print(
+                    "[Runner] gradient_accumulation_steps>1 is no longer supported; "
+                    "defaulting to 1 (micro-batching disabled)."
+                )
+            self.config.gradient_accumulation_steps = 1
+        video_max_grad = getattr(self.config, "video_max_grad_norm", None)
+        if video_max_grad is None:
+            video_max_grad = getattr(self.config, "max_grad_norm", 1.0)
+        self.video_max_grad_norm: float = (
+            float(video_max_grad) if video_max_grad is not None else 0.0
+        )
+        text_max_grad = getattr(self.config, "text_max_grad_norm", None)
+        self.text_max_grad_norm: float = (
+            float(text_max_grad) if text_max_grad is not None else 0.0
+        )
 
         # For simplicity: check the config for a known scheduler_name
         # If it includes "_warmup" or is from HF, we treat it as per-iteration
         self.scheduler_per_iteration = self._scheduler_is_per_iteration()
-
     def _scheduler_is_per_iteration(self) -> bool:
         """
         Returns True if the chosen scheduler is a Hugging Face style that
@@ -167,7 +192,6 @@ class VideoContrastiveLearningRunner:
         # If it matches typical HF warmup schedulers, return True
         HF_KEYS = ["warmup", "with_warmup"]
         return any(k in sched_name for k in HF_KEYS)
-
 
     def train(
         self, 
@@ -192,6 +216,13 @@ class VideoContrastiveLearningRunner:
                     world_size=self.world_size,
                     device_ids=self.device
                 )
+
+                train_sampler = getattr(self.train_loader, "sampler", None)
+                if isinstance(train_sampler, DistributedUtils.DS.DistributedSampler):
+                    train_sampler.set_epoch(epoch)
+                val_sampler = getattr(self.val_loader, "sampler", None)
+                if isinstance(val_sampler, DistributedUtils.DS.DistributedSampler):
+                    val_sampler.set_epoch(epoch)
 
                 # Training phase
                 train_metrics: dict[str, float] = self._run_epoch(mode=RunMode.TRAIN, epoch=epoch)
@@ -447,7 +478,7 @@ class VideoContrastiveLearningRunner:
         if self.config.is_ref_device or (self.device == 0):
             iterator_obj = tqdm(dataloader, desc=tqdm_desc)
         batch_count: int = 0
-        for _, batch in enumerate(iterator_obj, start=1): # Use iterator_obj
+        for iteration_idx, batch in enumerate(iterator_obj, start=1): # Use iterator_obj
             if batch["videos"] is None or batch["encoded_texts"] is None:
                 continue
 
@@ -456,13 +487,26 @@ class VideoContrastiveLearningRunner:
             if siglip_payload is not None:
                 step_inputs["siglip_batch"] = siglip_payload
 
-            batch_metrics, embeddings = step_fn(**step_inputs)
-
-            # Check for NaN loss
-            if torch.isnan(torch.tensor(batch_metrics["loss"])):
-                error_msg = f"NaN loss detected in {mode} at epoch {epoch + 1}, batch {batch_count + 1}"
+            try:
+                batch_metrics, embeddings = step_fn(**step_inputs)
+            except NonFiniteLossError as err:
+                error_msg = (
+                    f"NaN loss detected in {mode} at epoch {epoch + 1}, "
+                    f"batch {iteration_idx}"
+                )
                 if self.config.is_ref_device:
                     print(f"\nERROR: {error_msg}")
+                    if err.diagnostics:
+                        print(f"Diagnostics: {err.diagnostics}")
+                raise RuntimeError(error_msg) from err
+
+            # Check for NaN loss
+            loss_value = float(batch_metrics["loss"])
+            if not math.isfinite(loss_value):
+                error_msg = f"NaN loss detected in {mode} at epoch {epoch + 1}, batch {iteration_idx}"
+                if self.config.is_ref_device:
+                    print(f"\nERROR: {error_msg}")
+                    print(f"Diagnostics: {{'loss': {loss_value}}}")
                 raise RuntimeError(error_msg)
 
             # Store embeddings on CPU
@@ -709,7 +753,8 @@ class VideoContrastiveLearningRunner:
                                 ground_truth_indices=ground_truth_indices,
                                 epoch=epoch,
                                 wandb_wrapper=self.wandb_wrapper,
-                                dataset_obj=dataset
+                                dataset_obj=dataset,
+                                text_segments=text_segments,
                             )
 
             # Save retrieval results with mapping
@@ -724,6 +769,9 @@ class VideoContrastiveLearningRunner:
                             ground_truth_indices_override=ground_truth_indices,
                             top_k_predictions=int(getattr(self.config, "topk", 5) or 5),
                             text_segments=text_segments,
+                            index_to_texts=unique_texts,
+                            index_to_text_ids=all_text_ids,
+                            json_top_k=15,
                         )
                         # Compute retrieval metrics (use ground_truth_matrix if available for multi-positive)
                         if use_siglip_texts and 'ground_truth_matrix' in locals():
@@ -919,6 +967,21 @@ class VideoContrastiveLearningRunner:
             payload[key] = tensor.to(self.device, non_blocking=True)
         return payload
 
+    def _scaled_logits(self, v: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        """
+        Computes cosine-similarity logits with robust normalization, nan guards, and a CLIP-style cap.
+        """
+        v = F.normalize(v, dim=1, eps=1e-6)
+        t = F.normalize(t, dim=1, eps=1e-6)
+        v = torch.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0)
+        t = torch.nan_to_num(t, nan=0.0, posinf=0.0, neginf=0.0)
+
+        logits = torch.matmul(v.float(), t.float().t()).float()
+
+        logit_scale = torch.clamp((-self.log_temp).float(), max=math.log(100.0))
+        scale = torch.exp(logit_scale)
+        return logits * scale
+
     def _compute_siglip_pairwise_loss(
         self,
         video_embeddings: torch.Tensor,
@@ -928,14 +991,17 @@ class VideoContrastiveLearningRunner:
             siglip_batch["input_ids"],
             siglip_batch["attention_mask"],
         )
-        video_norm = F.normalize(video_embeddings, dim=1)
-        text_norm = F.normalize(siglip_text, dim=1)
-        logits = torch.matmul(video_norm, text_norm.t())
-        temp = torch.exp(self.log_temp.float())
-        logits = logits / temp
         pos_mask: torch.Tensor = siglip_batch["positive_mask"]
-        pos_weights: torch.Tensor = siglip_batch["positive_weights"]
+        if pos_mask.sum().item() == 0:
+            return video_embeddings.sum() * 0.0
+
+        logits = self._scaled_logits(video_embeddings, siglip_text)
+
+        pos_weights: Optional[torch.Tensor] = siglip_batch.get("positive_weights")
         weights = pos_weights if self.siglip_severity_weighting else None
+        if weights is not None:
+            weights = torch.nan_to_num(weights, nan=0.0, posinf=0.0, neginf=0.0).float()
+
         return self.siglip_pairwise_loss(logits, pos_mask, weights)
 
     def _compute_siglip_infonce_loss(
@@ -944,14 +1010,17 @@ class VideoContrastiveLearningRunner:
         text_embeddings: torch.Tensor,
         siglip_batch: dict,
     ) -> torch.Tensor:
-        video_norm = F.normalize(video_embeddings, dim=1)
-        text_norm = F.normalize(text_embeddings, dim=1)
-        logits = torch.matmul(video_norm, text_norm.t())
-        temp = torch.exp(self.log_temp.float())
-        logits = logits / temp
+        logits = self._scaled_logits(video_embeddings, text_embeddings)
+
         pos_mask: torch.Tensor = siglip_batch["positive_mask"]
-        pos_weights: torch.Tensor = siglip_batch["positive_weights"]
+        pos_weights: Optional[torch.Tensor] = siglip_batch.get("positive_weights")
         weights = pos_weights if self.siglip_severity_weighting else None
+        if weights is not None:
+            weights = torch.nan_to_num(weights, nan=0.0, posinf=0.0, neginf=0.0).float()
+
+        if pos_mask.sum().item() == 0:
+            return logits.sum() * 0.0
+
         return self.multi_positive_loss(logits, pos_mask, weights)
 
     def _compute_tree_losses(
@@ -972,17 +1041,11 @@ class VideoContrastiveLearningRunner:
         if not valid_mask.any():
             return zero, zero, None, None
 
-        logits: torch.Tensor
-        if tree_logits is not None:
-            logits = tree_logits[valid_mask]
-        else:
-            encoder = self.video_encoder
-            if hasattr(encoder, "module"):
-                encoder = encoder.module
-            if not hasattr(encoder, "classify_main_structure"):
-                return zero, zero, None, None
-            logits = encoder.classify_main_structure(video_embeddings[valid_mask])
-        logits = logits.view(-1)
+        if tree_logits is None:
+            return zero, zero, None, None
+
+        logits = tree_logits[valid_mask].view(-1).float()
+        logits = torch.clamp(logits, -20.0, 20.0)
         targets = main_structure[valid_mask].float()
         tree_loss = self.tree_loss_fn(logits, targets)
         probs = torch.sigmoid(logits.detach())
@@ -1056,19 +1119,14 @@ class VideoContrastiveLearningRunner:
         embeddings : dict
             'video_embeddings' | 'text_embeddings' (fp32, detached only at caller's request)
         """
-        # ------------------------------------------------------------------
-        # 0. housekeeping
-        # ------------------------------------------------------------------
-        # Clear gradients only if this is the first step in accumulation
-        if self.step % self.config.gradient_accumulation_steps == 0:
-            self.optimizer.zero_grad(set_to_none=True)
+        self.optimizer.zero_grad(set_to_none=True)
 
         amp_enabled: bool = self.scaler is not None
-        autocast_ctx: torch.amp.autocast = torch.amp.autocast(device_type="cuda", enabled=amp_enabled)
+        autocast_ctx: torch.amp.autocast = torch.amp.autocast(
+            device_type="cuda",
+            enabled=amp_enabled,
+        )
 
-        # ------------------------------------------------------------------
-        # 1. forward
-        # ------------------------------------------------------------------
         need_tree_logits = (
             main_structure is not None
             and self.tree_loss_weight > 0
@@ -1077,14 +1135,26 @@ class VideoContrastiveLearningRunner:
         with autocast_ctx:
             video_output = self.video_encoder(
                 videos,
-                return_tree_logits=need_tree_logits,
+                compute_tree_logits=need_tree_logits,
             )
-            if need_tree_logits:
-                video_emb, tree_logits = video_output
-            else:
-                video_emb = video_output
-                tree_logits = None
-            text_emb  = self.text_encoder(input_ids, attention_mask)
+            video_emb = video_output["video_embeds"]
+            tree_logits = video_output.get("tree_logits")
+            text_emb = self.text_encoder(input_ids, attention_mask)
+            if (
+                not torch.isfinite(video_emb).all()
+                or not torch.isfinite(text_emb).all()
+            ):
+                diagnostics = {
+                    "video_has_nan": bool(torch.isnan(video_emb).any().item()),
+                    "video_has_inf": bool(torch.isinf(video_emb).any().item()),
+                    "text_has_nan": bool(torch.isnan(text_emb).any().item()),
+                    "text_has_inf": bool(torch.isinf(text_emb).any().item()),
+                    "step": self.step,
+                }
+                raise NonFiniteLossError(
+                    "Non-finite encoder outputs",
+                    diagnostics=diagnostics,
+                )
             if siglip_batch and self.siglip_active:
                 if self.use_siglip_pairwise and self.siglip_pairwise_loss is not None:
                     contrastive_loss = self._compute_siglip_pairwise_loss(
@@ -1116,24 +1186,24 @@ class VideoContrastiveLearningRunner:
             )
             loss = contrastive_loss + tree_loss_weighted
 
-        # Scale loss by gradient accumulation steps
-        scaled_loss = loss / self.config.gradient_accumulation_steps
+            if not torch.isfinite(loss):
+                diagnostics = {
+                    "contrastive_loss": float(contrastive_loss.detach().float()),
+                    "tree_loss": float(tree_loss_weighted.detach().float()),
+                    "step": self.step,
+                }
+                raise NonFiniteLossError(
+                    "Detected non-finite loss before backward pass",
+                    diagnostics=diagnostics,
+                )
 
-        # ------------------------------------------------------------------
-        # 2. backward
-        # ------------------------------------------------------------------
         if amp_enabled:
-            self.scaler.scale(scaled_loss).backward()
+            self.scaler.scale(loss).backward()
         else:
-            scaled_loss.backward()
+            loss.backward()
 
-        # ------------------------------------------------------------------
-        # 3. (optional) gradient clipping + norm tracking
-        # ------------------------------------------------------------------
-        max_norm = getattr(self.config, "max_grad_norm", 5.0)  # 0 or None → disabled
         video_params = [p for p in self.video_encoder.parameters() if p.requires_grad]
         text_params = [p for p in self.text_encoder.parameters() if p.requires_grad]
-        params_list = video_params + text_params
 
         if amp_enabled:
             self.scaler.unscale_(self.optimizer)
@@ -1142,39 +1212,38 @@ class VideoContrastiveLearningRunner:
         text_grad_norm = self._grad_norm_from_params(text_params)
         grad_norm_val: float = (video_grad_norm ** 2 + text_grad_norm ** 2) ** 0.5
 
-        if max_norm and max_norm > 0 and (self.step + 1) % self.config.gradient_accumulation_steps == 0:
-            clip_grad_norm_(params_list, max_norm=max_norm)
+        if (
+            self.video_max_grad_norm
+            and self.video_max_grad_norm > 0
+            and video_params
+        ):
+            clip_grad_norm_(video_params, max_norm=self.video_max_grad_norm)
+        if (
+            self.text_max_grad_norm
+            and self.text_max_grad_norm > 0
+            and text_params
+        ):
+            clip_grad_norm_(text_params, max_norm=self.text_max_grad_norm)
 
         self._last_grad_norm = grad_norm_val
         self._last_video_grad_norm = video_grad_norm
         self._last_text_grad_norm = text_grad_norm
 
-        # ------------------------------------------------------------------
-        # 4. optimizer step
-        # ------------------------------------------------------------------
-        # Only step optimizer and update scaler if this is the last step in accumulation
-        if (self.step + 1) % self.config.gradient_accumulation_steps == 0:
-            if amp_enabled:
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-            else:
-                self.optimizer.step()
-            
-            # Step the learning rate scheduler after optimizer step
-            if self.lr_scheduler and self.scheduler_per_iteration:
-                self.lr_scheduler.step()
+        if amp_enabled:
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            self.optimizer.step()
 
-        # Increment step counter
+        if self.lr_scheduler and self.scheduler_per_iteration:
+            self.lr_scheduler.step()
+
         self.step += 1
 
-        # ------------------------------------------------------------------
-        # 5. logging (rank‑0 only)
-        # ------------------------------------------------------------------
         if (
             self.config.is_ref_device
             and self.wandb_wrapper.is_initialized()
         ):
-            # Norms already unscaled; no extra sync needed if you run this on rank‑0
             log_gradient_norms(
                 model=self.video_encoder,
                 wandb_wrapper=self.wandb_wrapper,
@@ -1204,12 +1273,19 @@ class VideoContrastiveLearningRunner:
 
         tree_auc = self._binary_auc(tree_probs, tree_targets)
 
+        effective_logit_scale = float(
+            torch.exp(
+                torch.clamp((-self.log_temp).detach().float(), max=math.log(100.0))
+            ).item()
+        )
+
         batch_metrics = {
             "loss": loss.detach().item(),
             "contrastive_loss": contrastive_loss.detach().item(),
             "tree_loss": tree_loss_raw.detach().item(),
             "tree_auc": tree_auc if tree_auc is not None else float("nan"),
             "temperature": self.log_temp.exp().detach().item(),
+            "logit_scale": effective_logit_scale,
             "grad_norm": grad_norm_val,
             "grad_norm/video": video_grad_norm,
             "grad_norm/text": text_grad_norm,
@@ -1250,13 +1326,10 @@ class VideoContrastiveLearningRunner:
             with torch.amp.autocast("cuda"):
                 video_output = self.video_encoder(
                     videos,
-                    return_tree_logits=need_tree_logits,
+                    compute_tree_logits=need_tree_logits,
                 )
-                if need_tree_logits:
-                    video_features, tree_logits = video_output
-                else:
-                    video_features = video_output
-                    tree_logits = None
+                video_features = video_output["video_embeds"]
+                tree_logits = video_output.get("tree_logits")
                 text_features = self.text_encoder(input_ids, attention_mask)
                 if siglip_batch and self.siglip_active:
                     if self.use_siglip_pairwise and self.siglip_pairwise_loss is not None:
@@ -1344,7 +1417,7 @@ class VideoContrastiveLearningRunner:
         ):
             with torch.no_grad():
                 with torch.amp.autocast("cuda"):
-                    video_embeddings = self.video_encoder(batch["videos"]).float()
+                    video_embeddings = self.video_encoder(batch["videos"])["video_embeds"].float()
                     
             similarity_matrix = torch.matmul(video_embeddings, text_embeddings.t())
             _, topk_indices = torch.topk(similarity_matrix, k=self.config.topk, dim=1)

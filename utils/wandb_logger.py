@@ -4,11 +4,12 @@ Logging utilities for training and evaluation.
 
 import os
 import csv
+import json
 import wandb
 import torch
 import torch.nn as nn
 from datetime import datetime
-from typing import Any, Dict, Optional, List, Tuple
+from typing import Any, Dict, Iterable, Optional, List, Tuple, Union
 from PIL import Image
 import numpy as np
 import tempfile
@@ -627,7 +628,8 @@ def log_best_worst_retrievals(
     ground_truth_indices: torch.Tensor,
     epoch: int, 
     wandb_wrapper: WandbWrapper,
-    dataset_obj: VideoClipDataset 
+    dataset_obj: VideoClipDataset,
+    text_segments: Optional[List[Optional[str]]] = None,
 ) -> None:
     """Log best and worst retrievals to wandb.
     
@@ -672,7 +674,8 @@ def log_best_worst_retrievals(
             epoch=epoch,
             is_best=True,
             wandb_wrapper=wandb_wrapper,
-            dataset_obj=dataset_obj
+            dataset_obj=dataset_obj,
+            text_segments=text_segments,
         )
 
     # Process and log worst retrievals
@@ -689,7 +692,8 @@ def log_best_worst_retrievals(
             epoch=epoch,
             is_best=False,
             wandb_wrapper=wandb_wrapper,
-            dataset_obj=dataset_obj
+            dataset_obj=dataset_obj,
+            text_segments=text_segments,
         )
 
 def _log_retrieval(
@@ -702,11 +706,29 @@ def _log_retrieval(
     epoch: int,
     is_best: bool,
     wandb_wrapper: WandbWrapper,
-    dataset_obj: VideoClipDataset
+    dataset_obj: VideoClipDataset,
+    text_segments: Optional[List[Optional[str]]] = None,
 ) -> None:
     """Helper function to log a single retrieval example."""
-    top_5_text_indices = torch.argsort(similarity_matrix[idx], descending=True)[:5]
-    predicted_texts = [unique_texts[j.item()] for j in top_5_text_indices]
+    values, indices = torch.sort(similarity_matrix[idx], descending=True)
+    unique_predictions = _select_unique_segment_predictions(
+        indices.tolist(), values.tolist(), text_segments, max_unique=5
+    )
+
+    if not unique_predictions:
+        print(f"Warning: Unable to collect predictions for index {idx}.")
+        return
+
+    predicted_texts: List[str] = []
+    for rank_offset, (pred_idx, _, seg_display) in enumerate(unique_predictions, start=1):
+        if 0 <= pred_idx < len(unique_texts):
+            text_label = unique_texts[pred_idx]
+        else:
+            text_label = f"<missing idx {pred_idx}>"
+        if seg_display:
+            predicted_texts.append(f"{rank_offset}. [{seg_display}] {text_label}")
+        else:
+            predicted_texts.append(f"{rank_offset}. {text_label}")
     
     video_to_log_path: Optional[str] = None
     is_temp_video = False
@@ -866,6 +888,41 @@ def _create_video_grid(video_paths: List[str], output_fps: int = 10, cell_resolu
     return temp_grid_path, True
 
 
+def _select_unique_segment_predictions(
+    predicted_indices: List[int],
+    predicted_sims: List[float],
+    text_segments: Optional[List[Optional[str]]],
+    max_unique: Optional[int] = None,
+) -> List[Tuple[int, float, Optional[str]]]:
+    """
+    Keep only the first occurrence of each segment in the ranked predictions.
+    """
+    if not predicted_indices or not predicted_sims:
+        return []
+
+    seen_segments: set[str] = set()
+    filtered: List[Tuple[int, float, Optional[str]]] = []
+
+    for idx_val, sim_val in zip(predicted_indices, predicted_sims):
+        seg_display: Optional[str] = None
+        seg_norm: Optional[str] = None
+        if text_segments is not None and 0 <= idx_val < len(text_segments):
+            seg_value = text_segments[idx_val]
+            if isinstance(seg_value, str):
+                seg_display = seg_value.strip() or None
+                if seg_display:
+                    seg_norm = seg_display.lower()
+        if seg_norm:
+            if seg_norm in seen_segments:
+                continue
+            seen_segments.add(seg_norm)
+        filtered.append((idx_val, sim_val, seg_display))
+        if max_unique is not None and max_unique > 0 and len(filtered) >= max_unique:
+            break
+
+    return filtered
+
+
 def save_retrieval_results(
     similarity_matrix: torch.Tensor,
     all_identifiers: List[str],
@@ -873,72 +930,146 @@ def save_retrieval_results(
     report_to_global_index: Optional[Dict[str, int]],
     epoch: int,
     output_dir: str,
-    dataset_obj: VideoClipDataset
+    dataset_obj: VideoClipDataset,
+    ground_truth_indices_override: Optional[Union[Iterable[int], torch.Tensor, np.ndarray]] = None,
+    top_k_predictions: int = 5,
+    text_segments: Optional[List[Optional[str]]] = None,
+    index_to_texts: Optional[List[str]] = None,
+    index_to_text_ids: Optional[List[str]] = None,
+    json_top_k: int = 15,
 ) -> None:
     """
-    Save retrieval results to a CSV, showing top-5 predicted indices and their similarities
-    for each sample. If report_to_global_index is None, we default to using row index i as the
-    ground-truth index.
+    Save retrieval results to a CSV, showing top-K predicted indices and their similarities
+    for each sample, and emit a JSON companion with the top `json_top_k` unique-by-segment
+    predictions per identifier. If report_to_global_index is None, we default to using row
+    index i as the ground-truth index unless `ground_truth_indices_override` is provided.
     Handles different CSV structures for single vs. multi-video modes.
     """
     val_csv_path = os.path.join(output_dir, f"val_epoch{epoch}.csv")
-    
+
     multi_video_mode = dataset_obj.multi_video_mode
     actual_groupby_col_name = dataset_obj.groupby_column if dataset_obj.groupby_column else "study_id"
 
+    normalized_gt_indices: Optional[List[int]] = None
+    if ground_truth_indices_override is not None:
+        if isinstance(ground_truth_indices_override, torch.Tensor):
+            normalized_gt_indices = ground_truth_indices_override.detach().cpu().tolist()
+        elif isinstance(ground_truth_indices_override, np.ndarray):
+            normalized_gt_indices = ground_truth_indices_override.tolist()
+        else:
+            try:
+                normalized_gt_indices = [int(idx) for idx in ground_truth_indices_override]  # type: ignore[arg-type]
+            except TypeError:
+                normalized_gt_indices = None
+
+    json_records: List[Dict[str, Any]] = []
+    text_count = similarity_matrix.shape[1]
+    json_top_k = max(1, int(json_top_k))
+    max_k = max(1, int(top_k_predictions))
+
     with open(val_csv_path, mode="w", newline="", encoding="utf-8") as csvfile:
         writer = csv.writer(csvfile)
-        
-        header_base = [
-            "ground_truth_idx",
-            "predicted_idx_1", "sim_1",
-            "predicted_idx_2", "sim_2",
-            "predicted_idx_3", "sim_3",
-            "predicted_idx_4", "sim_4",
-            "predicted_idx_5", "sim_5",
-        ]
-        
-        header_prefix = []
+
+        header_base = ["ground_truth_idx"]
+        for rank in range(1, max_k + 1):
+            header_base.append(f"predicted_idx_{rank}")
+            header_base.append(f"sim_{rank}")
+
         if multi_video_mode:
             header_prefix = [actual_groupby_col_name, "VideoFileNames"]
         else:
             header_prefix = ["FileName"]
-            
+
         writer.writerow(header_prefix + header_base)
 
         for i, identifier in enumerate(all_identifiers):
-            # Use the minimum of 5 and the actual number of samples available
-            k = min(5, similarity_matrix.shape[1])
-            top_k_sim_scores, top_k_text_indices = torch.topk(similarity_matrix[i], k=k)
-            predicted_indices = [idx.item() for idx in top_k_text_indices]
-            predicted_sims = [score.item() for score in top_k_sim_scores]
+            if text_count == 0:
+                continue
+
+            base_k = min(max_k, text_count)
+            expanded_target = max(json_top_k, base_k)
+            buffer_multiplier = 3 if text_segments else 1
+            k_for_topk = min(text_count, expanded_target * buffer_multiplier)
+
+            top_values, top_indices = torch.topk(similarity_matrix[i], k=k_for_topk)
+            ranked_indices = [idx.item() for idx in top_indices]
+            ranked_sims = [score.item() for score in top_values]
+
+            unique_for_csv = _select_unique_segment_predictions(
+                ranked_indices, ranked_sims, text_segments, max_unique=base_k
+            )
+            unique_for_json = _select_unique_segment_predictions(
+                ranked_indices, ranked_sims, text_segments, max_unique=json_top_k
+            )
 
             gt_text = all_ground_truth_reports[i]
+            gt_idx: Optional[int] = None
+            if normalized_gt_indices is not None and i < len(normalized_gt_indices):
+                try:
+                    gt_idx = int(normalized_gt_indices[i])
+                except (TypeError, ValueError):
+                    gt_idx = None
 
-            if report_to_global_index is not None and gt_text in report_to_global_index:
-                gt_idx = report_to_global_index[gt_text]
-            else:
-                print(f"Warning: Ground truth text '{gt_text}' not found in report_to_global_index for identifier '{identifier}'. Using row index {i} as fallback gt_idx.")
-                gt_idx = i 
+            if gt_idx is None:
+                if report_to_global_index is not None and gt_text in report_to_global_index:
+                    gt_idx = report_to_global_index[gt_text]
+                else:
+                    print(
+                        f"Warning: Ground truth text '{gt_text}' not found in report_to_global_index for identifier "
+                        f"'{identifier}'. Using row index {i} as fallback gt_idx."
+                    )
+                    gt_idx = i
 
-            current_row_prefix_data = []
+            current_row_prefix_data: List[Any] = []
             if multi_video_mode:
                 sid = identifier
                 video_files_list = dataset_obj.get_video_paths(sid)
                 video_files_str = ";".join(video_files_list) if video_files_list else ""
                 current_row_prefix_data.extend([sid, video_files_str])
             else:
-                filename = identifier
-                current_row_prefix_data.append(filename)
-            
-            row_data_suffix = [gt_idx]
-            for p_idx, p_sim in zip(predicted_indices, predicted_sims):
-                row_data_suffix.append(p_idx)
-                row_data_suffix.append(f"{p_sim:.4f}")
-            
-            num_prediction_pairs = (len(header_base) -1) // 2
-            while len(predicted_indices) < num_prediction_pairs:
+                current_row_prefix_data.append(identifier)
+
+            row_data_suffix: List[Any] = [gt_idx]
+            filled = 0
+            for pred_idx, pred_sim, _ in unique_for_csv:
+                row_data_suffix.append(pred_idx)
+                row_data_suffix.append(f"{pred_sim:.4f}")
+                filled += 1
+            while filled < max_k:
                 row_data_suffix.extend(["", ""])
-                predicted_indices.append(-1) 
+                filled += 1
+
             writer.writerow(current_row_prefix_data + row_data_suffix)
-    print(f"Saved retrieval results to {val_csv_path}")
+
+            json_predictions: List[Dict[str, Any]] = []
+            for rank_offset, (pred_idx, pred_sim, seg_display) in enumerate(unique_for_json, start=1):
+                text_id_val = None
+                if index_to_text_ids is not None and 0 <= pred_idx < len(index_to_text_ids):
+                    text_id_val = index_to_text_ids[pred_idx]
+                text_label_val = None
+                if index_to_texts is not None and 0 <= pred_idx < len(index_to_texts):
+                    text_label_val = index_to_texts[pred_idx]
+                json_predictions.append(
+                    {
+                        "rank": rank_offset,
+                        "text_index": pred_idx,
+                        "text_id": text_id_val,
+                        "segment": seg_display,
+                        "similarity": pred_sim,
+                        "text": text_label_val,
+                    }
+                )
+
+            json_records.append(
+                {
+                    "identifier": identifier,
+                    "ground_truth_idx": gt_idx,
+                    "top_predictions": json_predictions,
+                }
+            )
+
+    json_output_path = os.path.join(output_dir, f"val_epoch{epoch}_top{json_top_k}.json")
+    with open(json_output_path, "w", encoding="utf-8") as json_file:
+        json.dump(json_records, json_file, indent=2)
+
+    print(f"Saved retrieval results to {val_csv_path} and {json_output_path}")

@@ -63,10 +63,9 @@ class ContrastivePretrainingProject(BaseProject):
         is_distributed = DistributedUtils.is_initialized()
         world_size = DistributedUtils.get_world_size() if is_distributed else 1
         global_rank = DistributedUtils.get_rank() if is_distributed else 0
-        force_cpu = isinstance(self.config.device, str) and self.config.device == "cpu"
-        use_cuda = torch.cuda.is_available() and not force_cpu
         default_local_rank = int(self.config.device) if isinstance(self.config.device, int) else 0
-        if use_cuda:
+        force_cpu = isinstance(self.config.device, str) and self.config.device == "cpu"
+        if torch.cuda.is_available() and not force_cpu:
             local_rank = DistributedUtils.get_local_rank() if is_distributed else default_local_rank
             torch.cuda.set_device(local_rank)
             device = torch.device(f"cuda:{local_rank}")
@@ -75,8 +74,8 @@ class ContrastivePretrainingProject(BaseProject):
             device = torch.device("cpu")
 
         train_loader: DataLoader = get_distributed_video_clip_dataloader(
-            self.config, 
-            split="train", 
+            self.config,
+            split="train",
             mean=mean.tolist(),
             std=std.tolist(),
             shuffle=True,
@@ -85,8 +84,8 @@ class ContrastivePretrainingProject(BaseProject):
             drop_last=True,
         )
         val_loader: DataLoader = get_distributed_video_clip_dataloader(
-            self.config, 
-            split="val", 
+            self.config,
+            split="val",
             mean=mean.tolist(),
             std=std.tolist(),
             shuffle=False,
@@ -95,7 +94,9 @@ class ContrastivePretrainingProject(BaseProject):
             drop_last=True,
         )
 
-        # Create models
+        # Create models - all ranks create simultaneously
+        # Models/weights are cached locally, so no need for sequential creation
+        print(f"[Rank {global_rank}] Creating video_encoder...", flush=True)
         video_encoder: VideoEncoder = ModelRegistry.get(
             name="video_encoder"
         )(
@@ -109,14 +110,16 @@ class ContrastivePretrainingProject(BaseProject):
             num_heads=self.config.num_heads,
             aggregator_depth=self.config.aggregator_depth,
         )
-        video_encoder = video_encoder.to(device).float()
-
+        print(f"[Rank {global_rank}] video_encoder done. Creating text_encoder...", flush=True)
         text_encoder: TextEncoder = ModelRegistry.get(
             name="text_encoder"
         )(
             freeze_ratio=self.config.text_freeze_ratio,
             dropout=self.config.dropout,
         )
+        print(f"[Rank {global_rank}] text_encoder done.", flush=True)
+
+        video_encoder = video_encoder.to(device).float()
         text_encoder = text_encoder.to(device).float()
 
         # Make temperature a trainable parameter directly on the device
@@ -131,48 +134,54 @@ class ContrastivePretrainingProject(BaseProject):
         )
         video_encoder.register_parameter("log_temperature", log_temperature)
 
-        self._synchronize_trainable_params(video_encoder, module_name="video_encoder")
-        self._synchronize_trainable_params(text_encoder, module_name="text_encoder")
+        # Skip manual parameter synchronization - DDP handles this automatically
+        # when wrapping the model. The _synchronize_trainable_params was causing
+        # NCCL hangs due to barrier issues.
 
         if DistributedUtils.is_initialized():
             vid_params = sum(p.numel() for p in video_encoder.parameters())
             txt_params = sum(p.numel() for p in text_encoder.parameters())
             print(f"[Rank {global_rank}] video params={vid_params}, text params={txt_params}")
 
-        ddp_device_ids = [local_rank] if device.type == "cuda" else None
-        ddp_output_device = local_rank if device.type == "cuda" else None
-        video_encoder = DistributedUtils.DDP(
-            video_encoder,
-            device_ids=ddp_device_ids,
-            output_device=ddp_output_device,
-            broadcast_buffers=False,
-            find_unused_parameters=True,
-        )
-        text_encoder = DistributedUtils.DDP(
-            text_encoder,
-            device_ids=ddp_device_ids,
-            output_device=ddp_output_device,
-            broadcast_buffers=False,
-            find_unused_parameters=True,
-        )
-        log_temperature = video_encoder.module.log_temperature
+        use_ddp = is_distributed and world_size > 1
+        ddp_kwargs: dict[str, Any] = {
+            "broadcast_buffers": False,
+            "find_unused_parameters": bool(getattr(self.config, "find_unused_parameters", False)),
+        }
+        try:
+            from packaging.version import Version
+
+            if Version(torch.__version__) >= Version("2.1"):
+                ddp_kwargs["static_graph"] = bool(getattr(self.config, "ddp_static_graph", True))
+        except Exception:
+            pass
+
+        if use_ddp:
+            if device.type == "cuda":
+                ddp_kwargs.update(device_ids=[local_rank], output_device=local_rank)
+            video_encoder = DistributedUtils.DDP(video_encoder, **ddp_kwargs)
+            text_encoder = DistributedUtils.DDP(text_encoder, **ddp_kwargs)
+
+        video_module = video_encoder.module if use_ddp else video_encoder
+        text_module = text_encoder.module if use_ddp else text_encoder
+        log_temperature = video_module.log_temperature
 
         # Different learning rates for different components
         param_groups = [
             {
-                'params': video_encoder.module.model.parameters(),  # Main video backbone
+                'params': video_module.model.parameters(),  # Main video backbone
                 'lr': self.config.lr,
                 'name': 'video_backbone',
                 'weight_decay': self.config.video_weight_decay
             },
             {
-                'params': video_encoder.module.aggregator.parameters(),  # Multihead attention aggregator
+                'params': video_module.aggregator.parameters(),  # Multihead attention aggregator
                 'lr': self.config.lr * 2.0,  # Higher learning rate for aggregator
                 'name': 'video_aggregator',
                 'weight_decay': self.config.video_weight_decay
             },
             {
-                'params': text_encoder.module.parameters(),  # Entire text encoder
+                'params': text_module.parameters(),  # Entire text encoder
                 'lr': 0.00002,  # Lower learning rate for text encoder
                 'name': 'text_encoder',
                 'weight_decay': self.config.text_weight_decay
@@ -300,21 +309,31 @@ class ContrastivePretrainingProject(BaseProject):
         video_encoder.register_parameter("log_temperature", log_temperature)
         self._synchronize_trainable_params(video_encoder, module_name="video_encoder")
         
-        ddp_device_ids = [local_rank] if device.type == "cuda" else None
-        ddp_output_device = local_rank if device.type == "cuda" else None
-        video_encoder = DistributedUtils.DDP(
-            video_encoder,
-            device_ids=ddp_device_ids,
-            output_device=ddp_output_device,
-            broadcast_buffers=False,
-            find_unused_parameters=True,
-        )
-        log_temperature = video_encoder.module.log_temperature
+        use_ddp = is_distributed and world_size > 1
+        ddp_kwargs_inf: dict[str, Any] = {
+            "broadcast_buffers": False,
+            "find_unused_parameters": bool(getattr(self.config, "find_unused_parameters", False)),
+        }
+        try:
+            from packaging.version import Version
+
+            if Version(torch.__version__) >= Version("2.1"):
+                ddp_kwargs_inf["static_graph"] = bool(getattr(self.config, "ddp_static_graph", True))
+        except Exception:
+            pass
+
+        if use_ddp:
+            if device.type == "cuda":
+                ddp_kwargs_inf.update(device_ids=[local_rank], output_device=local_rank)
+            video_encoder = DistributedUtils.DDP(video_encoder, **ddp_kwargs_inf)
+
+        video_module = video_encoder.module if use_ddp else video_encoder
+        log_temperature = video_module.log_temperature
         
         checkpoint: dict[str, Any] = self._load_checkpoint(self.config.checkpoint)
         video_state = checkpoint["video_encoder"]
         has_log_temp = "log_temperature" in video_state
-        video_encoder.module.load_state_dict(video_state, strict=has_log_temp)
+        video_module.load_state_dict(video_state, strict=has_log_temp)
         if not has_log_temp and "train/temperature" in checkpoint:
             temp_tensor = torch.tensor(
                 checkpoint["train/temperature"],
@@ -322,7 +341,7 @@ class ContrastivePretrainingProject(BaseProject):
                 device=log_temperature.device,
             )
             log_temperature.data.copy_(temp_tensor.log())
-        log_temp: torch.Tensor = video_encoder.module.log_temperature
+        log_temp: torch.Tensor = video_module.log_temperature
 
         return {
             "val_loader": val_loader,
@@ -344,21 +363,26 @@ class ContrastivePretrainingProject(BaseProject):
         if not params:
             return
 
-        # Build a binary mask indicating which parameters require gradients.
-        if torch.cuda.is_available():
-            local_rank = DistributedUtils.get_local_rank()
-            device = torch.device(f"cuda:{local_rank}")
-        else:
-            device = torch.device("cpu")
-        mask = torch.tensor(
-            [1 if p.requires_grad else 0 for p in params],
-            dtype=torch.int32,
-            device=device,
-        )
+        world_size = DistributedUtils.get_world_size()
 
-        # All-reduce with MAX so a parameter stays trainable if it is enabled on any rank.
-        DistributedUtils.dist.all_reduce(mask, op=DistributedUtils.dist.ReduceOp.MAX)
-        mask_list = mask.tolist()
+        if world_size > 1:
+            # Use tensor-based all_reduce instead of all_gather_object for efficiency
+            # all_gather_object with large lists (100k+ params) causes NCCL timeouts
+            device = next(module.parameters()).device
+            local_mask = torch.tensor(
+                [1 if p.requires_grad else 0 for p in params],
+                dtype=torch.int32,
+                device=device,
+            )
+
+            # Barrier to ensure all ranks are ready
+            DistributedUtils.dist.barrier()
+
+            # Use all_reduce with MAX to get the union of trainable params across ranks
+            DistributedUtils.dist.all_reduce(local_mask, op=DistributedUtils.dist.ReduceOp.MAX)
+            mask_list = local_mask.tolist()
+        else:
+            mask_list = [1 if p.requires_grad else 0 for p in params]
 
         changed = False
         for desired, param in zip(mask_list, params):
@@ -381,8 +405,14 @@ class ContrastivePretrainingProject(BaseProject):
         print(f"Resuming from checkpoint: {checkpoint.keys()}")
         video_state = checkpoint["video_encoder"]
         has_log_temp = "log_temperature" in video_state
-        training_setup["video_encoder"].module.load_state_dict(video_state, strict=has_log_temp)
-        training_setup["text_encoder"].module.load_state_dict(checkpoint["text_encoder"])
+        video_module = training_setup["video_encoder"]
+        text_module = training_setup["text_encoder"]
+        if hasattr(video_module, "module"):
+            video_module = video_module.module
+        if hasattr(text_module, "module"):
+            text_module = text_module.module
+        video_module.load_state_dict(video_state, strict=has_log_temp)
+        text_module.load_state_dict(checkpoint["text_encoder"])
         training_setup["optimizer"].load_state_dict(checkpoint["optimizer"])
         training_setup["lr_scheduler"].load_state_dict(checkpoint["scheduler"])
         training_setup["scaler"].load_state_dict(checkpoint["scaler"])

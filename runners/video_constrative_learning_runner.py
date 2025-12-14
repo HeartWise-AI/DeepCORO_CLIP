@@ -151,7 +151,17 @@ class VideoContrastiveLearningRunner:
             if self.use_siglip_infonce
             else None
         )
-        self.tree_loss_weight: float = float(getattr(self.config, "main_structure_loss_weight", 0.0) or 0.0)
+        configured_tree_weight = getattr(self.config, "tree_loss_weight", None)
+        legacy_tree_weight = getattr(self.config, "main_structure_loss_weight", 0.0)
+        if configured_tree_weight is None:
+            configured_tree_weight = legacy_tree_weight
+        configured_tree_enabled = getattr(self.config, "tree_loss_enabled", None)
+        if configured_tree_enabled is None:
+            tree_loss_enabled = float(configured_tree_weight or 0.0) > 0.0
+        else:
+            tree_loss_enabled = bool(configured_tree_enabled)
+        tree_loss_weight_value = float(configured_tree_weight or 0.0)
+        self.tree_loss_weight: float = tree_loss_weight_value if tree_loss_enabled else 0.0
         self.tree_loss_fn: nn.Module = nn.BCEWithLogitsLoss()
         self._last_grad_norm: float = 0.0
         self._last_video_grad_norm: float = 0.0
@@ -176,6 +186,10 @@ class VideoContrastiveLearningRunner:
         self.text_max_grad_norm: float = (
             float(text_max_grad) if text_max_grad is not None else 0.0
         )
+
+        # Debug mode for detailed numerical stability logging
+        self.debug_numerical: bool = bool(getattr(self.config, "debug", False))
+        self._debug_log_interval: int = 50  # Log every N steps when debug is enabled
 
         # For simplicity: check the config for a known scheduler_name
         # If it includes "_warmup" or is from HF, we treat it as per-iteration
@@ -468,6 +482,7 @@ class VideoContrastiveLearningRunner:
         # Store local embeddings & text for retrieval computations
         all_video_embeddings_local: List[torch.Tensor] = []
         all_text_embeddings_local: List[torch.Tensor] = []
+        all_tree_logits_local: List[torch.Tensor] = []
         all_paths_local: List[str] = []
         all_ground_truth_reports_local: List[str] = []
 
@@ -510,8 +525,16 @@ class VideoContrastiveLearningRunner:
                 raise RuntimeError(error_msg)
 
             # Store embeddings on CPU
-            all_video_embeddings_local.append(embeddings["video_embeddings"].cpu())
-            all_text_embeddings_local.append(embeddings["text_embeddings"].cpu())
+            batch_video_emb = embeddings["video_embeddings"]
+            batch_text_emb = embeddings["text_embeddings"]
+            batch_size = batch_video_emb.shape[0]
+            all_video_embeddings_local.append(batch_video_emb.cpu())
+            all_text_embeddings_local.append(batch_text_emb.cpu())
+
+            if mode == RunMode.VALIDATE:
+                tree_logits_batch = embeddings.get("tree_logits")
+                if tree_logits_batch is not None:
+                    all_tree_logits_local.append(tree_logits_batch.detach().cpu())
 
             # Use dataset.multi_video_mode for consistency
             # paths_or_sids contains SIDs in multi-video mode, and direct file paths in single-video mode.
@@ -578,8 +601,16 @@ class VideoContrastiveLearningRunner:
             local_video_feats: torch.Tensor = torch.empty((0, 512), device=self.device)
             local_text_feats: torch.Tensor = torch.empty((0, 512), device=self.device)
 
+        local_tree_logits: Optional[torch.Tensor] = None
+        if len(all_tree_logits_local) > 0:
+            local_tree_logits = torch.cat(all_tree_logits_local, dim=0).to(self.device)
+
         # 2) gather across GPUs
         global_video_feats: torch.Tensor = self._gather_tensor_along_batch(local_video_feats, self.world_size)
+        global_tree_logits: Optional[torch.Tensor] = None
+        if local_tree_logits is not None and local_tree_logits.numel() > 0:
+            gathered_tree = self._gather_tensor_along_batch(local_tree_logits, self.world_size)
+            global_tree_logits = gathered_tree
 
         # 3) gather paths & reports
         global_paths: list[str] = self._gather_strings_across_gpus(
@@ -589,6 +620,18 @@ class VideoContrastiveLearningRunner:
             all_ground_truth_reports_local, self.world_size, device=local_video_feats.device
         )
 
+        tree_predictions: Optional[List[Optional[str]]] = None
+        if (
+            global_tree_logits is not None
+            and global_tree_logits.numel() == len(global_paths)
+            and len(global_paths) > 0
+        ):
+            logits_cpu = global_tree_logits.detach().cpu().tolist()
+            tree_predictions = [
+                (None if math.isnan(value) else ("right" if value >= 0.0 else "left"))
+                for value in logits_cpu
+            ]
+
         # Optionally compute NxM retrieval metrics on rank 0
         retrieval_metrics: dict[str, float] = {}
         if mode == RunMode.VALIDATE and len(global_video_feats) > 0:
@@ -597,6 +640,7 @@ class VideoContrastiveLearningRunner:
             )
 
         text_segments: Optional[List[Optional[str]]] = None
+        text_trees: Optional[List[Optional[str]]] = None
 
         if mode == RunMode.VALIDATE:
             if self.config.is_ref_device and len(global_video_feats) > 0:
@@ -620,10 +664,21 @@ class VideoContrastiveLearningRunner:
                         dataset.siglip.text_lookup[tid].get("prompt_text", "")
                         for tid in all_text_ids
                     ]
-                    text_segments = [
-                        (dataset.siglip.text_lookup[tid].get("segment") if dataset.siglip else None)
-                        for tid in all_text_ids
-                    ]
+                    siglip_lookup = dataset.siglip.text_lookup if dataset.siglip else {}
+                    normalize_tree = getattr(dataset, "_normalize_tree_key", None)
+                    text_segments = []
+                    text_trees = []
+                    for tid in all_text_ids:
+                        meta = siglip_lookup.get(tid, {})
+                        text_segments.append(meta.get("segment"))
+                        raw_tree = meta.get("tree")
+                        normalized_tree = None
+                        if callable(normalize_tree):
+                            normalized_tree = normalize_tree(raw_tree)
+                        elif isinstance(raw_tree, str):
+                            stripped = raw_tree.strip().lower()
+                            normalized_tree = stripped if stripped else None
+                        text_trees.append(normalized_tree)
                     text_id_to_index: Dict[str, int] = {tid: idx for idx, tid in enumerate(all_text_ids)}
                     # Also create text_to_index for save_retrieval_results compatibility
                     text_to_index: Dict[str, int] = {text: idx for idx, text in enumerate(unique_texts)}
@@ -755,6 +810,8 @@ class VideoContrastiveLearningRunner:
                                 wandb_wrapper=self.wandb_wrapper,
                                 dataset_obj=dataset,
                                 text_segments=text_segments,
+                                text_trees=text_trees,
+                                sample_tree_predictions=tree_predictions,
                             )
 
             # Save retrieval results with mapping
@@ -769,6 +826,8 @@ class VideoContrastiveLearningRunner:
                             ground_truth_indices_override=ground_truth_indices,
                             top_k_predictions=int(getattr(self.config, "topk", 5) or 5),
                             text_segments=text_segments,
+                            text_trees=text_trees,
+                            sample_tree_predictions=tree_predictions,
                             index_to_texts=unique_texts,
                             index_to_text_ids=all_text_ids,
                             json_top_k=15,
@@ -978,7 +1037,9 @@ class VideoContrastiveLearningRunner:
 
         logits = torch.matmul(v.float(), t.float().t()).float()
 
-        logit_scale = torch.clamp((-self.log_temp).float(), max=math.log(100.0))
+        # Clamp both lower and upper bounds to prevent underflow/overflow
+        # Lower bound: exp(-4.6) ≈ 0.01, Upper bound: exp(4.6) ≈ 100
+        logit_scale = torch.clamp((-self.log_temp).float(), min=math.log(0.01), max=math.log(100.0))
         scale = torch.exp(logit_scale)
         return logits * scale
 
@@ -1045,9 +1106,17 @@ class VideoContrastiveLearningRunner:
             return zero, zero, None, None
 
         logits = tree_logits[valid_mask].view(-1).float()
+        logits = torch.nan_to_num(logits, nan=0.0, posinf=0.0, neginf=0.0)
         logits = torch.clamp(logits, -20.0, 20.0)
         targets = main_structure[valid_mask].float()
+        targets = torch.nan_to_num(targets, nan=0.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
         tree_loss = self.tree_loss_fn(logits, targets)
+        if not torch.isfinite(tree_loss):
+            if getattr(self.config, "is_ref_device", False):
+                print(
+                    "[TreeLoss] Non-finite tree loss detected; skipping this batch.",
+                )
+            return zero, zero, None, None
         probs = torch.sigmoid(logits.detach())
         targets_detached = targets.detach()
         return tree_loss, tree_loss * self.tree_loss_weight, probs, targets_detached
@@ -1140,6 +1209,21 @@ class VideoContrastiveLearningRunner:
             video_emb = video_output["video_embeds"]
             tree_logits = video_output.get("tree_logits")
             text_emb = self.text_encoder(input_ids, attention_mask)
+
+            # Debug logging for numerical stability monitoring
+            if self.debug_numerical and self.step % self._debug_log_interval == 0:
+                v_min, v_max = video_emb.min().item(), video_emb.max().item()
+                v_mean, v_std = video_emb.mean().item(), video_emb.std().item()
+                t_min, t_max = text_emb.min().item(), text_emb.max().item()
+                t_mean, t_std = text_emb.mean().item(), text_emb.std().item()
+                temp_val = torch.exp(-self.log_temp).item()
+                print(
+                    f"[Debug Step {self.step}] "
+                    f"video_emb: min={v_min:.4f} max={v_max:.4f} mean={v_mean:.4f} std={v_std:.4f} | "
+                    f"text_emb: min={t_min:.4f} max={t_max:.4f} mean={t_mean:.4f} std={t_std:.4f} | "
+                    f"temp={temp_val:.4f}"
+                )
+
             if (
                 not torch.isfinite(video_emb).all()
                 or not torch.isfinite(text_emb).all()
@@ -1225,6 +1309,10 @@ class VideoContrastiveLearningRunner:
         ):
             clip_grad_norm_(text_params, max_norm=self.text_max_grad_norm)
 
+        # Clip temperature gradient to prevent wild swings in logit scaling
+        if hasattr(self, "log_temp") and self.log_temp.grad is not None:
+            self.log_temp.grad.clamp_(-0.1, 0.1)
+
         self._last_grad_norm = grad_norm_val
         self._last_video_grad_norm = video_grad_norm
         self._last_text_grad_norm = text_grad_norm
@@ -1298,6 +1386,8 @@ class VideoContrastiveLearningRunner:
             "video_embeddings": video_fp32,
             "text_embeddings": text_fp32,
         }
+        if tree_logits is not None:
+            embeddings["tree_logits"] = tree_logits.detach().float()
 
         return batch_metrics, embeddings
 
@@ -1368,6 +1458,13 @@ class VideoContrastiveLearningRunner:
         metrics = {"alignment_score": alignment_score, **embedding_norms}
         tree_auc = self._binary_auc(tree_probs, tree_targets)
 
+        embeddings_out = {
+            "video_embeddings": video_features.float(),
+            "text_embeddings": text_features.float(),
+        }
+        if tree_logits is not None:
+            embeddings_out["tree_logits"] = tree_logits.float()
+
         return (
             {
                 "loss": loss.detach().item(),
@@ -1380,10 +1477,7 @@ class VideoContrastiveLearningRunner:
                     for k, v in metrics.items()
                 },
             },
-            {
-                "video_embeddings": video_features.float(),
-                "text_embeddings": text_features.float(),
-            },
+            embeddings_out,
         )
 
     def validate(self):

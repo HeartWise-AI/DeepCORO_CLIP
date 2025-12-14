@@ -34,6 +34,7 @@ def main(config: HeartWiseConfig):
     
     # Set seed for reproducibility
     set_seed(config.seed)
+    print(f"[Main] device={config.device}, world_size={config.world_size}, is_ref={config.is_ref_device}")
     
     # Initialize process group with explicit device ID and world size
     DistributedUtils.ddp_setup(
@@ -47,8 +48,18 @@ def main(config: HeartWiseConfig):
             'lr', 'batch_size', 'temperature', 'video_freeze_ratio',
             'text_freeze_ratio', 'dropout', 'num_heads', 'aggregator_depth',
             'optimizer', 'scheduler_name', 'lr_step_period', 'factor',
-            'weight_decay', 'loss_name', 'tag', 'name', 'project', 'entity',
-            'gradient_accumulation_steps', 'num_warmup_percent'
+            'video_weight_decay', 'text_weight_decay', 'max_grad_norm',
+            'video_max_grad_norm', 'text_max_grad_norm',
+            'main_structure_loss_weight', 'tree_loss_enabled', 'tree_loss_weight',
+            'loss_name', 'tag', 'name',
+            'project', 'entity',
+            'num_warmup_percent', 'num_hard_restarts_cycles',
+            'warm_restart_tmult', 'siglip_max_positive_per_video',
+            'siglip_negatives_per_video', 'siglip_round_robin_sampling',
+            'siglip_max_segments_per_video', 'siglip_positive_loss_weight',
+            'siglip_negative_loss_weight', 'siglip_enable_severity_weighting',
+            'siglip_auto_positive_loss_weight', 'use_amp',
+            'aggregate_videos_tokens', 'per_video_pool'
         )
         
         wandb_wrapper: WandbWrapper = WandbWrapper(
@@ -58,12 +69,6 @@ def main(config: HeartWiseConfig):
             sweep_params=sweep_params
         )
                     
-        # Synchronize the updated config across all GPUs
-        DistributedUtils.sync_process_group(
-            world_size=config.world_size,
-            device_ids=config.device
-        )
-            
         # Create and run the project
         project: Project = Project(
             project_type=ProjectRegistry.get(

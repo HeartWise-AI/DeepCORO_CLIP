@@ -9,7 +9,7 @@ import wandb
 import torch
 import torch.nn as nn
 from datetime import datetime
-from typing import Any, Dict, Iterable, Optional, List, Tuple, Union
+from typing import Any, Dict, Iterable, Optional, List, Set, Tuple, Union
 from PIL import Image
 import numpy as np
 import tempfile
@@ -630,6 +630,8 @@ def log_best_worst_retrievals(
     wandb_wrapper: WandbWrapper,
     dataset_obj: VideoClipDataset,
     text_segments: Optional[List[Optional[str]]] = None,
+    text_trees: Optional[List[Optional[str]]] = None,
+    sample_tree_predictions: Optional[List[Optional[str]]] = None,
 ) -> None:
     """Log best and worst retrievals to wandb.
     
@@ -645,6 +647,8 @@ def log_best_worst_retrievals(
     if not wandb_wrapper.is_initialized(): # Check if wandb is initialized
         return
         
+    tree_to_text_indices = _build_tree_index(text_trees, dataset_obj)
+
     # Find best and worst retrievals based on maximum similarity scores for each video
     max_scores_per_video, _ = similarity_matrix.max(dim=1)
     
@@ -676,6 +680,8 @@ def log_best_worst_retrievals(
             wandb_wrapper=wandb_wrapper,
             dataset_obj=dataset_obj,
             text_segments=text_segments,
+            text_tree_indices=tree_to_text_indices,
+            sample_tree_predictions=sample_tree_predictions,
         )
 
     # Process and log worst retrievals
@@ -694,6 +700,8 @@ def log_best_worst_retrievals(
             wandb_wrapper=wandb_wrapper,
             dataset_obj=dataset_obj,
             text_segments=text_segments,
+            text_tree_indices=tree_to_text_indices,
+            sample_tree_predictions=sample_tree_predictions,
         )
 
 def _log_retrieval(
@@ -708,27 +716,58 @@ def _log_retrieval(
     wandb_wrapper: WandbWrapper,
     dataset_obj: VideoClipDataset,
     text_segments: Optional[List[Optional[str]]] = None,
+    text_tree_indices: Optional[Dict[str, Set[int]]] = None,
+    sample_tree_predictions: Optional[List[Optional[str]]] = None,
 ) -> None:
     """Helper function to log a single retrieval example."""
-    values, indices = torch.sort(similarity_matrix[idx], descending=True)
-    unique_predictions = _select_unique_segment_predictions(
-        indices.tolist(), values.tolist(), text_segments, max_unique=5
+    segment_index, segment_display = _build_segment_index(
+        text_segments, len(unique_texts)
     )
+    tree_label = None
+    if sample_tree_predictions and idx < len(sample_tree_predictions):
+        tree_label = _normalize_tree_label(sample_tree_predictions[idx], dataset_obj)
+    if tree_label is None:
+        tree_label = _resolve_tree_for_identifier(all_paths[idx], dataset_obj)
+    allowed_indices = None
+    if tree_label and text_tree_indices:
+        allowed_indices = text_tree_indices.get(tree_label)
+    if allowed_indices:
+        segment_rankings = _rank_segments(
+            similarity_matrix[idx],
+            segment_index,
+            segment_display,
+            limit=5,
+            allowed_text_indices=allowed_indices,
+        )
+        if not segment_rankings:
+            segment_rankings = _rank_segments(
+                similarity_matrix[idx],
+                segment_index,
+                segment_display,
+                limit=5,
+            )
+    else:
+        segment_rankings = _rank_segments(
+            similarity_matrix[idx],
+            segment_index,
+            segment_display,
+            limit=5,
+        )
 
-    if not unique_predictions:
+    if not segment_rankings:
         print(f"Warning: Unable to collect predictions for index {idx}.")
         return
 
     predicted_texts: List[str] = []
-    for rank_offset, (pred_idx, _, seg_display) in enumerate(unique_predictions, start=1):
+    for rank_offset, entry in enumerate(segment_rankings, start=1):
+        pred_idx = entry["text_index"]
+        seg_display = entry["segment_label"]
         if 0 <= pred_idx < len(unique_texts):
             text_label = unique_texts[pred_idx]
         else:
             text_label = f"<missing idx {pred_idx}>"
-        if seg_display:
-            predicted_texts.append(f"{rank_offset}. [{seg_display}] {text_label}")
-        else:
-            predicted_texts.append(f"{rank_offset}. {text_label}")
+        prefix = seg_display if seg_display else "segment"
+        predicted_texts.append(f"{rank_offset}. [{prefix}] {text_label}")
     
     video_to_log_path: Optional[str] = None
     is_temp_video = False
@@ -888,39 +927,175 @@ def _create_video_grid(video_paths: List[str], output_fps: int = 10, cell_resolu
     return temp_grid_path, True
 
 
-def _select_unique_segment_predictions(
-    predicted_indices: List[int],
-    predicted_sims: List[float],
+def _normalize_segment_label(value: Optional[str]) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    return normalized.lower()
+
+
+def _build_segment_index(
     text_segments: Optional[List[Optional[str]]],
-    max_unique: Optional[int] = None,
-) -> List[Tuple[int, float, Optional[str]]]:
-    """
-    Keep only the first occurrence of each segment in the ranked predictions.
-    """
-    if not predicted_indices or not predicted_sims:
-        return []
+    text_count: int,
+) -> Tuple[Dict[str, List[int]], Dict[str, Optional[str]]]:
+    segment_to_indices: Dict[str, List[int]] = {}
+    segment_display: Dict[str, Optional[str]] = {}
 
-    seen_segments: set[str] = set()
-    filtered: List[Tuple[int, float, Optional[str]]] = []
+    if not text_segments:
+        for idx in range(text_count):
+            key = f"__idx_{idx}"
+            segment_to_indices[key] = [idx]
+            segment_display[key] = None
+        return segment_to_indices, segment_display
 
-    for idx_val, sim_val in zip(predicted_indices, predicted_sims):
-        seg_display: Optional[str] = None
-        seg_norm: Optional[str] = None
-        if text_segments is not None and 0 <= idx_val < len(text_segments):
-            seg_value = text_segments[idx_val]
-            if isinstance(seg_value, str):
-                seg_display = seg_value.strip() or None
-                if seg_display:
-                    seg_norm = seg_display.lower()
-        if seg_norm:
-            if seg_norm in seen_segments:
-                continue
-            seen_segments.add(seg_norm)
-        filtered.append((idx_val, sim_val, seg_display))
-        if max_unique is not None and max_unique > 0 and len(filtered) >= max_unique:
-            break
+    covered: set[int] = set()
+    for idx in range(min(len(text_segments), text_count)):
+        seg_value = text_segments[idx]
+        norm = _normalize_segment_label(seg_value)
+        if norm is None:
+            key = f"__idx_{idx}"
+            segment_to_indices[key] = [idx]
+            segment_display[key] = None
+            covered.add(idx)
+            continue
+        if norm not in segment_to_indices:
+            segment_to_indices[norm] = []
+            display = seg_value.strip() if isinstance(seg_value, str) else norm
+            segment_display[norm] = display
+        segment_to_indices[norm].append(idx)
+        covered.add(idx)
 
-    return filtered
+    for idx in range(text_count):
+        if idx in covered:
+            continue
+        key = f"__idx_{idx}"
+        segment_to_indices[key] = [idx]
+        segment_display[key] = None
+
+    return segment_to_indices, segment_display
+
+
+def _normalize_tree_label(
+    tree_value: Optional[str],
+    dataset_obj: Optional[VideoClipDataset] = None,
+) -> Optional[str]:
+    if dataset_obj is not None:
+        normalizer = getattr(dataset_obj, "_normalize_tree_key", None)
+        if callable(normalizer):
+            normalized = normalizer(tree_value)
+            if normalized:
+                normalized_str = str(normalized).strip().lower()
+                if normalized_str:
+                    return normalized_str
+    if isinstance(tree_value, str):
+        lowered = tree_value.strip().lower()
+        return lowered if lowered else None
+    return None
+
+
+def _build_tree_index(
+    text_trees: Optional[List[Optional[str]]],
+    dataset_obj: VideoClipDataset,
+) -> Dict[str, Set[int]]:
+    tree_index: Dict[str, Set[int]] = {}
+    if not text_trees:
+        return tree_index
+    for idx, tree_hint in enumerate(text_trees):
+        normalized = _normalize_tree_label(tree_hint, dataset_obj)
+        if normalized:
+            if normalized not in tree_index:
+                tree_index[normalized] = set()
+            tree_index[normalized].add(idx)
+    return tree_index
+
+
+def _resolve_tree_for_identifier(
+    identifier: str,
+    dataset_obj: VideoClipDataset,
+) -> Optional[str]:
+    normalized_identifier = str(identifier)
+    candidate_indices: List[int] = []
+
+    idx = dataset_obj.video_path_to_idx.get(normalized_identifier)
+    if idx is not None:
+        candidate_indices.append(idx)
+
+    if not candidate_indices:
+        candidate_paths = dataset_obj.get_video_paths(normalized_identifier)
+        for path in candidate_paths:
+            mapped = dataset_obj.video_path_to_idx.get(str(path))
+            if mapped is not None:
+                candidate_indices.append(mapped)
+
+    if not candidate_indices:
+        try:
+            fallback_idx = dataset_obj.fnames.index(normalized_identifier)
+            candidate_indices.append(fallback_idx)
+        except (AttributeError, ValueError):
+            pass
+
+    video_trees: List[Optional[str]] = getattr(dataset_obj, "video_trees", [])
+    main_labels: List[int] = getattr(dataset_obj, "main_structure_labels", [])
+
+    for dataset_idx in candidate_indices:
+        if 0 <= dataset_idx < len(video_trees):
+            normalized = _normalize_tree_label(video_trees[dataset_idx], dataset_obj)
+            if normalized:
+                return normalized
+        if 0 <= dataset_idx < len(main_labels):
+            label_val = main_labels[dataset_idx]
+            if label_val == 0:
+                return "left"
+            if label_val == 1:
+                return "right"
+
+    return None
+
+
+def _rank_segments(
+    sim_row: torch.Tensor,
+    segment_to_indices: Dict[str, List[int]],
+    segment_display: Dict[str, Optional[str]],
+    limit: int,
+    allowed_text_indices: Optional[Set[int]] = None,
+) -> List[Dict[str, Any]]:
+    if sim_row.ndim > 1:
+        sim_row = sim_row.view(-1)
+    sim_cpu = sim_row.detach().float().cpu()
+    vocab = sim_cpu.shape[0]
+
+    if not segment_to_indices:
+        segment_to_indices = {f"__idx_{i}": [i] for i in range(vocab)}
+        segment_display = {key: None for key in segment_to_indices}
+
+    entries: List[Dict[str, Any]] = []
+    for seg_key, idx_list in segment_to_indices.items():
+        valid_indices = [idx for idx in idx_list if 0 <= idx < vocab]
+        if allowed_text_indices:
+            valid_indices = [idx for idx in valid_indices if idx in allowed_text_indices]
+        if not valid_indices:
+            continue
+        idx_tensor = torch.tensor(valid_indices, dtype=torch.long)
+        logits = sim_cpu[idx_tensor]
+        best_pos = torch.argmax(logits).item()
+        best_idx = int(idx_tensor[best_pos].item())
+        best_sim = float(logits[best_pos].item())
+        entries.append(
+            {
+                "segment_key": seg_key,
+                "segment_label": segment_display.get(seg_key),
+                "segment_score": best_sim,
+                "text_index": best_idx,
+                "text_similarity": best_sim,
+            }
+        )
+
+    entries.sort(key=lambda item: item["segment_score"], reverse=True)
+    if limit > 0:
+        entries = entries[:limit]
+    return entries
 
 
 def save_retrieval_results(
@@ -934,6 +1109,8 @@ def save_retrieval_results(
     ground_truth_indices_override: Optional[Union[Iterable[int], torch.Tensor, np.ndarray]] = None,
     top_k_predictions: int = 5,
     text_segments: Optional[List[Optional[str]]] = None,
+    text_trees: Optional[List[Optional[str]]] = None,
+    sample_tree_predictions: Optional[List[Optional[str]]] = None,
     index_to_texts: Optional[List[str]] = None,
     index_to_text_ids: Optional[List[str]] = None,
     json_top_k: int = 15,
@@ -966,6 +1143,9 @@ def save_retrieval_results(
     text_count = similarity_matrix.shape[1]
     json_top_k = max(1, int(json_top_k))
     max_k = max(1, int(top_k_predictions))
+    segment_index, segment_display = _build_segment_index(text_segments, text_count)
+    tree_to_text_indices = _build_tree_index(text_trees, dataset_obj)
+    combined_limit = max(json_top_k, max_k)
 
     with open(val_csv_path, mode="w", newline="", encoding="utf-8") as csvfile:
         writer = csv.writer(csvfile)
@@ -986,21 +1166,39 @@ def save_retrieval_results(
             if text_count == 0:
                 continue
 
-            base_k = min(max_k, text_count)
-            expanded_target = max(json_top_k, base_k)
-            buffer_multiplier = 3 if text_segments else 1
-            k_for_topk = min(text_count, expanded_target * buffer_multiplier)
+            allowed_idx_set: Optional[Set[int]] = None
+            tree_label = None
+            if sample_tree_predictions and i < len(sample_tree_predictions):
+                tree_label = _normalize_tree_label(sample_tree_predictions[i], dataset_obj)
+            if tree_label is None:
+                tree_label = _resolve_tree_for_identifier(identifier, dataset_obj)
+            if tree_label and tree_to_text_indices:
+                idx_candidates = tree_to_text_indices.get(tree_label)
+                if idx_candidates:
+                    allowed_idx_set = idx_candidates
 
-            top_values, top_indices = torch.topk(similarity_matrix[i], k=k_for_topk)
-            ranked_indices = [idx.item() for idx in top_indices]
-            ranked_sims = [score.item() for score in top_values]
-
-            unique_for_csv = _select_unique_segment_predictions(
-                ranked_indices, ranked_sims, text_segments, max_unique=base_k
-            )
-            unique_for_json = _select_unique_segment_predictions(
-                ranked_indices, ranked_sims, text_segments, max_unique=json_top_k
-            )
+            if allowed_idx_set:
+                segment_rankings = _rank_segments(
+                    similarity_matrix[i],
+                    segment_index,
+                    segment_display,
+                    limit=combined_limit,
+                    allowed_text_indices=allowed_idx_set,
+                )
+                if not segment_rankings:
+                    segment_rankings = _rank_segments(
+                        similarity_matrix[i],
+                        segment_index,
+                        segment_display,
+                        limit=combined_limit,
+                    )
+            else:
+                segment_rankings = _rank_segments(
+                    similarity_matrix[i],
+                    segment_index,
+                    segment_display,
+                    limit=combined_limit,
+                )
 
             gt_text = all_ground_truth_reports[i]
             gt_idx: Optional[int] = None
@@ -1031,9 +1229,9 @@ def save_retrieval_results(
 
             row_data_suffix: List[Any] = [gt_idx]
             filled = 0
-            for pred_idx, pred_sim, _ in unique_for_csv:
-                row_data_suffix.append(pred_idx)
-                row_data_suffix.append(f"{pred_sim:.4f}")
+            for entry in segment_rankings[:max_k]:
+                row_data_suffix.append(entry["text_index"])
+                row_data_suffix.append(f"{entry['text_similarity']:.4f}")
                 filled += 1
             while filled < max_k:
                 row_data_suffix.extend(["", ""])
@@ -1042,7 +1240,10 @@ def save_retrieval_results(
             writer.writerow(current_row_prefix_data + row_data_suffix)
 
             json_predictions: List[Dict[str, Any]] = []
-            for rank_offset, (pred_idx, pred_sim, seg_display) in enumerate(unique_for_json, start=1):
+            for rank_offset, entry in enumerate(segment_rankings[:json_top_k], start=1):
+                pred_idx = entry["text_index"]
+                pred_sim = entry["text_similarity"]
+                seg_display = entry["segment_label"]
                 text_id_val = None
                 if index_to_text_ids is not None and 0 <= pred_idx < len(index_to_text_ids):
                     text_id_val = index_to_text_ids[pred_idx]

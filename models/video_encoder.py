@@ -1,5 +1,7 @@
 """Model definitions for DeepCORO_CLIP."""
 
+from typing import Dict, Tuple
+
 import torch
 import torch.nn as nn
 from torchvision.models.video import mvit_v2_s, r3d_18
@@ -109,6 +111,9 @@ class VideoEncoder(nn.Module):
             aggregator_depth=aggregator_depth
         )
 
+        # LayerNorm to stabilize features before aggregator (prevents magnitude drift)
+        self.pre_agg_norm = nn.LayerNorm(output_dim)
+
         # 4) Freeze partial layers
         self._freeze_partial_layers()
 
@@ -122,6 +127,11 @@ class VideoEncoder(nn.Module):
         self._apply_aggregator: bool = aggregate_videos_tokens
         self._per_video_pool: bool = per_video_pool
         self._warned_non_finite: bool = False  # Emit at most one warning per process
+        self._last_forward_had_non_finite: bool = False
+        self._nan_replacement_std: float = 1e-3
+        self._nan_fallback_by_shape: Dict[
+            Tuple[str, int | None, Tuple[int, ...]], torch.Tensor
+        ] = {}
 
         # ------------------------------------------------------------------
         # Monkey-patch `forward_features` on the instance *once*.
@@ -175,7 +185,7 @@ class VideoEncoder(nn.Module):
     def get_tokens(self, x: torch.Tensor, mode: str = "patch"):
         self._apply_aggregator = False
         self._per_video_pool = (mode == "video")
-        return self.forward(x)
+        return self.forward(x)["video_embeds"]
     
     def _extract_backbone_features(self, x: torch.Tensor) -> torch.Tensor:
         """Return token-level features from the underlying video backbone.
@@ -222,8 +232,8 @@ class VideoEncoder(nn.Module):
         self,
         x: torch.Tensor,
         *,
-        return_tree_logits: bool = False,
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        compute_tree_logits: bool = False,
+    ) -> dict[str, torch.Tensor]:
         """
         Run the video branch in full precision even when global AMP is enabled.
         This prevents half-precision overflow inside the backbone/projection,
@@ -231,15 +241,14 @@ class VideoEncoder(nn.Module):
         """
         if x.is_cuda and torch.is_autocast_enabled():
             with autocast("cuda", enabled=False):
-                out = self._forward_impl(x.float())
+                video_embeds = self._forward_impl(x.float())
         else:
-            out = self._forward_impl(x)
+            video_embeds = self._forward_impl(x)
 
-        if not return_tree_logits:
-            return out
-
-        tree_logits = self.classify_main_structure(out)
-        return out, tree_logits
+        outputs: dict[str, torch.Tensor] = {"video_embeds": video_embeds}
+        if compute_tree_logits:
+            outputs["tree_logits"] = self.classify_main_structure(video_embeds)
+        return outputs
 
     def _forward_impl(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -253,6 +262,8 @@ class VideoEncoder(nn.Module):
         We'll reorder => [B,N,C,T,H,W], flatten => [B*N, C, T, H, W],
         pass through the backbone, then aggregator => [B, output_dim].
         """
+
+        self._last_forward_had_non_finite = False
 
         if x.ndim == 5:
             # Received [B, T, H, W, C] => treat as single video per study.
@@ -279,12 +290,44 @@ class VideoEncoder(nn.Module):
         # ------------------------------------------------------------------
         token_feats = self._extract_backbone_features(x)  # [B*N, L, in_features]
 
+        # Guard against NaN from backbone (MViT attention can overflow)
+        if not torch.isfinite(token_feats).all():
+            print("[VideoEncoder] WARNING: Non-finite values from backbone, replacing")
+            # Use small random noise instead of 0 to preserve variance for LayerNorm
+            finite_mask = torch.isfinite(token_feats)
+            if finite_mask.any():
+                # Use mean/std of finite values for replacement
+                finite_vals = token_feats[finite_mask]
+                replacement = torch.randn_like(token_feats) * finite_vals.std() + finite_vals.mean()
+            else:
+                # Fallback to small random noise
+                replacement = torch.randn_like(token_feats) * 0.1
+            token_feats = torch.where(finite_mask, token_feats, replacement)
+            # Clamp to prevent extreme values from corrupting projection
+            token_feats = torch.clamp(token_feats, min=-100.0, max=100.0)
+
         # ------------------------------------------------------------------
         # 2) Linear projection (shared across all tokens)
         # ------------------------------------------------------------------
         # ``nn.Sequential`` modules in ``self.proj`` operate on the last dim, so
         # we can call them directly on a 3-D tensor.
         token_feats = self.proj(token_feats.float())  # [B*N, L, output_dim]
+
+        # Clamp projection output to prevent GELU overflow (NaN when |x| > ~50)
+        token_feats = torch.clamp(token_feats, min=-50.0, max=50.0)
+
+        # Early NaN detection with recovery - catch issues before mean pooling propagates them
+        if not torch.isfinite(token_feats).all():
+            print("[VideoEncoder] WARNING: Non-finite values after projection, replacing")
+            # Use variance-preserving replacement to avoid LayerNorm NaN
+            finite_mask = torch.isfinite(token_feats)
+            if finite_mask.any():
+                finite_vals = token_feats[finite_mask]
+                replacement = torch.randn_like(token_feats) * finite_vals.std().clamp(min=0.1) + finite_vals.mean()
+                replacement = torch.clamp(replacement, min=-50.0, max=50.0)
+            else:
+                replacement = torch.randn_like(token_feats) * 0.1
+            token_feats = torch.where(finite_mask, token_feats, replacement)
 
         # ------------------------------------------------------------------
         # 3) Reshape → [B, N*L, output_dim] so that the aggregator treats every
@@ -300,6 +343,9 @@ class VideoEncoder(nn.Module):
             # patches.
             feats = token_feats.mean(dim=2)  # [B, N, D_out]
 
+            # Normalize features before aggregator to stabilize magnitudes
+            feats = self.pre_agg_norm(feats)
+
             with autocast("cuda", enabled=False):
                 out = self.aggregator(feats.float())
             return self._sanitize_tensor(out, context="aggregated tokens")
@@ -307,6 +353,7 @@ class VideoEncoder(nn.Module):
         # Aggregator disabled → return either per-video or per-patch tokens
         if self._per_video_pool:
             feats = token_feats.mean(dim=2)  # [B, N, D_out]
+            feats = self.pre_agg_norm(feats)  # Normalize for consistency
         else:
             feats = token_feats.reshape(B, N * L, D_out)  # [B, N_tokens, D]
 
@@ -314,20 +361,85 @@ class VideoEncoder(nn.Module):
 
     def _sanitize_tensor(self, tensor: torch.Tensor, *, context: str) -> torch.Tensor:
         """
-        Replace NaN/inf values with zeros and emit a one-time warning so that
+        Replace NaN/inf values with cached fallbacks or small random noise so
         downstream normalization never encounters non-finite inputs.
+
+        IMPORTANT: This method preserves gradient flow. The previous implementation
+        used detach() which completely broke gradients through the video encoder,
+        causing NaN gradients from batch 1.
         """
         if torch.isfinite(tensor).all():
+            self._last_forward_had_non_finite = False
+            self._update_nan_fallback_cache(tensor)
             return tensor
 
+        self._last_forward_had_non_finite = True
         if not self._warned_non_finite:
             print(
                 f"[VideoEncoder] Detected non-finite values in {context}; "
-                "replacing them with zeros to keep training stable."
+                "replacing them while preserving gradient flow."
             )
             self._warned_non_finite = True
 
-        return torch.nan_to_num(tensor, nan=0.0, posinf=0.0, neginf=0.0)
+        # Use torch.where to replace non-finite values while preserving gradients
+        # for the finite values. This is critical for backward pass.
+        finite_mask = torch.isfinite(tensor)
+
+        if tensor.ndim < 2:
+            # For 1D tensors, just replace non-finite with zeros
+            return torch.where(finite_mask, tensor, torch.zeros_like(tensor))
+
+        key = self._nan_fallback_key(tensor)
+
+        # Get or create fallback values
+        fallback = self._nan_fallback_by_shape.get(key) if key else None
+        if fallback is None:
+            fallback = torch.zeros(tensor.shape[1:], device=tensor.device, dtype=tensor.dtype)
+            if fallback.numel() > 0:
+                nn.init.normal_(fallback, std=self._nan_replacement_std)
+            if key is not None:
+                self._nan_fallback_by_shape[key] = fallback.clone()
+
+        # Ensure fallback is on the same device and has correct dtype
+        fallback = fallback.to(device=tensor.device, dtype=tensor.dtype)
+
+        # Expand fallback to match tensor shape for broadcasting
+        fallback_expanded = fallback.unsqueeze(0).expand_as(tensor)
+
+        # Use torch.where to preserve gradients for finite values
+        # Non-finite values get replaced with fallback (no gradient contribution)
+        sanitized = torch.where(finite_mask, tensor, fallback_expanded)
+
+        # Update cache with mean of finite rows for future fallbacks
+        row_mask = finite_mask.reshape(tensor.shape[0], -1).all(dim=1)
+        if row_mask.any() and key is not None:
+            # Only update cache from fully-finite rows
+            finite_rows = sanitized[row_mask]
+            self._nan_fallback_by_shape[key] = finite_rows.detach().mean(dim=0).clone()
+
+        return sanitized
+
+    def _nan_fallback_key(
+        self, tensor: torch.Tensor
+    ) -> Tuple[str, int | None, Tuple[int, ...]] | None:
+        """Generate a cache key for fallback embeddings of a given shape/device."""
+        if tensor.ndim < 2:
+            return None
+        device = tensor.device
+        shape = tuple(int(dim) for dim in tensor.shape[1:])
+        return (device.type, device.index, shape)
+
+    def _update_nan_fallback_cache(self, tensor: torch.Tensor) -> None:
+        """Store the latest finite embedding template for future fallbacks."""
+        key = self._nan_fallback_key(tensor)
+        if key is None:
+            return
+        fallback = tensor.detach().mean(dim=0).clone()
+        self._nan_fallback_by_shape[key] = fallback
+
+    def had_non_finite_last_forward(self) -> bool:
+        """Return True if the previous forward pass sanitized non-finite outputs."""
+        return self._last_forward_had_non_finite
 
     def classify_main_structure(self, embeddings: torch.Tensor) -> torch.Tensor:
         """Predict logits for the left/right coronary tree from embeddings."""

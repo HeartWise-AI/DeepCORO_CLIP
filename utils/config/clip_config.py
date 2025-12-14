@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import Dict, List, Optional
 from dataclasses import dataclass
 import os # Keep os import if used elsewhere, or remove if only for set_gpu_info_in_place
 
@@ -77,12 +77,33 @@ class ClipConfig(HeartWiseConfig):
     text_embeddings_path: str
     metadata_path: str
     inference_results_path: str
+    data_mean: Optional[List[float]] = None
+    data_std: Optional[List[float]] = None
 
     # Optional parameters
     view_count: Optional[int] = None
+    video_max_grad_norm: Optional[float] = None
+    text_max_grad_norm: Optional[float] = None
+
+    # SigLIP parameters for multi-positive contrastive learning
+    siglip_texts_path: Optional[str] = None
+    siglip_max_positive_per_video: int = 8
+    siglip_negatives_per_video: int = 0
+    siglip_round_robin_sampling: bool = False
+    siglip_max_segments_per_video: int = 15
+    siglip_positive_severity_weights: Optional[Dict[str, float]] = None
+    siglip_enable_severity_weighting: bool = False
+    siglip_positive_loss_weight: float = 1.0
+    siglip_negative_loss_weight: float = 1.0
+    siglip_auto_positive_loss_weight: bool = False
+
+    # Auxiliary losses
+    main_structure_loss_weight: float = 0.0
+    tree_loss_enabled: Optional[bool] = None
+    tree_loss_weight: Optional[float] = None
 
     # Device and distributed info are now inherited from HeartWiseConfig
-    # No local definition of device, world_size, is_ref_device, 
+    # No local definition of device, world_size, is_ref_device,
     # __post_init__ for device setup, or set_gpu_info_in_place needed here.
 
     def __post_init__(self):

@@ -4,7 +4,7 @@
 # Pipeline parameters
 pipeline_project: !!str DeepCORO_video_linear_probing_cardio_syntax
 base_checkpoint_path: !!str results/outputs
-run_mode: !!str train
+run_mode: !!str val
 epochs: !!int 20
 seed: !!int 42
 tag: !!str mvit_pretrained_multiview_cls_token
@@ -12,7 +12,7 @@ tag: !!str mvit_pretrained_multiview_cls_token
 name: !!str DeepCORO_video_linear_probing_multiview_improved_cls_token
 project: !!str DeepCORO_video_linear_probing_multiview_improved_cls_token
 entity: !!str mhi_ai
-use_wandb: !!bool true
+use_wandb: !!bool false
 # Training parameters
 scheduler_name: !!str cosine_with_warmup
 num_warmup_percent: !!float 0.08
@@ -42,10 +42,10 @@ stride: !!int 2
 # Improved CLS Token Configuration
 pooling_mode: !!str attention+cls_token # Hybrid pooling for richer features
 separate_video_attention: !!bool true # Separate within/across-video attention
-num_attention_heads: !!int 8 # Configurable attention heads
+num_attention_heads: !!int 24 # Configurable attention heads
 normalization_strategy: !!str post_norm # Post-norm like ViT (can try pre_norm)
 use_cls_token: !!bool true
-attention_hidden: !!int 256 # Taille cachée pour le mécanisme d'attention
+attention_hidden: !!int 512 # Taille cachée pour le mécanisme d'attention
 dropout_attention: !!float 0.2 # Dropout pour le bloc d'attention
 # Video Encoder parameters
 model_name: !!str mvit
@@ -77,7 +77,7 @@ head_structure:
   syntax_left: !!int 1
   syntax_category: !!int 4
   syntax_left_category: !!int 4
-  syntax_right_category: !!int 4
+  syntax_right_category: !!int 3
 head_dropout:
   syntax: !!float 0.2
   syntax_right: !!float 0.2
@@ -138,4 +138,4 @@ labels_map:
     intermediate: 2
     high: 3
 # Inference parameters
-inference_model_path: !!str outputs/DeepCORO_video_linear_probing/DeepCORO_video_linear_probing_multiview_improved_cls_token/g3cd6n40_20250707-114757/models/best_model_epoch_19.pt
+inference_model_path: !!str /media/data1/models/DeepCoro_CLIP/CardioSyntax/rxt2fz27_20250711-171619/models/best_model_epoch_17.pt

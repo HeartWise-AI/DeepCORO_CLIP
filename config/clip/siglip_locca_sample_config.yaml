@@ -1,0 +1,105 @@
+pipeline_project: "DeepCORO_clip"
+base_checkpoint_path: outputs
+# Training parameters - small sample for debugging
+epochs: 3
+num_workers: 4
+debug: false
+use_amp: true
+period: 1
+run_mode: train
+batch_size: 8
+# Dataset parameters - VERIFICATION SAMPLE (1000 videos)
+data_filename: "output_dataset/verification_sample/videos.csv"
+root: "."
+target_label: null
+datapoint_loc_label: "FileName"
+frames: 16
+stride: 1
+aggregate_videos_tokens: true
+per_video_pool: false
+data_mean: [105.67617, 105.67617, 105.67617]
+data_std: [38.953922, 38.953922, 38.953922]
+multi_video: false
+num_videos: 1
+groupby_column: "StudyInstanceUID"
+shuffle_videos: true
+siglip_texts_path: "output_dataset/verification_sample/texts.csv"
+siglip_max_positive_per_video: 15
+siglip_negatives_per_video: 0
+siglip_round_robin_sampling: true
+siglip_max_segments_per_video: 15
+siglip_positive_severity_weights:
+  normal: 1.0
+  mild: 2.0
+  moderate: 3.0
+  severe: 3.0
+  critical: 3.0
+  cto: 3.0
+siglip_enable_severity_weighting: true
+siglip_positive_loss_weight: 1.0
+siglip_negative_loss_weight: 0.8
+siglip_auto_positive_loss_weight: true
+# Seed
+seed: 42
+# Model parameters
+model_name: "mvit"
+pretrained: true
+# Optimizer parameters
+optimizer: "AdamW"
+scheduler_name: "cosine_with_hard_restarts_with_warmup"
+lr: 0.00001
+lr_step_period: 15
+factor: 0.15
+# Multi-loss configuration
+loss_name: "siglip_pairwise"
+loss_array:
+  - siglip_pairwise: 1.0
+  - locca_caption: 0.5
+# LocCa Decoder configuration
+locca_enabled: true
+locca_num_layers: 4
+locca_d_model: 512
+locca_num_heads: 8
+locca_dropout: 0.1
+locca_max_seq_len: 256
+tree_loss_enabled: false
+tree_loss_weight: 0
+video_weight_decay: 1e-6
+text_weight_decay: 1e-6
+gradient_accumulation_steps: 1
+num_warmup_percent: 0.1
+num_hard_restarts_cycles: 2
+warm_restart_tmult: 1
+max_grad_norm: 1.0
+video_max_grad_norm: 1.0
+text_max_grad_norm: 1.0
+# Model architecture parameters
+num_heads: 8
+aggregator_depth: 2
+temperature: 0.1
+dropout: 0.1
+video_freeze_ratio: 0.8
+text_freeze_ratio: 0.75
+# Checkpointing
+resume_training: false
+checkpoint: ""
+output_dir: outputs
+save_best: "loss"
+# Metrics
+recall_k: [1, 5, 10, 50]
+ndcg_k: [5]
+# Data augmentation
+rand_augment: true
+resize: 224
+apply_mask: false
+# wandb parameters
+tag: "mvit_locca_sample"
+name: "siglip_locca_sample_debug"
+project: "dev_deep_coro_clip_single_video"
+entity: "mhi_ai"
+use_wandb: true
+# Inference parameters
+topk: 5
+text_embeddings_path: ""
+metadata_path: ""
+inference_results_path: "checkpoints/inference/"

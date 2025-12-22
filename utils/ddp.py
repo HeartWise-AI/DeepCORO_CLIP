@@ -1,3 +1,4 @@
+import datetime
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as MP
@@ -62,10 +63,18 @@ class DistributedUtils:
             torch.cuda.set_device(gpu_id)
             backend = 'nccl'
             init_kwargs["backend"] = backend
-            init_kwargs["device_id"] = torch.device(f"cuda:{gpu_id}")
+            # Set device_id for PyTorch 2.x+ to avoid "devices unknown" warning in barriers
+            try:
+                from packaging.version import Version
+                if Version(torch.__version__) >= Version("2.0"):
+                    init_kwargs["device_id"] = torch.device(f"cuda:{gpu_id}")
+            except ImportError:
+                pass
             print(f"Using CUDA device {gpu_id}")
         
-        # Initialize process group
+        # Initialize process group with extended timeout for large models
+        # Default NCCL timeout is 30 minutes, but we set 60 minutes for safety
+        init_kwargs["timeout"] = datetime.timedelta(minutes=60)
         DistributedUtils.dist.init_process_group(**init_kwargs)
         
         

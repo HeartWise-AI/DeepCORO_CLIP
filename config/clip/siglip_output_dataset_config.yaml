@@ -5,9 +5,9 @@ epochs: 30
 num_workers: 10
 debug: false
 use_amp: true
-period: 1
+period: 2
 run_mode: train
-batch_size: 12
+batch_size: 16
 # Dataset parameters
 data_filename: "output_dataset/siglip_generated/videos.csv"
 root: "."
@@ -24,7 +24,7 @@ num_videos: 1
 groupby_column: "StudyInstanceUID"
 shuffle_videos: true
 siglip_texts_path: "output_dataset/siglip_generated/texts.csv"
-siglip_max_positive_per_video: 4
+siglip_max_positive_per_video: 15
 siglip_negatives_per_video: 0
 siglip_round_robin_sampling: true
 siglip_max_segments_per_video: 15
@@ -50,8 +50,11 @@ scheduler_name: "cosine_with_hard_restarts_with_warmup"
 lr: 0.000008446288339329215
 lr_step_period: 15
 factor: 0.14617805853947136
-loss_name: "siglip_ddp"
-main_structure_loss_weight: 0.1
+# NOTE: Using siglip_pairwise (true SigLIP BCE loss)
+# DO NOT use siglip_ddp - it's deprecated (uses softmax, not real SigLIP)
+loss_name: "siglip_pairwise"
+tree_loss_enabled: false
+tree_loss_weight: 0
 video_weight_decay: 8.521396694895177e-7
 text_weight_decay: 7.131150520313639e-7
 gradient_accumulation_steps: 1

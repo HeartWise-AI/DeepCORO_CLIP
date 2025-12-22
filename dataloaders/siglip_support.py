@@ -811,3 +811,90 @@ class SiglipSupport:
             "disease_severity": meta.disease_severity,
             "is_abnormal": meta.prompt_bucket == "abnormal" or meta.disease_severity not in {"normal", "mild"},
         }
+
+    def build_report_from_positives(
+        self,
+        video_key: str,
+        separator: str = " ",
+        order_by_severity: bool = True,
+    ) -> str:
+        """
+        Build a concatenated report from all positive text IDs for a video.
+
+        This creates the target text for LocCa generation training - the model
+        should learn to generate this report from video features.
+
+        Args:
+            video_key: Video identifier to look up positives
+            separator: Separator between individual texts
+            order_by_severity: Whether to order by severity (severe findings first)
+
+        Returns:
+            Concatenated report string from all positive texts
+        """
+        positive_pairs = self.video_to_text_ids.get(video_key, [])
+        if not positive_pairs:
+            return "No findings."
+
+        # Collect texts with metadata for sorting
+        texts_with_meta: List[Tuple[str, int, str]] = []
+        for text_id, weight in positive_pairs:
+            meta = self.text_lookup.get(text_id, {})
+            text = meta.get("prompt_text", str(text_id))
+            severity = meta.get("disease_severity", "normal")
+            segment = meta.get("segment", "")
+
+            # Severity ranking (lower = more severe)
+            severity_rank = {
+                "critical": 0, "cto": 0, "severe": 0,
+                "moderate": 1,
+                "mild": 2,
+                "normal": 3,
+            }.get(str(severity).lower().strip() if severity else "normal", 3)
+
+            texts_with_meta.append((text, severity_rank, segment or ""))
+
+        if order_by_severity:
+            texts_with_meta.sort(key=lambda x: (x[1], x[2]))
+
+        return separator.join(t[0] for t in texts_with_meta)
+
+    def build_report_tokens(
+        self,
+        video_key: str,
+        separator: str = " ",
+        order_by_severity: bool = True,
+        device: Optional[torch.device] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Build tokenized report for LocCa training.
+
+        Returns input_ids and attention_mask for the concatenated report.
+        """
+        report_text = self.build_report_from_positives(
+            video_key, separator=separator, order_by_severity=order_by_severity
+        )
+
+        tokenizer = getattr(self.dataset, "tokenizer", None)
+        if tokenizer is None:
+            tokenizer = get_tokenizer()
+
+        encoding = tokenizer(
+            report_text,
+            padding="max_length",
+            max_length=self.dataset.max_length,
+            truncation=True,
+            return_tensors="pt",
+        )
+
+        result = {
+            "input_ids": encoding["input_ids"].squeeze(0),
+            "attention_mask": encoding["attention_mask"].squeeze(0),
+            "report_text": report_text,
+        }
+
+        if device is not None:
+            result["input_ids"] = result["input_ids"].to(device)
+            result["attention_mask"] = result["attention_mask"].to(device)
+
+        return result

@@ -233,24 +233,46 @@ class VideoEncoder(nn.Module):
         x: torch.Tensor,
         *,
         compute_tree_logits: bool = False,
+        return_vision_features: bool = False,
     ) -> dict[str, torch.Tensor]:
         """
         Run the video branch in full precision even when global AMP is enabled.
         This prevents half-precision overflow inside the backbone/projection,
         which previously manifested as NaNs in the contrastive loss.
+
+        Args:
+            x: Input video tensor [B, N, T, H, W, C] or [B, T, H, W, C]
+            compute_tree_logits: Whether to compute tree classification logits
+            return_vision_features: Whether to return pre-pooled vision features
+                                    for cross-attention (e.g., LocCa decoder)
+
+        Returns:
+            Dict with 'video_embeds' and optionally 'tree_logits', 'vision_features'
         """
         if x.is_cuda and torch.is_autocast_enabled():
             with autocast("cuda", enabled=False):
-                video_embeds = self._forward_impl(x.float())
+                result = self._forward_impl(x.float(), return_vision_features=return_vision_features)
         else:
-            video_embeds = self._forward_impl(x)
+            result = self._forward_impl(x, return_vision_features=return_vision_features)
+
+        # Handle both old (tensor) and new (dict) return formats
+        if isinstance(result, dict):
+            video_embeds = result["video_embeds"]
+            vision_features = result.get("vision_features")
+        else:
+            video_embeds = result
+            vision_features = None
 
         outputs: dict[str, torch.Tensor] = {"video_embeds": video_embeds}
         if compute_tree_logits:
             outputs["tree_logits"] = self.classify_main_structure(video_embeds)
+        if return_vision_features and vision_features is not None:
+            outputs["vision_features"] = vision_features
         return outputs
 
-    def _forward_impl(self, x: torch.Tensor) -> torch.Tensor:
+    def _forward_impl(
+        self, x: torch.Tensor, return_vision_features: bool = False
+    ) -> torch.Tensor | dict[str, torch.Tensor]:
         """
         Expects shape: [B, N, T, H, W, C]
             B= batch size,
@@ -261,6 +283,15 @@ class VideoEncoder(nn.Module):
             C= channels=3
         We'll reorder => [B,N,C,T,H,W], flatten => [B*N, C, T, H, W],
         pass through the backbone, then aggregator => [B, output_dim].
+
+        Args:
+            x: Input video tensor
+            return_vision_features: If True, return dict with vision_features
+                                    for LocCa cross-attention
+
+        Returns:
+            If return_vision_features=False: video_embeds tensor [B, D]
+            If return_vision_features=True: dict with 'video_embeds' and 'vision_features'
         """
 
         self._last_forward_had_non_finite = False
@@ -346,9 +377,17 @@ class VideoEncoder(nn.Module):
             # Normalize features before aggregator to stabilize magnitudes
             feats = self.pre_agg_norm(feats)
 
+            # Capture vision features for LocCa before final pooling
+            # Shape: [B, N, D_out] - one token per video segment
+            vision_feats = self._sanitize_tensor(feats, context="vision features")
+
             with autocast("cuda", enabled=False):
                 out = self.aggregator(feats.float())
-            return self._sanitize_tensor(out, context="aggregated tokens")
+            video_embeds = self._sanitize_tensor(out, context="aggregated tokens")
+
+            if return_vision_features:
+                return {"video_embeds": video_embeds, "vision_features": vision_feats}
+            return video_embeds
 
         # Aggregator disabled → return either per-video or per-patch tokens
         if self._per_video_pool:
@@ -357,7 +396,20 @@ class VideoEncoder(nn.Module):
         else:
             feats = token_feats.reshape(B, N * L, D_out)  # [B, N_tokens, D]
 
-        return self._sanitize_tensor(feats, context="token features")
+        video_embeds = self._sanitize_tensor(feats, context="token features")
+
+        if return_vision_features:
+            # For non-aggregated case, vision_features = per-video pooled tokens
+            if self._per_video_pool:
+                vision_feats = video_embeds  # Already [B, N, D]
+            else:
+                # Pool patches per video for cross-attention
+                vision_feats = token_feats.mean(dim=2)  # [B, N, D_out]
+                vision_feats = self.pre_agg_norm(vision_feats)
+                vision_feats = self._sanitize_tensor(vision_feats, context="vision features")
+            return {"video_embeds": video_embeds, "vision_features": vision_feats}
+
+        return video_embeds
 
     def _sanitize_tensor(self, tensor: torch.Tensor, *, context: str) -> torch.Tensor:
         """

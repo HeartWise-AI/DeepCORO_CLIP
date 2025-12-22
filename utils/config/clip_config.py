@@ -58,7 +58,7 @@ class ClipConfig(HeartWiseConfig):
     period: int
 
     # Loss and metrics parameters
-    loss_name: str
+    loss_name: str  # Primary loss identifier
     recall_k: List[int]
     ndcg_k: List[int]
 
@@ -71,12 +71,27 @@ class ClipConfig(HeartWiseConfig):
     save_best: str
     resume_training: bool
     checkpoint: Optional[str]
-    
+
     # Inference parameters
     topk: int
     text_embeddings_path: str
     metadata_path: str
     inference_results_path: str
+
+    # === Fields WITH defaults must come after fields WITHOUT defaults ===
+
+    # Multi-loss configuration
+    loss_array: Optional[List[Dict[str, float]]] = None  # e.g. [{"siglip": 1.0}, {"locca_caption": 0.5}]
+
+    # LocCa Decoder parameters
+    locca_enabled: bool = False
+    locca_num_layers: int = 4
+    locca_d_model: int = 512
+    locca_num_heads: int = 8
+    locca_dropout: float = 0.1
+    locca_max_seq_len: int = 256
+
+    # Optional data parameters
     data_mean: Optional[List[float]] = None
     data_std: Optional[List[float]] = None
 
@@ -96,6 +111,11 @@ class ClipConfig(HeartWiseConfig):
     siglip_positive_loss_weight: float = 1.0
     siglip_negative_loss_weight: float = 1.0
     siglip_auto_positive_loss_weight: bool = False
+
+    # SigLIP entropy regularization (prevents embedding collapse)
+    siglip_entropy_regularization: bool = False
+    siglip_entropy_weight: float = 0.1
+    siglip_min_entropy_threshold: float = 2.0
 
     # Auxiliary losses
     main_structure_loss_weight: float = 0.0

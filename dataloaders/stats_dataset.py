@@ -1,13 +1,13 @@
 import os
 import torch
 import numpy as np
-import pandas as pd
 from torch.utils.data import DataLoader
 
 from utils.enums import RunMode
 from utils.seed import seed_worker
 from utils.video import load_video
 from utils.config.heartwise_config import HeartWiseConfig
+from dataloaders.csv_utils import read_csv_with_fallback
 
 
 class StatsDataset(torch.utils.data.Dataset):
@@ -48,13 +48,16 @@ class StatsDataset(torch.utils.data.Dataset):
             print(f"Limited dataset to {self.max_samples} samples")
 
     def load_data(self, split, target_label):
-        data = pd.read_csv(self.filename, sep="α", engine="python")
+        expected_cols = [self.datapoint_loc_label, "Split"]
+        if target_label and len(target_label) > 0 and target_label[0]:
+            expected_cols.append(target_label[0])
+        data = read_csv_with_fallback(self.filename, expected_columns=expected_cols)
 
         filename_index = data.columns.get_loc(self.datapoint_loc_label)
         split_index = data.columns.get_loc("Split")
         
         target_index = None
-        if target_label is not None:
+        if target_label and len(target_label) > 0 and target_label[0]:
             target_index = data.columns.get_loc(target_label[0])
 
         fnames = []

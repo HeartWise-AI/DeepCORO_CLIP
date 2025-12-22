@@ -16,6 +16,7 @@ import tempfile
 import shutil
 import cv2
 import subprocess
+import random
 
 from utils.wandb_wrapper import WandbWrapper
 from utils.config.heartwise_config import HeartWiseConfig
@@ -626,23 +627,31 @@ def log_best_worst_retrievals(
     all_paths: List[str],
     unique_texts: List[str],
     ground_truth_indices: torch.Tensor,
-    epoch: int, 
+    epoch: int,
     wandb_wrapper: WandbWrapper,
     dataset_obj: VideoClipDataset,
     text_segments: Optional[List[Optional[str]]] = None,
     text_trees: Optional[List[Optional[str]]] = None,
     sample_tree_predictions: Optional[List[Optional[str]]] = None,
+    ground_truth_matrix: Optional[torch.Tensor] = None,
+    all_text_ids: Optional[List[str]] = None,
+    text_lookup: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> None:
-    """Log best and worst retrievals to wandb.
-    
+    """Log best and worst retrievals to wandb with multi-positive support.
+
     Args:
-        wandb_logger: Wandb logger instance to use for logging
         similarity_matrix: Tensor of shape [num_videos x num_unique_texts] containing similarity scores
         all_paths: List of video paths (or SIDs in multi-video mode)
         unique_texts: List of unique text descriptions
-        ground_truth_indices: Tensor mapping each video to its ground truth text index
+        ground_truth_indices: Tensor mapping each video to its PRIMARY ground truth text index
         epoch: Current epoch number
         dataset_obj: The VideoClipDataset instance for multi-video path resolution.
+        text_segments: Optional list of segment labels for each text
+        text_trees: Optional list of tree labels for each text
+        sample_tree_predictions: Optional predicted tree labels per sample
+        ground_truth_matrix: Optional [num_videos, num_texts] binary matrix for multi-positive
+        all_text_ids: Optional list of text IDs corresponding to columns
+        text_lookup: Optional dict mapping text_id -> metadata (for severity/segment info)
     """
     if not wandb_wrapper.is_initialized(): # Check if wandb is initialized
         return
@@ -663,7 +672,16 @@ def log_best_worst_retrievals(
 
     best_scores, best_indices = torch.topk(max_scores_per_video, k=k_actual)
     worst_scores, worst_indices = torch.topk(max_scores_per_video, k=k_actual, largest=False)
-    
+
+    # Sample random indices (excluding best and worst)
+    all_indices = set(range(max_scores_per_video.numel()))
+    excluded_indices = set(best_indices.tolist()) | set(worst_indices.tolist())
+    available_for_random = list(all_indices - excluded_indices)
+
+    num_random = min(k_actual, len(available_for_random))
+    random_indices = random.sample(available_for_random, num_random) if num_random > 0 else []
+    random_scores = [max_scores_per_video[idx].item() for idx in random_indices]
+
     # Process and log best retrievals
     for i in range(best_indices.numel()):
         video_idx = best_indices[i].item()
@@ -682,6 +700,9 @@ def log_best_worst_retrievals(
             text_segments=text_segments,
             text_tree_indices=tree_to_text_indices,
             sample_tree_predictions=sample_tree_predictions,
+            ground_truth_matrix=ground_truth_matrix,
+            all_text_ids=all_text_ids,
+            text_lookup=text_lookup,
         )
 
     # Process and log worst retrievals
@@ -702,6 +723,31 @@ def log_best_worst_retrievals(
             text_segments=text_segments,
             text_tree_indices=tree_to_text_indices,
             sample_tree_predictions=sample_tree_predictions,
+            ground_truth_matrix=ground_truth_matrix,
+            all_text_ids=all_text_ids,
+            text_lookup=text_lookup,
+        )
+
+    # Process and log random retrievals
+    for i, video_idx in enumerate(random_indices):
+        score = random_scores[i]
+        _log_retrieval(
+            idx=video_idx,
+            score=score,
+            similarity_matrix=similarity_matrix,
+            all_paths=all_paths,
+            unique_texts=unique_texts,
+            ground_truth_indices=ground_truth_indices,
+            epoch=epoch,
+            is_best=None,  # None indicates random
+            wandb_wrapper=wandb_wrapper,
+            dataset_obj=dataset_obj,
+            text_segments=text_segments,
+            text_tree_indices=tree_to_text_indices,
+            sample_tree_predictions=sample_tree_predictions,
+            ground_truth_matrix=ground_truth_matrix,
+            all_text_ids=all_text_ids,
+            text_lookup=text_lookup,
         )
 
 def _log_retrieval(
@@ -712,14 +758,21 @@ def _log_retrieval(
     unique_texts: List[str],
     ground_truth_indices: torch.Tensor,
     epoch: int,
-    is_best: bool,
+    is_best: Optional[bool],  # True=good, False=bad, None=random
     wandb_wrapper: WandbWrapper,
     dataset_obj: VideoClipDataset,
     text_segments: Optional[List[Optional[str]]] = None,
     text_tree_indices: Optional[Dict[str, Set[int]]] = None,
     sample_tree_predictions: Optional[List[Optional[str]]] = None,
+    ground_truth_matrix: Optional[torch.Tensor] = None,
+    all_text_ids: Optional[List[str]] = None,
+    text_lookup: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> None:
-    """Helper function to log a single retrieval example."""
+    """Helper function to log a single retrieval example with multi-positive support.
+
+    Args:
+        is_best: True for good retrieval, False for bad retrieval, None for random sample
+    """
     segment_index, segment_display = _build_segment_index(
         text_segments, len(unique_texts)
     )
@@ -762,12 +815,13 @@ def _log_retrieval(
     for rank_offset, entry in enumerate(segment_rankings, start=1):
         pred_idx = entry["text_index"]
         seg_display = entry["segment_label"]
+        pred_sim = entry.get("text_similarity", 0.0)
         if 0 <= pred_idx < len(unique_texts):
             text_label = unique_texts[pred_idx]
         else:
             text_label = f"<missing idx {pred_idx}>"
         prefix = seg_display if seg_display else "segment"
-        predicted_texts.append(f"{rank_offset}. [{prefix}] {text_label}")
+        predicted_texts.append(f"{rank_offset}. [{prefix}] (sim={pred_sim:.3f}) {text_label}")
     
     video_to_log_path: Optional[str] = None
     is_temp_video = False
@@ -792,7 +846,13 @@ def _log_retrieval(
             print(f"Warning: Single video path '{single_video_path}' does not exist. Skipping video log.")
 
     if video_to_log_path:
-        prefix = "good" if is_best else "bad"
+        # Determine prefix based on is_best: True=good, False=bad, None=random
+        if is_best is True:
+            prefix = "good"
+        elif is_best is False:
+            prefix = "bad"
+        else:
+            prefix = "random"
         wandb_wrapper.log({
             f"qualitative/{prefix}_retrieval": wandb.Video(
                 video_to_log_path,
@@ -806,16 +866,93 @@ def _log_retrieval(
         predicted_html = "<br>".join(
             [f"{i+1}. {text}" for i, text in enumerate(predicted_texts)]
         )
-        gt_text_idx = ground_truth_indices[idx].item()
-        ground_truth_text_display = "N/A"
-        if 0 <= gt_text_idx < len(unique_texts):
-            ground_truth_text_display = unique_texts[gt_text_idx]
+
+        # Build ground truth display - show ALL positives if matrix available
+        ground_truth_texts_display: List[str] = []
+        alignment_metrics: Dict[str, float] = {}
+
+        if ground_truth_matrix is not None:
+            # Multi-positive mode: show ALL positive texts
+            pos_indices = torch.where(ground_truth_matrix[idx] > 0)[0]
+            sim_row = similarity_matrix[idx]
+
+            # Compute alignment metrics
+            if len(pos_indices) > 0:
+                pos_sims = sim_row[pos_indices]
+                neg_indices = torch.where(ground_truth_matrix[idx] == 0)[0]
+                neg_sims = sim_row[neg_indices] if len(neg_indices) > 0 else torch.tensor([0.0])
+
+                # Softmax probabilities
+                probs = torch.nn.functional.softmax(sim_row, dim=0)
+                pos_mass = probs[pos_indices].sum().item()
+                neg_mass = probs[neg_indices].sum().item() if len(neg_indices) > 0 else 0.0
+
+                alignment_metrics = {
+                    "alignment_score": pos_sims.mean().item(),
+                    "row_pos_mass": pos_mass,
+                    "row_neg_mass": neg_mass,
+                    "max_pos_sim": pos_sims.max().item(),
+                    "min_pos_sim": pos_sims.min().item(),
+                    "num_positives": len(pos_indices),
+                    # Negative similarity stats for collapse detection
+                    "max_neg_sim": neg_sims.max().item() if len(neg_indices) > 0 else 0.0,
+                    "mean_neg_sim": neg_sims.mean().item() if len(neg_indices) > 0 else 0.0,
+                }
+
+            # Collect all positive texts with metadata
+            for rank, pos_idx in enumerate(pos_indices, start=1):
+                pos_idx_int = pos_idx.item()
+                if 0 <= pos_idx_int < len(unique_texts):
+                    text = unique_texts[pos_idx_int]
+                    text_id = all_text_ids[pos_idx_int] if all_text_ids and pos_idx_int < len(all_text_ids) else f"idx_{pos_idx_int}"
+
+                    # Get metadata if available
+                    severity = "?"
+                    segment = "?"
+                    if text_lookup and text_id in text_lookup:
+                        meta = text_lookup[text_id]
+                        severity = meta.get("disease_severity", "?") or "?"
+                        segment = meta.get("segment", "?") or "?"
+
+                    sim_val = sim_row[pos_idx_int].item()
+                    ground_truth_texts_display.append(
+                        f"{rank}. [{text_id}] [{segment}] [{severity}] (sim={sim_val:.3f}) {text}"
+                    )
         else:
-            print(f"Warning: Ground truth index {gt_text_idx} is out of bounds for unique_texts (len: {len(unique_texts)}). Using N/A.")
+            # Single-positive fallback
+            gt_text_idx = ground_truth_indices[idx].item()
+            if 0 <= gt_text_idx < len(unique_texts):
+                ground_truth_texts_display.append(f"1. {unique_texts[gt_text_idx]}")
+            else:
+                ground_truth_texts_display.append("N/A")
+
+        gt_html = "<br>".join(ground_truth_texts_display) if ground_truth_texts_display else "N/A"
+
+        # Build alignment metrics HTML
+        metrics_html = ""
+        if alignment_metrics:
+            # Detect potential embedding collapse
+            max_neg = alignment_metrics.get('max_neg_sim', 0)
+            mean_pos = alignment_metrics.get('alignment_score', 0)
+            collapse_warning = ""
+            if max_neg > 0.95 and mean_pos > 0.95:
+                collapse_warning = "<br><b style='color:red'>⚠️ EMBEDDING COLLAPSE DETECTED</b><br>"
+
+            metrics_html = (
+                f"<b>Alignment Metrics:</b><br>"
+                f"&nbsp;&nbsp;Score (mean pos sim): {alignment_metrics.get('alignment_score', 0):.4f}<br>"
+                f"&nbsp;&nbsp;Max Neg Sim: {alignment_metrics.get('max_neg_sim', 0):.4f}<br>"
+                f"&nbsp;&nbsp;Mean Neg Sim: {alignment_metrics.get('mean_neg_sim', 0):.4f}<br>"
+                f"&nbsp;&nbsp;Pos Mass: {alignment_metrics.get('row_pos_mass', 0):.4f}<br>"
+                f"&nbsp;&nbsp;Neg Mass: {alignment_metrics.get('row_neg_mass', 0):.4f}<br>"
+                f"&nbsp;&nbsp;Num Positives: {alignment_metrics.get('num_positives', 0)}<br>"
+                f"{collapse_warning}<br>"
+            )
 
         ground_truth_html = (
-            f"<b>Identifier:</b> {all_paths[idx]}<br>"
-            f"<b>Ground Truth:</b> {ground_truth_text_display}<br>"
+            f"<b>Identifier:</b> {all_paths[idx]}<br><br>"
+            f"{metrics_html}"
+            f"<b>Ground Truth ({len(ground_truth_texts_display)} positives):</b><br>{gt_html}<br><br>"
             f"<b>Top 5 Predicted:</b><br>{predicted_html}"
         )
         wandb.log({
@@ -1273,4 +1410,55 @@ def save_retrieval_results(
     with open(json_output_path, "w", encoding="utf-8") as json_file:
         json.dump(json_records, json_file, indent=2)
 
-    print(f"Saved retrieval results to {val_csv_path} and {json_output_path}")
+    # Also save RAW top-15 (not grouped by segment) for detailed analysis
+    raw_top_k = 15
+    raw_records: List[Dict[str, Any]] = []
+    sim_cpu = similarity_matrix.detach().float().cpu()
+
+    for i, identifier in enumerate(all_identifiers):
+        gt_text = all_ground_truth_reports[i]
+        gt_idx: Optional[int] = None
+        if normalized_gt_indices is not None and i < len(normalized_gt_indices):
+            try:
+                gt_idx = int(normalized_gt_indices[i])
+            except (TypeError, ValueError):
+                gt_idx = None
+        if gt_idx is None:
+            if report_to_global_index is not None and gt_text in report_to_global_index:
+                gt_idx = report_to_global_index[gt_text]
+            else:
+                gt_idx = i
+
+        # Get raw top-K by similarity (not grouped by segment)
+        row_sims = sim_cpu[i]
+        top_indices = torch.argsort(row_sims, descending=True)[:raw_top_k]
+
+        raw_predictions = []
+        for rank, pred_idx in enumerate(top_indices.tolist(), start=1):
+            pred_sim = float(row_sims[pred_idx].item())
+            text_id_val = index_to_text_ids[pred_idx] if index_to_text_ids and pred_idx < len(index_to_text_ids) else None
+            text_val = index_to_texts[pred_idx] if index_to_texts and pred_idx < len(index_to_texts) else None
+            seg_val = text_segments[pred_idx] if text_segments and pred_idx < len(text_segments) else None
+
+            raw_predictions.append({
+                "rank": rank,
+                "text_index": pred_idx,
+                "text_id": text_id_val,
+                "text": text_val,
+                "segment": seg_val,
+                "similarity": pred_sim,
+                "is_ground_truth": pred_idx == gt_idx,
+            })
+
+        raw_records.append({
+            "identifier": identifier,
+            "ground_truth_idx": gt_idx,
+            "ground_truth_text": gt_text,
+            "top_predictions_raw": raw_predictions,
+        })
+
+    raw_json_path = os.path.join(output_dir, f"val_epoch{epoch}_raw_top{raw_top_k}.json")
+    with open(raw_json_path, "w", encoding="utf-8") as raw_file:
+        json.dump(raw_records, raw_file, indent=2)
+
+    print(f"Saved retrieval results to {val_csv_path}, {json_output_path}, and {raw_json_path}")

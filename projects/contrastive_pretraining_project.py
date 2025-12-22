@@ -1,5 +1,5 @@
 
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 import torch
 import torch.nn as nn
@@ -17,9 +17,9 @@ from utils.enums import RunMode
 from utils.config.clip_config import ClipConfig
 from utils.schedulers import get_scheduler
 from utils.registry import (
-    ModelRegistry, 
-    RunnerRegistry, 
-    ProjectRegistry, 
+    ModelRegistry,
+    RunnerRegistry,
+    ProjectRegistry,
     LossRegistry
 )
 from utils.wandb_wrapper import WandbWrapper
@@ -166,38 +166,89 @@ class ContrastivePretrainingProject(BaseProject):
         text_module = text_encoder.module if use_ddp else text_encoder
         log_temperature = video_module.log_temperature
 
+        # Create LocCa decoder if enabled (before optimizer so we can add its params)
+        locca_decoder: Optional[nn.Module] = None
+        if getattr(self.config, "locca_enabled", False):
+            tokenizer = text_module.tokenizer
+            vocab_size = tokenizer.vocab_size
+
+            # Get special token IDs from tokenizer
+            # BERT-style: cls_token_id (BOS), sep_token_id (EOS), pad_token_id (PAD)
+            # GPT-2 style: eos_token_id (used as BOS), eos_token_id (EOS), pad_token_id or eos_token_id
+            bos_token_id = getattr(tokenizer, "cls_token_id", None) or getattr(tokenizer, "bos_token_id", None)
+            eos_token_id = getattr(tokenizer, "sep_token_id", None) or getattr(tokenizer, "eos_token_id", None)
+            pad_token_id = getattr(tokenizer, "pad_token_id", 0)
+
+            locca_decoder = ModelRegistry.get("locca_decoder")(
+                vocab_size=vocab_size,
+                d_model=getattr(self.config, "locca_d_model", 512),
+                num_layers=getattr(self.config, "locca_num_layers", 4),
+                num_heads=getattr(self.config, "locca_num_heads", 8),
+                dropout=getattr(self.config, "locca_dropout", 0.1),
+                max_seq_len=getattr(self.config, "locca_max_seq_len", 256),
+                vision_dim=512,  # Video encoder output dimension
+                pad_token_id=pad_token_id,
+                bos_token_id=bos_token_id,
+                eos_token_id=eos_token_id,
+            )
+            locca_decoder = locca_decoder.to(device).float()
+
+            if use_ddp:
+                locca_ddp_kwargs = ddp_kwargs.copy()
+                if device.type == "cuda":
+                    locca_ddp_kwargs.update(device_ids=[local_rank], output_device=local_rank)
+                locca_decoder = DistributedUtils.DDP(locca_decoder, **locca_ddp_kwargs)
+
+            if self.config.is_ref_device:
+                print(f"[LocCa] Created decoder: layers={self.config.locca_num_layers}, d_model={self.config.locca_d_model}")
+
         # Different learning rates for different components
+        # Ensure weight_decay is float and params are lists for compatibility with foreach optimizers
         param_groups = [
             {
-                'params': video_module.model.parameters(),  # Main video backbone
-                'lr': self.config.lr,
+                'params': list(video_module.model.parameters()),  # Main video backbone
+                'lr': float(self.config.lr),
                 'name': 'video_backbone',
-                'weight_decay': self.config.video_weight_decay
+                'weight_decay': float(self.config.video_weight_decay)
             },
             {
-                'params': video_module.aggregator.parameters(),  # Multihead attention aggregator
-                'lr': self.config.lr * 2.0,  # Higher learning rate for aggregator
+                'params': list(video_module.aggregator.parameters()),  # Multihead attention aggregator
+                'lr': float(self.config.lr) * 2.0,  # Higher learning rate for aggregator
                 'name': 'video_aggregator',
-                'weight_decay': self.config.video_weight_decay
+                'weight_decay': float(self.config.video_weight_decay)
             },
             {
-                'params': text_module.parameters(),  # Entire text encoder
+                'params': list(text_module.parameters()),  # Entire text encoder
                 'lr': 0.00002,  # Lower learning rate for text encoder
                 'name': 'text_encoder',
-                'weight_decay': self.config.text_weight_decay
+                'weight_decay': float(self.config.text_weight_decay)
             },
             {
                 'params': [log_temperature],  # Temperature parameter
-                'lr': self.config.lr,
-                'name': 'temperature'
+                'lr': float(self.config.lr),
+                'name': 'temperature',
+                'weight_decay': 0.0  # No weight decay for temperature
             }
         ]
+
+        # Add LocCa decoder params to optimizer if enabled
+        if locca_decoder is not None:
+            locca_module = locca_decoder.module if use_ddp else locca_decoder
+            param_groups.append({
+                'params': list(locca_module.parameters()),
+                'lr': float(self.config.lr) * 2.0,  # Higher learning rate for decoder
+                'name': 'locca_decoder',
+                'weight_decay': float(self.config.text_weight_decay)  # Use text weight decay
+            })
+            if self.config.is_ref_device:
+                num_params = sum(p.numel() for p in locca_module.parameters())
+                print(f"[LocCa] Added {num_params:,} decoder parameters to optimizer")
 
         # Include the temperature parameter in the optimizer
         optimizer_class: torch.optim.Optimizer = getattr(torch.optim, self.config.optimizer)
         optimizer: torch.optim.Optimizer = optimizer_class(
             param_groups,
-            lr=self.config.lr # act as a default learning rate for unset learning rates in param_groups
+            lr=self.config.lr  # act as a default learning rate for unset learning rates in param_groups
         )
 
         scheduler: LRScheduler = get_scheduler(
@@ -215,9 +266,43 @@ class ContrastivePretrainingProject(BaseProject):
 
         scaler: GradScaler = GradScaler() if self.config.use_amp else None
 
-        # Create loss function
-        loss_fn: Loss = Loss(
-            loss_type=LossRegistry.get(self.config.loss_name)()
+        # Create loss functions from loss_array or fallback to loss_name
+        loss_configs: List[Dict[str, float]] = []
+        if getattr(self.config, "loss_array", None):
+            loss_configs = self.config.loss_array
+        else:
+            # Fallback to single loss_name with weight 1.0
+            loss_configs = [{self.config.loss_name: 1.0}]
+
+        loss_fns: Dict[str, Loss] = {}
+        loss_weights: Dict[str, float] = {}
+        for loss_entry in loss_configs:
+            for loss_name, weight in loss_entry.items():
+                # Get the loss class
+                loss_cls = LossRegistry.get(loss_name)
+
+                # For SigLIP losses, pass entropy regularization config
+                if loss_name.startswith("siglip"):
+                    loss_instance = loss_cls(
+                        entropy_regularization=getattr(self.config, "siglip_entropy_regularization", False),
+                        entropy_weight=getattr(self.config, "siglip_entropy_weight", 0.1),
+                        min_entropy_threshold=getattr(self.config, "siglip_min_entropy_threshold", 2.0),
+                    )
+                else:
+                    loss_instance = loss_cls()
+
+                loss_fns[loss_name] = Loss(loss_type=loss_instance)
+                loss_weights[loss_name] = float(weight)
+                if self.config.is_ref_device:
+                    entropy_str = ""
+                    if loss_name.startswith("siglip") and getattr(self.config, "siglip_entropy_regularization", False):
+                        entropy_str = f" [entropy_reg=True, weight={getattr(self.config, 'siglip_entropy_weight', 0.1)}]"
+                    print(f"[Loss] Registered: {loss_name} (weight={weight}){entropy_str}")
+
+        # Legacy single loss_fn for backward compatibility
+        loss_fn: Loss = loss_fns.get(
+            self.config.loss_name,
+            list(loss_fns.values())[0] if loss_fns else Loss(loss_type=LossRegistry.get(self.config.loss_name)())
         )
 
         if self.config.is_ref_device:
@@ -248,6 +333,9 @@ class ContrastivePretrainingProject(BaseProject):
             "scaler": scaler,
             "log_temp": log_temperature,
             "loss_fn": loss_fn,
+            "loss_fns": loss_fns,
+            "loss_weights": loss_weights,
+            "locca_decoder": locca_decoder,
             "output_dir": self.config.output_dir if self.config.is_ref_device else None,
         }    
 

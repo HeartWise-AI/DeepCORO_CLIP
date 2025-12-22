@@ -31,8 +31,13 @@ from utils.wandb_logger import (
     save_retrieval_results,
 )
 from utils.semantic_metrics import compute_siglip_semantic_metrics
+from utils.validation_logger import (
+    ValidationLogger,
+    log_first_batch_comparisons,
+    save_recall_summary_csv,
+)
 from utils.loss.typing import Loss
-from utils.loss.siglip_pairwise import SiglipPairwiseLoss
+# NOTE: SiglipPairwiseLoss is deprecated - use unified SigLIPLoss via loss_fn
 from utils.loss.multi_positive_infonce import MultiPositiveInfoNCELoss
 from utils.wandb_wrapper import WandbWrapper
 from models.video_encoder import VideoEncoder
@@ -72,6 +77,9 @@ class VideoContrastiveLearningRunner:
         log_temp: torch.Tensor = None,
         lr_scheduler: LRScheduler = None,
         loss_fn: Loss = None,
+        loss_fns: Optional[Dict[str, Loss]] = None,
+        loss_weights: Optional[Dict[str, float]] = None,
+        locca_decoder: Optional[nn.Module] = None,
         output_dir: str = None,
     ):
         """
@@ -113,6 +121,9 @@ class VideoContrastiveLearningRunner:
         self.scaler: GradScaler = scaler
         self.lr_scheduler: LRScheduler = lr_scheduler
         self.loss_fn: Loss = loss_fn
+        self.loss_fns: Dict[str, Loss] = loss_fns or {}
+        self.loss_weights: Dict[str, float] = loss_weights or {}
+        self.locca_decoder: Optional[nn.Module] = locca_decoder
         self.output_dir: str = output_dir
         self.best_val_loss: float = float("inf")
         self.best_epoch: int = -1
@@ -128,24 +139,14 @@ class VideoContrastiveLearningRunner:
             getattr(self.config, "siglip_enable_severity_weighting", False)
         )
         self.siglip_loss_mode: str = str(getattr(self.config, "loss_name", "") or "").lower()
-        self.use_siglip_pairwise = self.siglip_active and self.siglip_loss_mode == "siglip_ddp"
+        # Recognize all siglip* variants (siglip, siglip_pairwise, siglip2_bce, etc.)
+        self.use_siglip_loss = self.siglip_active and self.siglip_loss_mode.startswith("siglip")
+        # Legacy flags for backward compatibility
+        self.use_siglip_pairwise = self.use_siglip_loss  # Now all siglip* uses unified loss
         self.use_siglip_infonce = self.siglip_active and self.siglip_loss_mode == "infonce_loss_ddp"
-        self.siglip_pairwise_loss = (
-            SiglipPairwiseLoss(
-                positive_weight=float(
-                    getattr(self.config, "siglip_positive_loss_weight", 1.0) or 1.0
-                ),
-                negative_weight=float(
-                    getattr(self.config, "siglip_negative_loss_weight", 1.0) or 1.0
-                ),
-                use_positive_weights=self.siglip_severity_weighting,
-                auto_positive_weight=bool(
-                    getattr(self.config, "siglip_auto_positive_loss_weight", False)
-                ),
-            )
-            if self.use_siglip_pairwise
-            else None
-        )
+        # NOTE: siglip_pairwise_loss is no longer used - the unified SigLIPLoss
+        # from contrastive.py is accessed via self.loss_fn
+        self.siglip_pairwise_loss = None  # Deprecated - use loss_fn instead
         self.multi_positive_loss = (
             MultiPositiveInfoNCELoss()
             if self.use_siglip_infonce
@@ -191,6 +192,14 @@ class VideoContrastiveLearningRunner:
         self.debug_numerical: bool = bool(getattr(self.config, "debug", False))
         self._debug_log_interval: int = 50  # Log every N steps when debug is enabled
 
+        # LocCa captioning support
+        self._locca_enabled: bool = (
+            self.locca_decoder is not None
+            and any("locca" in name for name in self.loss_fns.keys())
+        )
+        if self._locca_enabled and self.config.is_ref_device:
+            print("[Runner] LocCa captioning enabled - will use SigLIP texts as captions")
+
         # For simplicity: check the config for a known scheduler_name
         # If it includes "_warmup" or is from HF, we treat it as per-iteration
         self.scheduler_per_iteration = self._scheduler_is_per_iteration()
@@ -200,12 +209,151 @@ class VideoContrastiveLearningRunner:
         expects a call to .step() per iteration (batch). Otherwise, False.
         """
         # We do a simpler check to change scheduler update to per epoch or per batch:
-        # Example keywords: "linear_warmup", "cosine_with_warmup", 
+        # Example keywords: "linear_warmup", "cosine_with_warmup",
         # "cosine_with_hard_restarts_with_warmup", etc.
         sched_name = getattr(self.config, "scheduler_name", "").lower()
         # If it matches typical HF warmup schedulers, return True
         HF_KEYS = ["warmup", "with_warmup"]
         return any(k in sched_name for k in HF_KEYS)
+
+    def _prepare_caption_tokens(
+        self,
+        siglip_batch: Optional[dict],
+        video_paths: Optional[List[str]] = None,
+        dataset: Optional[Any] = None,
+    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], Optional[List[str]]]:
+        """
+        Prepare caption tokens for LocCa decoder from SigLIP batch.
+
+        Concatenates ALL positive texts for each video as the caption target,
+        ordered by severity (most severe first). This creates comprehensive
+        reports for captioning training.
+
+        Args:
+            siglip_batch: Dict with input_ids, attention_mask, positive_mask
+            video_paths: List of video file paths for looking up captions
+            dataset: Dataset with siglip support for building reports
+
+        Returns:
+            Tuple of (caption_input_ids, caption_labels, caption_attention_mask, caption_texts)
+            where caption_texts is a list of decoded caption strings for debugging.
+        """
+        if not self._locca_enabled or siglip_batch is None:
+            return None, None, None, None
+
+        device = siglip_batch.get("input_ids").device if siglip_batch.get("input_ids") is not None else self.device
+
+        # Try to build concatenated reports from all positives using dataset's siglip support
+        if video_paths and dataset is not None and hasattr(dataset, "siglip") and dataset.siglip is not None:
+            siglip = dataset.siglip
+            caption_texts: List[str] = []
+            all_input_ids: List[torch.Tensor] = []
+            all_attention_masks: List[torch.Tensor] = []
+
+            # Get video keys from paths using dataset's mapping
+            for path in video_paths:
+                video_idx = dataset.video_path_to_idx.get(str(path))
+                video_key = None
+                if video_idx is not None and video_idx < len(dataset.video_ids):
+                    video_key = dataset.video_ids[video_idx]
+
+                if video_key:
+                    # Build concatenated report from all positive texts for this video
+                    report_data = siglip.build_report_tokens(
+                        video_key,
+                        separator=" ",
+                        order_by_severity=True,
+                        device=device,
+                    )
+                    caption_texts.append(report_data.get("report_text", "No findings."))
+                    all_input_ids.append(report_data["input_ids"])
+                    all_attention_masks.append(report_data["attention_mask"])
+                else:
+                    # Fallback - use "No findings" placeholder
+                    tokenizer = getattr(dataset, "tokenizer", None)
+                    if tokenizer:
+                        encoding = tokenizer(
+                            "No findings.",
+                            padding="max_length",
+                            max_length=dataset.max_length,
+                            truncation=True,
+                            return_tensors="pt",
+                        )
+                        caption_texts.append("No findings.")
+                        all_input_ids.append(encoding["input_ids"].squeeze(0).to(device))
+                        all_attention_masks.append(encoding["attention_mask"].squeeze(0).to(device))
+
+            if all_input_ids:
+                caption_tokens = torch.stack(all_input_ids, dim=0)  # [B, seq_len]
+                attention_mask = torch.stack(all_attention_masks, dim=0)  # [B, seq_len]
+            else:
+                return None, None, None, None
+        else:
+            # Fallback: use first positive per video (original behavior)
+            siglip_input_ids = siglip_batch.get("input_ids")
+            siglip_attention_mask = siglip_batch.get("attention_mask")
+            positive_mask = siglip_batch.get("positive_mask")
+            caption_texts = None
+
+            if siglip_input_ids is None:
+                return None, None, None, None
+
+            if positive_mask is not None and siglip_input_ids.ndim == 2:
+                B = positive_mask.shape[0]
+                first_positive_idx = positive_mask.argmax(dim=1)
+                has_positive = positive_mask.sum(dim=1) > 0
+                if not has_positive.all():
+                    first_positive_idx = torch.where(
+                        has_positive,
+                        first_positive_idx,
+                        torch.zeros_like(first_positive_idx)
+                    )
+                caption_tokens = siglip_input_ids[first_positive_idx]
+                if siglip_attention_mask is not None:
+                    attention_mask = siglip_attention_mask[first_positive_idx]
+                else:
+                    attention_mask = None
+            elif siglip_input_ids.ndim == 3:
+                caption_tokens = siglip_input_ids[:, 0, :]
+                if siglip_attention_mask is not None and siglip_attention_mask.ndim == 3:
+                    attention_mask = siglip_attention_mask[:, 0, :]
+                else:
+                    attention_mask = siglip_attention_mask
+            else:
+                caption_tokens = siglip_input_ids
+                attention_mask = siglip_attention_mask
+
+        # Autoregressive training setup:
+        # BERT-style tokenizers (PubMedBERT) already prepend [CLS] which acts as BOS.
+        # Tokenized sequence: [CLS, t1, t2, ..., tN, SEP, PAD, ...]
+        #
+        # Standard next-token prediction with causal masking:
+        # - Input:  tokens[:-1] = [CLS, t1, t2, ..., tN, SEP, PAD[:-1]...]
+        # - Labels: tokens[1:]  = [t1, t2, ..., tN, SEP, PAD[1:]...]
+        #
+        # This gives proper alignment:
+        # - Position 0: input=[CLS] (BOS), predict=[t1]
+        # - Position 1: input=[t1], predict=[t2]
+        # - ...
+        # - Position N: input=[tN], predict=[SEP] (EOS)
+        # - Padding positions: labels=-100 (ignored in loss)
+        #
+        # For GPT-2 style tokenizers without BOS, prepend eos_token_id as BOS
+        # (GPT-2 uses EOS as BOS). This is handled by locca_decoder's bos_token_id fallback.
+
+        caption_input_ids = caption_tokens[:, :-1].contiguous()
+        caption_labels = caption_tokens[:, 1:].contiguous()
+
+        # Preserve padding: set labels to -100 where attention_mask is 0
+        # This ensures padding positions are ignored in cross-entropy loss
+        caption_attention_mask = None
+        if attention_mask is not None:
+            caption_attention_mask = attention_mask[:, :-1].contiguous()
+            shifted_mask = attention_mask[:, 1:].contiguous()
+            caption_labels = caption_labels.clone()
+            caption_labels[shifted_mask == 0] = -100  # ignore_index for CrossEntropyLoss
+
+        return caption_input_ids, caption_labels, caption_attention_mask, caption_texts
 
     def train(
         self, 
@@ -485,6 +633,9 @@ class VideoContrastiveLearningRunner:
         all_tree_logits_local: List[torch.Tensor] = []
         all_paths_local: List[str] = []
         all_ground_truth_reports_local: List[str] = []
+        # Store vision_features for LocCa caption generation
+        all_vision_features_local: List[torch.Tensor] = []
+        all_caption_texts_local: List[str] = []  # Ground truth captions
 
         tqdm_desc = f"[GPU {self.device}] Running {mode} Epoch {epoch + 1}"
         
@@ -501,6 +652,12 @@ class VideoContrastiveLearningRunner:
             siglip_payload = self._build_siglip_payload(dataset, paths_or_sids)
             if siglip_payload is not None:
                 step_inputs["siglip_batch"] = siglip_payload
+
+            # Pass video_paths and dataset for LocCa caption building
+            if self._locca_enabled:
+                step_inputs["video_paths"] = paths_or_sids
+                step_inputs["dataset"] = dataset
+                step_inputs["is_first_batch"] = (iteration_idx == 1 and epoch == 0)
 
             try:
                 batch_metrics, embeddings = step_fn(**step_inputs)
@@ -530,6 +687,20 @@ class VideoContrastiveLearningRunner:
             batch_size = batch_video_emb.shape[0]
             all_video_embeddings_local.append(batch_video_emb.cpu())
             all_text_embeddings_local.append(batch_text_emb.cpu())
+
+            # Store vision_features for LocCa caption generation (validation only, limited samples)
+            if mode == RunMode.VALIDATE and self._locca_enabled:
+                vis_feats = embeddings.get("vision_features")
+                if vis_feats is not None and len(all_vision_features_local) < 50:  # Limit to 50 samples
+                    all_vision_features_local.append(vis_feats.cpu())
+                    # Get ground truth captions for these samples
+                    caption_input_ids, caption_labels, caption_attn_mask, caption_texts = self._prepare_caption_tokens(
+                        siglip_batch=siglip_payload,
+                        video_paths=paths_or_sids,
+                        dataset=dataset,
+                    )
+                    if caption_texts:
+                        all_caption_texts_local.extend(caption_texts[:batch_size])
 
             if mode == RunMode.VALIDATE:
                 tree_logits_batch = embeddings.get("tree_logits")
@@ -566,6 +737,20 @@ class VideoContrastiveLearningRunner:
                     "grad_v": f"{self._last_video_grad_norm:.2f}",
                     "grad_t": f"{self._last_text_grad_norm:.2f}",
                 }
+                # Add individual loss values for each head (e.g., loss/siglip_pairwise, loss/locca_caption)
+                for key, val in batch_metrics.items():
+                    if key.startswith("loss/"):
+                        # Create short name for tqdm display (e.g., "siglip_pairwise" -> "sig", "locca_caption" -> "loc")
+                        short_name = key.replace("loss/", "")
+                        if "siglip" in short_name:
+                            short_name = "sig"
+                        elif "locca" in short_name:
+                            short_name = "loc"
+                        elif "clip" in short_name or "contrastive" in short_name:
+                            short_name = "clip"
+                        else:
+                            short_name = short_name[:4]  # First 4 chars
+                        postfix_data[short_name] = f"{val:.4f}"
                 if "train/Recall@5" in batch_metrics:
                     postfix_data["recall@5"] = f"{batch_metrics['train/Recall@5']:.3f}"
                 iterator_obj.set_postfix(postfix_data)
@@ -708,14 +893,36 @@ class VideoContrastiveLearningRunner:
                                     text_idx = text_id_to_index[text_id]
                                     ground_truth_matrix[video_idx, text_idx] = 1.0
 
-                    # For single-positive metrics, use the first positive for each video
+                    # For single-positive metrics, use SEVERITY-PRIORITIZED selection
+                    # (prefer severe/critical findings over normal segments)
+                    severity_order = {
+                        'severe': 0, 'critical': 0, 'cto': 0,
+                        'moderate': 1,
+                        'mild': 2,
+                        'normal': 3,
+                    }
+
+                    # Build text_idx -> severity mapping
+                    text_idx_to_severity: Dict[int, str] = {}
+                    for tid, idx in text_id_to_index.items():
+                        meta = siglip_lookup.get(tid, {})
+                        sev = meta.get("disease_severity", "normal")
+                        if not isinstance(sev, str):
+                            sev = "normal"
+                        text_idx_to_severity[idx] = sev.lower().strip()
+
                     ground_truth_indices: torch.Tensor = torch.zeros(
                         len(global_video_feats), dtype=torch.long, device=self.device
                     )
                     for video_idx in range(len(global_video_feats)):
                         positive_indices = torch.where(ground_truth_matrix[video_idx] > 0)[0]
                         if len(positive_indices) > 0:
-                            ground_truth_indices[video_idx] = positive_indices[0]
+                            # Sort by severity: severe first, then moderate, mild, normal
+                            sorted_positives = sorted(
+                                positive_indices.tolist(),
+                                key=lambda i: severity_order.get(text_idx_to_severity.get(i, "normal"), 3)
+                            )
+                            ground_truth_indices[video_idx] = sorted_positives[0]
 
                 elif len(global_reports) > 0:
                     # Original mode: Use concatenated reports per video
@@ -801,6 +1008,10 @@ class VideoContrastiveLearningRunner:
                         retrieval_metrics.update(semantic_metrics)
                         
                         if self.wandb_wrapper.is_initialized():
+                            # Pass multi-positive ground truth matrix and text lookup for detailed logging
+                            gt_matrix_for_logging = ground_truth_matrix if use_siglip_texts and 'ground_truth_matrix' in locals() else None
+                            text_lookup_for_logging = siglip_lookup if use_siglip_texts and 'siglip_lookup' in locals() else None
+
                             log_best_worst_retrievals(
                                 similarity_matrix=similarity_matrix,
                                 all_paths=global_paths,
@@ -812,6 +1023,9 @@ class VideoContrastiveLearningRunner:
                                 text_segments=text_segments,
                                 text_trees=text_trees,
                                 sample_tree_predictions=tree_predictions,
+                                ground_truth_matrix=gt_matrix_for_logging,
+                                all_text_ids=all_text_ids if 'all_text_ids' in locals() else None,
+                                text_lookup=text_lookup_for_logging,
                             )
 
             # Save retrieval results with mapping
@@ -855,6 +1069,55 @@ class VideoContrastiveLearningRunner:
                         retrieval_metrics.update(ndcg_scores_dict)
                         retrieval_metrics["MAP"] = map_score
                         retrieval_metrics["MedianRank_V2T"] = median_rank_score
+
+                        # === Validation Logging: Save detailed CSV and text comparisons ===
+                        try:
+                            # Save recall summary to CSV (append per epoch)
+                            save_recall_summary_csv(
+                                recall_metrics=recall_metrics,
+                                epoch=epoch,
+                                output_dir=self.output_dir,
+                                additional_metrics={
+                                    "MAP": map_score,
+                                    "MRR_V2T": mrr_score_dict.get("MRR_V2T", 0.0),
+                                    "MedianRank_V2T": median_rank_score,
+                                    **ndcg_scores_dict,
+                                },
+                                append=True,
+                            )
+
+                            # Log first batch text comparisons (GT vs Predicted)
+                            if len(unique_texts) > 0 and global_video_feats.shape[0] > 0:
+                                print(f"\n[Epoch {epoch}] === Text Comparison Samples (First 5) ===")
+                                log_first_batch_comparisons(
+                                    video_features=global_video_feats[:min(10, global_video_feats.shape[0])],
+                                    text_features=unique_text_embeddings_tensor,
+                                    video_ids=global_paths[:min(10, len(global_paths))],
+                                    unique_texts=unique_texts,
+                                    ground_truth_indices=ground_truth_indices[:min(10, len(ground_truth_indices))],
+                                    epoch=epoch,
+                                    output_dir=self.output_dir,
+                                    max_samples=5,
+                                )
+                        except Exception as e:
+                            print(f"[ValidationLogger] Warning: Could not log validation details: {e}")
+                        # === End Validation Logging ===
+
+                        # === LocCa Caption Generation ===
+                        if self._locca_enabled and self.config.is_ref_device:
+                            try:
+                                self._save_locca_captions(
+                                    vision_features_list=all_vision_features_local,
+                                    ground_truth_captions=all_caption_texts_local,
+                                    video_paths=global_paths[:len(all_caption_texts_local)],
+                                    epoch=epoch,
+                                    dataset=dataset,
+                                    max_samples=50,
+                                )
+                            except Exception as e:
+                                print(f"[LocCa] Warning: Could not generate captions: {e}")
+                        # === End LocCa Caption Generation ===
+
             else:
                 retrieval_metrics = self._zero_retrieval_metrics()
         else:
@@ -896,6 +1159,105 @@ class VideoContrastiveLearningRunner:
         for k_val in self.config.ndcg_k:
             metrics[f"NDCG@{k_val}"] = 0.0
         return metrics
+
+    def _save_locca_captions(
+        self,
+        vision_features_list: List[torch.Tensor],
+        ground_truth_captions: List[str],
+        video_paths: List[str],
+        epoch: int,
+        dataset: Any,
+        max_samples: int = 50,
+    ) -> None:
+        """
+        Generate and save LocCa captions for validation samples.
+
+        Args:
+            vision_features_list: List of vision features tensors [B, L, D]
+            ground_truth_captions: List of ground truth caption strings
+            video_paths: List of video file paths
+            epoch: Current epoch
+            dataset: Dataset with tokenizer for decoding
+            max_samples: Maximum number of samples to generate
+        """
+        if not self._locca_enabled or self.locca_decoder is None:
+            return
+
+        if not vision_features_list:
+            return
+
+        import json
+
+        # Get tokenizer for decoding
+        tokenizer = getattr(dataset, "tokenizer", None)
+        if tokenizer is None:
+            print("[LocCa] Warning: No tokenizer found, skipping caption generation")
+            return
+
+        # Concatenate vision features
+        all_vis_feats = torch.cat(vision_features_list, dim=0)[:max_samples]
+        num_samples = min(all_vis_feats.shape[0], len(ground_truth_captions), len(video_paths))
+
+        # Get LocCa module (handle DDP wrapper)
+        locca_module = self.locca_decoder.module if hasattr(self.locca_decoder, 'module') else self.locca_decoder
+
+        # Generate captions
+        caption_records = []
+        self.locca_decoder.eval()
+        with torch.no_grad():
+            # Move to device and ensure 3D
+            vis_feats = all_vis_feats[:num_samples].to(self.device)
+            if vis_feats.ndim == 2:
+                vis_feats = vis_feats.unsqueeze(1)
+
+            # Generate in batches of 8
+            batch_size = 8
+            all_generated = []
+            for start_idx in range(0, num_samples, batch_size):
+                end_idx = min(start_idx + batch_size, num_samples)
+                batch_feats = vis_feats[start_idx:end_idx]
+
+                generated_ids = locca_module.generate(
+                    vision_features=batch_feats,
+                    max_length=100,
+                    temperature=0.8,
+                    top_k=50,
+                )
+                all_generated.append(generated_ids.cpu())
+
+            # Decode generated captions
+            generated_ids = torch.cat(all_generated, dim=0)
+            for i in range(num_samples):
+                gen_ids = generated_ids[i].tolist()
+                # Remove special tokens and decode
+                gen_text = tokenizer.decode(gen_ids, skip_special_tokens=True)
+                gt_text = ground_truth_captions[i] if i < len(ground_truth_captions) else ""
+                video_path = video_paths[i] if i < len(video_paths) else ""
+
+                caption_records.append({
+                    "video_path": video_path,
+                    "ground_truth": gt_text,
+                    "generated": gen_text,
+                    "epoch": epoch,
+                })
+
+        # Save to JSON
+        output_path = os.path.join(self.output_dir, f"locca_captions_epoch{epoch}.json")
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(caption_records, f, indent=2)
+
+        # Also save human-readable text file
+        txt_path = os.path.join(self.output_dir, f"locca_captions_epoch{epoch}.txt")
+        with open(txt_path, "w", encoding="utf-8") as f:
+            f.write(f"LocCa Generated Captions - Epoch {epoch}\n")
+            f.write("=" * 80 + "\n\n")
+            for i, record in enumerate(caption_records[:20]):  # First 20 for readability
+                f.write(f"--- Sample {i+1} ---\n")
+                f.write(f"Video: {record['video_path']}\n")
+                f.write(f"GT:    {record['ground_truth']}\n")
+                f.write(f"GEN:   {record['generated']}\n\n")
+
+        print(f"[LocCa] Saved {len(caption_records)} generated captions to {output_path}")
 
     def _save_checkpoint(self, epoch: int, metrics: dict, is_best: bool = False, is_highest_alignment: bool = False):
         """
@@ -1043,11 +1405,154 @@ class VideoContrastiveLearningRunner:
         scale = torch.exp(logit_scale)
         return logits * scale
 
+    def _compute_multi_loss(
+        self,
+        video_embeddings: torch.Tensor,
+        text_embeddings: torch.Tensor,
+        siglip_batch: Optional[dict] = None,
+        caption_input_ids: Optional[torch.Tensor] = None,
+        caption_labels: Optional[torch.Tensor] = None,
+        caption_attention_mask: Optional[torch.Tensor] = None,
+        vision_features: Optional[torch.Tensor] = None,
+        caption_texts: Optional[List[str]] = None,
+        is_first_batch: bool = False,
+        dataset: Optional[Any] = None,
+    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+        """
+        Compute combined loss from all registered losses.
+
+        Args:
+            video_embeddings: [B, D] pooled video embeddings for contrastive loss
+            text_embeddings: [B, D] text embeddings for contrastive loss
+            siglip_batch: SigLIP batch with multi-positive data
+            caption_input_ids: [B, L-1] input tokens for captioning (shifted)
+            caption_labels: [B, L-1] target tokens for captioning (shifted, -100 for padding)
+            caption_attention_mask: [B, L-1] attention mask for decoder (1=attend, 0=ignore)
+            vision_features: [B, N, D] pre-pooled vision features for cross-attention
+
+        Returns:
+            total_loss: Combined weighted loss
+            loss_breakdown: Dict of individual loss values for logging
+        """
+        total_loss = video_embeddings.new_tensor(0.0)
+        loss_breakdown: Dict[str, float] = {}
+
+        for loss_name, loss_fn in self.loss_fns.items():
+            weight = self.loss_weights.get(loss_name, 1.0)
+            if weight <= 0:
+                continue
+
+            loss_val = video_embeddings.new_tensor(0.0)
+
+            # Contrastive losses (siglip, clip, etc.)
+            if loss_name.startswith("siglip") or loss_name in ("clip", "contrastive"):
+                if siglip_batch and self.siglip_active:
+                    # Use SigLIP batch for multi-positive
+                    loss_val = self._compute_siglip_pairwise_loss(
+                        video_embeddings=video_embeddings,
+                        siglip_batch=siglip_batch,
+                    )
+                else:
+                    loss_val = loss_fn.run(
+                        video_features=video_embeddings,
+                        text_features=text_embeddings,
+                        log_temp=self.log_temp,
+                    )
+
+            # LocCa captioning loss
+            elif loss_name.startswith("locca") and self.locca_decoder is not None:
+                if caption_input_ids is not None and caption_labels is not None and vision_features is not None:
+                    # Ensure vision_features is 3D [B, L_vision, D] for cross-attention
+                    # If it's 2D [B, D] (pooled embedding), unsqueeze to [B, 1, D]
+                    vis_feats = vision_features
+                    if vis_feats.ndim == 2:
+                        vis_feats = vis_feats.unsqueeze(1)  # [B, D] -> [B, 1, D]
+
+                    # Forward through LocCa decoder with causal masking
+                    # The decoder applies causal self-attention mask internally
+                    # We pass attention_mask to handle padding in the input
+                    logits = self.locca_decoder(
+                        input_ids=caption_input_ids,
+                        vision_features=vis_feats,
+                        attention_mask=caption_attention_mask,
+                    )
+                    # LocCa loss computes cross-entropy, ignoring -100 in labels
+                    loss_val = loss_fn.loss_type(
+                        logits=logits,
+                        targets=caption_labels,
+                    )
+
+                    # Debug output for first batch: show target caption and model prediction
+                    if is_first_batch and self.config.is_ref_device:
+                        print("\n" + "=" * 80)
+                        print("[LocCa Debug - First Batch]")
+                        print("=" * 80)
+
+                        # Get tokenizer for decoding
+                        tokenizer = None
+                        if dataset is not None and hasattr(dataset, "tokenizer"):
+                            tokenizer = dataset.tokenizer
+
+                        # Show first sample's target caption
+                        if caption_texts and len(caption_texts) > 0:
+                            print(f"\n[Target Caption (Video 0)]:")
+                            print(f"  {caption_texts[0][:200]}..." if len(caption_texts[0]) > 200 else f"  {caption_texts[0]}")
+
+                        # Get input and predicted token IDs for comparison
+                        input_ids_sample = caption_input_ids[0]  # [seq_len]
+                        label_ids_sample = caption_labels[0]  # [seq_len] - the target (shifted by 1)
+                        pred_tokens = logits[0].argmax(dim=-1)  # [seq_len]
+
+                        # Check if prediction matches input (accidental copy bug)
+                        match_input = (pred_tokens == input_ids_sample).float().mean().item()
+                        match_labels = (pred_tokens == label_ids_sample).float().mean().item()
+
+                        print(f"\n[Token ID Comparison (first 20 tokens)]:")
+                        print(f"  Input IDs:     {input_ids_sample[:20].tolist()}")
+                        print(f"  Label IDs:     {label_ids_sample[:20].tolist()}")
+                        print(f"  Predicted IDs: {pred_tokens[:20].tolist()}")
+                        print(f"\n  Match with input: {match_input*100:.1f}%")
+                        print(f"  Match with labels: {match_labels*100:.1f}%")
+
+                        # Show logit statistics (should be ~uniform for random model)
+                        logit_sample = logits[0, :10]  # First 10 positions
+                        print(f"\n[Logit Stats (first 10 positions)]:")
+                        print(f"  Mean: {logit_sample.mean().item():.4f}")
+                        print(f"  Std:  {logit_sample.std().item():.4f}")
+                        print(f"  Min:  {logit_sample.min().item():.4f}")
+                        print(f"  Max:  {logit_sample.max().item():.4f}")
+
+                        # Decode model's prediction
+                        if tokenizer is not None:
+                            try:
+                                pred_text = tokenizer.decode(pred_tokens, skip_special_tokens=True)
+                                print(f"\n[Model Prediction (greedy decode)]:")
+                                print(f"  {pred_text[:200]}..." if len(pred_text) > 200 else f"  {pred_text}")
+                            except Exception as e:
+                                print(f"\n[Model Prediction decode error]: {e}")
+
+                        # Show shapes
+                        print(f"\n[Shapes]:")
+                        print(f"  caption_input_ids: {caption_input_ids.shape}")
+                        print(f"  caption_labels: {caption_labels.shape}")
+                        print(f"  vision_features: {vis_feats.shape}")
+                        print(f"  logits: {logits.shape}")
+                        print(f"  loss: {loss_val.item():.4f} (random chance ~10.3)")
+                        print("=" * 80 + "\n")
+
+            # Add weighted loss
+            weighted_loss = loss_val * weight
+            total_loss = total_loss + weighted_loss
+            loss_breakdown[f"loss/{loss_name}"] = float(loss_val.detach().item())
+
+        return total_loss, loss_breakdown
+
     def _compute_siglip_pairwise_loss(
         self,
         video_embeddings: torch.Tensor,
         siglip_batch: dict,
     ) -> torch.Tensor:
+        """Compute SigLIP loss using the unified SigLIPLoss from contrastive.py."""
         siglip_text = self.text_encoder(
             siglip_batch["input_ids"],
             siglip_batch["attention_mask"],
@@ -1056,14 +1561,21 @@ class VideoContrastiveLearningRunner:
         if pos_mask.sum().item() == 0:
             return video_embeddings.sum() * 0.0
 
-        logits = self._scaled_logits(video_embeddings, siglip_text)
-
         pos_weights: Optional[torch.Tensor] = siglip_batch.get("positive_weights")
         weights = pos_weights if self.siglip_severity_weighting else None
         if weights is not None:
             weights = torch.nan_to_num(weights, nan=0.0, posinf=0.0, neginf=0.0).float()
+            # Clamp weights to prevent extreme gradients (max 10x - proven stable in vvuet8ad)
+            weights = torch.clamp(weights, min=0.1, max=10.0)
 
-        return self.siglip_pairwise_loss(logits, pos_mask, weights)
+        # Use unified SigLIPLoss via loss_fn (handles DDP, normalization, etc.)
+        return self.loss_fn.run(
+            video_features=video_embeddings,
+            text_features=siglip_text,
+            log_temp=self.log_temp,
+            pos_mask=pos_mask,
+            pos_weights=weights,
+        )
 
     def _compute_siglip_infonce_loss(
         self,
@@ -1078,6 +1590,8 @@ class VideoContrastiveLearningRunner:
         weights = pos_weights if self.siglip_severity_weighting else None
         if weights is not None:
             weights = torch.nan_to_num(weights, nan=0.0, posinf=0.0, neginf=0.0).float()
+            # Clamp weights to prevent extreme gradients (max 10x - proven stable in vvuet8ad)
+            weights = torch.clamp(weights, min=0.1, max=10.0)
 
         if pos_mask.sum().item() == 0:
             return logits.sum() * 0.0
@@ -1176,6 +1690,9 @@ class VideoContrastiveLearningRunner:
         attention_mask: torch.Tensor,
         main_structure: Optional[torch.Tensor] = None,
         siglip_batch: Optional[dict] = None,
+        video_paths: Optional[List[str]] = None,
+        dataset: Optional[Any] = None,
+        is_first_batch: bool = False,
     ) -> tuple[dict, dict]:
         """
         One training iteration: forward → backward → (optional) clip → optimizer step →
@@ -1201,13 +1718,22 @@ class VideoContrastiveLearningRunner:
             and self.tree_loss_weight > 0
         )
 
+        # Prepare caption tokens for LocCa if enabled (concatenates ALL positive texts per video)
+        caption_input_ids, caption_labels, caption_attention_mask, caption_texts = self._prepare_caption_tokens(
+            siglip_batch=siglip_batch,
+            video_paths=video_paths,
+            dataset=dataset,
+        )
+
         with autocast_ctx:
             video_output = self.video_encoder(
                 videos,
                 compute_tree_logits=need_tree_logits,
+                return_vision_features=self._locca_enabled,
             )
             video_emb = video_output["video_embeds"]
             tree_logits = video_output.get("tree_logits")
+            vision_features = video_output.get("vision_features")  # For LocCa cross-attention
             text_emb = self.text_encoder(input_ids, attention_mask)
 
             # Debug logging for numerical stability monitoring
@@ -1239,8 +1765,23 @@ class VideoContrastiveLearningRunner:
                     "Non-finite encoder outputs",
                     diagnostics=diagnostics,
                 )
-            if siglip_batch and self.siglip_active:
-                if self.use_siglip_pairwise and self.siglip_pairwise_loss is not None:
+            # Multi-loss computation when loss_fns is configured
+            loss_breakdown: Dict[str, float] = {}
+            if self.loss_fns:
+                contrastive_loss, loss_breakdown = self._compute_multi_loss(
+                    video_embeddings=video_emb,
+                    text_embeddings=text_emb,
+                    siglip_batch=siglip_batch,
+                    caption_input_ids=caption_input_ids,
+                    caption_labels=caption_labels,
+                    caption_attention_mask=caption_attention_mask,
+                    vision_features=vision_features,
+                    caption_texts=caption_texts,
+                    is_first_batch=is_first_batch,
+                    dataset=dataset,
+                )
+            elif siglip_batch and self.siglip_active:
+                if self.use_siglip_pairwise:  # All siglip* losses use unified SigLIPLoss
                     contrastive_loss = self._compute_siglip_pairwise_loss(
                         video_embeddings=video_emb,
                         siglip_batch=siglip_batch,
@@ -1309,9 +1850,17 @@ class VideoContrastiveLearningRunner:
         ):
             clip_grad_norm_(text_params, max_norm=self.text_max_grad_norm)
 
+        # Guard against NaN temperature (reset to default if corrupted)
+        if hasattr(self, "log_temp") and not torch.isfinite(self.log_temp):
+            print("[WARNING] log_temp became non-finite, resetting to default")
+            self.log_temp.data.fill_(math.log(0.07))
+            if self.log_temp.grad is not None:
+                self.log_temp.grad.zero_()
+
         # Clip temperature gradient to prevent wild swings in logit scaling
+        # Tightened from ±0.1 to ±0.01 to prevent temperature explosion
         if hasattr(self, "log_temp") and self.log_temp.grad is not None:
-            self.log_temp.grad.clamp_(-0.1, 0.1)
+            self.log_temp.grad.clamp_(-0.01, 0.01)
 
         self._last_grad_norm = grad_norm_val
         self._last_video_grad_norm = video_grad_norm
@@ -1380,6 +1929,7 @@ class VideoContrastiveLearningRunner:
             "alignment_score": alignment_score,
             **embedding_norms,
             **lr_metrics,
+            **loss_breakdown,  # Individual loss values from multi-loss
         }
 
         embeddings = {
@@ -1392,12 +1942,15 @@ class VideoContrastiveLearningRunner:
         return batch_metrics, embeddings
 
     def _val_step(
-        self, 
-        videos: torch.Tensor, 
-        input_ids: torch.Tensor, 
+        self,
+        videos: torch.Tensor,
+        input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
         main_structure: Optional[torch.Tensor] = None,
         siglip_batch: Optional[dict] = None,
+        video_paths: Optional[List[str]] = None,
+        dataset: Optional[Any] = None,
+        is_first_batch: bool = False,
     ) -> tuple[dict, dict]:
         """
         Performs a single validation step (forward pass + metric computation).
@@ -1405,6 +1958,9 @@ class VideoContrastiveLearningRunner:
         :param videos: Tensor of shape [B, num_clips, T, H, W, C].
         :param input_ids: Encoded text token IDs.
         :param attention_mask: Attention mask for text.
+        :param video_paths: Optional list of video file paths for LocCa caption building.
+        :param dataset: Optional dataset reference for LocCa caption building.
+        :param is_first_batch: Whether this is the first batch (for debug output).
         :return: (batch_metrics, embeddings) similar to _train_step, but without backprop.
         """
         need_tree_logits = (
@@ -1412,17 +1968,41 @@ class VideoContrastiveLearningRunner:
             and self.tree_loss_weight > 0
         )
 
+        # Prepare caption tokens for LocCa if enabled
+        caption_input_ids, caption_labels, caption_attention_mask, caption_texts = self._prepare_caption_tokens(
+            siglip_batch=siglip_batch,
+            video_paths=video_paths,
+            dataset=dataset,
+        )
+
         with torch.no_grad():
             with torch.amp.autocast("cuda"):
                 video_output = self.video_encoder(
                     videos,
                     compute_tree_logits=need_tree_logits,
+                    return_vision_features=self._locca_enabled,
                 )
                 video_features = video_output["video_embeds"]
                 tree_logits = video_output.get("tree_logits")
+                vision_features = video_output.get("vision_features")  # For LocCa cross-attention
                 text_features = self.text_encoder(input_ids, attention_mask)
-                if siglip_batch and self.siglip_active:
-                    if self.use_siglip_pairwise and self.siglip_pairwise_loss is not None:
+                # Multi-loss computation when loss_fns is configured
+                loss_breakdown: Dict[str, float] = {}
+                if self.loss_fns:
+                    contrastive_loss, loss_breakdown = self._compute_multi_loss(
+                        video_embeddings=video_features,
+                        text_embeddings=text_features,
+                        siglip_batch=siglip_batch,
+                        vision_features=vision_features,
+                        caption_input_ids=caption_input_ids,
+                        caption_labels=caption_labels,
+                        caption_attention_mask=caption_attention_mask,
+                        caption_texts=caption_texts,
+                        dataset=dataset,
+                        is_first_batch=is_first_batch,
+                    )
+                elif siglip_batch and self.siglip_active:
+                    if self.use_siglip_pairwise:  # All siglip* losses use unified SigLIPLoss
                         contrastive_loss = self._compute_siglip_pairwise_loss(
                             video_embeddings=video_features,
                             siglip_batch=siglip_batch,
@@ -1441,8 +2021,8 @@ class VideoContrastiveLearningRunner:
                         )
                 else:
                     contrastive_loss = self.loss_fn.run(
-                        video_features=video_features, 
-                        text_features=text_features, 
+                        video_features=video_features,
+                        text_features=text_features,
                         log_temp=self.log_temp
                     )
                 tree_loss_raw, tree_loss_weighted, tree_probs, tree_targets = self._compute_tree_losses(
@@ -1464,6 +2044,8 @@ class VideoContrastiveLearningRunner:
         }
         if tree_logits is not None:
             embeddings_out["tree_logits"] = tree_logits.float()
+        if vision_features is not None:
+            embeddings_out["vision_features"] = vision_features.float()
 
         return (
             {
@@ -1476,6 +2058,7 @@ class VideoContrastiveLearningRunner:
                     k: v.detach().item() if torch.is_tensor(v) else v
                     for k, v in metrics.items()
                 },
+                **loss_breakdown,  # Individual loss values from multi-loss
             },
             embeddings_out,
         )

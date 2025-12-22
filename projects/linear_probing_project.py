@@ -71,7 +71,8 @@ class VideoMILWrapper(torch.nn.Module):
         # ------------------------------------------------------------------
         # 1) Run the backbone / encoder
         # ------------------------------------------------------------------
-        embeddings: torch.Tensor = self.video_encoder(x)
+        encoder_outputs = self.video_encoder(x)
+        embeddings: torch.Tensor = encoder_outputs["video_embeds"]
 
         # ------------------------------------------------------------------
         # 2) Reshape so that the MIL module always sees *either*:

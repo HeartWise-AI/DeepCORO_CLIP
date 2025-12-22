@@ -28,6 +28,7 @@ SELECTED_GPUS="0"
 CONFIG_PATH="config/clip/base_config.yaml"
 RUN_MODE="train"
 USE_WANDB="false"
+MASTER_PORT="29500"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -46,6 +47,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --use_wandb)
             USE_WANDB="$2"
+            shift 2
+            ;;
+        --master_port)
+            MASTER_PORT="$2"
             shift 2
             ;;
         --help | -h)
@@ -110,15 +115,31 @@ echo "Config path: $CONFIG_PATH"
 # Calculate number of GPUs from the comma-separated list
 NUM_GPUS=$(echo $SELECTED_GPUS | tr ',' '\n' | wc -l)
 
+# Activate virtual environment if present
+PYTHON_BIN="python"
+if [ -d ".venv" ] && [ -f ".venv/bin/activate" ]; then
+    echo -e "${BLUE}Activating virtual environment at .venv${NC}"
+    source .venv/bin/activate
+    PYTHON_BIN="python"
+fi
+
 # Environment variables for better DDP performance
-export NCCL_DEBUG=WARNING
+export NCCL_DEBUG=INFO  # Set to INFO to debug NCCL issues
 export CUDA_VISIBLE_DEVICES=$SELECTED_GPUS
 export OMP_NUM_THREADS=1
+export PYTHONPATH="$(pwd):${PYTHONPATH}"
+export TORCH_DISTRIBUTED_DEBUG=DETAIL
+
+# NCCL settings to fix multi-GPU communication issues
+export NCCL_P2P_DISABLE=0           # Enable P2P (try =1 if this fails)
+export NCCL_IB_DISABLE=1            # Disable InfiniBand (use shared memory instead)
+export NCCL_SHM_DISABLE=0           # Enable shared memory
+export NCCL_SOCKET_IFNAME=lo        # Use loopback for single-node multi-GPU
 
 # Run the training
-torchrun \
+$PYTHON_BIN -m torch.distributed.run \
     --nproc_per_node=$NUM_GPUS \
-    --master_port=29500 \
+    --master_port=$MASTER_PORT \
     --nnodes=1 \
     --node_rank=0 \
     scripts/main.py \

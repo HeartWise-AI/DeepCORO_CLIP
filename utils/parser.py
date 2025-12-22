@@ -78,7 +78,18 @@ class ClipParser(BaseParser):
         clip_data_group.add_argument('--num_videos', type=int, help="Number of videos per sample if multi_video is True.")
         clip_data_group.add_argument('--groupby_column', type=str, help="Column to group data by (e.g., patient ID).")
         clip_data_group.add_argument('--shuffle_videos', type=str2bool, help="Shuffle videos within a group if multi_video is True.")
-                
+        clip_data_group.add_argument('--siglip_texts_path', type=str, help="Path to the SigLIP texts CSV file.")
+        clip_data_group.add_argument('--siglip_max_segments_per_video', type=int, help="Max SigLIP captions to load per video.")
+        clip_data_group.add_argument('--siglip_round_robin_sampling', type=str2bool, help="Use round-robin sampling for SigLIP negatives.")
+
+        clip_siglip_group = self.parser.add_argument_group('SigLIP parameters')
+        clip_siglip_group.add_argument('--siglip_max_positive_per_video', type=int, help="Max number of SigLIP positive texts per video.")
+        clip_siglip_group.add_argument('--siglip_negatives_per_video', type=int, help="Number of SigLIP negatives sampled per video.")
+        clip_siglip_group.add_argument('--siglip_positive_loss_weight', type=float, help="Weight multiplier for SigLIP positives.")
+        clip_siglip_group.add_argument('--siglip_negative_loss_weight', type=float, help="Weight multiplier for SigLIP negatives.")
+        clip_siglip_group.add_argument('--siglip_enable_severity_weighting', type=str2bool, help="Enable severity-weighted SigLIP positives.")
+        clip_siglip_group.add_argument('--siglip_auto_positive_loss_weight', type=str2bool, help="Automatically scale SigLIP positive weights.")
+
         clip_model_group = self.parser.add_argument_group('CLIP Model parameters')
         clip_model_group.add_argument('--model_name', type=str, help="Name of the video encoder model.")
         clip_model_group.add_argument('--pretrained', type=str2bool, help="Whether to use a pretrained video encoder.")
@@ -92,6 +103,8 @@ class ClipParser(BaseParser):
 
         clip_optim_group = self.parser.add_argument_group('CLIP Optimization parameters')
         clip_optim_group.add_argument('--max_grad_norm', type=float, help="Maximum gradient norm.")
+        clip_optim_group.add_argument('--video_max_grad_norm', type=float, help="Per-video branch gradient clipping norm.")
+        clip_optim_group.add_argument('--text_max_grad_norm', type=float, help="Text encoder gradient clipping norm.")
         clip_optim_group.add_argument('--optimizer', type=str, help="Optimizer name (e.g., 'AdamW').")
         clip_optim_group.add_argument('--scheduler_name', type=str, help="Learning rate scheduler name.")
         clip_optim_group.add_argument('--lr_step_period', type=int, help="Period for step LR scheduler.")
@@ -111,6 +124,11 @@ class ClipParser(BaseParser):
         clip_metrics_group.add_argument('--loss_name', type=str, help="Name of the loss function.")
         clip_metrics_group.add_argument('--recall_k', type=parse_list, help="Values of k for Recall@k metric.")
         clip_metrics_group.add_argument('--ndcg_k', type=parse_list, help="Values of k for NDCG@k metric.")
+
+        clip_aux_group = self.parser.add_argument_group('CLIP Auxiliary loss parameters')
+        clip_aux_group.add_argument('--main_structure_loss_weight', type=float, help="Weight applied to auxiliary main-structure loss.")
+        clip_aux_group.add_argument('--tree_loss_enabled', type=str2bool, help="Enable the auxiliary tree loss regardless of weight.")
+        clip_aux_group.add_argument('--tree_loss_weight', type=float, help="Weight applied to the auxiliary tree loss.")
 
         clip_augment_group = self.parser.add_argument_group('CLIP Data Augmentation parameters')
         clip_augment_group.add_argument('--rand_augment', type=str2bool, help="Enable RandAugment.")

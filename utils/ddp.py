@@ -1,3 +1,4 @@
+import datetime
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as MP
@@ -21,23 +22,60 @@ class DistributedUtils:
         return dist.is_initialized()
 
     @staticmethod
+    def get_world_size() -> int:
+        if not dist.is_initialized():
+            return 1
+        return dist.get_world_size()
+
+    @staticmethod
+    def get_rank() -> int:
+        if not dist.is_initialized():
+            return 0
+        return dist.get_rank()
+
+    @staticmethod
+    def get_local_rank() -> int:
+        if not dist.is_initialized():
+            return 0
+        if "LOCAL_RANK" in os.environ:
+            return int(os.environ["LOCAL_RANK"])
+        if torch.cuda.is_available():
+            device_count = torch.cuda.device_count()
+            if device_count > 0:
+                return dist.get_rank() % device_count
+        return 0
+
+    @staticmethod
     def ddp_setup(gpu_id: int, world_size: int):
         # Use gloo backend for CPU
         backend = 'gloo'
+        rank = int(os.environ.get("RANK", gpu_id))
+        print(f"[DDP Setup] rank={rank}, local_gpu={gpu_id}, world_size={world_size}")
+        init_kwargs = {
+            "backend": backend,
+            "init_method": 'env://',
+            "world_size": world_size,
+            "rank": rank,
+        }
         
         # Only set CUDA device if CUDA is available
         if torch.cuda.is_available():
             torch.cuda.set_device(gpu_id)
             backend = 'nccl'
+            init_kwargs["backend"] = backend
+            # Set device_id for PyTorch 2.x+ to avoid "devices unknown" warning in barriers
+            try:
+                from packaging.version import Version
+                if Version(torch.__version__) >= Version("2.0"):
+                    init_kwargs["device_id"] = torch.device(f"cuda:{gpu_id}")
+            except ImportError:
+                pass
             print(f"Using CUDA device {gpu_id}")
         
-        # Initialize process group
-        DistributedUtils.dist.init_process_group(
-            backend=backend,
-            init_method='env://',
-            world_size=world_size,
-            rank=gpu_id
-        )
+        # Initialize process group with extended timeout for large models
+        # Default NCCL timeout is 30 minutes, but we set 60 minutes for safety
+        init_kwargs["timeout"] = datetime.timedelta(minutes=60)
+        DistributedUtils.dist.init_process_group(**init_kwargs)
         
         
     @staticmethod
@@ -45,7 +83,8 @@ class DistributedUtils:
         """
         Cleanup the DistributedDataParallel.
         """
-        destroy_process_group()
+        if dist.is_initialized():
+            destroy_process_group()
 
     @staticmethod
     def sync_process_group(
@@ -56,7 +95,7 @@ class DistributedUtils:
         Synchronize the process group across all devices.
         """
         if world_size > 1:
-            torch.distributed.barrier(device_ids=[device_ids])
+            torch.distributed.barrier()
     
     @staticmethod
     def gather_loss(

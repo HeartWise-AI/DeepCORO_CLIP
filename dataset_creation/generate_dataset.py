@@ -323,8 +323,7 @@ def assign_procedure_status(df: pd.DataFrame) -> pd.DataFrame:
     df_copy["pci_seen_before"] = (
         df_copy
         .groupby(group_cols, sort=False)["is_pci"]
-        .cumsum()            # running total …
-        .shift(fill_value=0) # … but *before* the current row
+        .transform(lambda x: x.cumsum().shift(fill_value=0))
         .astype(bool)
     )
 

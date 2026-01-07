@@ -22,7 +22,7 @@ def process_dicom_video(
         Tuple[Optional[str], Optional[str]]: A tuple containing 
             (avi_path, acquisition_time).
             avi_path: The path to the converted AVI file, or None if conversion failed.
-            acquisition_time: The acquisition time as a string (HHMMSS.FFFFFF), or None if not available.
+            acquisition_time: The acquisition time as a float, or None if not available.
     """
     # Read DICOM file
     ds: pydicom.Dataset = pydicom.dcmread(input_path)
@@ -31,7 +31,7 @@ def process_dicom_video(
     series_times: Optional[str] = None
     
     try:
-        series_times = str(ds[DICOM_TAGS['series_times']].value)
+        series_times = float(ds[DICOM_TAGS['series_times']].value)
     except Exception as e:
         print(f"Warning: Could not extract acquisition time from {input_path}: {e}")
         return None, None

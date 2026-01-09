@@ -1,0 +1,172 @@
+# Improved CLS Token Configuration for CathEF Regression
+# Showcases advanced features: separate attention layers, hybrid pooling, configurable heads
+
+# Pipeline parameters
+pipeline_project: !!str DeepCORO_video_linear_probing
+base_checkpoint_path: !!str outputs
+run_mode: !!str train
+epochs: !!int 20
+seed: !!int 42
+tag: !!str mvit_pretrained_multiview_cls_token
+# wandb parameters
+name: !!str DeepCORO_video_linear_probing_multiview_improved_cls_token
+project: !!str DeepCORO_video_linear_probing_multiview_improved_cls_token
+entity: !!str mhi_ai
+use_wandb: !!bool true
+# Training parameters
+scheduler_name: !!str cosine_with_warmup
+num_warmup_percent: !!float 0.08
+optimizer: !!str AdamW
+use_amp: !!bool true
+gradient_accumulation_steps: !!int 1
+# Scheduler parameters
+lr_step_period: !!int 10
+factor: !!float 0.1
+num_hard_restarts_cycles: !!int 3
+warm_restart_tmult: !!float 2.0
+# Dataset parameters
+data_filename: !!str /volume/Deep_CORO_Multi_Instance_clstoken_new/df3_filtered_7days_1year_binaryclassification_mace7_balanced.csv
+num_workers: !!int 4
+batch_size: !!int 2 # Smaller due to hybrid pooling memory requirements
+multi_video: !!bool true
+groupby_column: !!str 'StudyInstanceUID'
+num_videos: !!int 10
+shuffle_videos: !!bool true
+datapoint_loc_label: !!str FileName
+target_label: ['mace_cv_death_binary', 'mace_non_fatal_mi_binary', 'mace_non_fatal_stroke_binary', 'mace_urgent_revascularization_binary', 'mace_heart_failure_hosp_binary', 'mace_life_threatening_arrhythmia_binary', 'mace_cardiogenic_shock_binary', 'mace_binary']
+rand_augment: !!bool true
+resize: !!int 224
+frames: !!int 16
+stride: !!int 2
+# Improved CLS Token Configurations
+pooling_mode: !!str attention+cls_token # Hybrid pooling for richer features
+separate_video_attention: !!bool true # Separate within/across-video attention
+num_attention_heads: !!int 8 # Configurable attention heads
+normalization_strategy: !!str post_norm # Post-norm like ViT (can try pre_norm)
+use_cls_token: !!bool true
+attention_hidden: !!int 256 # Taille cachée pour le mécanisme d'attention
+dropout_attention: !!float 0.2 # Dropout pour le bloc d'attention
+# Video Encoder parameters
+model_name: !!str mvit
+aggregator_depth: !!int 1
+num_heads: !!int 16
+video_freeze_ratio: !!float 0.9179658719319556
+dropout: !!float 0.15
+pretrained: !!bool true
+# Learning rates - Optimized for improved architecture
+video_encoder_lr: !!float 8.795617632783049e-06 # Conservative for pretrained
+video_encoder_weight_decay: !!float 1.8160563690364244e-06
+# Attention learning rates - separate for within/across attention
+attention_within_lr: !!float 2e-3 # Within-video attention
+attention_across_lr: !!float 1.5e-3 # Across-video attention  
+attention_weight_decay: !!float 5e-5
+attention_lr: !!float 1.5e-3 # Global attention learning rate
+attention_within_weight_decay: !!float 5e-5 # Weight decay for within-video attention
+attention_across_weight_decay: !!float 5e-5 # Weight decay for across-video attention
+# Hybrid pooling means 2x feature dimension, so lower LR
+head_lr: !!float 3e-4 # Lower due to 2x input features
+head_weight_decay: !!float 1e-5
+video_encoder_checkpoint_path: !!str /volume/Deep_CORO_Multi_Instance_clstoken_new/data1/checkpoint/checkpoint.pt
+aggregate_videos_tokens: !!bool false # Maintain 4D structure for hierarchical processing
+per_video_pool: !!bool false # Let improved cls_token handle all pooling
+output_dir: !!str outputs/
+# Enhanced Linear Probing parameters with improved regression
+head_linear_probing:
+  mace_cv_death_binary: !!str cls_token_linear_probing
+  mace_non_fatal_mi_binary: !!str cls_token_linear_probing
+  mace_non_fatal_stroke_binary: !!str cls_token_linear_probing
+  mace_urgent_revascularization_binary: !!str cls_token_linear_probing
+  mace_heart_failure_hosp_binary: !!str cls_token_linear_probing
+  mace_life_threatening_arrhythmia_binary: !!str cls_token_linear_probing
+  mace_cardiogenic_shock_binary: !!str cls_token_linear_probing
+  mace_binary: !!str cls_token_linear_probing
+head_structure:
+  mace_cv_death_binary: 1
+  mace_non_fatal_mi_binary: 1
+  mace_non_fatal_stroke_binary: 1
+  mace_urgent_revascularization_binary: 1
+  mace_heart_failure_hosp_binary: 1
+  mace_life_threatening_arrhythmia_binary: 1
+  mace_cardiogenic_shock_binary: 1
+  mace_binary: 1
+head_dropout:
+  mace_cv_death_binary: 0.2
+  mace_non_fatal_mi_binary: 0.2
+  mace_non_fatal_stroke_binary: 0.2
+  mace_urgent_revascularization_binary: 0.2
+  mace_heart_failure_hosp_binary: 0.2
+  mace_life_threatening_arrhythmia_binary: 0.2
+  mace_cardiogenic_shock_binary: 0.2
+  mace_binary: 0.2
+loss_structure:
+  mace_cv_death_binary: !!str bce_logit
+  mace_non_fatal_mi_binary: !!str bce_logit
+  mace_non_fatal_stroke_binary: !!str bce_logit
+  mace_urgent_revascularization_binary: !!str bce_logit
+  mace_heart_failure_hosp_binary: !!str bce_logit
+  mace_life_threatening_arrhythmia_binary: !!str bce_logit
+  mace_cardiogenic_shock_binary: !!str bce_logit
+  mace_binary: !!str bce_logit
+head_lr:
+  mace_cv_death_binary: !!float 3e-4
+  mace_non_fatal_mi_binary: !!float 3e-4
+  mace_non_fatal_stroke_binary: !!float 3e-4
+  mace_urgent_revascularization_binary: !!float 3e-4
+  mace_heart_failure_hosp_binary: !!float 3e-4
+  mace_life_threatening_arrhythmia_binary: !!float 3e-4
+  mace_cardiogenic_shock_binary: !!float 3e-4
+  mace_binary: !!float 3e-4
+head_weight_decay:
+  mace_cv_death_binary: !!float 1e-5
+  mace_non_fatal_mi_binary: !!float 1e-5
+  mace_non_fatal_stroke_binary: !!float 1e-5
+  mace_urgent_revascularization_binary: !!float 1e-5
+  mace_heart_failure_hosp_binary: !!float 1e-5
+  mace_life_threatening_arrhythmia_binary: !!float 1e-5
+  mace_cardiogenic_shock_binary: !!float 1e-5
+  mace_binary: !!float 1e-5
+head_weights:
+  mace_cv_death_binary: !!float 1.0
+  mace_non_fatal_mi_binary: !!float 1.0
+  mace_non_fatal_stroke_binary: !!float 1.0
+  mace_urgent_revascularization_binary: !!float 1.0
+  mace_heart_failure_hosp_binary: !!float 1.0
+  mace_life_threatening_arrhythmia_binary: !!float 1.0
+  mace_cardiogenic_shock_binary: !!float 1.0
+  mace_binary: !!float 1.0
+head_task:
+  mace_cv_death_binary: !!str classification
+  mace_non_fatal_mi_binary: !!str classification
+  mace_non_fatal_stroke_binary: !!str classification
+  mace_urgent_revascularization_binary: !!str classification
+  mace_heart_failure_hosp_binary: !!str classification
+  mace_life_threatening_arrhythmia_binary: !!str classification
+  mace_cardiogenic_shock_binary: !!str classification
+  mace_binary: !!str classification
+labels_map:
+  mace_cv_death_binary:
+    negative: !!int 0
+    positive: !!int 1
+  mace_non_fatal_mi_binary:
+    negative: !!int 0
+    positive: !!int 1
+  mace_non_fatal_stroke_binary:
+    negative: !!int 0
+    positive: !!int 1
+  mace_urgent_revascularization_binary:
+    negative: !!int 0
+    positive: !!int 1
+  mace_heart_failure_hosp_binary:
+    negative: !!int 0
+    positive: !!int 1
+  mace_life_threatening_arrhythmia_binary:
+    negative: !!int 0
+    positive: !!int 1
+  mace_cardiogenic_shock_binary:
+    negative: !!int 0
+    positive: !!int 1
+  mace_binary:
+    negative: !!int 0
+    positive: !!int 1
+# Advanced Configuration Notes
+notes: "Improved CLS Token Configuration with Advanced Features:\n\n\U0001F680 New Features Enabled:\n• Hybrid Pooling: attention+cls_token provides 2x richer feature representations\n• Separate Attention: Different layers for within-video and across-video attention\n• Configurable Heads: 8 attention heads for better representational capacity\n• Post-Norm Strategy: Layer normalization after attention (ViT-style)\n• Enhanced Edge Handling: Robust fallbacks for empty masks\n\n\U0001F9E0 Architecture Benefits:\n• More sophisticated attention patterns for complex medical video analysis\n• Better capture of both local (within-video) and global (across-video) relationships\n• Richer feature representations through hybrid pooling\n• Improved training stability with separate learning rates\n\n⚙️ Training Optimizations:\n• Separate learning rates for within/across-video attention components\n• Lower learning rates compensating for 2x feature dimensions\n• Conservative video encoder updates to preserve pretrained knowledge\n• Higher dropout to prevent overfitting with richer features\n\n\U0001F4BE Memory Considerations:\n• Smaller batch size due to hybrid pooling memory requirements\n• 2x feature dimensions in classification heads\n• Separate attention layers increase parameter count\n\nExpected Performance: Significant improvement over standard pooling methods\ndue to learnable, task-adaptive attention patterns and richer feature representations. "

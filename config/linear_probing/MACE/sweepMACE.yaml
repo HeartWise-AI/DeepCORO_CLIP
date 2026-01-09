@@ -1,0 +1,186 @@
+command:
+  - torchrun
+  - "--nproc_per_node=2"
+  - "--master_port=29500"
+  - "scripts/main.py"
+  - "--base_config"
+  - "/volume/Deep_CORO_Multi_Instance_clstoken_new/config/multiview/base_config_multiview_MACE.yaml"
+  - ${args}
+name: "DeepCORO_video_linear_probing_MACE"
+project: "DeepCORO_video_linear_probing_MACE"
+entity: "mhi_ai"
+method: bayes
+metric:
+  name: best_val_loss
+  goal: minimize
+parameters:
+  # CLS Token specific parameters
+  pooling_mode:
+    values: ["cls_token", "attention+cls_token"]
+  use_cls_token:
+    values: [true]
+  num_attention_heads:
+    values: [8, 16, 24]
+  separate_video_attention:
+    values: [true]
+  normalization_strategy:
+    values: ["post_norm", "pre_norm"]
+  
+  # Separate attention learning rates
+  attention_within_lr:
+    distribution: uniform
+    min: 0.0005
+    max: 0.005
+  attention_across_lr:
+    distribution: uniform
+    min: 0.0005
+    max: 0.003
+  attention_within_weight_decay:
+    distribution: uniform
+    min: 0.000001
+    max: 0.0001
+  attention_across_weight_decay:
+    distribution: uniform
+    min: 0.000001
+    max: 0.0001
+
+   # Standard parameters
+  aggregate_videos_tokens:
+    values: [false]
+  batch_size:
+    values: [6, 8, 10]  # Smaller batches for hybrid pooling
+  dropout:
+    distribution: uniform
+    min: 0.05
+    max: 0.25
+  dropout_attention:
+    distribution: uniform
+    min: 0.1
+    max: 0.3
+  entity:
+    values: ["mhi_ai"]
+  factor:
+    distribution: uniform
+    min: 0.1
+    max: 0.7
+
+  # === MACE LABELS ===
+  # Head learning rates - using dot notation for dictionary parameters
+  head_lr.complete_occlusion_coronary_disease_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_lr.mace_cv_death_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_lr.mace_non_fatal_mi_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_lr.mace_non_fatal_stroke_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_lr.mace_urgent_revascularization_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_lr.mace_heart_failure_hosp_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_lr.mace_life_threatening_arrhythmia_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_lr.mace_cardiogenic_shock_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_lr.mace_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+
+  # Head weight decay - using dot notation for dictionary parameters
+  head_weight_decay.complete_occlusion_coronary_disease_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.mace_cv_death_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.mace_non_fatal_mi_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.mace_non_fatal_stroke_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.mace_urgent_revascularization_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.mace_heart_failure_hosp_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.mace_life_threatening_arrhythmia_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.mace_cardiogenic_shock_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.mace_binary:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+
+  lr_step_period:
+    values: [4, 6, 8]
+
+  attention_hidden:
+    values: [128, 256, 512]
+
+  # Other parameters
+  name:
+    values: ["DeepCORO_video_linear_probing_MACE"]
+  num_videos:
+    values: [2, 3, 4]
+  num_warmup_percent:
+    distribution: uniform
+    min: 0.02
+    max: 0.15
+  optimizer:
+    values: [AdamW, RAdam]
+  per_video_pool:
+    values: [false, true]
+  project:
+    values: ["DeepCORO_video_linear_probing_MACE"]
+  scheduler_name:
+    values: ["linear_warmup", "cosine_with_warmup", "cosine_with_hard_restarts_with_warmup"]
+  stride:
+    values: [1, 2, 3]
+  video_encoder_lr:
+    distribution: uniform
+    min: 0.00005
+    max: 0.0001
+  video_encoder_weight_decay:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.000001
+  video_freeze_ratio:
+    distribution: uniform
+    min: 0.7
+    max: 1.0
+early_terminate:
+  type: hyperband
+  min_iter: 3
+  eta: 2
+  s: 2
+run_mode: train

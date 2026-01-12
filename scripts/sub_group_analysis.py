@@ -124,8 +124,8 @@ else:
     df_results = pd.read_csv('/media/data1/jdelfrate/DeepCORO_CLIP/sarra_results/preds_with_true_filled_20251020_233850_with_sex_and_age.csv')
 
 if compute_metrics:
-    # lesion_types = ['stenosis_binary', 'stenosis', 'cto', 'thrombus', 'calcif_binary']
-    lesion_types = ['stenosis']
+    lesion_types = ['stenosis_binary', 'stenosis', 'cto', 'thrombus', 'calcif_binary']
+    # lesion_types = ['stenosis']
 
     arteries = (
         "left_main",
@@ -225,7 +225,7 @@ if compute_metrics:
         rng = np.random.RandomState(seed)
 
         n_failed = 0
-        mae, mse, rmse, pearson_r = [], [], [], []
+        mae, mse, rmse, r2, pearson_r = [], [], [], [], []
         for _ in range(n_bootstrap):
             indices = rng.choice(len(y_true), size=len(y_true), replace=True)
 
@@ -238,7 +238,8 @@ if compute_metrics:
                 mae.append(mean_absolute_error(y_true_resampled, y_pred_resampled))
                 mse.append(mean_squared_error(y_true_resampled, y_pred_resampled))
                 rmse.append(np.sqrt(mean_squared_error(y_true_resampled, y_pred_resampled)))
-                pearson_r.append(r2_score(y_true_resampled, y_pred_resampled))
+                r2.append(r2_score(y_true_resampled, y_pred_resampled))
+                pearson_r.append(np.corrcoef(y_true_resampled, y_pred_resampled)[0, 1])
 
             except ValueError:
                 continue
@@ -247,11 +248,14 @@ if compute_metrics:
             'mae': safe_ci(mae),
             'mse': safe_ci(mse),
             'rmse': safe_ci(rmse),
+            'r2': safe_ci(r2),
             'pearson_r': safe_ci(pearson_r)
         }
 
     classification_results = []
     regression_results = []
+    micro_results = []
+
     for lesion_type in tqdm(lesion_types, desc='Lesion types'):
         mode = 'regression' if lesion_type == 'stenosis' else 'classification'
 
@@ -314,7 +318,110 @@ if compute_metrics:
                 else:
                     raise ValueError(f'Invalid mode: {mode}')
 
+        # Compute micro-averaged AUC and AUPRC across all arteries (for classification lesion types)
+        n_total = len(df_results)
+        if mode == 'classification':
+            for subgroup, df_subgroup in subgroups.items():
+                if len(df_subgroup) == 0:
+                    continue
+
+                n_patients = len(df_subgroup)
+                pct = 100.0 * n_patients / n_total
+
+                all_y_true = []
+                all_y_pred = []
+                for artery in arteries:
+                    pred_col = f'{artery}_{lesion_type}_pred'
+                    true_col = f'{artery}_{lesion_type}_true'
+                    all_y_true.extend(df_subgroup[true_col].tolist())
+                    all_y_pred.extend(df_subgroup[pred_col].tolist())
+
+                all_y_true = np.array(all_y_true)
+                all_y_pred = np.array(all_y_pred)
+
+                if len(np.unique(all_y_true)) < 2:
+                    print(f"Skipping micro {lesion_type} for subgroup {subgroup} - less than 2 unique values")
+                    continue
+
+                bootstrap_metrics_results = bootstrap_classification_metrics(all_y_true, all_y_pred)
+
+                micro_results.append({
+                    'lesion_type': lesion_type,
+                    'subgroup': subgroup,
+                    'metric_type': 'micro',
+                    'n_patients': n_patients,
+                    'n_total': n_total,
+                    'pct': pct,
+                    'prevalence': np.mean(all_y_true),
+                    'n_samples': len(all_y_true),
+                    'micro_auc': bootstrap_metrics_results['auc']['mean'],
+                    'micro_auc_ci_lower': bootstrap_metrics_results['auc']['ci_lower'],
+                    'micro_auc_ci_upper': bootstrap_metrics_results['auc']['ci_upper'],
+                    'micro_auprc': bootstrap_metrics_results['auprc']['mean'],
+                    'micro_auprc_ci_lower': bootstrap_metrics_results['auprc']['ci_lower'],
+                    'micro_auprc_ci_upper': bootstrap_metrics_results['auprc']['ci_upper'],
+                    'micro_sensitivity': bootstrap_metrics_results['sensitivity']['mean'],
+                    'micro_sensitivity_ci_lower': bootstrap_metrics_results['sensitivity']['ci_lower'],
+                    'micro_sensitivity_ci_upper': bootstrap_metrics_results['sensitivity']['ci_upper'],
+                    'micro_specificity': bootstrap_metrics_results['specificity']['mean'],
+                    'micro_specificity_ci_lower': bootstrap_metrics_results['specificity']['ci_lower'],
+                    'micro_specificity_ci_upper': bootstrap_metrics_results['specificity']['ci_upper']
+                })
+
+        # Compute global MAE across all arteries (for regression lesion types like stenosis)
+        elif mode == 'regression':
+            for subgroup, df_subgroup in subgroups.items():
+                if len(df_subgroup) == 0:
+                    continue
+
+                n_patients = len(df_subgroup)
+                pct = 100.0 * n_patients / n_total
+
+                all_y_true = []
+                all_y_pred = []
+                for artery in arteries:
+                    pred_col = f'{artery}_{lesion_type}_pred'
+                    true_col = f'{artery}_{lesion_type}_true'
+                    all_y_true.extend(df_subgroup[true_col].tolist())
+                    all_y_pred.extend(df_subgroup[pred_col].tolist())
+
+                all_y_true = np.array(all_y_true)
+                all_y_pred = np.array(all_y_pred)
+
+                if len(np.unique(all_y_true)) < 2:
+                    print(f"Skipping global {lesion_type} for subgroup {subgroup} - less than 2 unique values")
+                    continue
+
+                bootstrap_metrics_results = bootstrap_regression_metrics(all_y_true, all_y_pred)
+
+                micro_results.append({
+                    'lesion_type': lesion_type,
+                    'subgroup': subgroup,
+                    'metric_type': 'global',
+                    'n_patients': n_patients,
+                    'n_total': n_total,
+                    'pct': pct,
+                    'mean_stenosis': np.mean(all_y_true),
+                    'n_samples': len(all_y_true),
+                    'global_mae': bootstrap_metrics_results['mae']['mean'],
+                    'global_mae_ci_lower': bootstrap_metrics_results['mae']['ci_lower'],
+                    'global_mae_ci_upper': bootstrap_metrics_results['mae']['ci_upper'],
+                    'global_mse': bootstrap_metrics_results['mse']['mean'],
+                    'global_mse_ci_lower': bootstrap_metrics_results['mse']['ci_lower'],
+                    'global_mse_ci_upper': bootstrap_metrics_results['mse']['ci_upper'],
+                    'global_rmse': bootstrap_metrics_results['rmse']['mean'],
+                    'global_rmse_ci_lower': bootstrap_metrics_results['rmse']['ci_lower'],
+                    'global_rmse_ci_upper': bootstrap_metrics_results['rmse']['ci_upper'],
+                    'global_pearson_r': bootstrap_metrics_results['pearson_r']['mean'],
+                    'global_pearson_r_ci_lower': bootstrap_metrics_results['pearson_r']['ci_lower'],
+                    'global_pearson_r_ci_upper': bootstrap_metrics_results['pearson_r']['ci_upper'],
+                })
+
     # df_results_classification_subgroups_ci = pd.DataFrame(classification_results)
     df_results_regression_subgroups_ci = pd.DataFrame(regression_results)
+    df_results_micro_ci = pd.DataFrame(micro_results)
     # df_results_classification_subgroups_ci.to_csv('preds_with_true_filled_20251020_233850_with_sex_and_age_classification_subgroups_ci.csv', index=False)
     df_results_regression_subgroups_ci.to_csv('preds_with_true_filled_20251020_233850_with_sex_and_age_regression_subgroups_ci.csv', index=False)
+    df_results_micro_ci.to_csv('preds_with_true_filled_20251020_233850_with_sex_and_age_global_metrics_ci.csv', index=False)
+    print(f"\nGlobal/micro-averaged results saved. Shape: {df_results_micro_ci.shape}")
+    print(df_results_micro_ci)

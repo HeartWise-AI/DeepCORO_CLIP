@@ -157,6 +157,43 @@ if compute_metrics:
         "age > 80": df_results[df_results.age > 80]
     }
 
+    # Compute prevalence per lesion type across all artery segments
+    prevalence_summary = []
+    for lesion_type in lesion_types:
+        for subgroup, df_subgroup in subgroups.items():
+            if len(df_subgroup) == 0:
+                continue
+
+            all_y_true = []
+            for artery in arteries:
+                true_col = f'{artery}_{lesion_type}_true'
+                all_y_true.extend(df_subgroup[true_col].tolist())
+
+            base_dict = {
+                'subgroup': subgroup,
+                'lesion_type': lesion_type,
+                'n_segments': len(all_y_true),
+                'n_patients': len(df_subgroup)
+            }
+
+            if lesion_type == 'stenosis':
+                base_dict.update({
+                    'mean_stenosis': np.mean(all_y_true),
+                    'std_stenosis': np.std(all_y_true)
+                })
+            else:
+                base_dict.update({
+                    'prevalence_pct': np.mean(all_y_true) * 100,
+                    'n_positive': int(np.sum(all_y_true))
+                })
+            
+            prevalence_summary.append(base_dict)
+
+    df_prevalence = pd.DataFrame(prevalence_summary)
+    print("\nPrevalence per lesion type (across all arteries):")
+    print(df_prevalence)
+    df_prevalence.to_csv('prevalence_per_lesion_type.csv', index=False)
+
     def compute_best_threshold(y_true: list[float], y_pred: list[float]) -> float:
         fpr, tpr, thresholds = roc_curve(y_true, y_pred)
         youden_index = tpr - fpr

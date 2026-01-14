@@ -55,6 +55,7 @@ data/
 # Sweep
 wandb/
 logs/
+results/
 
 # CSV
 *.csv

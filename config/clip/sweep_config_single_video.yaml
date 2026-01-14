@@ -32,9 +32,6 @@ parameters:
   lr_step_period:
     values: [15, 20, 30]
 
-  gradient_accumulation_steps:  
-    values: [1]
-
   num_warmup_percent:
     values: [0.05, 0.1, 0.15]
 

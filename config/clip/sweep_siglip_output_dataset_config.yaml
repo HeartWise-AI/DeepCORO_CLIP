@@ -1,0 +1,124 @@
+command:
+  - torchrun
+  - "--nproc_per_node=1"
+  - "--master_port=29500"
+  - "scripts/main.py"
+  - "--base_config"
+  - "config/clip/siglip_output_dataset_config.yaml"
+  - ${args}
+
+name: "dev_deep_coro_clip_siglip_output_dataset"
+project: "dev_deep_coro_clip_single_video"
+entity: "mhi_ai"
+
+method: bayes
+
+metric:
+  name: best_val_loss
+  goal: minimize
+
+parameters:
+  lr:
+    distribution: log_uniform_values
+    min: 0.00001
+    max: 0.0001
+
+  optimizer:
+    values: ["AdamW", "RAdam"]
+
+  scheduler_name:
+    values: ["linear_warmup", "cosine_with_warmup", "cosine_with_hard_restarts_with_warmup"]
+
+  lr_step_period:
+    values: [10, 15, 20]
+
+  batch_size:
+    values: [16, 20]
+
+  aggregate_videos_tokens:
+    values: [true, false]
+
+  per_video_pool:
+    values: [true, false]
+
+  dropout:
+    distribution: uniform
+    min: 0.08
+    max: 0.2
+
+  video_freeze_ratio:
+    distribution: uniform
+    min: 0.7
+    max: 0.95
+
+  text_freeze_ratio:
+    distribution: uniform
+    min: 0.6
+    max: 0.9
+
+  num_heads:
+    values: [8, 16, 32]
+
+  aggregator_depth:
+    values: [1, 2, 3]
+
+  temperature:
+    distribution: uniform
+    min: 0.05
+    max: 0.12
+
+  video_weight_decay:
+    distribution: log_uniform_values
+    min: 1e-6
+    max: 1e-4
+
+  text_weight_decay:
+    distribution: log_uniform_values
+    min: 1e-8
+    max: 1e-6
+
+  max_grad_norm:
+    values: [0.5, 1.0, 2.0]
+
+  tree_loss_enabled:
+    values: [true, false]
+
+  tree_loss_weight:
+    distribution: uniform
+    min: 0.0
+    max: 0.4
+
+  siglip_max_positive_per_video:
+    values: [4, 8, 12]
+
+  siglip_negatives_per_video:
+    values: [16, 32, 64]
+
+  siglip_positive_loss_weight:
+    distribution: uniform
+    min: 0.5
+    max: 1.5
+
+  siglip_negative_loss_weight:
+    distribution: uniform
+    min: 0.5
+    max: 1.5
+
+  siglip_enable_severity_weighting:
+    values: [true, false]
+
+  siglip_auto_positive_loss_weight:
+    values: [true, false]
+
+  name:
+    values: ["dev_deep_coro_clip_siglip_output_dataset"]
+  project:
+    values: ["dev_deep_coro_clip_single_video"]
+  entity:
+    values: ["mhi_ai"]
+
+early_terminate:
+  type: hyperband
+  min_iter: 3
+  eta: 2
+  s: 2

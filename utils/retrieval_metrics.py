@@ -4,34 +4,73 @@ import torch.nn as nn
 
 from typing import List
 
-def compute_recall_at_k(similarity_matrix: torch.Tensor, global_gt_indices: torch.Tensor, k_values: List[int] = [1, 5]) -> dict[str, float]:
+def compute_recall_at_k(
+    similarity_matrix: torch.Tensor,
+    global_gt_indices: torch.Tensor = None,
+    k_values: List[int] = [1, 5],
+    ground_truth_matrix: torch.Tensor = None
+) -> dict[str, float]:
     """
     Compute recall@k for video->text retrieval.
-    
+
     Args:
         similarity_matrix: Tensor of shape (n_videos, n_unique_texts) containing similarity scores.
-        global_gt_indices: Tensor of shape (n_videos,) containing the index of the 
-                         correct text for each video in the unique texts list.
+        global_gt_indices: Tensor of shape (n_videos,) containing the index of the
+                         correct text for each video in the unique texts list (for single-positive mode).
         k_values: List of k values to compute recall for
-        
+        ground_truth_matrix: Optional tensor of shape (n_videos, n_unique_texts) with 1.0 for
+                            positive pairs (for multi-positive SigLIP mode).
+
     Returns:
         Dictionary containing recall scores for each k value
     """
     metrics = {}
     num_candidates = similarity_matrix.size(1)
-    for k in k_values:
-        # If there are fewer candidates than k, adjust k to avoid the error.
-        if num_candidates < k:
-            print(f"Warning: similarity matrix has only {num_candidates} candidates; adjusting Recall@{k} to Recall@{num_candidates}.")
-            k_use = num_candidates
-        else:
-            k_use = k
-        # Get the indices of the top-k candidates.
-        v2t_topk = torch.topk(similarity_matrix, k_use, dim=1)[1]  # shape: [n_videos, k_use]
-        # Compare with ground truth indices.
-        v2t_correct = (v2t_topk == global_gt_indices.unsqueeze(1))
-        recall = (v2t_correct.sum(dim=1) > 0).float().mean().item()
-        metrics[f"Recall@{k}"] = recall
+
+    # Multi-positive mode: use ground truth matrix
+    if ground_truth_matrix is not None:
+        for k in k_values:
+            if num_candidates < k:
+                print(f"Warning: similarity matrix has only {num_candidates} candidates; adjusting Recall@{k} to Recall@{num_candidates}.")
+                k_use = num_candidates
+            else:
+                k_use = k
+
+            # Get the indices of the top-k candidates for each video
+            v2t_topk = torch.topk(similarity_matrix, k_use, dim=1)[1]  # shape: [n_videos, k_use]
+
+            # For each video, check if ANY of its positives appear in top-k
+            # Create a mask of shape [n_videos, k_use] indicating if each top-k item is a positive
+            batch_size = v2t_topk.size(0)
+            recalls = []
+            for video_idx in range(batch_size):
+                topk_indices = v2t_topk[video_idx]  # [k_use]
+                # Get ground truth positives for this video
+                gt_positives = ground_truth_matrix[video_idx]  # [n_unique_texts]
+                # Check if any of the top-k is a positive
+                is_positive = gt_positives[topk_indices]  # [k_use]
+                recalls.append(1.0 if is_positive.sum() > 0 else 0.0)
+
+            recall = sum(recalls) / len(recalls) if recalls else 0.0
+            metrics[f"Recall@{k}"] = recall
+    else:
+        # Single-positive mode: use ground truth indices (original behavior)
+        if global_gt_indices is None:
+            raise ValueError("Either global_gt_indices or ground_truth_matrix must be provided")
+
+        for k in k_values:
+            if num_candidates < k:
+                print(f"Warning: similarity matrix has only {num_candidates} candidates; adjusting Recall@{k} to Recall@{num_candidates}.")
+                k_use = num_candidates
+            else:
+                k_use = k
+            # Get the indices of the top-k candidates.
+            v2t_topk = torch.topk(similarity_matrix, k_use, dim=1)[1]  # shape: [n_videos, k_use]
+            # Compare with ground truth indices.
+            v2t_correct = (v2t_topk == global_gt_indices.unsqueeze(1))
+            recall = (v2t_correct.sum(dim=1) > 0).float().mean().item()
+            metrics[f"Recall@{k}"] = recall
+
     return metrics
 
 

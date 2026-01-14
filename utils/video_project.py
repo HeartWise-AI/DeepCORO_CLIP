@@ -47,11 +47,12 @@ def calculate_dataset_statistics_ddp(config: HeartWiseConfig) -> Tuple[torch.Ten
     
     # Broadcast statistics if distributed
     if torch.distributed.is_initialized():
+        device = torch.device(f"cuda:{config.device}") if torch.cuda.is_available() else torch.device("cpu")
         if mean is not None:
-            mean = mean.cuda()
-            std = std.cuda()
-        mean_tensor = torch.zeros(3, device="cuda")
-        std_tensor = torch.zeros(3, device="cuda")
+            mean = mean.to(device)
+            std = std.to(device)
+        mean_tensor = torch.zeros(3, device=device)
+        std_tensor = torch.zeros(3, device=device)
         if config.is_ref_device:
             mean_tensor.copy_(mean)
             std_tensor.copy_(std)

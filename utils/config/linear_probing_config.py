@@ -1,4 +1,4 @@
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 import os
 
@@ -91,6 +91,11 @@ class LinearProbingConfig(HeartWiseConfig):
     
     # Inference path
     inference_model_path: str = ""
+
+    # Pre-configured dataset statistics (for inference reproducibility)
+    # If specified, these will be used instead of recalculating from dataset
+    mean: Optional[List[float]] = None
+    std: Optional[List[float]] = None
 
     # Confidence interval settings
     ci_confidence_level: float = 0.95  # 95% confidence interval

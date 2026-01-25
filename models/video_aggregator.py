@@ -1,8 +1,19 @@
 import math
+from typing import Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+# Global legacy mode flag - set by VideoEncoder for exact reproducibility
+_LEGACY_MODE: bool = False
+
+
+def set_aggregator_legacy_mode(enabled: bool) -> None:
+    """Enable/disable legacy mode for aggregators globally."""
+    global _LEGACY_MODE
+    _LEGACY_MODE = enabled
+    print(f"[DEBUG] Aggregator legacy mode set to: {enabled}")
 
 
 class TransformerBlock(nn.Module):
@@ -33,7 +44,19 @@ class TransformerBlock(nn.Module):
         )
         self.dropout2 = nn.Dropout(dropout)
 
-    def forward(self, x):
+    def forward(self, x, key_padding_mask: Optional[torch.Tensor] = None):
+        # Legacy mode: simple forward without NaN handling (matches baseline)
+        if _LEGACY_MODE:
+            residual = x
+            x = self.norm1(x)
+            attn_out, _ = self.attn(x, x, x, key_padding_mask=key_padding_mask)
+            x = residual + self.dropout1(attn_out)
+            residual = x
+            x = self.norm2(x)
+            x = self.mlp(x)
+            x = residual + self.dropout2(x)
+            return x
+
         # Self-Attention
         residual = x
         x = self.norm1(x)
@@ -54,7 +77,7 @@ class TransformerBlock(nn.Module):
                 replacement = torch.randn_like(x) * 0.1
             x = torch.where(finite_mask, x, replacement)
 
-        attn_out, _ = self.attn(x, x, x)  # shape: [B, N, D]
+        attn_out, _ = self.attn(x, x, x, key_padding_mask=key_padding_mask)
 
         # Check for non-finite values after attention
         if not torch.isfinite(attn_out).all():
@@ -150,11 +173,33 @@ class EnhancedVideoAggregator(nn.Module):
     _warned_non_finite: bool = False  # Class-level flag to warn once
     _step_counter: int = 0  # Track steps for periodic logging
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         x: [B, N, D]
+        mask: Optional boolean mask [B, N] where True means invalid/padded
         Return: [B, D] aggregated representation.
         """
+        # Legacy mode: simple forward without NaN handling (matches baseline exactly)
+        if _LEGACY_MODE:
+            B, N, D = x.shape
+            if mask is not None:
+                mask = mask.to(torch.bool)
+            # Apply positional encoding if enabled
+            if self.pos_encoding is not None:
+                x = x + self.pos_encoding[:, :N, :]
+            # Pass through each Transformer block
+            for block in self.blocks:
+                x = block(x, key_padding_mask=mask)
+            # Final LayerNorm
+            x = self.final_ln(x)
+            # Learnable query-based attention
+            query = self.attn_query.expand(B, -1, -1)
+            attn_scores = torch.matmul(query, x.transpose(1, 2))
+            attn_scores = attn_scores / math.sqrt(D)
+            attn_weights = F.softmax(attn_scores, dim=-1)
+            out = torch.bmm(attn_weights, x).squeeze(1)
+            return out
+
         EnhancedVideoAggregator._step_counter += 1
         B, N, D = x.shape
 

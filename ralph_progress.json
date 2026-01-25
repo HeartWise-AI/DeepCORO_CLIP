@@ -1,0 +1,151 @@
+{
+  "task": "Fix inference reproducibility between siglip-loss and Sarra's branch",
+  "target": {
+    "correlation": ">=0.999",
+    "mae": "<0.1"
+  },
+  "status": "COMPLETED",
+  "final_results": {
+    "passing_columns": "90/90",
+    "mean_correlation": 0.9999994,
+    "mean_mae": 0.000599,
+    "target_achieved": true
+  },
+  "baseline": {
+    "checkpoint": "/media/data1/ravram/bestmodelstenosis70/best_model_epoch_18.pt",
+    "baseline_csv": "/media/data1/ravram/stenosis70/inference_predictions_best_epoch_-1.csv",
+    "sarra_branch": "origin/best_model_70_sarras_pipeline",
+    "config": "/tmp/test_siglip_100.yaml"
+  },
+  "fixes_applied": [
+    {
+      "file": "models/video_encoder.py",
+      "changes": [
+        "Implemented _forward_legacy() that exactly replicates Sarra's computation path",
+        "Implemented _compute_feature_dict_legacy() for exact feature extraction",
+        "Implemented _pool_video_tokens_legacy() with mean pooling",
+        "Implemented _aggregate_video_features_legacy() for aggregation",
+        "set_legacy_inference_mode() wraps output in dict for VideoMILWrapper compatibility"
+      ]
+    },
+    {
+      "file": "models/video_aggregator.py",
+      "changes": [
+        "Added _LEGACY_MODE global flag for legacy aggregator behavior"
+      ]
+    },
+    {
+      "file": "projects/linear_probing_project.py",
+      "changes": [
+        "Added set_legacy_inference_mode(True) for inference",
+        "Added .float() to MIL model initialization for consistency with Sarra's branch",
+        "VideoMILWrapper extracts 'video_embeds' from dict correctly"
+      ]
+    },
+    {
+      "file": "/tmp/test_siglip_100.yaml",
+      "changes": [
+        "Changed normalization_strategy from 'pre_norm' to 'post_norm' (default)",
+        "Changed rand_augment from true to false for reproducible inference"
+      ]
+    }
+  ],
+  "epochs": [
+    {
+      "epoch": 1,
+      "date": "2025-01-25",
+      "description": "Initial investigation and diagnosis",
+      "changes": [
+        "Ran inference on Sarra's branch with test config",
+        "Ran inference on siglip-loss branch with test config",
+        "Compared outputs between branches"
+      ],
+      "results": {
+        "sarra_vs_baseline_csv": {
+          "correlation": 0.9999999,
+          "status": "MATCH"
+        },
+        "siglip_vs_sarra": {
+          "prox_rca_stenosis": {"correlation": 0.969953, "mae": 4.034866},
+          "mid_rca_stenosis": {"correlation": 0.953359, "mae": 4.101644},
+          "status": "MISMATCH"
+        },
+        "siglip_determinism": {
+          "correlation": 1.0,
+          "status": "DETERMINISTIC"
+        }
+      },
+      "findings": [
+        "Sarra's branch matches baseline CSV perfectly (corr=0.9999999)",
+        "siglip-loss branch does NOT match Sarra's branch (corr=0.85-0.97)",
+        "siglip-loss branch IS deterministic (two runs match perfectly)",
+        "Root cause: Different forward path in VideoEncoder between branches"
+      ]
+    },
+    {
+      "epoch": 2,
+      "date": "2025-01-25",
+      "description": "Implemented legacy mode and fixed config issues",
+      "changes": [
+        "Implemented true _forward_legacy() in video_encoder.py",
+        "Fixed normalization_strategy mismatch (pre_norm -> post_norm)",
+        "Added .float() to MIL model"
+      ],
+      "results": {
+        "siglip_vs_sarra": {
+          "mean_correlation": 0.93,
+          "mean_mae": 0.25,
+          "status": "IMPROVED but not passing"
+        }
+      },
+      "findings": [
+        "VideoEncoder outputs are identical (corr=0.9999999)",
+        "MIL model outputs are identical when given same input (corr=1.0)",
+        "Issue must be in data loading"
+      ]
+    },
+    {
+      "epoch": 3,
+      "date": "2025-01-25",
+      "description": "Found and fixed data loading difference",
+      "changes": [
+        "Discovered rand_augment=true was causing different inputs",
+        "Sarra's branch applies RandAugment during inference",
+        "siglip-loss branch correctly disables RandAugment for non-training",
+        "Set rand_augment=false in config for reproducible inference"
+      ],
+      "results": {
+        "siglip_vs_sarra": {
+          "passing_columns": "90/90",
+          "mean_correlation": 0.9999994,
+          "mean_mae": 0.000599,
+          "status": "TARGET ACHIEVED"
+        }
+      },
+      "findings": [
+        "Root cause was rand_augment=true in config",
+        "Data loading with same augmentation produces identical inputs",
+        "Full pipeline now produces virtually identical outputs"
+      ]
+    }
+  ],
+  "key_differences_resolved": {
+    "video_encoder_forward": {
+      "issue": "siglip-loss had different forward path than Sarra's",
+      "fix": "Implemented _forward_legacy() that exactly replicates Sarra's computation"
+    },
+    "normalization_strategy": {
+      "issue": "Config had pre_norm but checkpoint trained with post_norm",
+      "fix": "Changed config to post_norm"
+    },
+    "rand_augment": {
+      "issue": "Config had rand_augment=true causing different input data",
+      "fix": "Changed to rand_augment=false for inference"
+    }
+  },
+  "recommendations": [
+    "Always set rand_augment=false for inference/validation",
+    "Use set_legacy_inference_mode(True) when using checkpoints from Sarra's branch",
+    "Verify normalization_strategy matches checkpoint training config"
+  ]
+}

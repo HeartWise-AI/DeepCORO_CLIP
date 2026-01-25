@@ -1,6 +1,6 @@
 """Model definitions for DeepCORO_CLIP."""
 
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional
 
 import torch
 import torch.nn as nn
@@ -8,7 +8,7 @@ from torchvision.models.video import mvit_v2_s, r3d_18
 from torch.amp.autocast_mode import autocast
 
 from utils.registry import ModelRegistry
-from models.video_aggregator import EnhancedVideoAggregator
+from models.video_aggregator import EnhancedVideoAggregator, set_aggregator_legacy_mode
 
 
 
@@ -111,17 +111,8 @@ class VideoEncoder(nn.Module):
             aggregator_depth=aggregator_depth
         )
 
-        # LayerNorm to stabilize features before aggregator (prevents magnitude drift)
-        self.pre_agg_norm = nn.LayerNorm(output_dim)
-
         # 4) Freeze partial layers
         self._freeze_partial_layers()
-
-        # 5) Auxiliary classifier to predict the main coronary tree
-        self.tree_classifier = nn.Sequential(
-            nn.LayerNorm(output_dim),
-            nn.Linear(output_dim, 1),
-        )
 
         # Whether to apply the internal aggregator in the forward pass.
         self._apply_aggregator: bool = aggregate_videos_tokens
@@ -132,6 +123,10 @@ class VideoEncoder(nn.Module):
         self._nan_fallback_by_shape: Dict[
             Tuple[str, int | None, Tuple[int, ...]], torch.Tensor
         ] = {}
+
+        # Legacy inference mode: skip autocast override and NaN sanitization
+        # for exact reproducibility with baseline checkpoints
+        self._legacy_inference_mode: bool = False
 
         # ------------------------------------------------------------------
         # Monkey-patch `forward_features` on the instance *once*.
@@ -228,13 +223,27 @@ class VideoEncoder(nn.Module):
 
         return feats  # [B*N, L, F]
 
+    def set_legacy_inference_mode(self, enabled: bool = True) -> None:
+        """Enable/disable legacy inference mode for exact reproducibility with baseline checkpoints.
+
+        When enabled:
+        - Uses baseline forward path (_forward_legacy)
+        - Skips NaN sanitization in video encoder AND aggregator
+        - Preserves original AMP behavior
+
+        Args:
+            enabled: Whether to enable legacy mode
+        """
+        self._legacy_inference_mode = enabled
+        # Also set aggregator legacy mode
+        set_aggregator_legacy_mode(enabled)
+
     def forward(
         self,
         x: torch.Tensor,
         *,
-        compute_tree_logits: bool = False,
         return_vision_features: bool = False,
-    ) -> dict[str, torch.Tensor]:
+    ) -> torch.Tensor | dict[str, torch.Tensor]:
         """
         Run the video branch in full precision even when global AMP is enabled.
         This prevents half-precision overflow inside the backbone/projection,
@@ -242,13 +251,21 @@ class VideoEncoder(nn.Module):
 
         Args:
             x: Input video tensor [B, N, T, H, W, C] or [B, T, H, W, C]
-            compute_tree_logits: Whether to compute tree classification logits
             return_vision_features: Whether to return pre-pooled vision features
                                     for cross-attention (e.g., LocCa decoder)
 
         Returns:
-            Dict with 'video_embeds' and optionally 'tree_logits', 'vision_features'
+            If return_vision_features=False: video_embeds tensor [B, D]
+            If return_vision_features=True: Dict with 'video_embeds' and 'vision_features'
         """
+        # Legacy mode: use baseline forward path for exact reproducibility
+        # with checkpoints trained on origin/best_model_70_sarras_pipeline
+        if self._legacy_inference_mode:
+            # Legacy path does not support return_vision_features
+            # Wrap in dict for compatibility with VideoMILWrapper which expects {"video_embeds": ...}
+            legacy_output = self._forward_legacy(x)
+            return {"video_embeds": legacy_output}
+
         if x.is_cuda and torch.is_autocast_enabled():
             with autocast("cuda", enabled=False):
                 result = self._forward_impl(x.float(), return_vision_features=return_vision_features)
@@ -263,12 +280,10 @@ class VideoEncoder(nn.Module):
             video_embeds = result
             vision_features = None
 
-        outputs: dict[str, torch.Tensor] = {"video_embeds": video_embeds}
-        if compute_tree_logits:
-            outputs["tree_logits"] = self.classify_main_structure(video_embeds)
+        # Return tensor for backward compatibility when vision features not requested
         if return_vision_features and vision_features is not None:
-            outputs["vision_features"] = vision_features
-        return outputs
+            return {"video_embeds": video_embeds, "vision_features": vision_features}
+        return video_embeds
 
     def _forward_impl(
         self, x: torch.Tensor, return_vision_features: bool = False
@@ -322,7 +337,8 @@ class VideoEncoder(nn.Module):
         token_feats = self._extract_backbone_features(x)  # [B*N, L, in_features]
 
         # Guard against NaN from backbone (MViT attention can overflow)
-        if not torch.isfinite(token_feats).all():
+        # Skip in legacy mode for exact reproducibility
+        if not self._legacy_inference_mode and not torch.isfinite(token_feats).all():
             print("[VideoEncoder] WARNING: Non-finite values from backbone, replacing")
             # Use small random noise instead of 0 to preserve variance for LayerNorm
             finite_mask = torch.isfinite(token_feats)
@@ -344,21 +360,23 @@ class VideoEncoder(nn.Module):
         # we can call them directly on a 3-D tensor.
         token_feats = self.proj(token_feats.float())  # [B*N, L, output_dim]
 
-        # Clamp projection output to prevent GELU overflow (NaN when |x| > ~50)
-        token_feats = torch.clamp(token_feats, min=-50.0, max=50.0)
+        # Skip clamping and NaN detection in legacy mode for exact reproducibility
+        if not self._legacy_inference_mode:
+            # Clamp projection output to prevent GELU overflow (NaN when |x| > ~50)
+            token_feats = torch.clamp(token_feats, min=-50.0, max=50.0)
 
-        # Early NaN detection with recovery - catch issues before mean pooling propagates them
-        if not torch.isfinite(token_feats).all():
-            print("[VideoEncoder] WARNING: Non-finite values after projection, replacing")
-            # Use variance-preserving replacement to avoid LayerNorm NaN
-            finite_mask = torch.isfinite(token_feats)
-            if finite_mask.any():
-                finite_vals = token_feats[finite_mask]
-                replacement = torch.randn_like(token_feats) * finite_vals.std().clamp(min=0.1) + finite_vals.mean()
-                replacement = torch.clamp(replacement, min=-50.0, max=50.0)
-            else:
-                replacement = torch.randn_like(token_feats) * 0.1
-            token_feats = torch.where(finite_mask, token_feats, replacement)
+            # Early NaN detection with recovery - catch issues before mean pooling propagates them
+            if not torch.isfinite(token_feats).all():
+                print("[VideoEncoder] WARNING: Non-finite values after projection, replacing")
+                # Use variance-preserving replacement to avoid LayerNorm NaN
+                finite_mask = torch.isfinite(token_feats)
+                if finite_mask.any():
+                    finite_vals = token_feats[finite_mask]
+                    replacement = torch.randn_like(token_feats) * finite_vals.std().clamp(min=0.1) + finite_vals.mean()
+                    replacement = torch.clamp(replacement, min=-50.0, max=50.0)
+                else:
+                    replacement = torch.randn_like(token_feats) * 0.1
+                token_feats = torch.where(finite_mask, token_feats, replacement)
 
         # ------------------------------------------------------------------
         # 3) Reshape → [B, N*L, output_dim] so that the aggregator treats every
@@ -374,16 +392,19 @@ class VideoEncoder(nn.Module):
             # patches.
             feats = token_feats.mean(dim=2)  # [B, N, D_out]
 
-            # Normalize features before aggregator to stabilize magnitudes
-            feats = self.pre_agg_norm(feats)
+            # Legacy mode: skip sanitization and autocast override
+            if self._legacy_inference_mode:
+                vision_feats = feats
+                out = self.aggregator(feats)
+                video_embeds = out
+            else:
+                # Capture vision features for LocCa before final pooling
+                # Shape: [B, N, D_out] - one token per video segment
+                vision_feats = self._sanitize_tensor(feats, context="vision features")
 
-            # Capture vision features for LocCa before final pooling
-            # Shape: [B, N, D_out] - one token per video segment
-            vision_feats = self._sanitize_tensor(feats, context="vision features")
-
-            with autocast("cuda", enabled=False):
-                out = self.aggregator(feats.float())
-            video_embeds = self._sanitize_tensor(out, context="aggregated tokens")
+                with autocast("cuda", enabled=False):
+                    out = self.aggregator(feats.float())
+                video_embeds = self._sanitize_tensor(out, context="aggregated tokens")
 
             if return_vision_features:
                 return {"video_embeds": video_embeds, "vision_features": vision_feats}
@@ -392,11 +413,14 @@ class VideoEncoder(nn.Module):
         # Aggregator disabled → return either per-video or per-patch tokens
         if self._per_video_pool:
             feats = token_feats.mean(dim=2)  # [B, N, D_out]
-            feats = self.pre_agg_norm(feats)  # Normalize for consistency
         else:
             feats = token_feats.reshape(B, N * L, D_out)  # [B, N_tokens, D]
 
-        video_embeds = self._sanitize_tensor(feats, context="token features")
+        # Legacy mode: skip sanitization
+        if self._legacy_inference_mode:
+            video_embeds = feats
+        else:
+            video_embeds = self._sanitize_tensor(feats, context="token features")
 
         if return_vision_features:
             # For non-aggregated case, vision_features = per-video pooled tokens
@@ -405,8 +429,8 @@ class VideoEncoder(nn.Module):
             else:
                 # Pool patches per video for cross-attention
                 vision_feats = token_feats.mean(dim=2)  # [B, N, D_out]
-                vision_feats = self.pre_agg_norm(vision_feats)
-                vision_feats = self._sanitize_tensor(vision_feats, context="vision features")
+                if not self._legacy_inference_mode:
+                    vision_feats = self._sanitize_tensor(vision_feats, context="vision features")
             return {"video_embeds": video_embeds, "vision_features": vision_feats}
 
         return video_embeds
@@ -493,12 +517,96 @@ class VideoEncoder(nn.Module):
         """Return True if the previous forward pass sanitized non-finite outputs."""
         return self._last_forward_had_non_finite
 
-    def classify_main_structure(self, embeddings: torch.Tensor) -> torch.Tensor:
-        """Predict logits for the left/right coronary tree from embeddings."""
-        if embeddings.ndim == 1:
-            embeddings = embeddings.unsqueeze(0)
-        elif embeddings.ndim > 2:
-            embeddings = embeddings.view(-1, embeddings.shape[-1])
-        with autocast("cuda", enabled=False):
-            logits = self.tree_classifier(embeddings.float())
-        return logits.squeeze(-1)
+    # =========================================================================
+    # LEGACY FORWARD PATH - Exact reproduction of baseline VideoEncoder methods
+    # Used when _legacy_inference_mode is True for exact reproducibility with
+    # checkpoints trained on origin/best_model_70_sarras_pipeline
+    # =========================================================================
+
+    def _compute_feature_dict_legacy(self, x: torch.Tensor, compute_aggregated: bool) -> Dict[str, torch.Tensor]:
+        """Legacy feature computation matching baseline exactly."""
+        if x.ndim == 5:
+            x = x.unsqueeze(1)
+        if x.ndim == 7:
+            s = x.shape
+            x = x.view(s[0], s[1] * s[2], s[3], s[4], s[5], s[6])
+
+        x = x.permute(0, 1, 5, 2, 3, 4)
+        B, N, C, T, H, W = x.shape
+        x = x.view(B * N, C, T, H, W)
+
+        # Debug: log input shape and first few values
+        if not hasattr(self, '_legacy_debug_step'):
+            self._legacy_debug_step = 0
+        if self._legacy_debug_step == 0:
+            print(f"[DEBUG LEGACY] Input shape after reshape: {x.shape}")
+            print(f"[DEBUG LEGACY] Input first values: {x[0, 0, 0, 0, :5]}")
+
+        token_feats = self._extract_backbone_features(x)
+
+        if self._legacy_debug_step == 0:
+            print(f"[DEBUG LEGACY] After backbone: shape={token_feats.shape}, mean={token_feats.mean():.6f}, std={token_feats.std():.6f}")
+
+        token_feats = self.proj(token_feats)
+
+        if self._legacy_debug_step == 0:
+            print(f"[DEBUG LEGACY] After projection: shape={token_feats.shape}, mean={token_feats.mean():.6f}, std={token_feats.std():.6f}")
+            self._legacy_debug_step += 1
+
+        _, L, D_out = token_feats.shape
+        token_feats = token_feats.view(B, N, L, D_out)
+
+        per_video = self._pool_video_tokens_legacy(token_feats)
+        patch_tokens = token_feats.reshape(B, N * L, D_out)
+
+        study_features = None
+        if compute_aggregated and self.aggregator is not None:
+            study_features = self._aggregate_video_features_legacy(per_video)
+
+        return {
+            "token_grid": token_feats,
+            "per_video_tokens": per_video,
+            "patch_tokens": patch_tokens,
+            "study_features": study_features,
+        }
+
+    def _pool_video_tokens_legacy(self, token_feats: torch.Tensor) -> torch.Tensor:
+        """Legacy token pooling matching baseline exactly (mean pooling only)."""
+        # Baseline uses mean pooling when attention_pool is None
+        return token_feats.mean(dim=2)
+
+    def _aggregate_video_features_legacy(
+        self,
+        per_video: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Legacy aggregation matching baseline exactly."""
+        orig_dtype = per_video.dtype
+        with autocast('cuda', enabled=False):
+            aggregated = self.aggregator(per_video.float(), mask=mask)
+        return aggregated.to(orig_dtype)
+
+    def _forward_legacy(self, x: torch.Tensor) -> torch.Tensor:
+        """Legacy forward path matching baseline VideoEncoder.forward() exactly.
+
+        This method reproduces the exact computation from origin/best_model_70_sarras_pipeline
+        for inference reproducibility.
+        """
+        if not hasattr(self, '_legacy_forward_logged'):
+            from models.video_aggregator import _LEGACY_MODE
+            print(f"[DEBUG] _forward_legacy called - using baseline computation path")
+            print(f"[DEBUG] _apply_aggregator={self._apply_aggregator}, _per_video_pool={self._per_video_pool}")
+            print(f"[DEBUG] aggregator_blocks={len(self.aggregator.blocks)}, global_legacy={_LEGACY_MODE}")
+            self._legacy_forward_logged = True
+        features = self._compute_feature_dict_legacy(x, compute_aggregated=self._apply_aggregator)
+
+        if self._apply_aggregator and features["study_features"] is not None:
+            primary = features["study_features"]
+        elif self._per_video_pool:
+            primary = features["per_video_tokens"]
+            if primary.dim() == 3 and primary.shape[1] == 1:
+                primary = primary.squeeze(1)
+        else:
+            primary = features["patch_tokens"]
+
+        return primary

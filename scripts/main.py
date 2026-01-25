@@ -14,7 +14,7 @@ from utils.parser import HeartWiseParser
 from utils.wandb_wrapper import WandbWrapper
 from utils.config.heartwise_config import HeartWiseConfig
 from utils.registry import register_submodules, ProjectRegistry
-from projects.typing import Project
+from projects.project_types import Project
 
 
 # Register all submodules

@@ -9,15 +9,26 @@ from dataloaders.stats_dataset import get_stats_dataloader
 def calculate_dataset_statistics_ddp(config: HeartWiseConfig) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Calculate dataset statistics (mean and standard deviation) and broadcast them in distributed environments.
-    
+
     Args:
         config (HeartWiseConfig): Configuration object
-        
+
     Returns:
         Tuple[torch.Tensor, torch.Tensor]: Mean and standard deviation tensors
     """
+    # Check if pre-computed mean/std are provided in config
+    if hasattr(config, 'dataset_mean') and hasattr(config, 'dataset_std') and config.dataset_mean is not None and config.dataset_std is not None:
+        mean = torch.tensor(config.dataset_mean)
+        std = torch.tensor(config.dataset_std)
+        if config.is_ref_device:
+            print("\n=== Using Pre-computed Dataset Statistics ===")
+            print(f"Mean: {mean.tolist()}")
+            print(f"Std:  {std.tolist()}")
+            print("===========================\n")
+        return mean, std
+
     mean, std = None, None
-    
+
     # Calculate statistics only on reference device
     if config.is_ref_device:
         print("\n=== Calculating Dataset Statistics ===")

@@ -95,3 +95,7 @@ class LinearProbingConfig(HeartWiseConfig):
     # Confidence interval settings
     ci_confidence_level: float = 0.95  # 95% confidence interval
     ci_n_bootstrap: int = 1000  # Number of bootstrap samples
+
+    # Pre-computed dataset statistics (optional - if None, will be calculated)
+    dataset_mean: List[float] = None  # Pre-computed mean for normalization
+    dataset_std: List[float] = None  # Pre-computed std for normalization

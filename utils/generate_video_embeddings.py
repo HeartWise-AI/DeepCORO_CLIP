@@ -30,7 +30,7 @@ def load_checkpoint(
         f"[BaseProject] Loading checkpoint: {checkpoint_path}"
     )
     
-    return torch.load(checkpoint_path, map_location='cpu', weights_only=True)
+    return torch.load(checkpoint_path, map_location='cpu', weights_only=False)
 
 def generate_video_embeddings():
     video_dataset: VideoDataset = VideoDataset(
@@ -75,7 +75,7 @@ def generate_video_embeddings():
     for video_data in tqdm(video_dataloader, total=len(video_dataloader)):
         if not multi_video:
             video_data['videos'] = video_data['videos'].unsqueeze(1)
-        embeddings = video_encoder(video_data['videos'].to(f'cuda:{cuda_idx}'))["video_embeds"]
+        embeddings = video_encoder(video_data['videos'].to(f'cuda:{cuda_idx}'))
         
         for idx, embedding in enumerate(embeddings):
             video_fname = os.path.basename(video_data['video_fname'][idx])
@@ -84,5 +84,6 @@ def generate_video_embeddings():
 
 if __name__ == "__main__":
     generate_video_embeddings()
+
 
 

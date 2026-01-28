@@ -10,33 +10,24 @@ def calculate_dataset_statistics_ddp(config: HeartWiseConfig) -> Tuple[torch.Ten
     """
     Calculate dataset statistics (mean and standard deviation) and broadcast them in distributed environments.
 
-    For inference mode, if mean/std are pre-configured in the config, use those values
-    instead of recalculating from the dataset. This ensures reproducibility.
-
     Args:
         config (HeartWiseConfig): Configuration object
 
     Returns:
         Tuple[torch.Tensor, torch.Tensor]: Mean and standard deviation tensors
     """
-    from utils.enums import RunMode
+    # Check if pre-computed mean/std are provided in config
+    if hasattr(config, 'dataset_mean') and hasattr(config, 'dataset_std') and config.dataset_mean is not None and config.dataset_std is not None:
+        mean = torch.tensor(config.dataset_mean)
+        std = torch.tensor(config.dataset_std)
+        if config.is_ref_device:
+            print("\n=== Using Pre-computed Dataset Statistics ===")
+            print(f"Mean: {mean.tolist()}")
+            print(f"Std:  {std.tolist()}")
+            print("===========================\n")
+        return mean, std
 
     mean, std = None, None
-
-    # For inference mode, prefer pre-configured mean/std if available
-    if config.run_mode == RunMode.INFERENCE:
-        config_mean = getattr(config, 'mean', None)
-        config_std = getattr(config, 'std', None)
-        if config_mean is not None and config_std is not None:
-            mean = torch.tensor(config_mean)
-            std = torch.tensor(config_std)
-            if config.is_ref_device:
-                print("\n=== Using Pre-configured Dataset Statistics (inference mode) ===")
-                print(f"Mean: {mean.tolist()}")
-                print(f"Std:  {std.tolist()}")
-                print("===========================\n")
-            print(f"Rank: {config.device} - mean: {mean} - std: {std}")
-            return mean, std
 
     # Calculate statistics only on reference device
     if config.is_ref_device:
@@ -50,12 +41,16 @@ def calculate_dataset_statistics_ddp(config: HeartWiseConfig) -> Tuple[torch.Ten
         assert len(stats_loader) > 0, f"No videos found in the dataset for mode {config.run_mode}"
         
         mean_sum, squared_sum, pixel_count = 0.0, 0.0, 0
-        for batch in tqdm(stats_loader, desc="Calculating statistics"):
+        # Only use first batch for quick statistics
+        for i, batch in enumerate(tqdm(stats_loader, desc="Calculating statistics")):
             batch = batch.float()
             batch = batch.reshape(-1, batch.shape[-1])
             mean_sum += batch.sum(dim=0)
             squared_sum += (batch**2).sum(dim=0)
             pixel_count += batch.shape[0]
+            if i == 0:  # Only process first batch
+                print("Using only first batch for quick statistics calculation")
+                break
             
         mean: torch.Tensor = mean_sum / pixel_count
         std: torch.Tensor = torch.sqrt((squared_sum / pixel_count) - (mean**2))
@@ -67,12 +62,11 @@ def calculate_dataset_statistics_ddp(config: HeartWiseConfig) -> Tuple[torch.Ten
     
     # Broadcast statistics if distributed
     if torch.distributed.is_initialized():
-        device = torch.device(f"cuda:{config.device}") if torch.cuda.is_available() else torch.device("cpu")
         if mean is not None:
-            mean = mean.to(device)
-            std = std.to(device)
-        mean_tensor = torch.zeros(3, device=device)
-        std_tensor = torch.zeros(3, device=device)
+            mean = mean.cuda()
+            std = std.cuda()
+        mean_tensor = torch.zeros(3, device="cuda")
+        std_tensor = torch.zeros(3, device="cuda")
         if config.is_ref_device:
             mean_tensor.copy_(mean)
             std_tensor.copy_(std)

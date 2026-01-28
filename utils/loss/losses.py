@@ -9,37 +9,58 @@ from utils.enums import LossType
 from utils.registry import LossRegistry
 
 
-# =============================================================================
-# NOTE: CLIP and SigLIP losses are now in utils/loss/contrastive.py
-# The unified CLIPLoss and SigLIPLoss classes auto-detect DDP.
-# =============================================================================
-
-
+@LossRegistry.register(LossType.CONTRASTIVE)
 class ContrastiveLoss(nn.Module):
     """
-    DEPRECATED: Use CLIPLoss from utils.loss.contrastive instead.
-
-    This class is kept for backwards compatibility only.
+    CLIP-style bidirectional contrastive loss for video and text embeddings.
     """
     def __init__(self):
+        """
+        Initialize contrastive loss.
+        """
         super().__init__()
-
+    
     def forward(
         self,
-        video_features: torch.Tensor,
+        video_features: torch.Tensor, 
         text_features: torch.Tensor,
         log_temp: torch.Tensor = torch.log(torch.tensor(0.1))
     ) -> torch.Tensor:
+        """
+        Compute contrastive loss between video and text features.
+        
+        Args:
+            video_features (torch.Tensor): [B, D] video embeddings
+            text_features (torch.Tensor): [B, D] text embeddings
+            log_temp (torch.Tensor, optional): float torch tensor value
+            
+        Returns:
+            torch.Tensor: Scalar loss value
+        """        
+        # Perform the entire loss computation in full precision to avoid
+        # overflow/underflow issues when AMP is enabled. This has negligible
+        # memory overhead because the tensors involved are only of size [B, D]
+        # and [B, B].
         with autocast('cuda', enabled=False):
+            # Normalize embeddings in fp32 for numerical stability.
             video_features_fp32 = F.normalize(video_features.float(), dim=1)
             text_features_fp32 = F.normalize(text_features.float(), dim=1)
+
+            # Compute similarity matrix of shape [B, B].
             similarity_matrix = torch.matmul(video_features_fp32, text_features_fp32.t())
+
+            # Apply temperature scaling.
             temp = torch.exp(log_temp.float())
             logits = similarity_matrix / temp
+
+            # Targets: assume the i-th video corresponds to the i-th text.
             targets = torch.arange(logits.size(0), device=logits.device)
+
+            # Cross-entropy loss in both directions.
             loss_v2t = F.cross_entropy(logits, targets)
             loss_t2v = F.cross_entropy(logits.t(), targets)
             loss = 0.5 * (loss_v2t + loss_t2v)
+
         return loss
 
 ###############################################################################
@@ -80,13 +101,15 @@ def gather_all(tensor: torch.Tensor) -> torch.Tensor:
         return tensor
     return GatherLayer.apply(tensor)
 
+@LossRegistry.register(LossType.CONTRASTIVE_DDP)
 class ContrastiveLossDDP(nn.Module):
     """
-    DEPRECATED: Use CLIPLoss from utils.loss.contrastive instead (auto-detects DDP).
-
-    This class is kept for backwards compatibility only.
+    CLIP-style bidirectional contrastive loss for video and text embeddings in DDP setting.
     """
     def __init__(self):
+        """
+        Initialize DDP contrastive loss.
+        """
         super().__init__()
     
     def forward(
@@ -134,50 +157,18 @@ class ContrastiveLossDDP(nn.Module):
 
         return loss
 
-# NOTE: LossType.SIGLIP is now registered to SigLIPLoss in contrastive.py
-@LossRegistry.register(LossType.CLIP_GATED)  # Keep for backwards compat
+@LossRegistry.register(LossType.SIGLIP)
 class SiglipLoss(nn.Module):
     """
-    DEPRECATED: This is NOT real SigLIP - it's CLIP with gating.
-
-    This loss applies a gating mechanism to the cosine similarity matrix
-    but still uses SOFTMAX cross-entropy (like CLIP). Real SigLIP uses
-    sigmoid BCE loss for independent pair classification.
-
-    For true SigLIP 2, use:
-    - siglip2_bce: SigLIP2BCELoss (independent BCE per pair)
-    - siglip_pairwise: SiglipPairwiseLoss (multi-positive BCE)
-
-    This class is kept for backwards compatibility only.
+    SIGLIP (Simple Gated Language-Image Pre-training) loss implementation.
+    This loss applies a gating mechanism to the cosine similarity matrix 
+    before computing the contrastive loss.
     """
-    def __init__(self, allow_deprecated: bool = False):
+    def __init__(self):
         """
-        Initialize loss (DEPRECATED - prefer siglip2_bce or siglip_pairwise).
-
-        Args:
-            allow_deprecated: Set to True to bypass the deprecation error.
-                             Only use this for migration/comparison purposes.
+        Initialize SIGLIP loss.
         """
         super().__init__()
-        if not allow_deprecated:
-            raise RuntimeError(
-                "SiglipLoss is DEPRECATED and BLOCKED.\n"
-                "This loss uses softmax cross-entropy, which is NOT real SigLIP.\n"
-                "\n"
-                "Please use one of these true SigLIP implementations:\n"
-                "  - loss_name: 'siglip_pairwise'  (RECOMMENDED for multi-positive)\n"
-                "  - loss_name: 'siglip2_bce'      (single-positive with learnable bias)\n"
-                "  - loss_name: 'siglip2_bce_ddp'  (DDP version)\n"
-                "\n"
-                "If you MUST use this deprecated loss for comparison, set allow_deprecated=True"
-            )
-        import warnings
-        warnings.warn(
-            "SiglipLoss uses softmax cross-entropy (not real SigLIP). "
-            "Consider using 'siglip_pairwise' for true SigLIP.",
-            DeprecationWarning,
-            stacklevel=2
-        )
     
     def forward(
         self,
@@ -220,46 +211,15 @@ class SiglipLoss(nn.Module):
         return loss
 
 @LossRegistry.register(LossType.SIGLIP_DDP)
-@LossRegistry.register(LossType.CLIP_GATED_DDP)  # Alias for clarity
 class SiglipLossDDP(nn.Module):
     """
-    DEPRECATED: This is NOT real SigLIP - it's CLIP with gating (DDP version).
-
-    Uses SOFTMAX cross-entropy after gating - not the real SigLIP algorithm.
-
-    For true SigLIP 2, use:
-    - siglip2_bce_ddp: SigLIP2BCELossDDP (independent BCE per pair)
-    - siglip_pairwise: SiglipPairwiseLoss (multi-positive BCE)
-
-    This class is kept for backwards compatibility only.
+    SIGLIP loss implementation with DDP support.
     """
-    def __init__(self, allow_deprecated: bool = False):
+    def __init__(self):
         """
-        Initialize DDP loss (DEPRECATED - prefer siglip2_bce_ddp or siglip_pairwise).
-
-        Args:
-            allow_deprecated: Set to True to bypass the deprecation error.
-                             Only use this for migration/comparison purposes.
+        Initialize DDP SIGLIP loss.
         """
         super().__init__()
-        if not allow_deprecated:
-            raise RuntimeError(
-                "SiglipLossDDP is DEPRECATED and BLOCKED.\n"
-                "This loss uses softmax cross-entropy, which is NOT real SigLIP.\n"
-                "\n"
-                "Please use one of these true SigLIP implementations:\n"
-                "  - loss_name: 'siglip_pairwise'  (RECOMMENDED - already DDP compatible)\n"
-                "  - loss_name: 'siglip2_bce_ddp'  (SigLIP 2 with learnable bias)\n"
-                "\n"
-                "If you MUST use this deprecated loss for comparison, set allow_deprecated=True"
-            )
-        import warnings
-        warnings.warn(
-            "SiglipLossDDP uses softmax cross-entropy (not real SigLIP). "
-            "Consider using 'siglip_pairwise' for true SigLIP.",
-            DeprecationWarning,
-            stacklevel=2
-        )
     
     def forward(
         self,
@@ -279,17 +239,23 @@ class SiglipLossDDP(nn.Module):
             torch.Tensor: Scalar loss value
         """        
         with autocast('cuda', enabled=False):
-            # 1) Gather features from all GPUs.
-            video_features_all = gather_all(video_features)
-            text_features_all  = gather_all(text_features)
+            # 1) Gather features from all GPUs using fp16 to cut communication volume.
+            video_features_half = gather_all(video_features.half())
+            text_features_half  = gather_all(text_features.half())
 
-            # 2) Normalize the gathered features.
-            video_features_all = F.normalize(video_features_all.float(), dim=1)
-            text_features_all  = F.normalize(text_features_all.float(), dim=1)
+            # 2) Normalize the gathered features in fp32 for numerical stability.
+            video_features_all = F.normalize(video_features_half.float(), dim=1)
+            text_features_all  = F.normalize(text_features_half.float(), dim=1)
 
-            # 3) Compute global similarity matrix of shape [N, N],
-            # where N is the total global batch size.
-            similarity_matrix = torch.matmul(video_features_all, text_features_all.t())
+            # 3) Compute global similarity matrix in manageable chunks to avoid long-running kernels.
+            total_samples = video_features_all.size(0)
+            chunk_size = 1024 if total_samples > 1024 else total_samples
+            similarity_chunks = []
+            for start in range(0, total_samples, chunk_size):
+                end = start + chunk_size
+                v_chunk = video_features_all[start:end]
+                similarity_chunks.append(torch.matmul(v_chunk, text_features_all.t()))
+            similarity_matrix = torch.cat(similarity_chunks, dim=0)
 
             # 4) Apply SIGLIP gating function: g(x) = x * sigmoid(x)
             gated_similarity = similarity_matrix * torch.sigmoid(similarity_matrix)

@@ -1,7 +1,7 @@
 import os
 import torch
 from typing import Any, Optional, Dict
-from torch.amp.grad_scaler import GradScaler
+from torch.amp import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
 import itertools
@@ -71,8 +71,7 @@ class VideoMILWrapper(torch.nn.Module):
         # ------------------------------------------------------------------
         # 1) Run the backbone / encoder
         # ------------------------------------------------------------------
-        encoder_outputs = self.video_encoder(x)
-        embeddings: torch.Tensor = encoder_outputs["video_embeds"]
+        embeddings: torch.Tensor = self.video_encoder(x)
 
         # ------------------------------------------------------------------
         # 2) Reshape so that the MIL module always sees *either*:
@@ -272,7 +271,7 @@ class LinearProbingProject(BaseProject):
 
         # Initialize scaler
         print(f"Using AMP: {self.config.use_amp}")
-        scaler = GradScaler() if self.config.use_amp else None
+        scaler = GradScaler('cuda') if self.config.use_amp else None
         
         # Create loss function
         loss_fn = Loss(
@@ -348,29 +347,19 @@ class LinearProbingProject(BaseProject):
             per_video_pool=self.config.per_video_pool,
         )        
         video_encoder = video_encoder.to(self.config.device)
-
-        # Enable legacy inference mode for exact reproducibility with baseline checkpoints
-        if self.config.run_mode == RunMode.INFERENCE:
-            video_encoder.set_legacy_inference_mode(True)
-            print("[DEBUG] Legacy inference mode ENABLED for video_encoder")
-            print(f"[DEBUG] aggregator_depth from config: {self.config.aggregator_depth}")
-            print(f"[DEBUG] actual aggregator blocks: {len(video_encoder.aggregator.blocks)}")
-
-        # Get embedding dimension from encoder
+        
+        # Get embedding dimension from encoder  
         embedding_dim = video_encoder.embedding_dim
         
         # Initialize Multi-Instance Linear Probing model
         mil_model: MultiInstanceLinearProbing = ModelRegistry.get("multi_instance_linear_probing")(
-            embedding_dim=embedding_dim,
+            embedding_dim=embedding_dim, 
             head_structure=self.config.head_structure,
-            pooling_mode=self.config.pooling_mode,
-            attention_hidden=self.config.attention_hidden,
-            dropout=self.config.dropout_attention,
-            num_attention_heads=self.config.num_attention_heads,
-            separate_video_attention=self.config.separate_video_attention,
-            normalization_strategy=self.config.normalization_strategy,
+            pooling_mode=self.config.pooling_mode, 
+            attention_hidden=self.config.attention_hidden, 
+            dropout=self.config.dropout_attention, 
         )
-        mil_model = mil_model.to(self.config.device).float()
+        mil_model = mil_model.to(self.config.device)
 
         # Wrap both models
         linear_probing = VideoMILWrapper(video_encoder, mil_model, self.config.num_videos)
@@ -384,16 +373,8 @@ class LinearProbingProject(BaseProject):
         
         # Load checkpoint with fixed keys
         checkpoint: dict[str, Any] = self._load_and_fix_checkpoint(self.config.inference_model_path)
-        missing_keys, unexpected_keys = linear_probing.load_state_dict(checkpoint["linear_probing"], strict=False)
-        if missing_keys:
-            print(f"[DEBUG] Missing keys: {len(missing_keys)}")
-            for k in missing_keys[:5]:
-                print(f"  {k}")
-        if unexpected_keys:
-            print(f"[DEBUG] Unexpected keys: {len(unexpected_keys)}")
-            for k in unexpected_keys[:5]:
-                print(f"  {k}")
-
+        linear_probing.load_state_dict(checkpoint["linear_probing"])
+        
         # Set to eval mode
         linear_probing.eval()
                 
@@ -464,7 +445,7 @@ class LinearProbingProject(BaseProject):
         device = self.config.device
         if isinstance(device, int):
             device = f"cuda:{device}"
-        checkpoint: dict[str, Any] = torch.load(path, map_location=device, weights_only=True)
+        checkpoint: dict[str, Any] = torch.load(path, map_location=device, weights_only=False)
         return checkpoint
 
     def _load_and_fix_checkpoint(self, path: str) -> dict[str, Any]:

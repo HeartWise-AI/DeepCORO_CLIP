@@ -1,14 +1,15 @@
-import math
 import os
 import pandas as pd
+import math
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.optim import Optimizer
-from torch.cuda.amp import GradScaler
+from torch.amp import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
-from typing import Callable, Dict, Tuple, List, Any, Optional
+from typing import Callable, Dict, Tuple, List, Any, Optional, Set
 
 from tqdm import tqdm
 
@@ -30,32 +31,16 @@ from utils.wandb_logger import (
     log_gradient_norms,
     save_retrieval_results,
 )
-from utils.semantic_metrics import compute_siglip_semantic_metrics
-from utils.validation_logger import (
-    ValidationLogger,
-    log_first_batch_comparisons,
-    save_recall_summary_csv,
-)
 from utils.loss.typing import Loss
-# NOTE: SiglipPairwiseLoss is deprecated - use unified SigLIPLoss via loss_fn
-from utils.loss.multi_positive_infonce import MultiPositiveInfoNCELoss
+from utils.loss.weighted_siglip import WeightedSigLIPLoss
 from utils.wandb_wrapper import WandbWrapper
 from models.video_encoder import VideoEncoder
 from models.text_encoder import TextEncoder
 from dataloaders.video_clip_dataset import VideoClipDataset
 import itertools
 from torch.nn.utils import clip_grad_norm_
-import torch.nn.functional as F
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
-
-class NonFiniteLossError(RuntimeError):
-    """Raised when a non-finite loss or tensor value is detected during training."""
-
-    def __init__(self, message: str, diagnostics: Optional[Dict[str, Any]] = None):
-        super().__init__(message)
-        self.diagnostics: Dict[str, Any] = diagnostics or {}
 
 @RunnerRegistry.register("DeepCORO_clip")
 @RunnerRegistry.register("DeepCORO_clip_test")
@@ -77,9 +62,6 @@ class VideoContrastiveLearningRunner:
         log_temp: torch.Tensor = None,
         lr_scheduler: LRScheduler = None,
         loss_fn: Loss = None,
-        loss_fns: Optional[Dict[str, Loss]] = None,
-        loss_weights: Optional[Dict[str, float]] = None,
-        locca_decoder: Optional[nn.Module] = None,
         output_dir: str = None,
     ):
         """
@@ -121,239 +103,170 @@ class VideoContrastiveLearningRunner:
         self.scaler: GradScaler = scaler
         self.lr_scheduler: LRScheduler = lr_scheduler
         self.loss_fn: Loss = loss_fn
-        self.loss_fns: Dict[str, Loss] = loss_fns or {}
-        self.loss_weights: Dict[str, float] = loss_weights or {}
-        self.locca_decoder: Optional[nn.Module] = locca_decoder
         self.output_dir: str = output_dir
         self.best_val_loss: float = float("inf")
         self.best_epoch: int = -1
         self.highest_alignment_score: float = float("-inf")
         self.highest_alignment_epoch: int = -1
         self.log_temp: torch.Tensor = log_temp
-        self.step: int = 0  # Step counter for logging/diagnostics
-        self.siglip_active: bool = bool(
-            isinstance(train_loader.dataset, VideoClipDataset)
-            and getattr(train_loader.dataset, "siglip_enabled", False)
-        )
-        self.siglip_severity_weighting: bool = bool(
-            getattr(self.config, "siglip_enable_severity_weighting", False)
-        )
-        self.siglip_loss_mode: str = str(getattr(self.config, "loss_name", "") or "").lower()
-        # Recognize all siglip* variants (siglip, siglip_pairwise, siglip2_bce, etc.)
-        self.use_siglip_loss = self.siglip_active and self.siglip_loss_mode.startswith("siglip")
-        # Legacy flags for backward compatibility
-        self.use_siglip_pairwise = self.use_siglip_loss  # Now all siglip* uses unified loss
-        self.use_siglip_infonce = self.siglip_active and self.siglip_loss_mode == "infonce_loss_ddp"
-        # NOTE: siglip_pairwise_loss is no longer used - the unified SigLIPLoss
-        # from contrastive.py is accessed via self.loss_fn
-        self.siglip_pairwise_loss = None  # Deprecated - use loss_fn instead
-        self.multi_positive_loss = (
-            MultiPositiveInfoNCELoss()
-            if self.use_siglip_infonce
-            else None
-        )
-        configured_tree_weight = getattr(self.config, "tree_loss_weight", None)
-        legacy_tree_weight = getattr(self.config, "main_structure_loss_weight", 0.0)
-        if configured_tree_weight is None:
-            configured_tree_weight = legacy_tree_weight
-        configured_tree_enabled = getattr(self.config, "tree_loss_enabled", None)
-        if configured_tree_enabled is None:
-            tree_loss_enabled = float(configured_tree_weight or 0.0) > 0.0
-        else:
-            tree_loss_enabled = bool(configured_tree_enabled)
-        tree_loss_weight_value = float(configured_tree_weight or 0.0)
-        self.tree_loss_weight: float = tree_loss_weight_value if tree_loss_enabled else 0.0
-        self.tree_loss_fn: nn.Module = nn.BCEWithLogitsLoss()
-        self._last_grad_norm: float = 0.0
-        self._last_video_grad_norm: float = 0.0
-        self._last_text_grad_norm: float = 0.0
-        self.progress_log_interval: int = max(
-            1, int(getattr(self.config, "progress_log_interval", 200))
-        )
-        if getattr(self.config, "gradient_accumulation_steps", 1) != 1:
-            if self.config.is_ref_device:
-                print(
-                    "[Runner] gradient_accumulation_steps>1 is no longer supported; "
-                    "defaulting to 1 (micro-batching disabled)."
-                )
-            self.config.gradient_accumulation_steps = 1
-        video_max_grad = getattr(self.config, "video_max_grad_norm", None)
-        if video_max_grad is None:
-            video_max_grad = getattr(self.config, "max_grad_norm", 1.0)
-        self.video_max_grad_norm: float = (
-            float(video_max_grad) if video_max_grad is not None else 0.0
-        )
-        text_max_grad = getattr(self.config, "text_max_grad_norm", None)
-        self.text_max_grad_norm: float = (
-            float(text_max_grad) if text_max_grad is not None else 0.0
-        )
-
-        # Debug mode for detailed numerical stability logging
-        self.debug_numerical: bool = bool(getattr(self.config, "debug", False))
-        self._debug_log_interval: int = 50  # Log every N steps when debug is enabled
-
-        # LocCa captioning support
-        self._locca_enabled: bool = (
-            self.locca_decoder is not None
-            and any("locca" in name for name in self.loss_fns.keys())
-        )
-        if self._locca_enabled and self.config.is_ref_device:
-            print("[Runner] LocCa captioning enabled - will use SigLIP texts as captions")
+        self.step: int = 0  # Initialize step counter for gradient accumulation
 
         # For simplicity: check the config for a known scheduler_name
         # If it includes "_warmup" or is from HF, we treat it as per-iteration
         self.scheduler_per_iteration = self._scheduler_is_per_iteration()
+        
+        # Store initial temperature for scheduling
+        self.initial_log_temp = log_temp.clone() if log_temp is not None else torch.log(torch.tensor(config.temperature))
+        self.use_weighted_siglip: bool = bool(getattr(self.config, "siglip_use_weighted_loss", False))
+        self.weighted_siglip_loss = WeightedSigLIPLoss() if self.use_weighted_siglip else None
+        self.siglip_abnormal_margin: float = float(getattr(self.config, "siglip_abnormal_margin", 0.0))
+        
+    def _should_debug_batch(self) -> bool:
+        debug_batches = max(0, getattr(self.config, 'siglip_debug_batches', 0))
+        debug_every = max(0, getattr(self.config, 'siglip_debug_every', 0))
+        if debug_batches > 0 and self.step < debug_batches:
+            return True
+        if debug_every > 0 and debug_batches == 0 and self.step > 0 and (self.step % debug_every == 0):
+            return True
+        return False
+
+    @staticmethod
+    def _collect_grad_norms(param_groups: List[dict]) -> Dict[str, float]:
+        grad_norms: Dict[str, float] = {}
+        for idx, group in enumerate(param_groups):
+            total = 0.0
+            for param in group.get('params', []):
+                if param is None or param.grad is None:
+                    continue
+                grad = param.grad.detach()
+                total += float(torch.sum(grad * grad))
+            name = group.get('name', f'group_{idx}')
+            grad_norms[name] = float(total ** 0.5) if total > 0 else 0.0
+        return grad_norms
+
+    def _compute_temperature_schedule(self, epoch: int) -> float:
+        """
+        Compute scheduled temperature for current epoch.
+        
+        Args:
+            epoch: Current epoch number (0-indexed)
+            
+        Returns:
+            Scheduled temperature value
+        """
+        schedule_type = getattr(self.config, "temperature_schedule", "constant")
+        temp_start = getattr(self.config, "temperature_start", self.config.temperature)
+        temp_end = getattr(self.config, "temperature_end", self.config.temperature)
+        warmup_epochs = getattr(self.config, "temperature_warmup_epochs", 0)
+        
+        if schedule_type == "constant" or warmup_epochs <= 0:
+            return self.config.temperature
+        
+        if epoch >= warmup_epochs:
+            return temp_end
+        
+        progress = epoch / warmup_epochs
+        
+        if schedule_type == "linear":
+            return temp_start + (temp_end - temp_start) * progress
+        elif schedule_type == "cosine":
+            # Cosine annealing from start to end
+            cosine_factor = (1 - math.cos(progress * math.pi)) / 2
+            return temp_start + (temp_end - temp_start) * cosine_factor
+        elif schedule_type == "exponential":
+            # Exponential decay
+            decay_rate = math.log(temp_end / temp_start) / warmup_epochs
+            return temp_start * math.exp(decay_rate * epoch)
+        else:
+            return self.config.temperature
+    
+    def _compute_freeze_schedule(self, epoch: int) -> float:
+        """
+        Compute scheduled video freeze ratio for current epoch.
+        
+        Args:
+            epoch: Current epoch number (0-indexed)
+            
+        Returns:
+            Scheduled freeze ratio (1.0 = all frozen, 0.0 = all trainable)
+        """
+        schedule_type = getattr(self.config, "video_freeze_schedule", "constant")
+        freeze_start = getattr(self.config, "video_freeze_start", self.config.video_freeze_ratio)
+        freeze_end = getattr(self.config, "video_freeze_end", self.config.video_freeze_ratio)
+        warmup_epochs = getattr(self.config, "video_freeze_warmup_epochs", 0)
+        
+        if schedule_type == "constant" or warmup_epochs <= 0:
+            return self.config.video_freeze_ratio
+        
+        if epoch >= warmup_epochs:
+            return freeze_end
+        
+        progress = epoch / warmup_epochs
+        
+        if schedule_type == "linear":
+            return freeze_start + (freeze_end - freeze_start) * progress
+        elif schedule_type == "cosine":
+            # Cosine annealing from start to end
+            cosine_factor = (1 - math.cos(progress * math.pi)) / 2
+            return freeze_start + (freeze_end - freeze_start) * cosine_factor
+        elif schedule_type == "step":
+            # Step-wise decrease
+            steps = warmup_epochs
+            step_size = (freeze_start - freeze_end) / steps
+            return max(freeze_end, freeze_start - step_size * (epoch + 1))
+        else:
+            return self.config.video_freeze_ratio
+    
+    def _compute_text_freeze_schedule(self, epoch: int) -> float:
+        """
+        Compute scheduled text encoder freeze ratio for current epoch.
+        
+        Args:
+            epoch: Current epoch number (0-indexed)
+            
+        Returns:
+            Scheduled freeze ratio (1.0 = all frozen, 0.0 = all trainable)
+        """
+        schedule_type = getattr(self.config, "text_freeze_schedule", "constant")
+        freeze_start = getattr(self.config, "text_freeze_start", self.config.text_freeze_ratio)
+        freeze_end = getattr(self.config, "text_freeze_end", self.config.text_freeze_ratio)
+        warmup_epochs = getattr(self.config, "text_freeze_warmup_epochs", 0)
+        
+        if schedule_type == "constant" or warmup_epochs <= 0:
+            return self.config.text_freeze_ratio
+        
+        if epoch >= warmup_epochs:
+            return freeze_end
+        
+        progress = epoch / warmup_epochs
+        
+        if schedule_type == "linear":
+            return freeze_start + (freeze_end - freeze_start) * progress
+        elif schedule_type == "cosine":
+            # Cosine annealing from start to end
+            cosine_factor = (1 - math.cos(progress * math.pi)) / 2
+            return freeze_start + (freeze_end - freeze_start) * cosine_factor
+        elif schedule_type == "step":
+            # Step-wise decrease
+            steps = warmup_epochs
+            step_size = (freeze_start - freeze_end) / steps
+            return max(freeze_end, freeze_start - step_size * (epoch + 1))
+        else:
+            return self.config.text_freeze_ratio
+
     def _scheduler_is_per_iteration(self) -> bool:
         """
         Returns True if the chosen scheduler is a Hugging Face style that
         expects a call to .step() per iteration (batch). Otherwise, False.
         """
         # We do a simpler check to change scheduler update to per epoch or per batch:
-        # Example keywords: "linear_warmup", "cosine_with_warmup",
+        # Example keywords: "linear_warmup", "cosine_with_warmup", 
         # "cosine_with_hard_restarts_with_warmup", etc.
         sched_name = getattr(self.config, "scheduler_name", "").lower()
         # If it matches typical HF warmup schedulers, return True
         HF_KEYS = ["warmup", "with_warmup"]
         return any(k in sched_name for k in HF_KEYS)
 
-    def _prepare_caption_tokens(
-        self,
-        siglip_batch: Optional[dict],
-        video_paths: Optional[List[str]] = None,
-        dataset: Optional[Any] = None,
-    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor], Optional[List[str]]]:
-        """
-        Prepare caption tokens for LocCa decoder from SigLIP batch.
-
-        Concatenates ALL positive texts for each video as the caption target,
-        ordered by severity (most severe first). This creates comprehensive
-        reports for captioning training.
-
-        Args:
-            siglip_batch: Dict with input_ids, attention_mask, positive_mask
-            video_paths: List of video file paths for looking up captions
-            dataset: Dataset with siglip support for building reports
-
-        Returns:
-            Tuple of (caption_input_ids, caption_labels, caption_attention_mask, caption_texts)
-            where caption_texts is a list of decoded caption strings for debugging.
-        """
-        if not self._locca_enabled or siglip_batch is None:
-            return None, None, None, None
-
-        device = siglip_batch.get("input_ids").device if siglip_batch.get("input_ids") is not None else self.device
-
-        # Try to build concatenated reports from all positives using dataset's siglip support
-        if video_paths and dataset is not None and hasattr(dataset, "siglip") and dataset.siglip is not None:
-            siglip = dataset.siglip
-            caption_texts: List[str] = []
-            all_input_ids: List[torch.Tensor] = []
-            all_attention_masks: List[torch.Tensor] = []
-
-            # Get video keys from paths using dataset's mapping
-            for path in video_paths:
-                video_idx = dataset.video_path_to_idx.get(str(path))
-                video_key = None
-                if video_idx is not None and video_idx < len(dataset.video_ids):
-                    video_key = dataset.video_ids[video_idx]
-
-                if video_key:
-                    # Build concatenated report from all positive texts for this video
-                    report_data = siglip.build_report_tokens(
-                        video_key,
-                        separator=" ",
-                        order_by_severity=True,
-                        device=device,
-                    )
-                    caption_texts.append(report_data.get("report_text", "No findings."))
-                    all_input_ids.append(report_data["input_ids"])
-                    all_attention_masks.append(report_data["attention_mask"])
-                else:
-                    # Fallback - use "No findings" placeholder
-                    tokenizer = getattr(dataset, "tokenizer", None)
-                    if tokenizer:
-                        encoding = tokenizer(
-                            "No findings.",
-                            padding="max_length",
-                            max_length=dataset.max_length,
-                            truncation=True,
-                            return_tensors="pt",
-                        )
-                        caption_texts.append("No findings.")
-                        all_input_ids.append(encoding["input_ids"].squeeze(0).to(device))
-                        all_attention_masks.append(encoding["attention_mask"].squeeze(0).to(device))
-
-            if all_input_ids:
-                caption_tokens = torch.stack(all_input_ids, dim=0)  # [B, seq_len]
-                attention_mask = torch.stack(all_attention_masks, dim=0)  # [B, seq_len]
-            else:
-                return None, None, None, None
-        else:
-            # Fallback: use first positive per video (original behavior)
-            siglip_input_ids = siglip_batch.get("input_ids")
-            siglip_attention_mask = siglip_batch.get("attention_mask")
-            positive_mask = siglip_batch.get("positive_mask")
-            caption_texts = None
-
-            if siglip_input_ids is None:
-                return None, None, None, None
-
-            if positive_mask is not None and siglip_input_ids.ndim == 2:
-                B = positive_mask.shape[0]
-                first_positive_idx = positive_mask.argmax(dim=1)
-                has_positive = positive_mask.sum(dim=1) > 0
-                if not has_positive.all():
-                    first_positive_idx = torch.where(
-                        has_positive,
-                        first_positive_idx,
-                        torch.zeros_like(first_positive_idx)
-                    )
-                caption_tokens = siglip_input_ids[first_positive_idx]
-                if siglip_attention_mask is not None:
-                    attention_mask = siglip_attention_mask[first_positive_idx]
-                else:
-                    attention_mask = None
-            elif siglip_input_ids.ndim == 3:
-                caption_tokens = siglip_input_ids[:, 0, :]
-                if siglip_attention_mask is not None and siglip_attention_mask.ndim == 3:
-                    attention_mask = siglip_attention_mask[:, 0, :]
-                else:
-                    attention_mask = siglip_attention_mask
-            else:
-                caption_tokens = siglip_input_ids
-                attention_mask = siglip_attention_mask
-
-        # Autoregressive training setup:
-        # BERT-style tokenizers (PubMedBERT) already prepend [CLS] which acts as BOS.
-        # Tokenized sequence: [CLS, t1, t2, ..., tN, SEP, PAD, ...]
-        #
-        # Standard next-token prediction with causal masking:
-        # - Input:  tokens[:-1] = [CLS, t1, t2, ..., tN, SEP, PAD[:-1]...]
-        # - Labels: tokens[1:]  = [t1, t2, ..., tN, SEP, PAD[1:]...]
-        #
-        # This gives proper alignment:
-        # - Position 0: input=[CLS] (BOS), predict=[t1]
-        # - Position 1: input=[t1], predict=[t2]
-        # - ...
-        # - Position N: input=[tN], predict=[SEP] (EOS)
-        # - Padding positions: labels=-100 (ignored in loss)
-        #
-        # For GPT-2 style tokenizers without BOS, prepend eos_token_id as BOS
-        # (GPT-2 uses EOS as BOS). This is handled by locca_decoder's bos_token_id fallback.
-
-        caption_input_ids = caption_tokens[:, :-1].contiguous()
-        caption_labels = caption_tokens[:, 1:].contiguous()
-
-        # Preserve padding: set labels to -100 where attention_mask is 0
-        # This ensures padding positions are ignored in cross-entropy loss
-        caption_attention_mask = None
-        if attention_mask is not None:
-            caption_attention_mask = attention_mask[:, :-1].contiguous()
-            shifted_mask = attention_mask[:, 1:].contiguous()
-            caption_labels = caption_labels.clone()
-            caption_labels[shifted_mask == 0] = -100  # ignore_index for CrossEntropyLoss
-
-        return caption_input_ids, caption_labels, caption_attention_mask, caption_texts
 
     def train(
         self, 
@@ -378,16 +291,69 @@ class VideoContrastiveLearningRunner:
                     world_size=self.world_size,
                     device_ids=self.device
                 )
-
-                train_sampler = getattr(self.train_loader, "sampler", None)
-                if isinstance(train_sampler, DistributedUtils.DS.DistributedSampler):
-                    train_sampler.set_epoch(epoch)
-                val_sampler = getattr(self.val_loader, "sampler", None)
-                if isinstance(val_sampler, DistributedUtils.DS.DistributedSampler):
-                    val_sampler.set_epoch(epoch)
+                
+                learnable_temp = getattr(self.config, "learnable_temperature", False)
+                if not learnable_temp:
+                    scheduled_temp = self._compute_temperature_schedule(epoch)
+                    scheduled_log_temp = torch.log(
+                        torch.tensor(
+                            [scheduled_temp],
+                            device=self.device,
+                            dtype=self.log_temp.dtype if self.log_temp is not None else torch.float32,
+                        )
+                    )
+                    if isinstance(self.log_temp, torch.nn.Parameter):
+                        with torch.no_grad():
+                            self.log_temp.data.copy_(scheduled_log_temp)
+                    else:
+                        self.log_temp = scheduled_log_temp
+                    if self.config.is_ref_device:
+                        print(f"\n[Epoch {epoch+1}] Temperature scheduled: {scheduled_temp:.4f}")
+                else:
+                    if self.log_temp is None:
+                        self.log_temp = torch.nn.Parameter(
+                            torch.log(
+                                torch.tensor(
+                                    [self.config.temperature],
+                                    dtype=torch.float32,
+                                    device=self.device,
+                                )
+                            )
+                        )
+                    scheduled_temp = float(torch.exp(self.log_temp.detach()).item())
+                    if self.config.is_ref_device:
+                        print(f"\n[Epoch {epoch+1}] Temperature (learnable): {scheduled_temp:.4f}")
+                
+                # Apply freeze ratio schedule for video encoder
+                scheduled_video_freeze = self._compute_freeze_schedule(epoch)
+                if hasattr(self.video_encoder, 'update_freeze_ratio'):
+                    self.video_encoder.update_freeze_ratio(scheduled_video_freeze)
+                    if self.config.is_ref_device:
+                        print(f"[Epoch {epoch+1}] Video freeze ratio scheduled: {scheduled_video_freeze:.2f}")
+                
+                # Apply freeze ratio schedule for text encoder
+                scheduled_text_freeze = self._compute_text_freeze_schedule(epoch)
+                if hasattr(self.text_encoder, 'update_freeze_ratio'):
+                    self.text_encoder.update_freeze_ratio(scheduled_text_freeze)
+                    if self.config.is_ref_device:
+                        print(f"[Epoch {epoch+1}] Text freeze ratio scheduled: {scheduled_text_freeze:.2f}")
+                
+                # Set epoch for both train and val samplers (ensures deterministic behavior)
+                if hasattr(self.train_loader.sampler, 'set_epoch'):
+                    self.train_loader.sampler.set_epoch(epoch)
+                if hasattr(self.val_loader.sampler, 'set_epoch'):
+                    self.val_loader.sampler.set_epoch(epoch)  # Important for validation stability
 
                 # Training phase
                 train_metrics: dict[str, float] = self._run_epoch(mode=RunMode.TRAIN, epoch=epoch)
+                
+                # Add scheduled values to metrics
+                train_metrics["train/scheduled_temperature"] = scheduled_temp
+                train_metrics["train/temperature"] = scheduled_temp
+                current_log_temp = float(self.log_temp.detach().item()) if self.log_temp is not None else float(math.log(scheduled_temp))
+                train_metrics["train/log_temp"] = current_log_temp
+                train_metrics["train/scheduled_video_freeze_ratio"] = scheduled_video_freeze
+                train_metrics["train/scheduled_text_freeze_ratio"] = scheduled_text_freeze
                 if self.wandb_wrapper.is_initialized() and self.config.is_ref_device:
                     # Let wandb auto-increment steps
                     self.wandb_wrapper.log(train_metrics)
@@ -413,7 +379,7 @@ class VideoContrastiveLearningRunner:
                 
                 # If it's an epoch-based scheduler (like StepLR, CosineAnnealingLR, etc.),
                 # call lr_scheduler.step() after each epoch
-                if self.lr_scheduler and (not self.scheduler_per_iteration):
+                if self.lr_scheduler and (not self.scheduler_per_iteration) and batch_count > 0:
                     self.lr_scheduler.step()
 
                 # Update best model
@@ -480,6 +446,17 @@ class VideoContrastiveLearningRunner:
                     world_size=self.world_size,
                     device_ids=self.device
                 )
+
+                patience = getattr(self.config, 'early_stop_patience', 0)
+                if patience and patience > 0 and self.best_epoch >= 0:
+                    epochs_since_best = epoch - self.best_epoch
+                    if epochs_since_best >= patience:
+                        if self.config.is_ref_device:
+                            print(
+                                f"[EarlyStopping] No val improvement for {epochs_since_best} epochs "
+                                f"(patience={patience}); stopping training."
+                            )
+                        break
 
                 # ------------------------------------------------------------------
                 # Memory cleanup to avoid GPU OOM across epochs
@@ -597,6 +574,50 @@ class VideoContrastiveLearningRunner:
 
         return out_list
 
+    def _gather_nested_lists(
+        self, local_nested: list[list[str]], world_size: int, device: torch.device
+    ) -> list[list[str]]:
+        """
+        Gathers nested string lists (list of list of str) across ranks.
+
+        :param local_nested: Nested list on current rank.
+        :param world_size: Number of participating ranks.
+        :param device: CUDA device for temporary tensors.
+        :return: Combined nested list from all ranks.
+        """
+        if self.config.world_size < 2:
+            return local_nested
+
+        import pickle
+
+        local_bytes: bytes = pickle.dumps(local_nested)
+        local_size = torch.tensor([len(local_bytes)], dtype=torch.long, device=device)
+
+        sizes_list: list[torch.Tensor] = [torch.zeros_like(local_size) for _ in range(world_size)]
+        DistributedUtils.dist.all_gather(sizes_list, local_size)
+        sizes: list[int] = [s.item() for s in sizes_list]
+        max_size: int = max(sizes) if sizes else 0
+
+        buffer = torch.zeros(max_size, dtype=torch.uint8, device=device)
+        if local_size.item() > 0:
+            buffer[: local_size.item()] = torch.tensor(
+                list(local_bytes), dtype=torch.uint8, device=device
+            )
+
+        gathered_buffers: list[torch.Tensor] = [
+            torch.zeros(max_size, dtype=torch.uint8, device=device) for _ in range(world_size)
+        ]
+        DistributedUtils.dist.all_gather(gathered_buffers, buffer)
+
+        combined: list[list[str]] = []
+        for size, buf in zip(sizes, gathered_buffers):
+            if size == 0:
+                continue
+            valid_bytes = buf[:size].cpu().numpy().tobytes()
+            combined.extend(pickle.loads(valid_bytes))
+
+        return combined
+
     def _run_epoch(
         self, 
         mode: str, 
@@ -615,6 +636,13 @@ class VideoContrastiveLearningRunner:
 
         self.video_encoder.train(mode == RunMode.TRAIN)
         self.text_encoder.train(mode == RunMode.TRAIN)
+        
+        # Extra synchronization for validation to ensure all ranks start together
+        if mode == RunMode.VALIDATE:
+            if torch.distributed.is_initialized():
+                torch.distributed.barrier()
+                if self.config.is_ref_device:
+                    print(f"[Validation] All ranks synchronized, starting validation epoch {epoch + 1}")
 
         total_loss: float = 0.0
         epoch_metrics: dict[str, float] = {}
@@ -630,12 +658,8 @@ class VideoContrastiveLearningRunner:
         # Store local embeddings & text for retrieval computations
         all_video_embeddings_local: List[torch.Tensor] = []
         all_text_embeddings_local: List[torch.Tensor] = []
-        all_tree_logits_local: List[torch.Tensor] = []
         all_paths_local: List[str] = []
-        all_ground_truth_reports_local: List[str] = []
-        # Store vision_features for LocCa caption generation
-        all_vision_features_local: List[torch.Tensor] = []
-        all_caption_texts_local: List[str] = []  # Ground truth captions
+        all_positive_texts_local: List[List[str]] = []
 
         tqdm_desc = f"[GPU {self.device}] Running {mode} Epoch {epoch + 1}"
         
@@ -643,129 +667,154 @@ class VideoContrastiveLearningRunner:
         iterator_obj: Any = dataloader # Use Any for iterator_obj as it can be DataLoader or tqdm
         if self.config.is_ref_device or (self.device == 0):
             iterator_obj = tqdm(dataloader, desc=tqdm_desc)
+
         batch_count: int = 0
-        for iteration_idx, batch in enumerate(iterator_obj, start=1): # Use iterator_obj
-            if batch["videos"] is None or batch["encoded_texts"] is None:
+        for _, batch in enumerate(iterator_obj, start=1): # Use iterator_obj
+            # For validation, NEVER skip batches to maintain rank synchronization
+            if mode == RunMode.TRAIN and (batch["videos"] is None or batch["encoded_texts"] is None):
                 continue
+            elif mode == RunMode.VALIDATE and (batch["videos"] is None or batch["encoded_texts"] is None):
+                # Create dummy tensors to maintain synchronization across ranks
+                if self.config.is_ref_device:
+                    print(f"Warning: Empty batch in validation at batch {batch_count+1}, using dummy tensors")
+                # Use existing batch structure but with dummy values
+                if batch["videos"] is None:
+                    batch["videos"] = torch.zeros(1, 3, self.config.frames, 224, 224, device=self.device)
+                if batch["encoded_texts"] is None:
+                    batch["encoded_texts"] = {"input_ids": torch.zeros(1, 1, dtype=torch.long, device=self.device),
+                                            "attention_mask": torch.zeros(1, 1, dtype=torch.long, device=self.device)}
 
             step_inputs, paths_or_sids = self._preprocess_inputs(batch)
-            siglip_payload = self._build_siglip_payload(dataset, paths_or_sids)
-            if siglip_payload is not None:
-                step_inputs["siglip_batch"] = siglip_payload
 
-            # Pass video_paths and dataset for LocCa caption building
-            if self._locca_enabled:
-                step_inputs["video_paths"] = paths_or_sids
-                step_inputs["dataset"] = dataset
-                step_inputs["is_first_batch"] = (iteration_idx == 1 and epoch == 0)
+            sample_info = None
+            if self.config.is_ref_device and self._should_debug_batch():
+                sample_cap = max(0, getattr(self.config, 'siglip_debug_sample_count', 0))
+                if sample_cap > 0:
+                    sample_info = []
+                    paths = list(batch.get('paths', []))
+                    reports = list(batch.get('reports', []))
+                    positive_mask_batch = batch.get('positive_mask')
+                    positive_weights_batch = batch.get('positive_weights')
+                    text_metadata_batch = batch.get('text_metadata')
+                    dataset: VideoClipDataset = dataloader.dataset  # type: ignore
+                    mask_cpu = positive_mask_batch.detach().cpu() if isinstance(positive_mask_batch, torch.Tensor) else None
+                    weight_cpu = positive_weights_batch.detach().cpu() if isinstance(positive_weights_batch, torch.Tensor) else None
+                    meta_list = text_metadata_batch if isinstance(text_metadata_batch, list) else None
+                    for idx, path in enumerate(paths[:sample_cap]):
+                        entry: Dict[str, Any] = {
+                            'path': str(path)
+                        }
+                        if idx < len(reports):
+                            entry['text'] = reports[idx]
+                        if hasattr(dataset, 'video_path_to_idx'):
+                            vid_idx = dataset.video_path_to_idx.get(str(path))
+                            if vid_idx is not None and vid_idx < len(dataset.video_ids):
+                                entry['video_id'] = dataset.video_ids[vid_idx]
+                        if mask_cpu is not None and meta_list is not None and idx < mask_cpu.size(0):
+                            row = mask_cpu[idx]
+                            prompt_texts = []
+                            prompt_ids = []
+                            prompt_weights: List[float] = []
+                            for col in (row > 0).nonzero(as_tuple=False).flatten().tolist():
+                                if col < len(meta_list):
+                                    prompt_ids.append(meta_list[col].get('text_id'))
+                                    prompt_texts.append(meta_list[col].get('prompt_text', ''))
+                                    if weight_cpu is not None:
+                                        prompt_weights.append(float(weight_cpu[idx, col].item()))
+                            entry['prompt_ids'] = prompt_ids
+                            entry['prompts'] = prompt_texts
+                            if prompt_weights:
+                                entry['positive_weights'] = prompt_weights
+                                entry['positive_weight_stats'] = {
+                                    'min': float(torch.tensor(prompt_weights).min().item()),
+                                    'max': float(torch.tensor(prompt_weights).max().item()),
+                                    'mean': float(torch.tensor(prompt_weights).mean().item()),
+                                }
+                            entry['negative_weight'] = float(getattr(self.config, 'siglip_negative_weight', 1.0))
+                        sample_info.append(entry)
+                    if sample_info:
+                        step_inputs['debug_sample_info'] = sample_info
 
-            try:
-                batch_metrics, embeddings = step_fn(**step_inputs)
-            except NonFiniteLossError as err:
-                error_msg = (
-                    f"NaN loss detected in {mode} at epoch {epoch + 1}, "
-                    f"batch {iteration_idx}"
-                )
+            batch_metrics, embeddings = step_fn(**step_inputs)
+
+            if torch.isnan(embeddings["video_embeddings"]).any():
                 if self.config.is_ref_device:
-                    print(f"\nERROR: {error_msg}")
-                    if err.diagnostics:
-                        print(f"Diagnostics: {err.diagnostics}")
-                raise RuntimeError(error_msg) from err
+                    print(f"Warning: NaN video embeddings detected at epoch {epoch+1}, batch {batch_count+1}; paths={paths_or_sids}")
+                embeddings["video_embeddings"] = torch.nan_to_num(embeddings["video_embeddings"], nan=0.0)
+            if torch.isnan(embeddings["text_embeddings"]).any():
+                if self.config.is_ref_device:
+                    print(f"Warning: NaN text embeddings detected at epoch {epoch+1}, batch {batch_count+1}; paths={paths_or_sids}")
+                embeddings["text_embeddings"] = torch.nan_to_num(embeddings["text_embeddings"], nan=0.0)
 
             # Check for NaN loss
-            loss_value = float(batch_metrics["loss"])
-            if not math.isfinite(loss_value):
-                error_msg = f"NaN loss detected in {mode} at epoch {epoch + 1}, batch {iteration_idx}"
+            if torch.isnan(torch.tensor(batch_metrics["loss"])):
+                error_msg = f"NaN loss detected in {mode} at epoch {epoch + 1}, batch {batch_count + 1}"
                 if self.config.is_ref_device:
                     print(f"\nERROR: {error_msg}")
-                    print(f"Diagnostics: {{'loss': {loss_value}}}")
+                    print(f"  paths: {paths_or_sids}")
+                    print(f"  batch_metrics: {batch_metrics}")
                 raise RuntimeError(error_msg)
 
             # Store embeddings on CPU
-            batch_video_emb = embeddings["video_embeddings"]
-            batch_text_emb = embeddings["text_embeddings"]
-            batch_size = batch_video_emb.shape[0]
-            all_video_embeddings_local.append(batch_video_emb.cpu())
-            all_text_embeddings_local.append(batch_text_emb.cpu())
-
-            # Store vision_features for LocCa caption generation (validation only, limited samples)
-            if mode == RunMode.VALIDATE and self._locca_enabled:
-                vis_feats = embeddings.get("vision_features")
-                if vis_feats is not None and len(all_vision_features_local) < 50:  # Limit to 50 samples
-                    all_vision_features_local.append(vis_feats.cpu())
-                    # Get ground truth captions for these samples
-                    caption_input_ids, caption_labels, caption_attn_mask, caption_texts = self._prepare_caption_tokens(
-                        siglip_batch=siglip_payload,
-                        video_paths=paths_or_sids,
-                        dataset=dataset,
-                    )
-                    if caption_texts:
-                        all_caption_texts_local.extend(caption_texts[:batch_size])
-
-            if mode == RunMode.VALIDATE:
-                tree_logits_batch = embeddings.get("tree_logits")
-                if tree_logits_batch is not None:
-                    all_tree_logits_local.append(tree_logits_batch.detach().cpu())
+            all_video_embeddings_local.append(embeddings["video_embeddings"].cpu())
+            all_text_embeddings_local.append(embeddings["text_embeddings"].cpu())
 
             # Use dataset.multi_video_mode for consistency
             # paths_or_sids contains SIDs in multi-video mode, and direct file paths in single-video mode.
             # all_paths_local will store these identifiers directly.
             all_paths_local.extend(paths_or_sids)
 
-            all_ground_truth_reports_local.extend(dataset.get_reports(paths_or_sids)) # Now type-safe
+            paths_list: List[str] = list(batch.get('paths', []))
+            batch_reports: List[str] = list(batch.get("reports", []))
+            positive_mask_batch = batch.get('positive_mask')
+            text_metadata_batch = batch.get('text_metadata')
+
+            batch_positive_texts: List[List[str]] = []
+            if (
+                isinstance(positive_mask_batch, torch.Tensor)
+                and isinstance(text_metadata_batch, list)
+                and positive_mask_batch.numel() > 0
+            ):
+                mask_cpu = positive_mask_batch.detach().cpu()
+                meta_list = text_metadata_batch
+                for row_idx in range(mask_cpu.size(0)):
+                    prompts: List[str] = []
+                    active_cols = (mask_cpu[row_idx] > 0).nonzero(as_tuple=False).flatten().tolist()
+                    for col in active_cols:
+                        if col < len(meta_list):
+                            prompt_text = meta_list[col].get('prompt_text', '')
+                            if prompt_text:
+                                prompts.append(prompt_text)
+                    if not prompts and row_idx < len(batch_reports):
+                        fallback_prompt = batch_reports[row_idx]
+                        if fallback_prompt:
+                            prompts.append(fallback_prompt)
+                    batch_positive_texts.append(prompts)
+            else:
+                for report_text in batch_reports:
+                    prompts = [report_text] if report_text else []
+                    batch_positive_texts.append(prompts)
+
+            if len(batch_positive_texts) < len(paths_list):
+                batch_positive_texts.extend([] for _ in range(len(paths_list) - len(batch_positive_texts)))
+
+            all_positive_texts_local.extend(batch_positive_texts)
 
             # accumulate metrics
             for k, v in batch_metrics.items():
                 epoch_metrics[k] = epoch_metrics.get(k, 0.0) + float(v)
-                if (
-                    self.wandb_wrapper.is_initialized()
-                    and self.config.is_ref_device
-                    and (mode == RunMode.TRAIN or mode == RunMode.VALIDATE)
-                ):
-                    mode_name = mode.value if isinstance(mode, RunMode) else str(mode)
-                    wandb_key = f"{mode_name}/{k}"
-                    self.wandb_wrapper.log({wandb_key: float(v)})
 
             total_loss += float(batch_metrics["loss"])
             batch_count += 1
 
-
             if (self.config.is_ref_device or (self.device == 0)) and mode == RunMode.TRAIN:
-                postfix_data = {
-                    f"{mode}_loss": f"{batch_metrics['loss']:.4f}", # Use mode variable
-                    "avg_loss": f"{(total_loss / batch_count):.4f}",
-                    "grad_v": f"{self._last_video_grad_norm:.2f}",
-                    "grad_t": f"{self._last_text_grad_norm:.2f}",
-                }
-                # Add individual loss values for each head (e.g., loss/siglip_pairwise, loss/locca_caption)
-                for key, val in batch_metrics.items():
-                    if key.startswith("loss/"):
-                        # Create short name for tqdm display (e.g., "siglip_pairwise" -> "sig", "locca_caption" -> "loc")
-                        short_name = key.replace("loss/", "")
-                        if "siglip" in short_name:
-                            short_name = "sig"
-                        elif "locca" in short_name:
-                            short_name = "loc"
-                        elif "clip" in short_name or "contrastive" in short_name:
-                            short_name = "clip"
-                        else:
-                            short_name = short_name[:4]  # First 4 chars
-                        postfix_data[short_name] = f"{val:.4f}"
-                if "train/Recall@5" in batch_metrics:
-                    postfix_data["recall@5"] = f"{batch_metrics['train/Recall@5']:.3f}"
-                iterator_obj.set_postfix(postfix_data)
-                if hasattr(iterator_obj, 'set_postfix_str'):
-                    iterator_obj.set_postfix_str(
-                        " | ".join(f"{k}:{v}" for k, v in postfix_data.items())
+                if hasattr(iterator_obj, 'set_postfix'): # Check if it's the tqdm instance
+                    iterator_obj.set_postfix(
+                        {
+                            f"{mode}_loss": f"{batch_metrics['loss']:.4f}", # Use mode variable
+                            "avg_loss": f"{(total_loss / batch_count):.4f}",
+                        }
                     )
-                if batch_count % self.progress_log_interval == 0:
-                    log_line = (
-                        f"[Epoch {epoch + 1} | Step {batch_count}] "
-                        + " | ".join(f"{k}={v}" for k, v in postfix_data.items())
-                    )
-                    tqdm.write(log_line)
-                    if hasattr(iterator_obj, 'write'):
-                        iterator_obj.write(log_line)
 
         if 'batch_metrics' in locals():
             del batch_metrics
@@ -786,349 +835,221 @@ class VideoContrastiveLearningRunner:
             local_video_feats: torch.Tensor = torch.empty((0, 512), device=self.device)
             local_text_feats: torch.Tensor = torch.empty((0, 512), device=self.device)
 
-        local_tree_logits: Optional[torch.Tensor] = None
-        if len(all_tree_logits_local) > 0:
-            local_tree_logits = torch.cat(all_tree_logits_local, dim=0).to(self.device)
-
         # 2) gather across GPUs
         global_video_feats: torch.Tensor = self._gather_tensor_along_batch(local_video_feats, self.world_size)
-        global_tree_logits: Optional[torch.Tensor] = None
-        if local_tree_logits is not None and local_tree_logits.numel() > 0:
-            gathered_tree = self._gather_tensor_along_batch(local_tree_logits, self.world_size)
-            global_tree_logits = gathered_tree
 
         # 3) gather paths & reports
         global_paths: list[str] = self._gather_strings_across_gpus(
             all_paths_local, self.world_size, device=local_video_feats.device
         )
-        global_reports: list[str] = self._gather_strings_across_gpus(
-            all_ground_truth_reports_local, self.world_size, device=local_video_feats.device
+        global_positive_texts: list[list[str]] = self._gather_nested_lists(
+            all_positive_texts_local, self.world_size, device=local_video_feats.device
         )
-
-        tree_predictions: Optional[List[Optional[str]]] = None
-        if (
-            global_tree_logits is not None
-            and global_tree_logits.numel() == len(global_paths)
-            and len(global_paths) > 0
-        ):
-            logits_cpu = global_tree_logits.detach().cpu().tolist()
-            tree_predictions = [
-                (None if math.isnan(value) else ("right" if value >= 0.0 else "left"))
-                for value in logits_cpu
-            ]
+        primary_reports: list[str] = [texts[0] if texts else "" for texts in global_positive_texts]
+        joined_reports: list[str] = [" | ".join(texts) if texts else "" for texts in global_positive_texts]
 
         # Optionally compute NxM retrieval metrics on rank 0
         retrieval_metrics: dict[str, float] = {}
-        if mode == RunMode.VALIDATE and len(global_video_feats) > 0:
+        if mode == "val" and self.config.is_ref_device:
             print(
                 f"[DEBUG rank={self.device}] Starting retrieval computation with {global_video_feats.shape[0]} videos."
             )
+            
+            # Step 1: Deduplicate texts and create mapping
+            flattened_texts: List[str] = [
+                text for texts in global_positive_texts for text in texts if text
+            ]
+            unique_texts: List[str] = sorted(set(flattened_texts))
+            if not unique_texts:
+                unique_texts = [""]
+            text_to_index: Dict[str, int] = {text: idx for idx, text in enumerate(unique_texts)}
+            
+            # Step 2: Resolve ground-truth index sets for each video
+            ground_truth_index_sets: List[List[int]] = []
+            primary_indices: List[int] = []
+            for vid_idx, texts in enumerate(global_positive_texts):
+                indices_for_video: List[int] = []
+                seen: Set[int] = set()
+                for text in texts:
+                    mapped_idx = text_to_index.get(text)
+                    if mapped_idx is not None and mapped_idx not in seen:
+                        indices_for_video.append(mapped_idx)
+                        seen.add(mapped_idx)
 
-        text_segments: Optional[List[Optional[str]]] = None
-        text_trees: Optional[List[Optional[str]]] = None
+                if not indices_for_video:
+                    fallback_text = primary_reports[vid_idx]
+                    mapped_idx = text_to_index.get(fallback_text)
+                    if mapped_idx is None:
+                        raise ValueError(
+                            "Missing ground-truth text in mapping: "
+                            f"'{fallback_text}' for identifier '{global_paths[vid_idx]}'"
+                        )
+                    indices_for_video.append(mapped_idx)
 
-        if mode == RunMode.VALIDATE:
-            if self.config.is_ref_device and len(global_video_feats) > 0:
-                # Check if we're using SigLIP-style multi-positive training
-                all_text_ids: List[str] = []
-                use_siglip_texts = (
-                    hasattr(dataset, 'siglip_enabled') and
-                    dataset.siglip_enabled and
-                    dataset.siglip is not None and
-                    hasattr(dataset.siglip, 'text_lookup') and
-                    len(dataset.siglip.text_lookup) > 0
+                ground_truth_index_sets.append(indices_for_video)
+                primary_indices.append(indices_for_video[0])
+
+            ground_truth_indices: torch.Tensor = torch.tensor(
+                primary_indices,
+                device=self.device,
+                dtype=torch.long
+            )
+            ground_truth_indices_cpu: torch.Tensor = ground_truth_indices.detach().cpu()
+            
+            total_positives = sum(len(texts) for texts in global_positive_texts)
+            print(
+                f"[DEBUG rank={self.device}] Found {len(unique_texts)} unique texts out of {total_positives} total positive assignments."
+            )
+            
+            # Step 3: Encode unique texts
+            unique_text_embeddings_list: List[torch.Tensor] = [] # Renamed list
+            batch_size: int = 64  # Process in batches to avoid OOM
+            
+            self.text_encoder.eval()
+            with torch.no_grad():
+                for start_idx in range(0, len(unique_texts), batch_size):
+                    end_idx = min(start_idx + batch_size, len(unique_texts))
+                    text_batch = unique_texts[start_idx:end_idx]
+                    
+                    # Tokenize batch, Handle both DDP and non-DDP cases for text encoder
+                    tokenizer = (
+                        self.text_encoder.module.tokenizer 
+                        if hasattr(self.text_encoder, "module") 
+                        else self.text_encoder.tokenizer
+                    )
+                    encoded = tokenizer(
+                        text_batch,
+                        padding=True,
+                        truncation=True,
+                        return_tensors="pt"
+                    ).to(self.device)
+                    # Get embeddings
+                    text_embs = self.text_encoder(
+                        encoded["input_ids"],
+                        encoded["attention_mask"]
+                    )
+                    text_embs = torch.nan_to_num(text_embs, nan=0.0, posinf=1e4, neginf=-1e4)
+                    if not torch.isfinite(text_embs).all():
+                        if self.config.is_ref_device:
+                            print(
+                                "Warning: non-finite deduplicated text embeddings detected; sanitising to zeros"
+                            )
+                        text_embs = torch.zeros_like(text_embs)
+                    unique_text_embeddings_list.append(text_embs) # Append to renamed list
+            
+            # Concatenate all batches into a new tensor variable
+            unique_text_embeddings_tensor: torch.Tensor = torch.cat(unique_text_embeddings_list, dim=0)
+            
+            # Step 4: Normalize embeddings
+            global_video_feats_norm: torch.Tensor = nn.functional.normalize(global_video_feats, dim=1)
+            unique_text_embeddings_norm: torch.Tensor = nn.functional.normalize(unique_text_embeddings_tensor, dim=1) # Use normalized tensor
+            
+            # Step 5: Compute NxM similarity matrix
+            similarity_matrix: torch.Tensor = torch.matmul(global_video_feats_norm, unique_text_embeddings_norm.t()) # Use normalized embeddings
+            print(
+                f"[DEBUG rank={self.device}] Computed NxM sim matrix with shape={similarity_matrix.shape}"
+            )
+            
+            # Log best/worst retrievals using unique texts
+            if self.config.is_ref_device and self.wandb_wrapper.is_initialized():
+                # Calculate global step for consistent wandb logging
+                wandb_step = epoch * len(self.train_loader) + len(self.train_loader)
+                log_best_worst_retrievals(
+                    similarity_matrix=similarity_matrix,
+                    all_paths=global_paths,
+                    unique_texts=unique_texts,
+                    ground_truth_indices=ground_truth_indices_cpu,
+                    ground_truth_texts=global_positive_texts,
+                    epoch=epoch,
+                    wandb_wrapper=self.wandb_wrapper,
+                    dataset_obj=dataset, # Pass the dataset object
+                    step=wandb_step
                 )
 
-                if use_siglip_texts:
-                    # SigLIP mode: Load all unique texts from texts.csv
-                    print(f"[DEBUG rank={self.device}] Using SigLIP mode - loading all texts from texts.csv")
-
-                    # Get all text IDs and their corresponding prompt texts
-                    all_text_ids = sorted(dataset.siglip.text_lookup.keys())
-                    unique_texts: List[str] = [
-                        dataset.siglip.text_lookup[tid].get("prompt_text", "")
-                        for tid in all_text_ids
-                    ]
-                    siglip_lookup = dataset.siglip.text_lookup if dataset.siglip else {}
-                    normalize_tree = getattr(dataset, "_normalize_tree_key", None)
-                    text_segments = []
-                    text_trees = []
-                    for tid in all_text_ids:
-                        meta = siglip_lookup.get(tid, {})
-                        text_segments.append(meta.get("segment"))
-                        raw_tree = meta.get("tree")
-                        normalized_tree = None
-                        if callable(normalize_tree):
-                            normalized_tree = normalize_tree(raw_tree)
-                        elif isinstance(raw_tree, str):
-                            stripped = raw_tree.strip().lower()
-                            normalized_tree = stripped if stripped else None
-                        text_trees.append(normalized_tree)
-                    text_id_to_index: Dict[str, int] = {tid: idx for idx, tid in enumerate(all_text_ids)}
-                    # Also create text_to_index for save_retrieval_results compatibility
-                    text_to_index: Dict[str, int] = {text: idx for idx, text in enumerate(unique_texts)}
-
-                    print(f"[DEBUG rank={self.device}] Found {len(unique_texts)} unique texts out of {len(all_text_ids)} text IDs.")
-
-                    # Step 2: Build ground truth matrix (videos x texts) with multiple positives per video
-                    ground_truth_matrix = torch.zeros(
-                        len(global_video_feats),
-                        len(unique_texts),
-                        dtype=torch.float32,
-                        device=self.device
-                    )
-
-                    # For each video, mark all its positive texts
-                    for video_idx, video_path in enumerate(global_paths):
-                        # Get the dataset index for this video
-                        dataset_idx = dataset.video_path_to_idx.get(str(video_path))
-                        if dataset_idx is None:
-                            continue
-
-                        # Get positive text IDs for this video
-                        if dataset_idx < len(dataset.video_positive_texts):
-                            positive_pairs = dataset.video_positive_texts[dataset_idx]
-                            for text_id, weight in positive_pairs:
-                                if text_id in text_id_to_index:
-                                    text_idx = text_id_to_index[text_id]
-                                    ground_truth_matrix[video_idx, text_idx] = 1.0
-
-                    # For single-positive metrics, use SEVERITY-PRIORITIZED selection
-                    # (prefer severe/critical findings over normal segments)
-                    severity_order = {
-                        'severe': 0, 'critical': 0, 'cto': 0,
-                        'moderate': 1,
-                        'mild': 2,
-                        'normal': 3,
-                    }
-
-                    # Build text_idx -> severity mapping
-                    text_idx_to_severity: Dict[int, str] = {}
-                    for tid, idx in text_id_to_index.items():
-                        meta = siglip_lookup.get(tid, {})
-                        sev = meta.get("disease_severity", "normal")
-                        if not isinstance(sev, str):
-                            sev = "normal"
-                        text_idx_to_severity[idx] = sev.lower().strip()
-
-                    ground_truth_indices: torch.Tensor = torch.zeros(
-                        len(global_video_feats), dtype=torch.long, device=self.device
-                    )
-                    for video_idx in range(len(global_video_feats)):
-                        positive_indices = torch.where(ground_truth_matrix[video_idx] > 0)[0]
-                        if len(positive_indices) > 0:
-                            # Sort by severity: severe first, then moderate, mild, normal
-                            sorted_positives = sorted(
-                                positive_indices.tolist(),
-                                key=lambda i: severity_order.get(text_idx_to_severity.get(i, "normal"), 3)
-                            )
-                            ground_truth_indices[video_idx] = sorted_positives[0]
-
-                elif len(global_reports) > 0:
-                    # Original mode: Use concatenated reports per video
-                    unique_texts: List[str] = sorted(set(global_reports))
-                    if len(unique_texts) == 0:
-                        print(f"[DEBUG rank={self.device}] No unique texts found; skipping retrieval metrics.")
-                        retrieval_metrics = self._zero_retrieval_metrics()
-                        unique_texts = []
-                    else:
-                        text_to_index: Dict[str, int] = {text: idx for idx, text in enumerate(unique_texts)}
-                        text_segments = [None for _ in unique_texts]
-
-                        # Step 2: Get ground truth indices for each video
-                        ground_truth_indices: torch.Tensor = torch.tensor(
-                            [text_to_index[text] for text in global_reports],
-                            device=self.device
-                        )
-                        ground_truth_matrix = None  # Not used in this mode
-
-                        print(f"[DEBUG rank={self.device}] Found {len(unique_texts)} unique texts out of {len(global_reports)} total.")
-                        all_text_ids = list(unique_texts)
-                else:
-                        print(f"[DEBUG rank={self.device}] No reports or SigLIP texts found; skipping retrieval metrics.")
-                        retrieval_metrics = self._zero_retrieval_metrics()
-                        unique_texts = []
-                        all_text_ids = []
-                        text_segments = None
-
-                # Continue with encoding if we have texts
-                if len(unique_texts) > 0:
-                    
-                    # Step 3: Encode unique texts
-                    unique_text_embeddings_list: List[torch.Tensor] = []
-                    batch_size: int = 64  # Process in batches to avoid OOM
-                    
-                    self.text_encoder.eval()
-                    with torch.no_grad():
-                        for start_idx in range(0, len(unique_texts), batch_size):
-                            end_idx = min(start_idx + batch_size, len(unique_texts))
-                            text_batch = unique_texts[start_idx:end_idx]
-                            
-                            tokenizer = (
-                                self.text_encoder.module.tokenizer 
-                                if hasattr(self.text_encoder, "module") 
-                                else self.text_encoder.tokenizer
-                            )
-                            encoded = tokenizer(
-                                text_batch,
-                                padding=True,
-                                truncation=True,
-                                return_tensors="pt"
-                            ).to(self.device)
-                            text_embs = self.text_encoder(
-                                encoded["input_ids"],
-                                encoded["attention_mask"]
-                            )
-                            unique_text_embeddings_list.append(text_embs)
-                    
-                    if len(unique_text_embeddings_list) == 0:
-                        print(f"[DEBUG rank={self.device}] No text embeddings produced; skipping retrieval metrics.")
-                        retrieval_metrics = self._zero_retrieval_metrics()
-                    else:
-                        unique_text_embeddings_tensor: torch.Tensor = torch.cat(unique_text_embeddings_list, dim=0)
-                        
-                        # Step 4: Normalize embeddings
-                        global_video_feats_norm: torch.Tensor = nn.functional.normalize(global_video_feats, dim=1)
-                        unique_text_embeddings_norm: torch.Tensor = nn.functional.normalize(unique_text_embeddings_tensor, dim=1)
-                        
-                        # Step 5: Compute NxM similarity matrix
-                        similarity_matrix: torch.Tensor = torch.matmul(global_video_feats_norm, unique_text_embeddings_norm.t())
-                        print(
-                            f"[DEBUG rank={self.device}] Computed NxM sim matrix with shape={similarity_matrix.shape}"
-                        )
-
-                        semantic_metrics = compute_siglip_semantic_metrics(
-                            similarity_matrix=similarity_matrix.detach().cpu(),
-                            sample_identifiers=global_paths,
-                            dataset=dataset,
-                            all_text_ids=all_text_ids,
-                            top_tree_k=5,
-                            top_segment_k=15,
-                        )
-                        retrieval_metrics.update(semantic_metrics)
-                        
-                        if self.wandb_wrapper.is_initialized():
-                            # Pass multi-positive ground truth matrix and text lookup for detailed logging
-                            gt_matrix_for_logging = ground_truth_matrix if use_siglip_texts and 'ground_truth_matrix' in locals() else None
-                            text_lookup_for_logging = siglip_lookup if use_siglip_texts and 'siglip_lookup' in locals() else None
-
-                            log_best_worst_retrievals(
-                                similarity_matrix=similarity_matrix,
-                                all_paths=global_paths,
-                                unique_texts=unique_texts,
-                                ground_truth_indices=ground_truth_indices,
-                                epoch=epoch,
-                                wandb_wrapper=self.wandb_wrapper,
-                                dataset_obj=dataset,
-                                text_segments=text_segments,
-                                text_trees=text_trees,
-                                sample_tree_predictions=tree_predictions,
-                                ground_truth_matrix=gt_matrix_for_logging,
-                                all_text_ids=all_text_ids if 'all_text_ids' in locals() else None,
-                                text_lookup=text_lookup_for_logging,
-                            )
-
             # Save retrieval results with mapping
-                        save_retrieval_results(
-                            similarity_matrix=similarity_matrix,
-                            all_identifiers=global_paths,
-                            all_ground_truth_reports=global_reports,
-                            report_to_global_index=text_to_index,
-                            epoch=epoch,
-                            output_dir=self.output_dir,
-                            dataset_obj=dataset,
-                            ground_truth_indices_override=ground_truth_indices,
-                            top_k_predictions=int(getattr(self.config, "topk", 5) or 5),
-                            text_segments=text_segments,
-                            text_trees=text_trees,
-                            sample_tree_predictions=tree_predictions,
-                            index_to_texts=unique_texts,
-                            index_to_text_ids=all_text_ids,
-                            json_top_k=15,
-                        )
-                        # Compute retrieval metrics (use ground_truth_matrix if available for multi-positive)
-                        if use_siglip_texts and 'ground_truth_matrix' in locals():
-                            recall_metrics: Dict[str, float] = compute_recall_at_k(
-                                similarity_matrix,
-                                ground_truth_matrix=ground_truth_matrix,
-                                k_values=self.config.recall_k
-                            )
-                        else:
-                            recall_metrics: Dict[str, float] = compute_recall_at_k(
-                                similarity_matrix, ground_truth_indices, k_values=self.config.recall_k
-                            )
-                        mrr_score_dict: Dict[str, float] = compute_mrr(similarity_matrix, ground_truth_indices)
-                        map_score: float = compute_map(similarity_matrix, ground_truth_indices)
-                        median_rank_score: float = compute_median_rank(similarity_matrix, ground_truth_indices)
-                        ndcg_scores_dict: Dict[str, float] = compute_ndcg_at_k(
-                            similarity_matrix, ground_truth_indices, k_values=self.config.ndcg_k
-                        )
+            save_retrieval_results(
+                similarity_matrix=similarity_matrix,
+                all_identifiers=global_paths, # Pass SIDs or file paths
+                all_ground_truth_reports=joined_reports,
+                report_to_global_index=text_to_index,
+                epoch=epoch,
+                output_dir=self.output_dir,
+                dataset_obj=dataset, # Pass the dataset object
+                ground_truth_index_sets=ground_truth_index_sets,
+            )
+            print(f"[DEBUG rank={self.device}] Ground truth index set sizes: {[len(s) for s in ground_truth_index_sets[:10]]}")
 
-                        retrieval_metrics.update(recall_metrics)
-                        retrieval_metrics.update(mrr_score_dict)
-                        retrieval_metrics.update(ndcg_scores_dict)
-                        retrieval_metrics["MAP"] = map_score
-                        retrieval_metrics["MedianRank_V2T"] = median_rank_score
+            # Compute retrieval metrics using ground truth indices
+            recall_metrics: Dict[str, float] = compute_recall_at_k( # Ensure it's a Dict
+                similarity_matrix, ground_truth_index_sets, k_values=self.config.recall_k
+            )
+            mrr_score_dict: Dict[str, float] = compute_mrr(
+                similarity_matrix, ground_truth_index_sets
+            )
+            map_score: float = compute_map(similarity_matrix, ground_truth_index_sets)
+            median_rank_score: float = compute_median_rank(similarity_matrix, ground_truth_index_sets)
+            ndcg_scores_dict: Dict[str, float] = compute_ndcg_at_k( # Assign to dict
+                similarity_matrix, ground_truth_index_sets, k_values=self.config.ndcg_k
+            )
 
-                        # === Validation Logging: Save detailed CSV and text comparisons ===
-                        try:
-                            # Save recall summary to CSV (append per epoch)
-                            save_recall_summary_csv(
-                                recall_metrics=recall_metrics,
-                                epoch=epoch,
-                                output_dir=self.output_dir,
-                                additional_metrics={
-                                    "MAP": map_score,
-                                    "MRR_V2T": mrr_score_dict.get("MRR_V2T", 0.0),
-                                    "MedianRank_V2T": median_rank_score,
-                                    **ndcg_scores_dict,
-                                },
-                                append=True,
-                            )
-
-                            # Log first batch text comparisons (GT vs Predicted)
-                            if len(unique_texts) > 0 and global_video_feats.shape[0] > 0:
-                                print(f"\n[Epoch {epoch}] === Text Comparison Samples (First 5) ===")
-                                log_first_batch_comparisons(
-                                    video_features=global_video_feats[:min(10, global_video_feats.shape[0])],
-                                    text_features=unique_text_embeddings_tensor,
-                                    video_ids=global_paths[:min(10, len(global_paths))],
-                                    unique_texts=unique_texts,
-                                    ground_truth_indices=ground_truth_indices[:min(10, len(ground_truth_indices))],
-                                    epoch=epoch,
-                                    output_dir=self.output_dir,
-                                    max_samples=5,
-                                )
-                        except Exception as e:
-                            print(f"[ValidationLogger] Warning: Could not log validation details: {e}")
-                        # === End Validation Logging ===
-
-                        # === LocCa Caption Generation ===
-                        if self._locca_enabled and self.config.is_ref_device:
-                            try:
-                                self._save_locca_captions(
-                                    vision_features_list=all_vision_features_local,
-                                    ground_truth_captions=all_caption_texts_local,
-                                    video_paths=global_paths[:len(all_caption_texts_local)],
-                                    epoch=epoch,
-                                    dataset=dataset,
-                                    max_samples=50,
-                                )
-                            except Exception as e:
-                                print(f"[LocCa] Warning: Could not generate captions: {e}")
-                        # === End LocCa Caption Generation ===
-
-            else:
-                retrieval_metrics = self._zero_retrieval_metrics()
+            retrieval_metrics.update(recall_metrics)
+            retrieval_metrics.update(mrr_score_dict) # Update with dict
+            retrieval_metrics.update(ndcg_scores_dict) # Update with dict
+            retrieval_metrics["MAP"] = map_score 
+            retrieval_metrics["MedianRank_V2T"] = median_rank_score
+            
+            # Save unique texts and their indices
+            df_texts: pd.DataFrame = pd.DataFrame({
+                "Index": range(len(unique_texts)),
+                "Text": unique_texts
+            })
+            texts_csv_path: str = os.path.join(self.output_dir, f"val_unique_texts.csv")
+            df_texts.to_csv(texts_csv_path, index=False)
+            print(f"[DEBUG rank={self.device}] Saved {len(unique_texts)} unique texts to {texts_csv_path}")
+            
+            # Also save text embeddings for future use
+            embeddings_path: str = os.path.join(self.output_dir, f"val_text_embeddings_epoch_{epoch}.pt")
+            torch.save({
+                'text_embeddings': unique_text_embeddings_tensor.cpu(), # Save the concatenated tensor
+                'text_to_index': text_to_index,
+                'unique_texts': unique_texts
+            }, embeddings_path)
+            print(f"[DEBUG rank={self.device}] Saved text embeddings to {embeddings_path}")
+            
+            print(
+                f"[DEBUG rank={self.device}] Completed retrieval metrics & logging for val at epoch={epoch}"
+            )
         else:
-            retrieval_metrics = {}
+            # Non-zero ranks: placeholders for the same metrics
+            for k_val in self.config.recall_k:
+                retrieval_metrics[f"Recall@{k_val}"] = 0.0
+            retrieval_metrics.update({
+                "MRR": 0.0,
+                "MAP": 0.0,
+                "MedianRank_V2T": 0.0,
+            })
+            for k_val in self.config.ndcg_k:
+                retrieval_metrics[f"NDCG@{k_val}"] = 0.0
+
+        if self.config.is_ref_device:
+            flat_texts = [text for texts in global_positive_texts for text in texts if text]
+            unique_prompt_count = len(set(flat_texts))
+            videos_with_prompts = sum(1 for texts in global_positive_texts if texts)
+            videos_without_prompts = len(global_positive_texts) - videos_with_prompts
+            mean_loss = (total_loss / batch_count) if batch_count > 0 else float("nan")
+            print(
+                f"[DEBUG rank={self.device}] Epoch {epoch + 1} {mode} summary | "
+                f"videos={len(global_positive_texts)} | with_prompts={videos_with_prompts} | "
+                f"without_prompts={videos_without_prompts} | total_prompts={len(flat_texts)} | "
+                f"unique_prompts={unique_prompt_count} | mean_loss={mean_loss:.4f}"
+            )
 
         epoch_metrics.update(retrieval_metrics)
+
         # 4) reduce final epoch metrics across ranks
         gathered_metrics: dict[str, float] = {}
-        mode_prefix = mode.value if isinstance(mode, RunMode) else str(mode)
         for k, v in epoch_metrics.items():
-            gathered_metrics[f"{mode_prefix}/{k}"] = self._maybe_reduce_metric(k, v)
+            gathered_metrics[f"{mode}/{k}"] = self._maybe_reduce_metric(k, v)
 
         return gathered_metrics
 
@@ -1146,118 +1067,6 @@ class VideoContrastiveLearningRunner:
             return t.item()
         else:
             return val
-
-    def _zero_retrieval_metrics(self) -> dict[str, float]:
-        metrics: dict[str, float] = {}
-        for k_val in self.config.recall_k:
-            metrics[f"Recall@{k_val}"] = 0.0
-        metrics.update({
-            "MRR": 0.0,
-            "MAP": 0.0,
-            "MedianRank_V2T": 0.0,
-        })
-        for k_val in self.config.ndcg_k:
-            metrics[f"NDCG@{k_val}"] = 0.0
-        return metrics
-
-    def _save_locca_captions(
-        self,
-        vision_features_list: List[torch.Tensor],
-        ground_truth_captions: List[str],
-        video_paths: List[str],
-        epoch: int,
-        dataset: Any,
-        max_samples: int = 50,
-    ) -> None:
-        """
-        Generate and save LocCa captions for validation samples.
-
-        Args:
-            vision_features_list: List of vision features tensors [B, L, D]
-            ground_truth_captions: List of ground truth caption strings
-            video_paths: List of video file paths
-            epoch: Current epoch
-            dataset: Dataset with tokenizer for decoding
-            max_samples: Maximum number of samples to generate
-        """
-        if not self._locca_enabled or self.locca_decoder is None:
-            return
-
-        if not vision_features_list:
-            return
-
-        import json
-
-        # Get tokenizer for decoding
-        tokenizer = getattr(dataset, "tokenizer", None)
-        if tokenizer is None:
-            print("[LocCa] Warning: No tokenizer found, skipping caption generation")
-            return
-
-        # Concatenate vision features
-        all_vis_feats = torch.cat(vision_features_list, dim=0)[:max_samples]
-        num_samples = min(all_vis_feats.shape[0], len(ground_truth_captions), len(video_paths))
-
-        # Get LocCa module (handle DDP wrapper)
-        locca_module = self.locca_decoder.module if hasattr(self.locca_decoder, 'module') else self.locca_decoder
-
-        # Generate captions
-        caption_records = []
-        self.locca_decoder.eval()
-        with torch.no_grad():
-            # Move to device and ensure 3D
-            vis_feats = all_vis_feats[:num_samples].to(self.device)
-            if vis_feats.ndim == 2:
-                vis_feats = vis_feats.unsqueeze(1)
-
-            # Generate in batches of 8
-            batch_size = 8
-            all_generated = []
-            for start_idx in range(0, num_samples, batch_size):
-                end_idx = min(start_idx + batch_size, num_samples)
-                batch_feats = vis_feats[start_idx:end_idx]
-
-                generated_ids = locca_module.generate(
-                    vision_features=batch_feats,
-                    max_length=100,
-                    temperature=0.8,
-                    top_k=50,
-                )
-                all_generated.append(generated_ids.cpu())
-
-            # Decode generated captions
-            generated_ids = torch.cat(all_generated, dim=0)
-            for i in range(num_samples):
-                gen_ids = generated_ids[i].tolist()
-                # Remove special tokens and decode
-                gen_text = tokenizer.decode(gen_ids, skip_special_tokens=True)
-                gt_text = ground_truth_captions[i] if i < len(ground_truth_captions) else ""
-                video_path = video_paths[i] if i < len(video_paths) else ""
-
-                caption_records.append({
-                    "video_path": video_path,
-                    "ground_truth": gt_text,
-                    "generated": gen_text,
-                    "epoch": epoch,
-                })
-
-        # Save to JSON
-        output_path = os.path.join(self.output_dir, f"locca_captions_epoch{epoch}.json")
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(caption_records, f, indent=2)
-
-        # Also save human-readable text file
-        txt_path = os.path.join(self.output_dir, f"locca_captions_epoch{epoch}.txt")
-        with open(txt_path, "w", encoding="utf-8") as f:
-            f.write(f"LocCa Generated Captions - Epoch {epoch}\n")
-            f.write("=" * 80 + "\n\n")
-            for i, record in enumerate(caption_records[:20]):  # First 20 for readability
-                f.write(f"--- Sample {i+1} ---\n")
-                f.write(f"Video: {record['video_path']}\n")
-                f.write(f"GT:    {record['ground_truth']}\n")
-                f.write(f"GEN:   {record['generated']}\n\n")
-
-        print(f"[LocCa] Saved {len(caption_records)} generated captions to {output_path}")
 
     def _save_checkpoint(self, epoch: int, metrics: dict, is_best: bool = False, is_highest_alignment: bool = False):
         """
@@ -1318,7 +1127,7 @@ class VideoContrastiveLearningRunner:
             return None, 0, float("inf"), -1
 
         print(f"[Preview] Loading minimal info from checkpoint: {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
 
         wandb_run = checkpoint.get("wandb_run", None)
         start_epoch = checkpoint.get("epoch", -1) + 1
@@ -1368,303 +1177,6 @@ class VideoContrastiveLearningRunner:
         if "scheduler" in checkpoint and checkpoint["scheduler"] and scheduler is not None:
             scheduler.load_state_dict(checkpoint["scheduler"])
 
-    def _build_siglip_payload(
-        self,
-        dataset: VideoClipDataset,
-        sample_ids: List[str],
-    ) -> Optional[dict]:
-        if not getattr(dataset, "siglip_enabled", False):
-            return None
-        if not hasattr(dataset, "build_siglip_batch"):
-            return None
-        siglip_batch = dataset.build_siglip_batch(sample_ids)
-        if not siglip_batch:
-            return None
-        payload = {}
-        for key in ("input_ids", "attention_mask", "positive_mask", "positive_weights"):
-            tensor = siglip_batch.get(key)
-            if tensor is None:
-                continue
-            payload[key] = tensor.to(self.device, non_blocking=True)
-        return payload
-
-    def _scaled_logits(self, v: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        """
-        Computes cosine-similarity logits with robust normalization, nan guards, and a CLIP-style cap.
-        """
-        v = F.normalize(v, dim=1, eps=1e-6)
-        t = F.normalize(t, dim=1, eps=1e-6)
-        v = torch.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0)
-        t = torch.nan_to_num(t, nan=0.0, posinf=0.0, neginf=0.0)
-
-        logits = torch.matmul(v.float(), t.float().t()).float()
-
-        # Clamp both lower and upper bounds to prevent underflow/overflow
-        # Lower bound: exp(-4.6) ≈ 0.01, Upper bound: exp(4.6) ≈ 100
-        logit_scale = torch.clamp((-self.log_temp).float(), min=math.log(0.01), max=math.log(100.0))
-        scale = torch.exp(logit_scale)
-        return logits * scale
-
-    def _compute_multi_loss(
-        self,
-        video_embeddings: torch.Tensor,
-        text_embeddings: torch.Tensor,
-        siglip_batch: Optional[dict] = None,
-        caption_input_ids: Optional[torch.Tensor] = None,
-        caption_labels: Optional[torch.Tensor] = None,
-        caption_attention_mask: Optional[torch.Tensor] = None,
-        vision_features: Optional[torch.Tensor] = None,
-        caption_texts: Optional[List[str]] = None,
-        is_first_batch: bool = False,
-        dataset: Optional[Any] = None,
-    ) -> Tuple[torch.Tensor, Dict[str, float]]:
-        """
-        Compute combined loss from all registered losses.
-
-        Args:
-            video_embeddings: [B, D] pooled video embeddings for contrastive loss
-            text_embeddings: [B, D] text embeddings for contrastive loss
-            siglip_batch: SigLIP batch with multi-positive data
-            caption_input_ids: [B, L-1] input tokens for captioning (shifted)
-            caption_labels: [B, L-1] target tokens for captioning (shifted, -100 for padding)
-            caption_attention_mask: [B, L-1] attention mask for decoder (1=attend, 0=ignore)
-            vision_features: [B, N, D] pre-pooled vision features for cross-attention
-
-        Returns:
-            total_loss: Combined weighted loss
-            loss_breakdown: Dict of individual loss values for logging
-        """
-        total_loss = video_embeddings.new_tensor(0.0)
-        loss_breakdown: Dict[str, float] = {}
-
-        for loss_name, loss_fn in self.loss_fns.items():
-            weight = self.loss_weights.get(loss_name, 1.0)
-            if weight <= 0:
-                continue
-
-            loss_val = video_embeddings.new_tensor(0.0)
-
-            # Contrastive losses (siglip, clip, etc.)
-            if loss_name.startswith("siglip") or loss_name in ("clip", "contrastive"):
-                if siglip_batch and self.siglip_active:
-                    # Use SigLIP batch for multi-positive
-                    loss_val = self._compute_siglip_pairwise_loss(
-                        video_embeddings=video_embeddings,
-                        siglip_batch=siglip_batch,
-                    )
-                else:
-                    loss_val = loss_fn.run(
-                        video_features=video_embeddings,
-                        text_features=text_embeddings,
-                        log_temp=self.log_temp,
-                    )
-
-            # LocCa captioning loss
-            elif loss_name.startswith("locca") and self.locca_decoder is not None:
-                if caption_input_ids is not None and caption_labels is not None and vision_features is not None:
-                    # Ensure vision_features is 3D [B, L_vision, D] for cross-attention
-                    # If it's 2D [B, D] (pooled embedding), unsqueeze to [B, 1, D]
-                    vis_feats = vision_features
-                    if vis_feats.ndim == 2:
-                        vis_feats = vis_feats.unsqueeze(1)  # [B, D] -> [B, 1, D]
-
-                    # Forward through LocCa decoder with causal masking
-                    # The decoder applies causal self-attention mask internally
-                    # We pass attention_mask to handle padding in the input
-                    logits = self.locca_decoder(
-                        input_ids=caption_input_ids,
-                        vision_features=vis_feats,
-                        attention_mask=caption_attention_mask,
-                    )
-                    # LocCa loss computes cross-entropy, ignoring -100 in labels
-                    loss_val = loss_fn.loss_type(
-                        logits=logits,
-                        targets=caption_labels,
-                    )
-
-                    # Debug output for first batch: show target caption and model prediction
-                    if is_first_batch and self.config.is_ref_device:
-                        print("\n" + "=" * 80)
-                        print("[LocCa Debug - First Batch]")
-                        print("=" * 80)
-
-                        # Get tokenizer for decoding
-                        tokenizer = None
-                        if dataset is not None and hasattr(dataset, "tokenizer"):
-                            tokenizer = dataset.tokenizer
-
-                        # Show first sample's target caption
-                        if caption_texts and len(caption_texts) > 0:
-                            print(f"\n[Target Caption (Video 0)]:")
-                            print(f"  {caption_texts[0][:200]}..." if len(caption_texts[0]) > 200 else f"  {caption_texts[0]}")
-
-                        # Get input and predicted token IDs for comparison
-                        input_ids_sample = caption_input_ids[0]  # [seq_len]
-                        label_ids_sample = caption_labels[0]  # [seq_len] - the target (shifted by 1)
-                        pred_tokens = logits[0].argmax(dim=-1)  # [seq_len]
-
-                        # Check if prediction matches input (accidental copy bug)
-                        match_input = (pred_tokens == input_ids_sample).float().mean().item()
-                        match_labels = (pred_tokens == label_ids_sample).float().mean().item()
-
-                        print(f"\n[Token ID Comparison (first 20 tokens)]:")
-                        print(f"  Input IDs:     {input_ids_sample[:20].tolist()}")
-                        print(f"  Label IDs:     {label_ids_sample[:20].tolist()}")
-                        print(f"  Predicted IDs: {pred_tokens[:20].tolist()}")
-                        print(f"\n  Match with input: {match_input*100:.1f}%")
-                        print(f"  Match with labels: {match_labels*100:.1f}%")
-
-                        # Show logit statistics (should be ~uniform for random model)
-                        logit_sample = logits[0, :10]  # First 10 positions
-                        print(f"\n[Logit Stats (first 10 positions)]:")
-                        print(f"  Mean: {logit_sample.mean().item():.4f}")
-                        print(f"  Std:  {logit_sample.std().item():.4f}")
-                        print(f"  Min:  {logit_sample.min().item():.4f}")
-                        print(f"  Max:  {logit_sample.max().item():.4f}")
-
-                        # Decode model's prediction
-                        if tokenizer is not None:
-                            try:
-                                pred_text = tokenizer.decode(pred_tokens, skip_special_tokens=True)
-                                print(f"\n[Model Prediction (greedy decode)]:")
-                                print(f"  {pred_text[:200]}..." if len(pred_text) > 200 else f"  {pred_text}")
-                            except Exception as e:
-                                print(f"\n[Model Prediction decode error]: {e}")
-
-                        # Show shapes
-                        print(f"\n[Shapes]:")
-                        print(f"  caption_input_ids: {caption_input_ids.shape}")
-                        print(f"  caption_labels: {caption_labels.shape}")
-                        print(f"  vision_features: {vis_feats.shape}")
-                        print(f"  logits: {logits.shape}")
-                        print(f"  loss: {loss_val.item():.4f} (random chance ~10.3)")
-                        print("=" * 80 + "\n")
-
-            # Add weighted loss
-            weighted_loss = loss_val * weight
-            total_loss = total_loss + weighted_loss
-            loss_breakdown[f"loss/{loss_name}"] = float(loss_val.detach().item())
-
-        return total_loss, loss_breakdown
-
-    def _compute_siglip_pairwise_loss(
-        self,
-        video_embeddings: torch.Tensor,
-        siglip_batch: dict,
-    ) -> torch.Tensor:
-        """Compute SigLIP loss using the unified SigLIPLoss from contrastive.py."""
-        siglip_text = self.text_encoder(
-            siglip_batch["input_ids"],
-            siglip_batch["attention_mask"],
-        )
-        pos_mask: torch.Tensor = siglip_batch["positive_mask"]
-        if pos_mask.sum().item() == 0:
-            return video_embeddings.sum() * 0.0
-
-        pos_weights: Optional[torch.Tensor] = siglip_batch.get("positive_weights")
-        weights = pos_weights if self.siglip_severity_weighting else None
-        if weights is not None:
-            weights = torch.nan_to_num(weights, nan=0.0, posinf=0.0, neginf=0.0).float()
-            # Clamp weights to prevent extreme gradients (max 10x - proven stable in vvuet8ad)
-            weights = torch.clamp(weights, min=0.1, max=10.0)
-
-        # Use unified SigLIPLoss via loss_fn (handles DDP, normalization, etc.)
-        return self.loss_fn.run(
-            video_features=video_embeddings,
-            text_features=siglip_text,
-            log_temp=self.log_temp,
-            pos_mask=pos_mask,
-            pos_weights=weights,
-        )
-
-    def _compute_siglip_infonce_loss(
-        self,
-        video_embeddings: torch.Tensor,
-        text_embeddings: torch.Tensor,
-        siglip_batch: dict,
-    ) -> torch.Tensor:
-        logits = self._scaled_logits(video_embeddings, text_embeddings)
-
-        pos_mask: torch.Tensor = siglip_batch["positive_mask"]
-        pos_weights: Optional[torch.Tensor] = siglip_batch.get("positive_weights")
-        weights = pos_weights if self.siglip_severity_weighting else None
-        if weights is not None:
-            weights = torch.nan_to_num(weights, nan=0.0, posinf=0.0, neginf=0.0).float()
-            # Clamp weights to prevent extreme gradients (max 10x - proven stable in vvuet8ad)
-            weights = torch.clamp(weights, min=0.1, max=10.0)
-
-        if pos_mask.sum().item() == 0:
-            return logits.sum() * 0.0
-
-        return self.multi_positive_loss(logits, pos_mask, weights)
-
-    def _compute_tree_losses(
-        self,
-        video_embeddings: torch.Tensor,
-        main_structure: Optional[torch.Tensor],
-        tree_logits: Optional[torch.Tensor] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
-        zero = video_embeddings.new_tensor(0.0)
-        if (
-            main_structure is None
-            or self.tree_loss_weight <= 0
-            or main_structure.numel() == 0
-        ):
-            return zero, zero, None, None
-
-        valid_mask = main_structure >= 0
-        if not valid_mask.any():
-            return zero, zero, None, None
-
-        if tree_logits is None:
-            return zero, zero, None, None
-
-        logits = tree_logits[valid_mask].view(-1).float()
-        logits = torch.nan_to_num(logits, nan=0.0, posinf=0.0, neginf=0.0)
-        logits = torch.clamp(logits, -20.0, 20.0)
-        targets = main_structure[valid_mask].float()
-        targets = torch.nan_to_num(targets, nan=0.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
-        tree_loss = self.tree_loss_fn(logits, targets)
-        if not torch.isfinite(tree_loss):
-            if getattr(self.config, "is_ref_device", False):
-                print(
-                    "[TreeLoss] Non-finite tree loss detected; skipping this batch.",
-                )
-            return zero, zero, None, None
-        probs = torch.sigmoid(logits.detach())
-        targets_detached = targets.detach()
-        return tree_loss, tree_loss * self.tree_loss_weight, probs, targets_detached
-
-    @staticmethod
-    def _binary_auc(
-        probs: Optional[torch.Tensor],
-        targets: Optional[torch.Tensor],
-    ) -> Optional[float]:
-        if probs is None or targets is None:
-            return None
-        if probs.numel() == 0 or targets.numel() == 0:
-            return None
-        targets = targets.float()
-        pos = (targets > 0.5).sum()
-        neg = targets.numel() - pos
-        if pos == 0 or neg == 0:
-            return None
-        sorted_indices = torch.argsort(probs)
-        sorted_targets = targets[sorted_indices]
-        neg_cumulative = torch.cumsum((sorted_targets <= 0.5).float(), dim=0)
-        auc = neg_cumulative[sorted_targets > 0.5].sum() / (pos * neg)
-        return float(auc.item())
-
-    @staticmethod
-    def _grad_norm_from_params(params: list[torch.nn.Parameter]) -> float:
-        total = 0.0
-        for p in params:
-            if p.grad is None:
-                continue
-            param_norm = p.grad.detach().data.norm(2)
-            total += float(param_norm.item() ** 2)
-        return total ** 0.5
-
     def _preprocess_inputs(self, batch: dict) -> tuple[dict, list[str]]:
         """
         Moves raw batch data (videos, texts) to GPU and returns a dictionary suitable
@@ -1673,214 +1185,277 @@ class VideoContrastiveLearningRunner:
         :param batch: Dictionary containing 'videos', 'encoded_texts', and 'paths'.
         :return: (step_inputs, paths_or_sids)
         """
-        main_structure = batch.get("main_structure")
-        if main_structure is not None:
-            main_structure = main_structure.to(self.device)
-        return {
-            "videos": batch["videos"].to(self.device).float(),
-            "input_ids": batch["encoded_texts"]["input_ids"].to(self.device),
-            "attention_mask": batch["encoded_texts"]["attention_mask"].to(self.device),
-            "main_structure": main_structure,
-        }, batch["paths"]
+        videos_tensor = batch["videos"].to(self.device).float()
+        torch.nan_to_num_(videos_tensor, nan=0.0, posinf=0.0, neginf=0.0)
+
+        step_inputs: Dict[str, Any] = {"videos": videos_tensor}
+
+        encoded_texts = batch.get("encoded_texts")
+        if encoded_texts is not None:
+            step_inputs["input_ids"] = encoded_texts["input_ids"].to(self.device)
+            step_inputs["attention_mask"] = encoded_texts["attention_mask"].to(self.device)
+
+        positive_mask = batch.get("positive_mask")
+        if positive_mask is not None:
+            step_inputs["positive_mask"] = positive_mask.to(self.device)
+        positive_weights = batch.get("positive_weights")
+        if positive_weights is not None:
+            step_inputs["positive_weights"] = positive_weights.to(self.device)
+
+        if "text_ids" in batch:
+            step_inputs["text_ids"] = batch["text_ids"]
+        if "text_metadata" in batch:
+            step_inputs["text_metadata"] = batch["text_metadata"]
+
+        return step_inputs, batch.get("paths", [])
 
     def _train_step(
         self,
         videos: torch.Tensor,
-        input_ids: torch.Tensor,
-        attention_mask: torch.Tensor,
-        main_structure: Optional[torch.Tensor] = None,
-        siglip_batch: Optional[dict] = None,
-        video_paths: Optional[List[str]] = None,
-        dataset: Optional[Any] = None,
-        is_first_batch: bool = False,
+        input_ids: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        positive_mask: Optional[torch.Tensor] = None,
+        positive_weights: Optional[torch.Tensor] = None,
+        text_ids: Optional[List[str]] = None,
+        text_metadata: Optional[List[Dict[str, Any]]] = None,
+        debug_sample_info: Optional[List[Dict[str, Any]]] = None,
     ) -> tuple[dict, dict]:
-        """
-        One training iteration: forward → backward → (optional) clip → optimizer step →
-        metric computation.
-
-        Returns
-        -------
-        batch_metrics : dict
-            loss, LR(s), temperature, alignment score, embedding norms …
-        embeddings : dict
-            'video_embeddings' | 'text_embeddings' (fp32, detached only at caller's request)
-        """
-        self.optimizer.zero_grad(set_to_none=True)
+        if self.step % self.config.gradient_accumulation_steps == 0:
+            self.optimizer.zero_grad(set_to_none=True)
 
         amp_enabled: bool = self.scaler is not None
-        autocast_ctx: torch.amp.autocast = torch.amp.autocast(
-            device_type="cuda",
-            enabled=amp_enabled,
-        )
-
-        need_tree_logits = (
-            main_structure is not None
-            and self.tree_loss_weight > 0
-        )
-
-        # Prepare caption tokens for LocCa if enabled (concatenates ALL positive texts per video)
-        caption_input_ids, caption_labels, caption_attention_mask, caption_texts = self._prepare_caption_tokens(
-            siglip_batch=siglip_batch,
-            video_paths=video_paths,
-            dataset=dataset,
-        )
+        autocast_ctx: torch.amp.autocast = torch.amp.autocast(device_type="cuda", enabled=amp_enabled)
 
         with autocast_ctx:
-            video_output = self.video_encoder(
-                videos,
-                compute_tree_logits=need_tree_logits,
-                return_vision_features=self._locca_enabled,
-            )
-            video_emb = video_output["video_embeds"]
-            tree_logits = video_output.get("tree_logits")
-            vision_features = video_output.get("vision_features")  # For LocCa cross-attention
-            text_emb = self.text_encoder(input_ids, attention_mask)
-
-            # Debug logging for numerical stability monitoring
-            if self.debug_numerical and self.step % self._debug_log_interval == 0:
-                v_min, v_max = video_emb.min().item(), video_emb.max().item()
-                v_mean, v_std = video_emb.mean().item(), video_emb.std().item()
-                t_min, t_max = text_emb.min().item(), text_emb.max().item()
-                t_mean, t_std = text_emb.mean().item(), text_emb.std().item()
-                temp_val = torch.exp(-self.log_temp).item()
-                print(
-                    f"[Debug Step {self.step}] "
-                    f"video_emb: min={v_min:.4f} max={v_max:.4f} mean={v_mean:.4f} std={v_std:.4f} | "
-                    f"text_emb: min={t_min:.4f} max={t_max:.4f} mean={t_mean:.4f} std={t_std:.4f} | "
-                    f"temp={temp_val:.4f}"
-                )
-
-            if (
-                not torch.isfinite(video_emb).all()
-                or not torch.isfinite(text_emb).all()
-            ):
-                diagnostics = {
-                    "video_has_nan": bool(torch.isnan(video_emb).any().item()),
-                    "video_has_inf": bool(torch.isinf(video_emb).any().item()),
-                    "text_has_nan": bool(torch.isnan(text_emb).any().item()),
-                    "text_has_inf": bool(torch.isinf(text_emb).any().item()),
-                    "step": self.step,
-                }
-                raise NonFiniteLossError(
-                    "Non-finite encoder outputs",
-                    diagnostics=diagnostics,
-                )
-            # Multi-loss computation when loss_fns is configured
-            loss_breakdown: Dict[str, float] = {}
-            if self.loss_fns:
-                contrastive_loss, loss_breakdown = self._compute_multi_loss(
-                    video_embeddings=video_emb,
-                    text_embeddings=text_emb,
-                    siglip_batch=siglip_batch,
-                    caption_input_ids=caption_input_ids,
-                    caption_labels=caption_labels,
-                    caption_attention_mask=caption_attention_mask,
-                    vision_features=vision_features,
-                    caption_texts=caption_texts,
-                    is_first_batch=is_first_batch,
-                    dataset=dataset,
-                )
-            elif siglip_batch and self.siglip_active:
-                if self.use_siglip_pairwise:  # All siglip* losses use unified SigLIPLoss
-                    contrastive_loss = self._compute_siglip_pairwise_loss(
-                        video_embeddings=video_emb,
-                        siglip_batch=siglip_batch,
-                    )
-                elif self.use_siglip_infonce and self.multi_positive_loss is not None:
-                    contrastive_loss = self._compute_siglip_infonce_loss(
-                        video_embeddings=video_emb,
-                        text_embeddings=text_emb,
-                        siglip_batch=siglip_batch,
-                    )
-                else:
-                    contrastive_loss = self.loss_fn.run(
-                        video_features=video_emb,
-                        text_features=text_emb,
-                        log_temp=self.log_temp,
-                    )
+            video_emb = self.video_encoder(videos)
+            if input_ids is not None and attention_mask is not None:
+                text_emb = self.text_encoder(input_ids, attention_mask)
             else:
-                contrastive_loss = self.loss_fn.run(
+                text_emb = None
+
+        video_emb = torch.nan_to_num(video_emb, nan=0.0, posinf=1e4, neginf=-1e4)
+        if text_emb is not None:
+            text_emb = torch.nan_to_num(text_emb, nan=0.0, posinf=1e4, neginf=-1e4)
+
+        if not torch.isfinite(video_emb).all() or (text_emb is not None and not torch.isfinite(text_emb).all()):
+            if self.config.is_ref_device:
+                print("Warning: non-finite embeddings detected; sanitising to zeros")
+            video_emb = torch.zeros_like(video_emb)
+            if text_emb is not None:
+                text_emb = torch.zeros_like(text_emb)
+
+        video_emb = video_emb.float()
+        if text_emb is not None:
+            text_emb = text_emb.float()
+
+        logits_matrix = None
+        pos_weights_for_loss = None
+        alignment_logprob_tensor: Optional[torch.Tensor] = None
+        alignment_prob_tensor: Optional[torch.Tensor] = None
+        alignment_cosine_tensor: Optional[torch.Tensor] = None
+        if positive_mask is not None and text_emb is not None:
+            targets = positive_mask
+            video_norm = F.normalize(video_emb, dim=1)
+            text_norm = F.normalize(text_emb, dim=1)
+            similarity = torch.matmul(video_norm, text_norm.t())
+            gated = similarity * torch.sigmoid(similarity)
+            temp_value = torch.exp(self.log_temp.float())
+            logits_matrix = gated / temp_value
+
+            if self.siglip_abnormal_margin > 0 and text_metadata:
+                abnormal_vector = logits_matrix.new_tensor(
+                    [
+                        1.0 if (meta and meta.get("is_abnormal", False)) else 0.0
+                        for meta in text_metadata
+                    ]
+                )
+                if torch.count_nonzero(abnormal_vector) > 0:
+                    logits_matrix = logits_matrix + abnormal_vector.unsqueeze(0) * self.siglip_abnormal_margin
+
+            if self.use_weighted_siglip and self.weighted_siglip_loss is not None:
+                pos_weights_for_loss = targets
+                if positive_weights is not None and torch.count_nonzero(positive_weights) > 0:
+                    pos_weights_for_loss = targets * positive_weights
+                clip_loss = self.weighted_siglip_loss(
+                    logits=logits_matrix,
+                    positive_weights=pos_weights_for_loss,
+                )
+            else:
+                negative_weight = getattr(self.config, 'siglip_negative_weight', 1.0)
+                weight_matrix = torch.full_like(targets, negative_weight)
+                if positive_weights is not None:
+                    weight_matrix = torch.where(targets > 0, positive_weights, weight_matrix)
+
+                loss_sum = F.binary_cross_entropy_with_logits(
+                    logits_matrix,
+                    targets,
+                    weight=weight_matrix,
+                    reduction='sum'
+                )
+                denom = max(1.0, float(targets.sum().item()))
+                clip_loss = loss_sum / denom
+
+            with torch.no_grad():
+                logprob_matrix = F.log_softmax(logits_matrix, dim=1)
+                pos_weight_mask = None
+                if positive_weights is not None and torch.count_nonzero(positive_weights) > 0:
+                    pos_weight_mask = positive_weights * targets
+                else:
+                    pos_weight_mask = targets
+                row_sums = pos_weight_mask.sum(dim=1)
+                valid_rows = row_sums > 0
+                if valid_rows.any():
+                    normalized_weights = torch.zeros_like(pos_weight_mask)
+                    normalized_weights[valid_rows] = pos_weight_mask[valid_rows] / row_sums[valid_rows].unsqueeze(1)
+                    alignment_logprob_tensor = (logprob_matrix * normalized_weights).sum(dim=1)[valid_rows].mean()
+                    alignment_prob_tensor = alignment_logprob_tensor.exp()
+                pos_logits = similarity[targets.bool()]
+                if pos_logits.numel() > 0:
+                    alignment_cosine_tensor = pos_logits.mean()
+        else:
+            with autocast_ctx:
+                clip_loss = self.loss_fn.run(
                     video_features=video_emb,
                     text_features=text_emb,
                     log_temp=self.log_temp,
                 )
-            tree_loss_raw, tree_loss_weighted, tree_probs, tree_targets = self._compute_tree_losses(
-                video_embeddings=video_emb,
-                main_structure=main_structure,
-                tree_logits=tree_logits,
+            if text_emb is not None:
+                video_norm = F.normalize(video_emb, dim=1)
+                text_norm = F.normalize(text_emb, dim=1)
+                similarity = torch.matmul(video_norm, text_norm.t())
+                alignment_cosine_tensor = torch.diag(similarity).mean()
+                use_siglip = "siglip" in str(getattr(self.config, "loss_name", "")).lower()
+                logits_base = similarity
+                if use_siglip:
+                    logits_base = similarity * torch.sigmoid(similarity)
+                tau_value = torch.exp(self.log_temp.float())
+                logits_matrix = logits_base / tau_value
+                logprob_matrix = F.log_softmax(logits_matrix, dim=1)
+                alignment_logprob_tensor = torch.diag(logprob_matrix).mean()
+                alignment_prob_tensor = alignment_logprob_tensor.exp()
+
+        debug_enabled = self.config.is_ref_device and self._should_debug_batch()
+        debug_payload: Dict[str, Any] = {}
+        if debug_enabled:
+            with torch.no_grad():
+                if positive_mask is not None and text_emb is not None and logits_matrix is not None:
+                    pos_logits = logits_matrix[positive_mask.bool()]
+                    neg_logits = logits_matrix[~positive_mask.bool()]
+                    debug_payload.update(
+                        {
+                            'pos_logit_mean': float(pos_logits.mean().item()) if pos_logits.numel() > 0 else 0.0,
+                            'pos_logit_std': float(pos_logits.std(unbiased=False).item()) if pos_logits.numel() > 1 else 0.0,
+                            'neg_logit_mean': float(neg_logits.mean().item()) if neg_logits.numel() > 0 else 0.0,
+                            'neg_logit_std': float(neg_logits.std(unbiased=False).item()) if neg_logits.numel() > 1 else 0.0,
+                            'clip_loss': float(clip_loss.detach().item()),
+                            'temperature': float(torch.exp(self.log_temp.float()).item()),
+                            'batch_size': int(video_emb.size(0)),
+                        }
+                    )
+                    if positive_weights is not None:
+                        pos_weight_vals = positive_weights[positive_mask.bool()]
+                        if pos_weight_vals.numel() > 0:
+                            debug_payload.update(
+                                {
+                                    'pos_weight_mean': float(pos_weight_vals.mean().item()),
+                                    'pos_weight_min': float(pos_weight_vals.min().item()),
+                                    'pos_weight_max': float(pos_weight_vals.max().item()),
+                                }
+                            )
+                    debug_payload['neg_weight'] = float(getattr(self.config, 'siglip_negative_weight', 1.0))
+                else:
+                    sim_matrix = torch.matmul(
+                        F.normalize(video_emb.float(), dim=1),
+                        F.normalize(text_emb.float(), dim=1).t(),
+                    )
+                    diag = torch.diag(sim_matrix)
+                    off_diag = sim_matrix - torch.diag(diag)
+                    debug_payload.update({
+                        'diag_mean': float(diag.mean().item()),
+                        'diag_std': float(diag.std(unbiased=False).item()),
+                        'off_diag_mean': float(off_diag.mean().item()),
+                        'off_diag_std': float(off_diag.std(unbiased=False).item()),
+                        'clip_loss': float(clip_loss.detach().item()),
+                        'temperature': float(torch.exp(self.log_temp.float()).item()),
+                        'batch_size': int(video_emb.size(0)),
+                    })
+                if debug_sample_info:
+                    debug_payload['samples'] = debug_sample_info
+
+        total_loss = clip_loss
+
+        scaled_loss = total_loss / self.config.gradient_accumulation_steps
+
+        if amp_enabled:
+            self.scaler.scale(scaled_loss).backward()
+        else:
+            scaled_loss.backward()
+
+        max_norm = getattr(self.config, "max_grad_norm", 5.0)
+        grad_norms: Dict[str, float] = {}
+        should_log_gradients = False
+
+        if max_norm and (self.step + 1) % self.config.gradient_accumulation_steps == 0:
+            params = itertools.chain(
+                self.video_encoder.parameters(),
+                self.text_encoder.parameters(),
             )
-            loss = contrastive_loss + tree_loss_weighted
+            if amp_enabled:
+                self.scaler.unscale_(self.optimizer)
+            clip_grad_norm_(params, max_norm=max_norm)
+            if debug_enabled:
+                grad_norms = self._collect_grad_norms(self.optimizer.param_groups)
 
-            if not torch.isfinite(loss):
-                diagnostics = {
-                    "contrastive_loss": float(contrastive_loss.detach().float()),
-                    "tree_loss": float(tree_loss_weighted.detach().float()),
-                    "step": self.step,
+        if (self.step + 1) % self.config.gradient_accumulation_steps == 0:
+            if (
+                isinstance(self.log_temp, torch.nn.Parameter)
+                and self.log_temp.grad is not None
+                and torch.distributed.is_initialized()
+            ):
+                torch.distributed.all_reduce(self.log_temp.grad, op=torch.distributed.ReduceOp.AVG)
+
+            if amp_enabled:
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                self.optimizer.step()
+
+            if self.lr_scheduler and self.scheduler_per_iteration and self.step > 0:
+                self.lr_scheduler.step()
+
+            if debug_enabled:
+                lr_snapshot = {
+                    group.get('name', f'group_{idx}'): group['lr']
+                    for idx, group in enumerate(self.optimizer.param_groups)
                 }
-                raise NonFiniteLossError(
-                    "Detected non-finite loss before backward pass",
-                    diagnostics=diagnostics,
-                )
+                video_params = list(self.video_encoder.module.parameters()) if hasattr(self.video_encoder, 'module') else list(self.video_encoder.parameters())
+                text_params = list(self.text_encoder.module.parameters()) if hasattr(self.text_encoder, 'module') else list(self.text_encoder.parameters())
+                video_with_grad = sum(1 for p in video_params if p.grad is not None)
+                text_with_grad = sum(1 for p in text_params if p.grad is not None)
+                extra_counts = {
+                    'video_params_with_grad': video_with_grad,
+                    'text_params_with_grad': text_with_grad,
+                    'video_params_total': len(video_params),
+                    'text_params_total': len(text_params),
+                }
+                grad_payload = {
+                    'grad_norms': grad_norms,
+                    'lr': lr_snapshot,
+                }
+                if debug_sample_info:
+                    grad_payload['samples'] = debug_sample_info
+                grad_payload.update(extra_counts)
+                msg = {
+                    'step': int(self.step),
+                    **debug_payload,
+                    **grad_payload,
+                }
+                print(f"[SigLIP DEBUG] {msg}")
 
-        if amp_enabled:
-            self.scaler.scale(loss).backward()
-        else:
-            loss.backward()
-
-        video_params = [p for p in self.video_encoder.parameters() if p.requires_grad]
-        text_params = [p for p in self.text_encoder.parameters() if p.requires_grad]
-
-        if amp_enabled:
-            self.scaler.unscale_(self.optimizer)
-
-        video_grad_norm = self._grad_norm_from_params(video_params)
-        text_grad_norm = self._grad_norm_from_params(text_params)
-        grad_norm_val: float = (video_grad_norm ** 2 + text_grad_norm ** 2) ** 0.5
-
-        if (
-            self.video_max_grad_norm
-            and self.video_max_grad_norm > 0
-            and video_params
-        ):
-            clip_grad_norm_(video_params, max_norm=self.video_max_grad_norm)
-        if (
-            self.text_max_grad_norm
-            and self.text_max_grad_norm > 0
-            and text_params
-        ):
-            clip_grad_norm_(text_params, max_norm=self.text_max_grad_norm)
-
-        # Guard against NaN temperature (reset to default if corrupted)
-        if hasattr(self, "log_temp") and not torch.isfinite(self.log_temp):
-            print("[WARNING] log_temp became non-finite, resetting to default")
-            self.log_temp.data.fill_(math.log(0.07))
-            if self.log_temp.grad is not None:
-                self.log_temp.grad.zero_()
-
-        # Clip temperature gradient to prevent wild swings in logit scaling
-        # Tightened from ±0.1 to ±0.01 to prevent temperature explosion
-        if hasattr(self, "log_temp") and self.log_temp.grad is not None:
-            self.log_temp.grad.clamp_(-0.01, 0.01)
-
-        self._last_grad_norm = grad_norm_val
-        self._last_video_grad_norm = video_grad_norm
-        self._last_text_grad_norm = text_grad_norm
-
-        if amp_enabled:
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-        else:
-            self.optimizer.step()
-
-        if self.lr_scheduler and self.scheduler_per_iteration:
-            self.lr_scheduler.step()
 
         self.step += 1
 
-        if (
-            self.config.is_ref_device
-            and self.wandb_wrapper.is_initialized()
-        ):
+        if self.config.is_ref_device and self.wandb_wrapper.is_initialized():
             log_gradient_norms(
                 model=self.video_encoder,
                 wandb_wrapper=self.wandb_wrapper,
@@ -1892,65 +1467,85 @@ class VideoContrastiveLearningRunner:
                 prefix="train/text_encoder/",
             )
 
-        # ------------------------------------------------------------------
-        # 6. metrics (no_grad)
-        # ------------------------------------------------------------------
         with torch.no_grad():
             video_fp32 = video_emb.float()
-            text_fp32  = text_emb.float()
+            if text_emb is not None:
+                text_fp32 = text_emb.float()
+                embedding_norms = compute_embedding_norms(video_fp32, text_fp32)
+                if positive_mask is not None:
+                    if alignment_cosine_tensor is None:
+                        video_norm = F.normalize(video_fp32, dim=1)
+                        text_norm = F.normalize(text_fp32, dim=1)
+                        cos_matrix = torch.matmul(video_norm, text_norm.t())
+                        pos_cos = cos_matrix[positive_mask.bool()]
+                        if pos_cos.numel() > 0:
+                            alignment_cosine_tensor = pos_cos.mean()
+                    if alignment_prob_tensor is None and logits_matrix is not None:
+                        logprob_matrix = F.log_softmax(logits_matrix.detach(), dim=1)
+                        if positive_weights is not None and torch.count_nonzero(positive_weights) > 0:
+                            pos_weight_mask = positive_weights * positive_mask
+                        else:
+                            pos_weight_mask = positive_mask
+                        row_sums = pos_weight_mask.sum(dim=1)
+                        valid_rows = row_sums > 0
+                        if valid_rows.any():
+                            normalized_weights = torch.zeros_like(pos_weight_mask)
+                            normalized_weights[valid_rows] = pos_weight_mask[valid_rows] / row_sums[valid_rows].unsqueeze(1)
+                            alignment_logprob_tensor = (logprob_matrix * normalized_weights).sum(dim=1)[valid_rows].mean()
+                            alignment_prob_tensor = alignment_logprob_tensor.exp()
+                else:
+                    if alignment_cosine_tensor is None:
+                        video_norm = F.normalize(video_fp32, dim=1)
+                        text_norm = F.normalize(text_fp32, dim=1)
+                        similarity = torch.matmul(video_norm, text_norm.t())
+                        alignment_cosine_tensor = torch.diag(similarity).mean()
+                    if alignment_prob_tensor is None and logits_matrix is not None:
+                        logprob_matrix = F.log_softmax(logits_matrix.detach(), dim=1)
+                        alignment_logprob_tensor = torch.diag(logprob_matrix).mean()
+                        alignment_prob_tensor = alignment_logprob_tensor.exp()
+            else:
+                text_fp32 = torch.empty(0, device=video_fp32.device)
+                embedding_norms = {}
 
-            embedding_norms  = compute_embedding_norms(video_fp32, text_fp32)
-            alignment_score  = compute_alignment_score(video_fp32, text_fp32)
-
-        # LR per param‑group (torch‑native ≥ 2.2 supports names)
         lr_metrics = {
             f"lr/{pg.get('name', str(i))}": pg["lr"]
             for i, pg in enumerate(self.optimizer.param_groups)
         }
 
-        tree_auc = self._binary_auc(tree_probs, tree_targets)
-
-        effective_logit_scale = float(
-            torch.exp(
-                torch.clamp((-self.log_temp).detach().float(), max=math.log(100.0))
-            ).item()
-        )
-
+        alignment_score_scalar: float
         batch_metrics = {
-            "loss": loss.detach().item(),
-            "contrastive_loss": contrastive_loss.detach().item(),
-            "tree_loss": tree_loss_raw.detach().item(),
-            "tree_auc": tree_auc if tree_auc is not None else float("nan"),
+            "loss": total_loss.detach().item(),
             "temperature": self.log_temp.exp().detach().item(),
-            "logit_scale": effective_logit_scale,
-            "grad_norm": grad_norm_val,
-            "grad_norm/video": video_grad_norm,
-            "grad_norm/text": text_grad_norm,
-            "alignment_score": alignment_score,
+            "contrastive/clip_loss": clip_loss.detach().item(),
             **embedding_norms,
             **lr_metrics,
-            **loss_breakdown,  # Individual loss values from multi-loss
         }
+        if alignment_prob_tensor is not None:
+            batch_metrics["alignment_score"] = float(alignment_prob_tensor.detach().item())
+            batch_metrics["alignment_logprob"] = float(alignment_logprob_tensor.detach().item())
+        else:
+            alignment_score_scalar = float(alignment_cosine_tensor.detach().item()) if alignment_cosine_tensor is not None else 0.0
+            batch_metrics["alignment_score"] = alignment_score_scalar
+        if alignment_cosine_tensor is not None:
+            batch_metrics["alignment_cosine"] = float(alignment_cosine_tensor.detach().item())
 
         embeddings = {
             "video_embeddings": video_fp32,
             "text_embeddings": text_fp32,
         }
-        if tree_logits is not None:
-            embeddings["tree_logits"] = tree_logits.detach().float()
 
         return batch_metrics, embeddings
 
     def _val_step(
         self,
         videos: torch.Tensor,
-        input_ids: torch.Tensor,
-        attention_mask: torch.Tensor,
-        main_structure: Optional[torch.Tensor] = None,
-        siglip_batch: Optional[dict] = None,
-        video_paths: Optional[List[str]] = None,
-        dataset: Optional[Any] = None,
-        is_first_batch: bool = False,
+        input_ids: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        positive_mask: Optional[torch.Tensor] = None,
+        positive_weights: Optional[torch.Tensor] = None,
+        text_ids: Optional[List[str]] = None,
+        text_metadata: Optional[List[Dict[str, Any]]] = None,
+        debug_sample_info: Optional[List[Dict[str, Any]]] = None,
     ) -> tuple[dict, dict]:
         """
         Performs a single validation step (forward pass + metric computation).
@@ -1958,109 +1553,172 @@ class VideoContrastiveLearningRunner:
         :param videos: Tensor of shape [B, num_clips, T, H, W, C].
         :param input_ids: Encoded text token IDs.
         :param attention_mask: Attention mask for text.
-        :param video_paths: Optional list of video file paths for LocCa caption building.
-        :param dataset: Optional dataset reference for LocCa caption building.
-        :param is_first_batch: Whether this is the first batch (for debug output).
         :return: (batch_metrics, embeddings) similar to _train_step, but without backprop.
         """
-        need_tree_logits = (
-            main_structure is not None
-            and self.tree_loss_weight > 0
-        )
-
-        # Prepare caption tokens for LocCa if enabled
-        caption_input_ids, caption_labels, caption_attention_mask, caption_texts = self._prepare_caption_tokens(
-            siglip_batch=siglip_batch,
-            video_paths=video_paths,
-            dataset=dataset,
-        )
-
+        alignment_logprob_tensor: Optional[torch.Tensor] = None
+        alignment_prob_tensor: Optional[torch.Tensor] = None
+        alignment_cosine_tensor: Optional[torch.Tensor] = None
         with torch.no_grad():
             with torch.amp.autocast("cuda"):
-                video_output = self.video_encoder(
-                    videos,
-                    compute_tree_logits=need_tree_logits,
-                    return_vision_features=self._locca_enabled,
-                )
-                video_features = video_output["video_embeds"]
-                tree_logits = video_output.get("tree_logits")
-                vision_features = video_output.get("vision_features")  # For LocCa cross-attention
-                text_features = self.text_encoder(input_ids, attention_mask)
-                # Multi-loss computation when loss_fns is configured
-                loss_breakdown: Dict[str, float] = {}
-                if self.loss_fns:
-                    contrastive_loss, loss_breakdown = self._compute_multi_loss(
-                        video_embeddings=video_features,
-                        text_embeddings=text_features,
-                        siglip_batch=siglip_batch,
-                        vision_features=vision_features,
-                        caption_input_ids=caption_input_ids,
-                        caption_labels=caption_labels,
-                        caption_attention_mask=caption_attention_mask,
-                        caption_texts=caption_texts,
-                        dataset=dataset,
-                        is_first_batch=is_first_batch,
-                    )
-                elif siglip_batch and self.siglip_active:
-                    if self.use_siglip_pairwise:  # All siglip* losses use unified SigLIPLoss
-                        contrastive_loss = self._compute_siglip_pairwise_loss(
-                            video_embeddings=video_features,
-                            siglip_batch=siglip_batch,
-                        )
-                    elif self.use_siglip_infonce and self.multi_positive_loss is not None:
-                        contrastive_loss = self._compute_siglip_infonce_loss(
-                            video_embeddings=video_features,
-                            text_embeddings=text_features,
-                            siglip_batch=siglip_batch,
-                        )
-                    else:
-                        contrastive_loss = self.loss_fn.run(
-                            video_features=video_features,
-                            text_features=text_features,
-                            log_temp=self.log_temp
-                        )
+                video_features = self.video_encoder(videos)
+                if input_ids is not None and attention_mask is not None:
+                    text_features = self.text_encoder(input_ids, attention_mask)
                 else:
-                    contrastive_loss = self.loss_fn.run(
-                        video_features=video_features,
-                        text_features=text_features,
-                        log_temp=self.log_temp
+                    text_features = None
+
+            video_features = torch.nan_to_num(video_features, nan=0.0, posinf=1e4, neginf=-1e4)
+            if text_features is not None:
+                text_features = torch.nan_to_num(text_features, nan=0.0, posinf=1e4, neginf=-1e4)
+
+            if not torch.isfinite(video_features).all() or (text_features is not None and not torch.isfinite(text_features).all()):
+                if self.config.is_ref_device:
+                    print("Warning: non-finite validation embeddings detected; sanitising to zeros")
+                video_features = torch.zeros_like(video_features)
+                if text_features is not None:
+                    text_features = torch.zeros_like(text_features)
+
+            video_features = video_features.float()
+            if text_features is not None:
+                text_features = text_features.float()
+
+            logits_matrix = None
+            if positive_mask is not None and text_features is not None:
+                targets = positive_mask
+                video_norm = F.normalize(video_features, dim=1)
+                text_norm = F.normalize(text_features, dim=1)
+                similarity = torch.matmul(video_norm, text_norm.t())
+                gated = similarity * torch.sigmoid(similarity)
+                temp_value = torch.exp(self.log_temp.float())
+                logits_matrix = gated / temp_value
+
+                if self.siglip_abnormal_margin > 0 and text_metadata:
+                    abnormal_vector = logits_matrix.new_tensor(
+                        [
+                            1.0 if (meta and meta.get("is_abnormal", False)) else 0.0
+                            for meta in text_metadata
+                        ]
                     )
-                tree_loss_raw, tree_loss_weighted, tree_probs, tree_targets = self._compute_tree_losses(
-                    video_embeddings=video_features,
-                    main_structure=main_structure,
-                    tree_logits=tree_logits,
+                    if torch.count_nonzero(abnormal_vector) > 0:
+                        logits_matrix = logits_matrix + abnormal_vector.unsqueeze(0) * self.siglip_abnormal_margin
+
+                if self.use_weighted_siglip and self.weighted_siglip_loss is not None:
+                    pos_weights = targets
+                    if positive_weights is not None and torch.count_nonzero(positive_weights) > 0:
+                        pos_weights = targets * positive_weights
+                    loss = self.weighted_siglip_loss(
+                        logits=logits_matrix,
+                        positive_weights=pos_weights,
+                    )
+                else:
+                    negative_weight = getattr(self.config, 'siglip_negative_weight', 1.0)
+                    weight_matrix = torch.full_like(targets, negative_weight)
+                    if positive_weights is not None:
+                        weight_matrix = torch.where(targets > 0, positive_weights, weight_matrix)
+                    loss_sum = F.binary_cross_entropy_with_logits(
+                        logits_matrix,
+                        targets,
+                        weight=weight_matrix,
+                        reduction='sum'
+                    )
+                    denom = max(1.0, float(targets.sum().item()))
+                    loss = loss_sum / denom
+
+                logprob_matrix = F.log_softmax(logits_matrix, dim=1)
+                if positive_weights is not None and torch.count_nonzero(positive_weights) > 0:
+                    pos_weight_mask = positive_weights * targets
+                else:
+                    pos_weight_mask = targets
+                row_sums = pos_weight_mask.sum(dim=1)
+                valid_rows = row_sums > 0
+                if valid_rows.any():
+                    normalized_weights = torch.zeros_like(pos_weight_mask)
+                    normalized_weights[valid_rows] = pos_weight_mask[valid_rows] / row_sums[valid_rows].unsqueeze(1)
+                    alignment_logprob_tensor = (logprob_matrix * normalized_weights).sum(dim=1)[valid_rows].mean()
+                    alignment_prob_tensor = alignment_logprob_tensor.exp()
+
+                pos_cos = similarity[targets.bool()]
+                if pos_cos.numel() > 0:
+                    alignment_cosine_tensor = pos_cos.mean()
+            else:
+                loss = self.loss_fn.run(
+                    video_features=video_features,
+                    text_features=text_features,
+                    log_temp=self.log_temp,
                 )
-                loss = contrastive_loss + tree_loss_weighted
+                if text_features is not None:
+                    video_norm = F.normalize(video_features, dim=1)
+                    text_norm = F.normalize(text_features, dim=1)
+                    similarity = torch.matmul(video_norm, text_norm.t())
+                    alignment_cosine_tensor = torch.diag(similarity).mean()
+                    use_siglip = "siglip" in str(getattr(self.config, "loss_name", "")).lower()
+                    logits_base = similarity
+                    if use_siglip:
+                        logits_base = similarity * torch.sigmoid(similarity)
+                    tau_value = torch.exp(self.log_temp.float())
+                    logits_matrix = logits_base / tau_value
+                    logprob_matrix = F.log_softmax(logits_matrix, dim=1)
+                    alignment_logprob_tensor = torch.diag(logprob_matrix).mean()
+                    alignment_prob_tensor = alignment_logprob_tensor.exp()
 
-            embedding_norms = compute_embedding_norms(video_features, text_features)
-            alignment_score = compute_alignment_score(video_features, text_features)
+            video_fp32 = video_features.float()
+            if text_features is not None:
+                text_fp32 = text_features.float()
+                embedding_norms = compute_embedding_norms(video_fp32, text_fp32)
+                if positive_mask is not None:
+                    if alignment_cosine_tensor is None:
+                        video_norm = F.normalize(video_fp32, dim=1)
+                        text_norm = F.normalize(text_fp32, dim=1)
+                        cos_matrix = torch.matmul(video_norm, text_norm.t())
+                        pos_cos = cos_matrix[positive_mask.bool()]
+                        if pos_cos.numel() > 0:
+                            alignment_cosine_tensor = pos_cos.mean()
+                    if alignment_prob_tensor is None and logits_matrix is not None:
+                        logprob_matrix = F.log_softmax(logits_matrix.detach(), dim=1)
+                        if positive_weights is not None and torch.count_nonzero(positive_weights) > 0:
+                            pos_weight_mask = positive_weights * positive_mask
+                        else:
+                            pos_weight_mask = positive_mask
+                        row_sums = pos_weight_mask.sum(dim=1)
+                        valid_rows = row_sums > 0
+                        if valid_rows.any():
+                            normalized_weights = torch.zeros_like(pos_weight_mask)
+                            normalized_weights[valid_rows] = pos_weight_mask[valid_rows] / row_sums[valid_rows].unsqueeze(1)
+                            alignment_logprob_tensor = (logprob_matrix * normalized_weights).sum(dim=1)[valid_rows].mean()
+                            alignment_prob_tensor = alignment_logprob_tensor.exp()
+                else:
+                    if alignment_cosine_tensor is None:
+                        video_norm = F.normalize(video_fp32, dim=1)
+                        text_norm = F.normalize(text_fp32, dim=1)
+                        similarity = torch.matmul(video_norm, text_norm.t())
+                        alignment_cosine_tensor = torch.diag(similarity).mean()
+                    if alignment_prob_tensor is None and logits_matrix is not None:
+                        logprob_matrix = F.log_softmax(logits_matrix.detach(), dim=1)
+                        alignment_logprob_tensor = torch.diag(logprob_matrix).mean()
+                        alignment_prob_tensor = alignment_logprob_tensor.exp()
+            else:
+                text_fp32 = torch.empty(0, device=video_fp32.device)
+                embedding_norms = {}
 
-        metrics = {"alignment_score": alignment_score, **embedding_norms}
-        tree_auc = self._binary_auc(tree_probs, tree_targets)
-
-        embeddings_out = {
-            "video_embeddings": video_features.float(),
-            "text_embeddings": text_features.float(),
-        }
-        if tree_logits is not None:
-            embeddings_out["tree_logits"] = tree_logits.float()
-        if vision_features is not None:
-            embeddings_out["vision_features"] = vision_features.float()
+        metrics: Dict[str, float] = {}
+        if alignment_prob_tensor is not None:
+            metrics["alignment_score"] = float(alignment_prob_tensor.detach().item())
+            metrics["alignment_logprob"] = float(alignment_logprob_tensor.detach().item())
+        else:
+            metrics["alignment_score"] = float(alignment_cosine_tensor.detach().item()) if alignment_cosine_tensor is not None else 0.0
+        if alignment_cosine_tensor is not None:
+            metrics["alignment_cosine"] = float(alignment_cosine_tensor.detach().item())
+        metrics.update(embedding_norms)
 
         return (
             {
-                "loss": loss.detach().item(),
-                "contrastive_loss": contrastive_loss.detach().item(),
-                "tree_loss": tree_loss_raw.detach().item(),
-                "tree_auc": tree_auc if tree_auc is not None else float("nan"),
+                "loss": torch.nan_to_num(loss, nan=0.0).detach().item(),
                 "temperature": self.log_temp.exp().detach().item(),
-                **{
-                    k: v.detach().item() if torch.is_tensor(v) else v
-                    for k, v in metrics.items()
-                },
-                **loss_breakdown,  # Individual loss values from multi-loss
+                **metrics,
             },
-            embeddings_out,
+            {
+                "video_embeddings": video_fp32,
+                "text_embeddings": text_fp32,
+            },
         )
 
     def validate(self):
@@ -2075,7 +1733,7 @@ class VideoContrastiveLearningRunner:
         Method for a dedicated inference.
         """
         # Load text embeddings tensor
-        text_embeddings: torch.Tensor = torch.load(self.config.text_embeddings_path, weights_only=True, map_location=torch.device(self.device))
+        text_embeddings: torch.Tensor = torch.load(self.config.text_embeddings_path, weights_only=False, map_location=torch.device(self.device))
         # Load metadata
         metadata: pd.DataFrame = pd.read_parquet(self.config.metadata_path)
         
@@ -2094,7 +1752,7 @@ class VideoContrastiveLearningRunner:
         ):
             with torch.no_grad():
                 with torch.amp.autocast("cuda"):
-                    video_embeddings = self.video_encoder(batch["videos"])["video_embeds"].float()
+                    video_embeddings = self.video_encoder(batch["videos"]).float()
                     
             similarity_matrix = torch.matmul(video_embeddings, text_embeddings.t())
             _, topk_indices = torch.topk(similarity_matrix, k=self.config.topk, dim=1)

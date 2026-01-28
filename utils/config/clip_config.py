@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional
+from typing import List, Optional
 from dataclasses import dataclass
 import os # Keep os import if used elsewhere, or remove if only for set_gpu_info_in_place
 
@@ -10,6 +10,8 @@ from utils.config.heartwise_config import HeartWiseConfig
 @ConfigRegistry.register("DeepCORO_clip")
 @ConfigRegistry.register("DeepCORO_clip_test")
 class ClipConfig(HeartWiseConfig):
+    # ===== FIELDS WITHOUT DEFAULTS (REQUIRED) =====
+    
     # Training parameters
     lr: float
     batch_size: int
@@ -41,6 +43,11 @@ class ClipConfig(HeartWiseConfig):
     num_heads: int
     aggregator_depth: int
     
+    # Video pooling configuration
+    video_pooling_mode: str  # 'mean', 'attention', or 'cls_token'
+    attention_pool_heads: int
+    attention_pool_dropout: float
+    
     # Optimization parameters
     optimizer: str
     scheduler_name: str
@@ -58,7 +65,7 @@ class ClipConfig(HeartWiseConfig):
     period: int
 
     # Loss and metrics parameters
-    loss_name: str  # Primary loss identifier
+    loss_name: str
     recall_k: List[int]
     ndcg_k: List[int]
 
@@ -71,60 +78,79 @@ class ClipConfig(HeartWiseConfig):
     save_best: str
     resume_training: bool
     checkpoint: Optional[str]
-
+    
     # Inference parameters
     topk: int
     text_embeddings_path: str
     metadata_path: str
     inference_results_path: str
 
-    # === Fields WITH defaults must come after fields WITHOUT defaults ===
+    # ===== FIELDS WITH DEFAULTS (OPTIONAL) =====
 
-    # Multi-loss configuration
-    loss_array: Optional[List[Dict[str, float]]] = None  # e.g. [{"siglip": 1.0}, {"locca_caption": 0.5}]
-
-    # LocCa Decoder parameters
-    locca_enabled: bool = False
-    locca_num_layers: int = 4
-    locca_d_model: int = 512
-    locca_num_heads: int = 8
-    locca_dropout: float = 0.1
-    locca_max_seq_len: int = 256
-
-    # Optional data parameters
-    data_mean: Optional[List[float]] = None
-    data_std: Optional[List[float]] = None
-
+    # Training parameter defaults
+    persistent_workers: bool = False  # Keep DataLoader workers alive
+    prefetch_factor: int = 2  # Number of batches to prefetch
+    
     # Optional parameters
     view_count: Optional[int] = None
-    video_max_grad_norm: Optional[float] = None
-    text_max_grad_norm: Optional[float] = None
 
-    # SigLIP parameters for multi-positive contrastive learning
-    siglip_texts_path: Optional[str] = None
-    siglip_max_positive_per_video: int = 8
-    siglip_negatives_per_video: int = 0
-    siglip_round_robin_sampling: bool = False
-    siglip_max_segments_per_video: int = 15
-    siglip_positive_severity_weights: Optional[Dict[str, float]] = None
-    siglip_enable_severity_weighting: bool = False
-    siglip_positive_loss_weight: float = 1.0
-    siglip_negative_loss_weight: float = 1.0
-    siglip_auto_positive_loss_weight: bool = False
+    # Encoder checkpoint path (optional)
+    encoder_path: Optional[str] = None  # Path to pretrained encoder checkpoint
 
-    # SigLIP entropy regularization (prevents embedding collapse)
-    siglip_entropy_regularization: bool = False
-    siglip_entropy_weight: float = 0.1
-    siglip_min_entropy_threshold: float = 2.0
+    # CLS token configuration
+    use_cls_token: bool = False
 
-    # Auxiliary losses
-    main_structure_loss_weight: float = 0.0
-    tree_loss_enabled: Optional[bool] = None
-    tree_loss_weight: Optional[float] = None
+    # RoPE configuration (optional with defaults)
+    use_rope: bool = False
+    rope_base: float = 10000.0
+    rope_temporal_scale: float = 1.0
+    rope_normalize_mode: str = "separate"  # "separate", "max", or "min"
+    
+    # Temperature scheduling parameters (optional with defaults)
+    temperature_schedule: str = "constant"  # "linear", "cosine", "exponential", or "constant"
+    temperature_start: float = 1.0  # Starting temperature for scheduling
+    temperature_end: float = 0.1  # Target temperature for scheduling
+    temperature_warmup_epochs: int = 0  # Number of epochs for temperature warmup
+    learnable_temperature: bool = False  # If True, temperature becomes trainable and schedule is ignored
+
+    # Video freeze scheduling parameters (optional with defaults)
+    video_freeze_schedule: str = "constant"  # "linear", "step", or "constant"  
+    video_freeze_start: float = 0.95  # Starting freeze ratio for scheduling
+    video_freeze_end: float = 0.0  # Target freeze ratio for scheduling
+    video_freeze_warmup_epochs: int = 0  # Number of epochs for freeze warmup
+    
+    # Text freeze scheduling parameters (optional with defaults)
+    text_freeze_schedule: str = "constant"  # "linear", "cosine", "step", or "constant"
+    text_freeze_start: float = 0.95  # Starting freeze ratio for text encoder
+    text_freeze_end: float = 0.7  # Target freeze ratio for text encoder
+    text_freeze_warmup_epochs: int = 0  # Number of epochs for text freeze warmup
 
     # Device and distributed info are now inherited from HeartWiseConfig
-    # No local definition of device, world_size, is_ref_device,
+    # No local definition of device, world_size, is_ref_device, 
     # __post_init__ for device setup, or set_gpu_info_in_place needed here.
+
+    # SigLIP dataset manifests (optional)
+    siglip_texts_path: Optional[str] = None
+    siglip_edges_path: Optional[str] = None
+    siglip_video_id_column: str = "video_id"
+    siglip_text_id_column: str = "text_id"
+    siglip_prompt_text_column: str = "prompt_text"
+    siglip_prompt_type_column: str = "prompt_type"
+    siglip_soft_weight_column: str = "soft_weight"
+    siglip_edge_weight_column: str = "weight"
+    siglip_negatives_per_video: int = 0
+    siglip_negative_weight: float = 1.0
+    siglip_pos_samples_per_video: int = 1
+    siglip_round_robin_sampling: bool = False
+    siglip_debug_batches: int = 0
+    siglip_debug_every: int = 0
+    siglip_debug_sample_count: int = 3
+    siglip_use_weighted_loss: bool = False
+    siglip_abnormal_margin: float = 0.0
+    siglip_use_class_aware_sampler: bool = False
+    siglip_abnormal_ratio: float = 0.5
+    siglip_sampler_seed: int = 42
+    early_stop_patience: int = 0
 
     def __post_init__(self):
         # Set default values for list fields

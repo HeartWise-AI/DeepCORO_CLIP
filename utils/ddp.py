@@ -1,4 +1,3 @@
-import datetime
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as MP
@@ -22,60 +21,42 @@ class DistributedUtils:
         return dist.is_initialized()
 
     @staticmethod
-    def get_world_size() -> int:
-        if not dist.is_initialized():
-            return 1
-        return dist.get_world_size()
-
-    @staticmethod
-    def get_rank() -> int:
-        if not dist.is_initialized():
-            return 0
-        return dist.get_rank()
-
-    @staticmethod
-    def get_local_rank() -> int:
-        if not dist.is_initialized():
-            return 0
-        if "LOCAL_RANK" in os.environ:
-            return int(os.environ["LOCAL_RANK"])
-        if torch.cuda.is_available():
-            device_count = torch.cuda.device_count()
-            if device_count > 0:
-                return dist.get_rank() % device_count
-        return 0
-
-    @staticmethod
     def ddp_setup(gpu_id: int, world_size: int):
-        # Use gloo backend for CPU
+        """Initialise the default process group with a robust rank/device mapping."""
+        # Resolve ranks from the launcher when available. torchrun exports both
+        # LOCAL_RANK (device index on the node) and RANK (global process id).
+        env_local_rank = os.environ.get("LOCAL_RANK")
+        env_rank = os.environ.get("RANK")
+
+        if env_local_rank is not None:
+            local_rank = int(env_local_rank)
+        elif isinstance(gpu_id, int):
+            local_rank = gpu_id
+        else:
+            local_rank = 0
+
+        if env_rank is not None:
+            rank = int(env_rank)
+        elif isinstance(gpu_id, int):
+            rank = gpu_id
+        else:
+            rank = 0
+
+        # Use gloo backend when CUDA is not available, otherwise NCCL.
         backend = 'gloo'
-        rank = int(os.environ.get("RANK", gpu_id))
-        print(f"[DDP Setup] rank={rank}, local_gpu={gpu_id}, world_size={world_size}")
-        init_kwargs = {
-            "backend": backend,
-            "init_method": 'env://',
-            "world_size": world_size,
-            "rank": rank,
-        }
-        
-        # Only set CUDA device if CUDA is available
+
         if torch.cuda.is_available():
-            torch.cuda.set_device(gpu_id)
+            torch.cuda.set_device(local_rank)
             backend = 'nccl'
-            init_kwargs["backend"] = backend
-            # Set device_id for PyTorch 2.x+ to avoid "devices unknown" warning in barriers
-            try:
-                from packaging.version import Version
-                if Version(torch.__version__) >= Version("2.0"):
-                    init_kwargs["device_id"] = torch.device(f"cuda:{gpu_id}")
-            except ImportError:
-                pass
-            print(f"Using CUDA device {gpu_id}")
-        
-        # Initialize process group with extended timeout for large models
-        # Default NCCL timeout is 30 minutes, but we set 60 minutes for safety
-        init_kwargs["timeout"] = datetime.timedelta(minutes=60)
-        DistributedUtils.dist.init_process_group(**init_kwargs)
+            print(f"Using CUDA device {local_rank} for global rank {rank}")
+
+        # Initialise the process group using the resolved rank information.
+        DistributedUtils.dist.init_process_group(
+            backend=backend,
+            init_method='env://',
+            world_size=world_size,
+            rank=rank
+        )
         
         
     @staticmethod
@@ -88,13 +69,13 @@ class DistributedUtils:
 
     @staticmethod
     def sync_process_group(
-        world_size: int, 
+        world_size: int,
         device_ids: int
     ):
         """
         Synchronize the process group across all devices.
         """
-        if world_size > 1:
+        if world_size > 1 and dist.is_initialized():
             torch.distributed.barrier()
     
     @staticmethod

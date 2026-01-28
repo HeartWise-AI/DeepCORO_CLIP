@@ -9,7 +9,7 @@ from typing import Optional, Dict,  Callable
 
 from tqdm import tqdm
 from torch.optim import Optimizer
-from torch.amp.grad_scaler import GradScaler
+from torch.amp import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
 from collections import defaultdict

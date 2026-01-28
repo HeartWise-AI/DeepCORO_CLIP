@@ -16,7 +16,7 @@ text_encoder: TextEncoder = ModelRegistry.get(
 text_encoder.to(device)
 
 checkpoint_path = "outputs/dev_deep_coro_clip_single_video/mvit_pretrained_mvit_b84_f16_AdamW_lr6.1605e-05_20250225-113553_jb9rgjv9/checkpoints/best_epoch.pt"
-checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
+checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
 text_encoder.load_state_dict(checkpoint["text_encoder"])
 text_encoder.eval()
 

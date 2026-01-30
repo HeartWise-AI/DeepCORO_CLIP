@@ -1,0 +1,96 @@
+pipeline_project: DeepCORO_clip
+base_checkpoint_path: outputs
+run_mode: train
+epochs: 30
+seed: 42
+name: dev_deep_coro_clip_single_video_siglip
+project: dev_deep_coro_clip_single_video
+entity: mhi_ai
+tag: mvit_pretrained
+use_wandb: true
+device: 0
+world_size: 1
+is_ref_device: true
+lr: 2.0e-05
+batch_size: 20
+num_workers: 10
+debug: false
+temperature: 0.08703471467769354
+max_grad_norm: 1.0
+video_max_grad_norm: 1.0
+text_max_grad_norm: 1.0
+data_filename: output_dataset/siglip_generated/videos.csv
+root: .
+target_label: null
+datapoint_loc_label: FileName
+frames: 16
+stride: 1
+multi_video: false
+num_videos: 1
+groupby_column: StudyInstanceUID
+shuffle_videos: true
+aggregate_videos_tokens: false
+per_video_pool: false
+model_name: mvit
+pretrained: true
+video_freeze_ratio: 0.8006794008069684
+text_freeze_ratio: 0.7464391999406222
+dropout: 0.11443597301670493
+num_heads: 16
+aggregator_depth: 1
+optimizer: AdamW
+scheduler_name: linear_warmup
+lr_step_period: 15
+factor: 0.14617805853947136
+video_weight_decay: 1.0931731551842769e-05
+text_weight_decay: 1.1105191010748157e-07
+gradient_accumulation_steps: 1
+num_warmup_percent: 0.1
+num_hard_restarts_cycles: 1
+warm_restart_tmult: 2
+use_amp: true
+period: 1
+loss_name: siglip_ddp
+recall_k:
+  - 1
+  - 5
+  - 10
+  - 50
+ndcg_k:
+  - 5
+rand_augment: true
+resize: 224
+apply_mask: false
+save_best: loss
+resume_training: false
+checkpoint: outputs/deepCORO_CLIP/DeepCORO_Clip_Sweep_Learnable_Temp_Full_mvit_b12_f16_RAdam_lr0.0001_20250114-190320_2o5xoevj/checkpoints/latest.pt
+topk: 5
+text_embeddings_path: /media/data1/datasets/ECG_Tokenizer/utils/inference/reports_embeddings.pt
+metadata_path: /media/data1/datasets/ECG_Tokenizer/utils/inference/reports_metadata.parquet
+inference_results_path: checkpoints/inference/
+data_mean:
+  - 105.67617
+  - 105.67617
+  - 105.67617
+data_std:
+  - 38.953922
+  - 38.953922
+  - 38.953922
+view_count: null
+siglip_texts_path: output_dataset/siglip_generated/texts.csv
+siglip_max_positive_per_video: 15
+siglip_negatives_per_video: 0
+siglip_round_robin_sampling: true
+siglip_max_segments_per_video: 15
+siglip_positive_severity_weights:
+  normal: 0.75
+  mild: 1.5
+  moderate: 6.0
+  severe: 8.0
+  critical: 8.0
+  cto: 8.0
+siglip_enable_severity_weighting: true
+siglip_positive_loss_weight: 1.25
+siglip_negative_loss_weight: 1.0
+siglip_auto_positive_loss_weight: true
+main_structure_loss_weight: 0.2

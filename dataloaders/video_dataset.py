@@ -1,5 +1,4 @@
 import os
-import cv2
 import torch
 import random
 import numpy as np
@@ -18,7 +17,7 @@ from typing import (
 from utils.enums import RunMode
 from utils.seed import seed_worker
 from utils.ddp import DistributedUtils
-from utils.video import load_video, format_mean_std
+from utils.video import load_video, format_mean_std, create_video_capture
 from utils.config.heartwise_config import HeartWiseConfig
 
 class VideoDataset(torch.utils.data.Dataset):
@@ -64,8 +63,8 @@ class VideoDataset(torch.utils.data.Dataset):
         self.mean: List[float] = format_mean_std(mean) if mean is not None else [0.485, 0.456, 0.406]
         self.std: List[float] = format_mean_std(std) if std is not None else [0.229, 0.224, 0.225]
         self.normalize: bool = normalize
-        self.rand_augment: bool = rand_augment if split == RunMode.TRAIN else False
-        self.stride: int = np.random.randint(1, stride + 1) if stride > 1 else 1 if split == RunMode.TRAIN else stride
+        self.rand_augment: bool = rand_augment
+        self.stride: int = stride
         
         # Define X3D model specific parameters (requirements)
         self.x3d_default_params = {
@@ -241,10 +240,14 @@ class VideoDataset(torch.utils.data.Dataset):
                 valid_group = True
                 for fname in group_fnames:
                     try:
-                        cap = cv2.VideoCapture(fname)
-                        if not cap.isOpened():
+                        cap = create_video_capture(fname)
+                        if cap is None:
                             raise ValueError(f"Unable to open video {fname}")
-                        cap.release()
+                        try:
+                            if not cap.isOpened():
+                                raise ValueError(f"Unable to open video {fname}")
+                        finally:
+                            cap.release()
                     except Exception as e:
                         print(f"Warning: Failed to load video {fname}: {str(e)}")
                         self.failed_videos.append((fname, str(e)))
@@ -255,10 +258,14 @@ class VideoDataset(torch.utils.data.Dataset):
         else:
             for idx, fname in enumerate(self.fnames):
                 try:
-                    cap = cv2.VideoCapture(fname)
-                    if not cap.isOpened():
+                    cap = create_video_capture(fname)
+                    if cap is None:
                         raise ValueError(f"Unable to open video {fname}")
-                    cap.release()
+                    try:
+                        if not cap.isOpened():
+                            raise ValueError(f"Unable to open video {fname}")
+                    finally:
+                        cap.release()
                     valid_indices.append(idx)
                 except Exception as e:
                     print(f"Warning: Failed to load video {fname}: {str(e)}")

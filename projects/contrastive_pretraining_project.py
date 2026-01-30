@@ -3,7 +3,7 @@ from typing import Any
 
 import torch
 import torch.nn as nn
-from torch.amp.grad_scaler import GradScaler
+from torch.amp import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
 
@@ -65,10 +65,10 @@ class ContrastivePretrainingProject(BaseProject):
             split="val", 
             mean=mean.tolist(),
             std=std.tolist(),
-            shuffle=False,
+            shuffle=False,  # IMPORTANT: Never shuffle validation
             num_replicas=self.config.world_size,
             rank=self.config.device,
-            drop_last=False,
+            drop_last=False,  # IMPORTANT: Keep all validation samples
         )
 
         # Create models
@@ -84,6 +84,15 @@ class ContrastivePretrainingProject(BaseProject):
             dropout=self.config.dropout,
             num_heads=self.config.num_heads,
             aggregator_depth=self.config.aggregator_depth,
+            token_pooling_mode=getattr(self.config, 'video_pooling_mode', 'mean'),
+            attention_pool_heads=getattr(self.config, 'attention_pool_heads', 8),
+            attention_pool_dropout=getattr(self.config, 'attention_pool_dropout', 0.1),
+            use_cls_token=getattr(self.config, 'use_cls_token', False),
+            # RoPE parameters
+            use_rope=getattr(self.config, 'use_rope', False),
+            rope_base=getattr(self.config, 'rope_base', 10000.0),
+            rope_temporal_scale=getattr(self.config, 'rope_temporal_scale', 1.0),
+            rope_normalize_mode=getattr(self.config, 'rope_normalize_mode', 'separate'),
         )
         video_encoder = video_encoder.to(self.config.device).float()
 
@@ -124,12 +133,6 @@ class ContrastivePretrainingProject(BaseProject):
                 'weight_decay': self.config.video_weight_decay
             },
             {
-                'params': video_encoder.module.aggregator.parameters(),  # Multihead attention aggregator
-                'lr': self.config.lr * 2.0,  # Higher learning rate for aggregator
-                'name': 'video_aggregator',
-                'weight_decay': self.config.video_weight_decay
-            },
-            {
                 'params': text_encoder.module.parameters(),  # Entire text encoder
                 'lr': 0.00002,  # Lower learning rate for text encoder
                 'name': 'text_encoder',
@@ -141,6 +144,39 @@ class ContrastivePretrainingProject(BaseProject):
                 'name': 'temperature'
             }
         ]
+
+        insert_idx = 1
+
+        attention_pool_params = [
+            p for p in getattr(video_encoder.module, 'attention_pool', nn.Identity()).parameters()
+            if p.requires_grad
+        ]
+        if attention_pool_params:
+            param_groups.insert(
+                insert_idx,
+                {
+                    'params': attention_pool_params,
+                    'lr': self.config.lr * 2.0,
+                    'name': 'video_attention_pool',
+                    'weight_decay': self.config.video_weight_decay
+                }
+            )
+            insert_idx += 1
+
+        aggregator_params = [
+            p for p in getattr(video_encoder.module, 'aggregator', nn.Identity()).parameters()
+            if p.requires_grad
+        ]
+        if aggregator_params:
+            param_groups.insert(
+                insert_idx,
+                {
+                    'params': aggregator_params,
+                    'lr': self.config.lr * 2.0,  # Higher learning rate for aggregator
+                    'name': 'video_aggregator',
+                    'weight_decay': self.config.video_weight_decay
+                }
+            )
 
         # Include the temperature parameter in the optimizer
         optimizer_class: torch.optim.Optimizer = getattr(torch.optim, self.config.optimizer)
@@ -162,7 +198,7 @@ class ContrastivePretrainingProject(BaseProject):
             warm_restart_tmult=self.config.warm_restart_tmult,
         )
 
-        scaler: GradScaler = GradScaler() if self.config.use_amp else None
+        scaler: GradScaler = GradScaler('cuda') if self.config.use_amp else None
 
         # Create loss function
         loss_fn: Loss = Loss(
@@ -230,6 +266,14 @@ class ContrastivePretrainingProject(BaseProject):
             dropout=self.config.dropout,
             num_heads=self.config.num_heads,
             aggregator_depth=self.config.aggregator_depth,
+            token_pooling_mode=getattr(self.config, 'video_pooling_mode', 'mean'),
+            attention_pool_heads=getattr(self.config, 'attention_pool_heads', 8),
+            attention_pool_dropout=getattr(self.config, 'attention_pool_dropout', 0.1),
+            # RoPE parameters
+            use_rope=getattr(self.config, 'use_rope', False),
+            rope_base=getattr(self.config, 'rope_base', 10000.0),
+            rope_temporal_scale=getattr(self.config, 'rope_temporal_scale', 1.0),
+            rope_normalize_mode=getattr(self.config, 'rope_normalize_mode', 'separate'),
         )        
         video_encoder = video_encoder.to(self.config.device).float()
         
@@ -301,4 +345,3 @@ class ContrastivePretrainingProject(BaseProject):
             raise ValueError(
                 f"Invalid run mode: {self.config.run_mode}, must be one of {RunMode.TRAIN} or {RunMode.INFERENCE}"
             )
-

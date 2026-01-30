@@ -8,7 +8,7 @@ import wandb
 import torch
 import torch.nn as nn
 from datetime import datetime
-from typing import Any, Dict, Optional, List, Tuple
+from typing import Any, Dict, Optional, List, Tuple, Set
 from PIL import Image
 import numpy as np
 import tempfile
@@ -18,7 +18,7 @@ import subprocess
 
 from utils.wandb_wrapper import WandbWrapper
 from utils.config.heartwise_config import HeartWiseConfig
-from utils.video import convert_video_for_wandb, cleanup_temp_video
+from utils.video import convert_video_for_wandb, cleanup_temp_video, get_ffmpeg_environment
 from dataloaders.video_clip_dataset import VideoClipDataset
 
 class WandbLogger:
@@ -324,18 +324,16 @@ class WandbLogger:
 
                 wandb.log(
                     {
-                        f"{scenario}/qualitative/good_retrieval_epoch_{epoch}_{i}": wandb.Video(
+                        f"{scenario}/qualitative/good_retrieval_{i}": wandb.Video(
                             mp4_path,
                             caption=(
-                                f"Good {scenario} Retrieval {i+1} "
+                                f"Good {scenario} Retrieval {i+1} @ Epoch {epoch} "
                                 f"(Sim: {report_data['similarity_score']:.3f})"
                             ),
                         ),
-                        f"{scenario}/qualitative/good_reports_epoch_{epoch}_{i}": wandb.Html(report_html),
-                        f"{scenario}/qualitative/good_similarity_epoch_{epoch}_{i}": report_data["similarity_score"],
-                        "epoch": epoch,
-                    },
-                    step=epoch,
+                        f"{scenario}/qualitative/good_reports_{i}": wandb.Html(report_html),
+                        f"{scenario}/qualitative/good_similarity_{i}": report_data["similarity_score"],
+                    }
                 )
 
             except Exception as e:
@@ -366,18 +364,16 @@ class WandbLogger:
 
                 wandb.log(
                     {
-                        f"{scenario}/qualitative/bad_retrieval_epoch_{epoch}_{i}": wandb.Video(
+                        f"{scenario}/qualitative/bad_retrieval_{i}": wandb.Video(
                             mp4_path,
                             caption=(
-                                f"Bad {scenario} Retrieval {i+1} "
+                                f"Bad {scenario} Retrieval {i+1} @ Epoch {epoch} "
                                 f"(Sim: {report_data['similarity_score']:.3f})"
                             ),
                         ),
-                        f"{scenario}/qualitative/bad_reports_epoch_{epoch}_{i}": wandb.Html(report_html),
-                        f"{scenario}/qualitative/bad_similarity_epoch_{epoch}_{i}": report_data["similarity_score"],
-                        "epoch": epoch,
-                    },
-                    step=epoch,
+                        f"{scenario}/qualitative/bad_reports_{i}": wandb.Html(report_html),
+                        f"{scenario}/qualitative/bad_similarity_{i}": report_data["similarity_score"],
+                    }
                 )
 
             except Exception as e:
@@ -418,7 +414,13 @@ def convert_video_for_wandb(video_path: str, max_frames: int = 50, fps: int = 10
             "-frames:v", str(max_frames), # Limit total frames
             "-c:v", "libx264", "-y", temp_path # Removed -preset fast
         ]
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        subprocess.run(
+            cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+            env=get_ffmpeg_environment(),
+        )
         return temp_path, True
     except subprocess.CalledProcessError as e:
         print(f"Warning: Failed to convert video {video_path} with ffmpeg: {e.stderr}")
@@ -627,7 +629,9 @@ def log_best_worst_retrievals(
     ground_truth_indices: torch.Tensor,
     epoch: int, 
     wandb_wrapper: WandbWrapper,
-    dataset_obj: VideoClipDataset 
+    dataset_obj: VideoClipDataset,
+    step: Optional[int] = None,
+    ground_truth_texts: Optional[List[List[str]]] = None
 ) -> None:
     """Log best and worst retrievals to wandb.
     
@@ -639,6 +643,7 @@ def log_best_worst_retrievals(
         ground_truth_indices: Tensor mapping each video to its ground truth text index
         epoch: Current epoch number
         dataset_obj: The VideoClipDataset instance for multi-video path resolution.
+        step: Optional wandb step to use (if None, uses epoch)
     """
     if not wandb_wrapper.is_initialized(): # Check if wandb is initialized
         return
@@ -646,7 +651,7 @@ def log_best_worst_retrievals(
     # Find best and worst retrievals based on maximum similarity scores for each video
     max_scores_per_video, _ = similarity_matrix.max(dim=1)
     
-    num_examples_to_log = 2  # Log top 2 best and top 2 worst
+    num_examples_to_log = 5  # Log top 5 best and top 5 worst
     
     # Ensure k is not greater than the number of videos
     k_actual = min(num_examples_to_log, max_scores_per_video.numel())
@@ -658,11 +663,15 @@ def log_best_worst_retrievals(
     best_scores, best_indices = torch.topk(max_scores_per_video, k=k_actual)
     worst_scores, worst_indices = torch.topk(max_scores_per_video, k=k_actual, largest=False)
     
-    # Process and log best retrievals
+    combined_log: Dict[str, Any] = {}
+    temp_files_to_cleanup: List[str] = []
+    _ = step  # Retained for API compatibility; wandb will auto-increment step
+
+    # Process and prepare best retrievals
     for i in range(best_indices.numel()):
         video_idx = best_indices[i].item()
         score = best_scores[i].item()
-        _log_retrieval(
+        log_entries, temp_files = _log_retrieval(
             idx=video_idx,
             score=score,
             similarity_matrix=similarity_matrix,
@@ -671,15 +680,18 @@ def log_best_worst_retrievals(
             ground_truth_indices=ground_truth_indices,
             epoch=epoch,
             is_best=True,
-            wandb_wrapper=wandb_wrapper,
-            dataset_obj=dataset_obj
+            dataset_obj=dataset_obj,
+            ground_truth_texts=ground_truth_texts,
+            example_idx=i
         )
+        combined_log.update(log_entries)
+        temp_files_to_cleanup.extend(temp_files)
 
-    # Process and log worst retrievals
+    # Process and prepare worst retrievals
     for i in range(worst_indices.numel()):
         video_idx = worst_indices[i].item()
         score = worst_scores[i].item()
-        _log_retrieval(
+        log_entries, temp_files = _log_retrieval(
             idx=video_idx,
             score=score,
             similarity_matrix=similarity_matrix,
@@ -688,9 +700,18 @@ def log_best_worst_retrievals(
             ground_truth_indices=ground_truth_indices,
             epoch=epoch,
             is_best=False,
-            wandb_wrapper=wandb_wrapper,
-            dataset_obj=dataset_obj
+            dataset_obj=dataset_obj,
+            ground_truth_texts=ground_truth_texts,
+            example_idx=i
         )
+        combined_log.update(log_entries)
+        temp_files_to_cleanup.extend(temp_files)
+
+    if combined_log:
+        wandb_wrapper.log(combined_log)
+
+    for temp_path in temp_files_to_cleanup:
+        cleanup_temp_video(temp_path)
 
 def _log_retrieval(
     idx: int,
@@ -701,10 +722,11 @@ def _log_retrieval(
     ground_truth_indices: torch.Tensor,
     epoch: int,
     is_best: bool,
-    wandb_wrapper: WandbWrapper,
-    dataset_obj: VideoClipDataset
-) -> None:
-    """Helper function to log a single retrieval example."""
+    dataset_obj: VideoClipDataset,
+    ground_truth_texts: Optional[List[List[str]]] = None,
+    example_idx: int = 0
+) -> tuple[Dict[str, Any], List[str]]:
+    """Prepare wandb payload for a single retrieval example."""
     top_5_text_indices = torch.argsort(similarity_matrix[idx], descending=True)[:5]
     predicted_texts = [unique_texts[j.item()] for j in top_5_text_indices]
     
@@ -730,41 +752,58 @@ def _log_retrieval(
         else:
             print(f"Warning: Single video path '{single_video_path}' does not exist. Skipping video log.")
 
+    log_entries: Dict[str, Any] = {}
+    temp_files: List[str] = []
+
     if video_to_log_path:
         prefix = "good" if is_best else "bad"
-        wandb_wrapper.log({
-            f"qualitative/{prefix}_retrieval": wandb.Video(
-                video_to_log_path,
-                caption=f"Sim: {score:.3f} (Identifier: {all_paths[idx]})",
-                format="mp4"
-            ),
-            "epoch": epoch
-        })
-        
-        # Log text information
         predicted_html = "<br>".join(
             [f"{i+1}. {text}" for i, text in enumerate(predicted_texts)]
         )
-        gt_text_idx = ground_truth_indices[idx].item()
-        ground_truth_text_display = "N/A"
-        if 0 <= gt_text_idx < len(unique_texts):
-            ground_truth_text_display = unique_texts[gt_text_idx]
-        else:
-            print(f"Warning: Ground truth index {gt_text_idx} is out of bounds for unique_texts (len: {len(unique_texts)}). Using N/A.")
+        gt_display_lines: List[str] = []
+        if ground_truth_texts and idx < len(ground_truth_texts):
+            gt_display_lines = [text for text in ground_truth_texts[idx] if text]
+        if not gt_display_lines:
+            gt_text_idx = ground_truth_indices[idx].item()
+            if 0 <= gt_text_idx < len(unique_texts):
+                gt_display_lines = [unique_texts[gt_text_idx]]
+            else:
+                raise ValueError(
+                    "Ground truth index out of bounds while preparing qualitative log: "
+                    f"idx={gt_text_idx}, unique_texts={len(unique_texts)}"
+                )
+
+        ground_truth_block = "<br>".join(gt_display_lines)
 
         ground_truth_html = (
             f"<b>Identifier:</b> {all_paths[idx]}<br>"
-            f"<b>Ground Truth:</b> {ground_truth_text_display}<br>"
+            f"<b>Ground Truth:</b> {ground_truth_block}<br>"
             f"<b>Top 5 Predicted:</b><br>{predicted_html}"
         )
-        wandb.log({
-            f"qualitative/{prefix}_retrieval_text": wandb.Html(ground_truth_html),
-            "epoch": epoch
-        })
-        
+
+        caption = f"Sim: {score:.3f} (Identifier: {all_paths[idx]})"
+        key_suffix = f"_{example_idx}"
+
+        log_entries[f"qualitative/{prefix}_retrieval{key_suffix}"] = wandb.Video(
+            video_to_log_path,
+            caption=caption,
+            format="mp4"
+        )
+        log_entries[f"qualitative/{prefix}_retrieval_text{key_suffix}"] = wandb.Html(ground_truth_html)
+
+        if example_idx == 0:
+            # Maintain backward-compatible keys for the top-ranked example
+            log_entries[f"qualitative/{prefix}_retrieval"] = wandb.Video(
+                video_to_log_path,
+                caption=caption,
+                format="mp4"
+            )
+            log_entries[f"qualitative/{prefix}_retrieval_text"] = wandb.Html(ground_truth_html)
+
         if is_temp_video:
-            cleanup_temp_video(video_to_log_path)
-    # else: (warnings for not logging video are handled above)
+            temp_files.append(video_to_log_path)
+
+    return log_entries, temp_files
 
 
 def _create_video_grid(video_paths: List[str], output_fps: int = 10, cell_resolution: Tuple[int, int] = (224, 224), grid_dim: Tuple[int, int] = (2,2)) -> Tuple[Optional[str], bool]:
@@ -873,7 +912,8 @@ def save_retrieval_results(
     report_to_global_index: Optional[Dict[str, int]],
     epoch: int,
     output_dir: str,
-    dataset_obj: VideoClipDataset
+    dataset_obj: VideoClipDataset,
+    ground_truth_index_sets: Optional[List[List[int]]] = None,
 ) -> None:
     """
     Save retrieval results to a CSV, showing top-5 predicted indices and their similarities
@@ -888,57 +928,101 @@ def save_retrieval_results(
 
     with open(val_csv_path, mode="w", newline="", encoding="utf-8") as csvfile:
         writer = csv.writer(csvfile)
-        
-        header_base = [
-            "ground_truth_idx",
-            "predicted_idx_1", "sim_1",
-            "predicted_idx_2", "sim_2",
-            "predicted_idx_3", "sim_3",
-            "predicted_idx_4", "sim_4",
-            "predicted_idx_5", "sim_5",
+
+        predicted_columns = [
+            col
+            for rank in range(1, 6)
+            for col in (f"predicted_idx_{rank}", f"sim_{rank}")
         ]
-        
-        header_prefix = []
+
+        header_prefix: List[str]
         if multi_video_mode:
             header_prefix = [actual_groupby_col_name, "VideoFileNames"]
         else:
             header_prefix = ["FileName"]
-            
-        writer.writerow(header_prefix + header_base)
+
+        header = header_prefix + [
+            "ground_truth_idx",
+            "ground_truth_indices",
+            "ground_truth_texts",
+        ] + predicted_columns
+        writer.writerow(header)
 
         for i, identifier in enumerate(all_identifiers):
-            # Use the minimum of 5 and the actual number of samples available
             k = min(5, similarity_matrix.shape[1])
-            top_k_sim_scores, top_k_text_indices = torch.topk(similarity_matrix[i], k=k)
+            top_k_sim_scores, top_k_text_indices = torch.topk(
+                similarity_matrix[i], k=k
+            )
             predicted_indices = [idx.item() for idx in top_k_text_indices]
             predicted_sims = [score.item() for score in top_k_sim_scores]
 
-            gt_text = all_ground_truth_reports[i]
-
-            if report_to_global_index is not None and gt_text in report_to_global_index:
-                gt_idx = report_to_global_index[gt_text]
-            else:
-                print(f"Warning: Ground truth text '{gt_text}' not found in report_to_global_index for identifier '{identifier}'. Using row index {i} as fallback gt_idx.")
-                gt_idx = i 
-
-            current_row_prefix_data = []
+            current_row_prefix_data: List[str] = []
             if multi_video_mode:
                 sid = identifier
                 video_files_list = dataset_obj.get_video_paths(sid)
                 video_files_str = ";".join(video_files_list) if video_files_list else ""
                 current_row_prefix_data.extend([sid, video_files_str])
             else:
-                filename = identifier
-                current_row_prefix_data.append(filename)
-            
-            row_data_suffix = [gt_idx]
+                current_row_prefix_data.append(identifier)
+
+            gt_text_raw = (
+                all_ground_truth_reports[i] if i < len(all_ground_truth_reports) else ""
+            )
+
+            gt_indices: List[int] = []
+            if ground_truth_index_sets and i < len(ground_truth_index_sets):
+                # Preserve order while removing duplicates
+                seen: Set[int] = set()
+                for idx in ground_truth_index_sets[i]:
+                    if idx is None:
+                        continue
+                    idx_int = int(idx)
+                    if idx_int >= 0 and idx_int not in seen:
+                        seen.add(idx_int)
+                        gt_indices.append(idx_int)
+
+            if not gt_indices and report_to_global_index is not None:
+                candidate_texts: List[str] = []
+                if gt_text_raw:
+                    candidate_texts.append(gt_text_raw)
+                    if "|" in gt_text_raw:
+                        candidate_texts.extend(
+                            [
+                                part.strip()
+                                for part in gt_text_raw.split("|")
+                                if part.strip()
+                            ]
+                        )
+                for candidate in candidate_texts:
+                    mapped_idx = report_to_global_index.get(candidate)
+                    if mapped_idx is not None:
+                        gt_indices.append(int(mapped_idx))
+                # Deduplicate while preserving order
+                seen = set()
+                gt_indices = [idx for idx in gt_indices if not (idx in seen or seen.add(idx))]
+
+            if not gt_indices:
+                raise ValueError(
+                    "Ground truth text not found in mapping for retrieval export: "
+                    f"identifier='{identifier}', text='{gt_text_raw}'"
+                )
+
+            primary_idx = gt_indices[0] if gt_indices else ""
+            gt_indices_str = "|".join(str(idx) for idx in gt_indices)
+            row_ground_truth_text = gt_text_raw
+
+            predicted_cells: List[str] = []
             for p_idx, p_sim in zip(predicted_indices, predicted_sims):
-                row_data_suffix.append(p_idx)
-                row_data_suffix.append(f"{p_sim:.4f}")
-            
-            num_prediction_pairs = (len(header_base) -1) // 2
-            while len(predicted_indices) < num_prediction_pairs:
-                row_data_suffix.extend(["", ""])
-                predicted_indices.append(-1) 
-            writer.writerow(current_row_prefix_data + row_data_suffix)
+                predicted_cells.append(p_idx)
+                predicted_cells.append(f"{p_sim:.4f}")
+
+            while len(predicted_cells) < len(predicted_columns):
+                predicted_cells.extend(["", ""])
+
+            row = (
+                current_row_prefix_data
+                + [primary_idx, gt_indices_str, row_ground_truth_text]
+                + predicted_cells
+            )
+            writer.writerow(row)
     print(f"Saved retrieval results to {val_csv_path}")

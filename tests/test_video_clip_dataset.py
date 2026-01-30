@@ -21,6 +21,14 @@ class TestVideoClipDataset(unittest.TestCase):
             os.path.join(self.temp_dir.name, f"video_{i}.mp4") 
             for i in range(5)
         ]
+        self.video_ids = [f"VID_{i}" for i in range(5)]
+        self.positive_text_ids = [
+            "TXT_A|TXT_B",
+            "TXT_B|TXT_C",
+            "TXT_C",
+            "TXT_A",
+            "TXT_B"
+        ]
         
         # Create dummy CSV data
         data = {
@@ -32,10 +40,38 @@ class TestVideoClipDataset(unittest.TestCase):
                 "This is report 3.",
                 "This is report 4.",
                 "This is report 5."
-            ]
+            ],
+            "video_id": self.video_ids,
+            "positive_text_ids": self.positive_text_ids,
         }
         df = pd.DataFrame(data)
         df.to_csv(self.temp_csv_path, sep="α", index=False)
+
+        # Create SigLIP texts CSV
+        self.siglip_texts_path = os.path.join(self.temp_dir.name, "siglip_texts.csv")
+        siglip_texts = pd.DataFrame(
+            {
+                "text_id": ["TXT_A", "TXT_B", "TXT_C"],
+                "prompt_text": [
+                    "Left coronary is normal.",
+                    "Right coronary has mild disease.",
+                    "Distal LAD shows severe stenosis."
+                ],
+                "prompt_type": ["lesion_atomic"] * 3,
+                "tags": [
+                    "category:normal|segment:left_main|tree:left",
+                    "category:mild|segment:prox_rca|tree:right",
+                    "category:severe|segment:dist_lad|tree:left"
+                ],
+                "tree": ["left", "right", "left"],
+                "category": ["normal", "mild", "severe"],
+                "segment": ["left_main", "prox_rca", "dist_lad"],
+                "bin": ["", "", ""],
+                "disease_severity": ["normal", "mild", "severe"],
+                "soft_weight": [1.0, 1.0, 1.0],
+            }
+        )
+        siglip_texts.to_csv(self.siglip_texts_path, index=False)
         
         # Default mean and std values for tests
         self.mean = [0.485, 0.456, 0.406]
@@ -47,10 +83,17 @@ class TestVideoClipDataset(unittest.TestCase):
         
         # Create a mock tokenizer with the necessary functionality
         mock_tokenizer_instance = MagicMock()
-        mock_tokenizer_instance.return_value = {
-            "input_ids": torch.zeros((512,), dtype=torch.long),
-            "attention_mask": torch.ones((512,), dtype=torch.long)
-        }
+        def fake_tokenizer(texts, **kwargs):
+            if isinstance(texts, (list, tuple)):
+                batch_size = len(texts)
+            else:
+                batch_size = 1
+            max_length = kwargs.get("max_length", 512)
+            return {
+                "input_ids": torch.zeros((batch_size, max_length), dtype=torch.long),
+                "attention_mask": torch.ones((batch_size, max_length), dtype=torch.long)
+            }
+        mock_tokenizer_instance.side_effect = fake_tokenizer
         self.mock_tokenizer.return_value = mock_tokenizer_instance
         
         # Mock video loading
@@ -194,7 +237,7 @@ class TestVideoClipDataset(unittest.TestCase):
         )
         
         # Test successful item retrieval
-        video, encoded, path = dataset[0]
+        video, encoded, path, tree_label = dataset[0]
         
         # Check the types and shapes
         self.assertIsInstance(video, np.ndarray)
@@ -203,6 +246,7 @@ class TestVideoClipDataset(unittest.TestCase):
         self.assertIn("input_ids", encoded)
         self.assertIn("attention_mask", encoded)
         self.assertIsInstance(path, str)
+        self.assertIsInstance(tree_label, int)
         
         # Test with MVit backbone (should force 16 frames)
         # Create a new dataset with mvit backbone
@@ -226,7 +270,7 @@ class TestVideoClipDataset(unittest.TestCase):
         self.mock_load_video.side_effect = mock_load_video_side_effect
         
         # Get item from MVit dataset, should receive 16 frames
-        video, _, _ = dataset_mvit[0]
+        video, _, _, _ = dataset_mvit[0]
         self.assertEqual(video.shape[0], 16)
         
         # Test the error case where video shape doesn't match backbone requirements
@@ -237,7 +281,7 @@ class TestVideoClipDataset(unittest.TestCase):
         # Should raise RuntimeError (not ValueError) because the VideoClipDataset.__getitem__ 
         # method wraps all exceptions in RuntimeError
         with self.assertRaises(RuntimeError):
-            video, _, _ = dataset_mvit[0]
+            video, _, _, _ = dataset_mvit[0]
     
     def test_utility_methods(self):
         """Test utility methods like get_reports and get_all_reports."""
@@ -264,6 +308,27 @@ class TestVideoClipDataset(unittest.TestCase):
         missing_report = dataset.get_reports(["nonexistent_path"])
         self.assertEqual(len(missing_report), 1)
         self.assertEqual(missing_report[0], "")
+
+    def test_siglip_report_fallback(self):
+        """Ensure SigLIP datasets supply meaningful reports when target_label is missing."""
+        dataset = VideoClipDataset(
+            root=self.temp_dir.name,
+            data_filename=os.path.basename(self.temp_csv_path),
+            split="train",
+            target_label=None,
+            datapoint_loc_label="target_video_path",
+            mean=self.mean,
+            std=self.std,
+            siglip_texts_path=self.siglip_texts_path,
+            siglip_max_positive_per_video=2,
+        )
+
+        reports = dataset.get_reports([dataset.fnames[0]])
+        self.assertIn("Left coronary is normal.", reports[0])
+
+        all_reports = dataset.get_all_reports()
+        self.assertEqual(len(all_reports), 2)
+        self.assertTrue(all(report for report in all_reports))
     
     def test_custom_collate_fn(self):
         """Test custom_collate_fn functionality."""
@@ -272,15 +337,17 @@ class TestVideoClipDataset(unittest.TestCase):
             (
                 np.zeros((32, 224, 224, 3), dtype=np.float32),
                 {"input_ids": torch.zeros(512), "attention_mask": torch.ones(512)},
-                "video1.mp4"
+                "video1.mp4",
+                0,
             ),
             (
                 np.ones((32, 224, 224, 3), dtype=np.float32),
                 {"input_ids": torch.ones(512), "attention_mask": torch.ones(512)},
-                "video2.mp4"
+                "video2.mp4",
+                1,
             )
         ]
-        
+
         # Apply collate function
         collated = custom_collate_fn(batch)
         
@@ -296,25 +363,29 @@ class TestVideoClipDataset(unittest.TestCase):
         self.assertIn("input_ids", collated["encoded_texts"])
         self.assertIn("attention_mask", collated["encoded_texts"])
         self.assertEqual(collated["encoded_texts"]["input_ids"].shape, torch.Size([2, 512]))
-        
+
         self.assertEqual(len(collated["paths"]), 2)
-        
+        self.assertTrue(torch.equal(collated["main_structure"], torch.tensor([0, 1])))
+
         # Test with None encoded_texts
         batch_with_none = [
             (
                 np.zeros((32, 224, 224, 3), dtype=np.float32),
                 None,
-                "video1.mp4"
+                "video1.mp4",
+                -1,
             ),
             (
                 np.ones((32, 224, 224, 3), dtype=np.float32),
                 None,
-                "video2.mp4"
+                "video2.mp4",
+                -1,
             )
         ]
-        
+
         collated = custom_collate_fn(batch_with_none)
         self.assertIsNone(collated["encoded_texts"])
+        self.assertIsNone(collated["main_structure"])
 
 
 if __name__ == '__main__':

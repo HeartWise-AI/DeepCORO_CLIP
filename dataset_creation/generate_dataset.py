@@ -15,7 +15,8 @@ import sys
 import os
 import argparse
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
+import re
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
@@ -66,6 +67,56 @@ LABELS_TO_VESSEL_NAMES = {
     "lima_or_svg_stenosis": "the LIMA or SVG graft",
 }
 
+SEGMENT_NAME_MAP = {
+    "left_main": "Left Main",
+    "prox_lad": "Proximal LAD",
+    "mid_lad": "Mid LAD",
+    "dist_lad": "Distal LAD",
+    "d1": "D1",
+    "d2": "D2",
+    "dist_lcx": "Distal LCx",
+    "prox_lcx": "Proximal LCx",
+    "lcx": "Proximal LCx",
+    "om1": "OM1",
+    "om2": "OM2",
+    "ramus": "Ramus",
+    "bx": "Ramus",
+    "pda": "PDA",
+    "posterolateral": "Posterolateral",
+    "prox_rca": "Proximal RCA",
+    "mid_rca": "Mid RCA",
+    "dist_rca": "Distal RCA",
+    "lvp": "LVP branch",
+}
+
+BIN_TO_SEVERITY = {
+    "<30": "mild",
+    "30-49": "mild",
+    "50-69": "moderate",
+    "70-89": "severe",
+    ">=90": "critical",
+    "100": "critical",
+    "cto": "critical",
+}
+
+BIN_TO_PERCENT = {
+    "<30": "<30%",
+    "30-49": "30-49%",
+    "50-69": "50-69%",
+    "70-89": "70-89%",
+    ">=90": ">=90%",
+    "100": "100%",
+    "cto": "100%",
+}
+
+SEVERITY_PHRASES = {
+    "normal": "normal segment",
+    "mild": "mild stenosis",
+    "moderate": "moderate stenosis",
+    "severe": "severe stenosis",
+    "critical": "critical stenosis",
+}
+
 RCA_VESSELS = ["prox_rca_stenosis", "mid_rca_stenosis", "dist_rca_stenosis"]
 NON_RCA_VESSELS = [
     "left_main_stenosis", "prox_lad_stenosis", "mid_lad_stenosis", "dist_lad_stenosis",
@@ -109,6 +160,186 @@ def format_calcification_value(c: str) -> str:
 def format_ifr_value(v: float) -> str:
     """Format IFR value into descriptive text."""
     return f"IFR {'normal' if v > 0.89 else 'abnormal'} (~{v:.2f})"
+
+
+def parse_tags_field(tags_str: Any) -> Dict[str, str]:
+    """Parse the pipe-delimited tags column into a dictionary."""
+    tags: Dict[str, str] = {}
+    if not isinstance(tags_str, str):
+        return tags
+    for token in tags_str.split("|"):
+        if ":" not in token:
+            continue
+        key, value = token.split(":", 1)
+        key = key.strip().lower()
+        value = value.strip()
+        if key:
+            tags[key] = value
+    return tags
+
+
+def format_segment_name(segment: Optional[str]) -> str:
+    """Return a human-readable segment name."""
+    if not isinstance(segment, str) or not segment.strip():
+        return "Unknown segment"
+    normalized = segment.strip().lower()
+    return SEGMENT_NAME_MAP.get(normalized, segment.replace("_", " ").strip().title())
+
+
+def detect_calcification_level(prompt_text: str) -> Optional[str]:
+    """Extract calcification severity descriptor from the prompt text."""
+    text = (prompt_text or "").lower()
+    if "calcification" not in text and "calcifications" not in text:
+        return None
+    if "severe" in text:
+        return "severe calcification"
+    if "moderate" in text:
+        return "moderate calcification"
+    if "minimal" in text or "mild" in text:
+        return "mild calcification"
+    return "calcification"
+
+
+def _infer_severity_label(row: pd.Series, tags: Dict[str, str]) -> str:
+    """Infer normalized severity label from disease_severity and bin."""
+    severity = str(row.get("disease_severity") or "").strip().lower()
+    if severity in {"critical", "cto"}:
+        return "critical"
+    if severity:
+        return severity
+    bin_label = str(row.get("bin") or tags.get("bin") or "").strip().lower()
+    return BIN_TO_SEVERITY.get(bin_label, "normal")
+
+
+def build_canonical_siglip_prompt(row: pd.Series) -> Tuple[str, Tuple[str, ...]]:
+    """
+    Build a canonical prompt text and its deduplication key
+    based on segment, severity, lesion attributes, and collateral info.
+    """
+    tags = parse_tags_field(row.get("tags"))
+    prompt_text = str(row.get("prompt_text") or "")
+    category = str(row.get("category") or "").strip().lower()
+    base_segment = row.get("segment") or tags.get("segment") or ""
+    segment_code = str(base_segment).strip().lower()
+    segment_name = format_segment_name(segment_code or prompt_text.split(";")[0])
+
+    prompt_lower = prompt_text.lower()
+    severity = _infer_severity_label(row, tags)
+    bin_label = str(row.get("bin") or tags.get("bin") or "").strip().lower()
+    percent_text = BIN_TO_PERCENT.get(bin_label, "")
+
+    has_cto = "cto" in prompt_lower or category == "cto"
+    has_thrombus = "thrombus" in prompt_lower or category == "thrombus"
+    has_bifurcation = "bifurcation" in prompt_lower or category == "medina"
+    has_calcification = "calcification" in prompt_lower or category == "calcification"
+    calc_level = detect_calcification_level(prompt_text) if has_calcification else None
+    has_stent = "stent" in prompt_lower or category == "in_stent"
+    has_restenosis = "restenosis" in prompt_lower or category == "in_stent"
+
+    has_stenosis = (
+        "stenosis" in prompt_lower
+        or category in {"stenosis", "in_stent", "medina"}
+        or has_restenosis
+    )
+
+    medina_type = tags.get("medina")
+    extras_codes: List[str] = []
+    extras_phrases: List[str] = []
+
+    if has_bifurcation:
+        if medina_type:
+            extras_codes.append(f"bifurcation:{medina_type}")
+            extras_phrases.append(f"Medina {medina_type} bifurcation lesion")
+        else:
+            extras_codes.append("bifurcation")
+            extras_phrases.append("a bifurcation lesion")
+    if calc_level:
+        extras_codes.append(f"calc:{calc_level}")
+        extras_phrases.append(calc_level)
+    if has_thrombus:
+        extras_codes.append("thrombus")
+        extras_phrases.append("thrombus")
+    if has_stent and not has_restenosis:
+        extras_codes.append("stent")
+        extras_phrases.append("a stent present")
+
+    ifr_phrase = None
+    ifr_match = re.search(r"(ABNORMAL|NORMAL)?\s*IFR\s*([0-9.]+)", prompt_text, flags=re.IGNORECASE)
+    if ifr_match:
+        status = ifr_match.group(1).strip().lower() if ifr_match.group(1) else ""
+        value = ifr_match.group(2)
+        if status:
+            ifr_phrase = f"{status.lower()} IFR ~{value}"
+        else:
+            ifr_phrase = f"IFR ~{value}"
+        extras_codes.append("ifr")
+        extras_phrases.append(ifr_phrase)
+
+    base_code: str
+    base_phrase: str
+    severity_title = severity.capitalize() if severity else ""
+    normal_phrase = SEVERITY_PHRASES.get("normal", "normal segment")
+
+    if has_cto:
+        base_code = "cto"
+        base_phrase = "CTO (100% occlusion)"
+    elif has_thrombus and not has_stenosis:
+        base_code = "thrombus"
+        base_phrase = "thrombus present"
+    elif has_stenosis and severity != "normal":
+        base_code = f"stenosis:{severity}"
+        severity_word = severity_title.lower() if severity_title else "moderate"
+        base_phrase = f"{severity_word} stenosis"
+        if percent_text:
+            base_phrase += f" ({percent_text})"
+        if has_restenosis:
+            base_phrase += " with in-stent restenosis"
+    else:
+        base_code = "normal"
+        base_phrase = normal_phrase
+
+    if base_code == "thrombus" and "thrombus" in extras_codes:
+        filtered_pairs = [
+            (code, phrase)
+            for code, phrase in zip(extras_codes, extras_phrases)
+            if code != "thrombus"
+        ]
+        extras_codes = [code for code, _ in filtered_pairs]
+        extras_phrases = [phrase for _, phrase in filtered_pairs]
+
+    # Append extras (calcification, medina, IFR, etc.)
+    if extras_phrases:
+        extras_clause = " and ".join(extras_phrases)
+        if " with " in base_phrase:
+            base_phrase = f"{base_phrase} and {extras_clause}"
+        else:
+            base_phrase = f"{base_phrase} with {extras_clause}"
+
+    collateral_phrases: List[str] = []
+    receives = {
+        match.group(2).strip().rstrip(".")
+        for match in re.finditer(r"(receives collaterals from)\s+([^.;]+)", prompt_text, flags=re.IGNORECASE)
+    }
+    gives = {
+        match.group(2).strip().rstrip(".")
+        for match in re.finditer(r"(gives collaterals to)\s+([^.;]+)", prompt_text, flags=re.IGNORECASE)
+    }
+    for src in sorted(receives):
+        collateral_phrases.append(f"{segment_name} receives collaterals from {src}")
+    for dest in sorted(gives):
+        collateral_phrases.append(f"{segment_name} gives collaterals to {dest}")
+
+    clauses = [f"{segment_name}; {base_phrase}."]
+    for clause in collateral_phrases:
+        clauses.append(f"{clause}.")
+    canonical_text = " ".join(clauses)
+
+    canonical_key = (
+        segment_code or segment_name.lower(),
+        base_code,
+        tuple(sorted(extras_codes)),
+    )
+    return canonical_text, canonical_key
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -535,6 +766,87 @@ def process_dataset(
     logger.info("Dataset processing completed successfully!")
 
 
+def canonicalize_siglip_texts(
+    texts_path: Path,
+    videos_path: Optional[Path] = None,
+    output_texts_path: Optional[Path] = None,
+    output_videos_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """
+    Deduplicate SigLIP prompts so that each segment/severity combination
+    has a single canonical description.
+    """
+    texts_path = Path(texts_path)
+    videos_path = Path(videos_path) if videos_path else None
+    output_texts_path = Path(output_texts_path or texts_path)
+    output_videos_path = Path(output_videos_path or videos_path) if videos_path else None
+
+    logger.info(f"Loading SigLIP texts from {texts_path}")
+    texts_df = pd.read_csv(texts_path)
+    texts_df["__prompt_len"] = texts_df["prompt_text"].astype(str).str.len()
+    texts_df = texts_df.sort_values("__prompt_len", ascending=False)
+
+    key_to_id: Dict[Tuple[str, str, Tuple[str, ...]], str] = {}
+    id_remap: Dict[str, str] = {}
+    canonical_rows: List[Dict[str, Any]] = []
+
+    for _, row in texts_df.iterrows():
+        text_id = row["text_id"]
+        canonical_text, canonical_key = build_canonical_siglip_prompt(row)
+        if canonical_key in key_to_id:
+            id_remap[text_id] = key_to_id[canonical_key]
+            continue
+        key_to_id[canonical_key] = text_id
+        id_remap[text_id] = text_id
+        updated_row = row.copy()
+        updated_row["prompt_text"] = canonical_text
+        canonical_rows.append(updated_row)
+
+    canonical_df = pd.DataFrame(canonical_rows)
+    drop_cols = [col for col in canonical_df.columns if col.startswith("__")]
+    if drop_cols:
+        canonical_df = canonical_df.drop(columns=drop_cols)
+    canonical_df.sort_values("text_id", inplace=True)
+    canonical_df.to_csv(output_texts_path, index=False)
+    logger.info(
+        "Canonicalized SigLIP texts: %d -> %d unique prompts",
+        len(texts_df),
+        len(canonical_df),
+    )
+
+    stats = {
+        "original_texts": len(texts_df),
+        "canonical_texts": len(canonical_df),
+        "dropped_texts": len(texts_df) - len(canonical_df),
+    }
+
+    if videos_path and videos_path.exists():
+        logger.info(f"Updating SigLIP videos at {videos_path}")
+        videos_df = pd.read_csv(videos_path)
+
+        def remap_ids(text_ids: Any) -> str:
+            if not isinstance(text_ids, str) or not text_ids.strip():
+                return text_ids
+            new_ids: List[str] = []
+            for tid in text_ids.split("|"):
+                tid = tid.strip()
+                if not tid:
+                    continue
+                canonical_id = id_remap.get(tid, tid)
+                if canonical_id not in new_ids:
+                    new_ids.append(canonical_id)
+            return "|".join(new_ids)
+
+        videos_df["positive_text_ids"] = videos_df["positive_text_ids"].apply(remap_ids)
+        videos_df.to_csv(output_videos_path or videos_path, index=False)
+        logger.info("Updated SigLIP videos with canonical text IDs")
+        stats["videos_updated"] = True
+    else:
+        stats["videos_updated"] = False
+
+    return stats
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # CLI Interface
 # ──────────────────────────────────────────────────────────────────────────
@@ -566,13 +878,11 @@ def main():
         description="Generate medical dataset with coronary vessel reports"
     )
     parser.add_argument(
-        '--input-csv', 
-        required=True,
+        '--input-csv',
         help='Path to input CSV or Parquet file'
     )
     parser.add_argument(
         '--output-dir',
-        required=True,
         help='Directory to save processed dataset'
     )
     parser.add_argument(
@@ -584,6 +894,23 @@ def main():
         action='store_true',
         help='Create a default configuration file and exit'
     )
+    parser.add_argument(
+        '--canonicalize-siglip',
+        action='store_true',
+        help='Canonicalize SigLIP texts/videos and exit'
+    )
+    parser.add_argument(
+        '--siglip-output-dir',
+        help='Directory containing SigLIP texts.csv/videos.csv'
+    )
+    parser.add_argument(
+        '--siglip-texts',
+        help='Path to SigLIP texts.csv (overrides --siglip-output-dir)'
+    )
+    parser.add_argument(
+        '--siglip-videos',
+        help='Path to SigLIP videos.csv (overrides --siglip-output-dir)'
+    )
     
     args = parser.parse_args()
     
@@ -593,7 +920,18 @@ def main():
             yaml.dump(config, f, default_flow_style=False)
         print("Created default_config.yaml")
         return
-    
+
+    if args.canonicalize_siglip:
+        base_dir = Path(args.siglip_output_dir or "output_dataset/siglip_generated")
+        texts_path = Path(args.siglip_texts) if args.siglip_texts else base_dir / "texts.csv"
+        videos_path = Path(args.siglip_videos) if args.siglip_videos else base_dir / "videos.csv"
+        stats = canonicalize_siglip_texts(texts_path, videos_path)
+        logger.info("Canonicalization summary: %s", stats)
+        return
+
+    if not args.input_csv or not args.output_dir:
+        parser.error("--input-csv and --output-dir are required unless --canonicalize-siglip is specified")
+
     # Load configuration
     if args.config:
         config = load_config(args.config)

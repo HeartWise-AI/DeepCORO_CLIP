@@ -288,6 +288,108 @@ class LinearProbingParser(BaseParser):
 
         return config
 
+
+@ParserRegistry.register("DeepCORO_multitask")
+class MultitaskParser(BaseParser):
+    """Parser for multitask pretraining (contrastive + captioning + masked modeling)."""
+    def __init__(self):
+        super().__init__(description="Train DeepCORO Multitask model")
+        self.parser.add_help = True
+        self.parser.prog = sys.argv[0]
+        self._add_multitask_arguments()
+
+    def _add_multitask_arguments(self):
+        """Adds arguments specific to the multitask pipeline."""
+        # Training parameters
+        train_group = self.parser.add_argument_group('Multitask Training parameters')
+        train_group.add_argument('--lr', type=float, help="Learning rate for the model.")
+        train_group.add_argument('--batch_size', type=int, help="Batch size for training.")
+        train_group.add_argument('--num_workers', type=int, help="Number of workers for data loading.")
+        train_group.add_argument('--debug', type=str2bool, help="Enable debug mode.")
+        train_group.add_argument('--temperature', type=float, help="Temperature parameter for contrastive loss.")
+        train_group.add_argument('--base_checkpoint_path', type=str, help="Path to the base checkpoint file.")
+        train_group.add_argument('--max_grad_norm', type=float, help="Maximum gradient norm.")
+        
+        # Data parameters
+        data_group = self.parser.add_argument_group('Multitask Data parameters')
+        data_group.add_argument('--data_filename', type=str, help="Path to the data CSV/manifest file.")
+        data_group.add_argument('--root', type=str, help="Root directory for data.")
+        data_group.add_argument('--target_label', type=str, help="Column name for the target label.")
+        data_group.add_argument('--datapoint_loc_label', type=str, help="Column name for the video file path.")
+        data_group.add_argument('--frames', type=int, help="Number of frames to sample per video.")
+        data_group.add_argument('--stride', type=int, help="Stride between sampled frames.")
+        data_group.add_argument('--multi_video', type=str2bool, help="Whether to load multiple videos per sample.")
+        data_group.add_argument('--num_videos', type=int, help="Number of videos per sample if multi_video is True.")
+        data_group.add_argument('--groupby_column', type=str, help="Column to group data by.")
+        data_group.add_argument('--shuffle_videos', type=str2bool, help="Shuffle videos within a group.")
+        data_group.add_argument('--aggregate_videos_tokens', type=str2bool, help="Whether to aggregate video tokens.")
+        data_group.add_argument('--per_video_pool', type=str2bool, help="Pool per video.")
+        
+        # Model parameters
+        model_group = self.parser.add_argument_group('Multitask Model parameters')
+        model_group.add_argument('--model_name', type=str, help="Name of the video encoder model.")
+        model_group.add_argument('--pretrained', type=str2bool, help="Whether to use a pretrained video encoder.")
+        model_group.add_argument('--video_freeze_ratio', type=float, help="Ratio of video encoder layers to freeze.")
+        model_group.add_argument('--text_freeze_ratio', type=float, help="Ratio of text encoder layers to freeze.")
+        model_group.add_argument('--dropout', type=float, help="Dropout rate.")
+        model_group.add_argument('--num_heads', type=int, help="Number of attention heads.")
+        model_group.add_argument('--aggregator_depth', type=int, help="Depth of the aggregation head.")
+        
+        # Optimization parameters
+        optim_group = self.parser.add_argument_group('Multitask Optimization parameters')
+        optim_group.add_argument('--optimizer', type=str, help="Optimizer name.")
+        optim_group.add_argument('--scheduler_name', type=str, help="Learning rate scheduler name.")
+        optim_group.add_argument('--lr_step_period', type=int, help="Period for step LR scheduler.")
+        optim_group.add_argument('--factor', type=float, help="Factor for ReduceLROnPlateau scheduler.")
+        optim_group.add_argument('--video_weight_decay', type=float, help="Weight decay for video encoder.")
+        optim_group.add_argument('--text_weight_decay', type=float, help="Weight decay for text components.")
+        optim_group.add_argument('--gradient_accumulation_steps', type=int, help="Gradient accumulation steps.")
+        
+        # Captioning parameters
+        caption_group = self.parser.add_argument_group('Captioning parameters')
+        caption_group.add_argument('--vocab_size', type=int, help="Vocabulary size.")
+        caption_group.add_argument('--decoder_layers', type=int, help="Number of decoder layers.")
+        caption_group.add_argument('--decoder_heads', type=int, help="Number of decoder attention heads.")
+        caption_group.add_argument('--decoder_intermediate_size', type=int, help="Decoder intermediate size.")
+        caption_group.add_argument('--max_position_embeddings', type=int, help="Maximum position embeddings.")
+        caption_group.add_argument('--use_biomed_tokenizer', type=str2bool, help="Use biomedical tokenizer.")
+        caption_group.add_argument('--max_text_length', type=int, help="Maximum text length.")
+        caption_group.add_argument('--max_generation_length', type=int, help="Maximum generation length.")
+        caption_group.add_argument('--captioning_lr', type=float, help="Learning rate for captioning decoder.")
+        caption_group.add_argument('--captioning_weight_decay', type=float, help="Weight decay for captioning.")
+        
+        # Masked video modeling parameters
+        mvm_group = self.parser.add_argument_group('Masked Video Modeling parameters')
+        mvm_group.add_argument('--mvm_decoder_hidden_size', type=int, help="MVM decoder hidden size.")
+        mvm_group.add_argument('--mvm_decoder_layers', type=int, help="MVM decoder layers.")
+        mvm_group.add_argument('--mvm_decoder_heads', type=int, help="MVM decoder attention heads.")
+        mvm_group.add_argument('--mask_ratio', type=float, help="Mask ratio for MVM.")
+        mvm_group.add_argument('--mask_token_learnable', type=str2bool, help="Use learnable mask token.")
+        mvm_group.add_argument('--mvm_lr', type=float, help="Learning rate for MVM decoder.")
+        mvm_group.add_argument('--mvm_weight_decay', type=float, help="Weight decay for MVM.")
+        
+        # Loss configuration
+        loss_group = self.parser.add_argument_group('Loss configuration')
+        loss_group.add_argument('--loss_name', type=str, help="Loss function name.")
+        loss_group.add_argument('--contrastive_loss_type', type=str, help="Contrastive loss type.")
+        loss_group.add_argument('--captioning_loss_type', type=str, help="Captioning loss type.")
+        loss_group.add_argument('--masked_modeling_loss_type', type=str, help="Masked modeling loss type.")
+        loss_group.add_argument('--label_smoothing', type=float, help="Label smoothing.")
+        
+    def parse_args_and_update(self, config: HeartWiseConfig):
+        """Parse arguments and update config."""
+        args, unknown = self.parser.parse_known_args()
+        
+        # Update config with known arguments
+        config = HeartWiseConfig.update_config_with_args(config, args)
+        
+        # Handle unknown arguments if any
+        if unknown:
+            print(f"Warning: Unknown arguments: {unknown}")
+            
+        return config
+
+
 class HeartWiseParser:
     @staticmethod
     def _get_pipeline_parser() -> tuple[BaseParser, HeartWiseConfig]:

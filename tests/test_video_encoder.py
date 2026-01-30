@@ -162,6 +162,15 @@ class TestVideoEncoder(ModelTestsMixin, unittest.TestCase):
                         param_updated = True
         self.assertTrue(param_updated, "No parameters were significantly updated")
 
+    def test_nan_replacement_uses_cached_embeddings(self):
+        """Verify NaN sanitization fills embeddings with cached values instead of zeros."""
+        cached = torch.full((2, 512), 1.5)
+        _ = self.model._sanitize_tensor(cached, context="test-cache")
+        with torch.no_grad():
+            corrupt = torch.full((2, 512), float("nan"))
+            repaired = self.model._sanitize_tensor(corrupt, context="test-cache")
+        self.assertTrue(torch.allclose(repaired, torch.full_like(repaired, 1.5)))
+
 
 if __name__ == '__main__':
     unittest.main() 

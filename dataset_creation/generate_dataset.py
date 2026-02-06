@@ -13,6 +13,7 @@ Usage:
 
 import sys
 import os
+import re
 import argparse
 from pathlib import Path
 from typing import Dict, Any, Optional, List
@@ -527,11 +528,14 @@ def load_data(data_path: str) -> pd.DataFrame:
 
 
 def _extract_acq_time_from_filename(fn: str) -> Optional[float]:
-    """Extract DICOM acquisition time (HHMMSS) from the SOP Instance UID in the filename.
+    """Extract DICOM acquisition datetime (YYYYMMDDHHMMSS) from the SOP Instance UID in the filename.
 
     Many DICOM SOP UIDs embed the acquisition datetime as YYYYMMDDHHMMSS.
     This is more reliable than series_time (which can be a transfer/storage
     timestamp with corrupted hour values).
+
+    Returns the full 14-digit datetime as a float so that procedures spanning
+    midnight sort correctly (the date portion increments across midnight).
     """
     fn = str(fn)
     basename = fn.rsplit("/", 1)[-1]
@@ -540,7 +544,7 @@ def _extract_acq_time_from_filename(fn: str) -> Optional[float]:
     if len(parts) < 2:
         return None
     sop = parts[1]
-    m = re.search(r"20[12]\d[01]\d[0-3]\d(\d{6})", sop)
+    m = re.search(r"(20[12]\d[01]\d[0-3]\d\d{6})", sop)
     if m:
         return float(m.group(1))
     return None

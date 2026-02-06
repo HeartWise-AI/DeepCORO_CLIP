@@ -447,13 +447,42 @@ def apply_hard_filters(df: pd.DataFrame, config: Dict[str, Any]) -> pd.DataFrame
         logger.warning(f"Invalid status filter type: {type(status_filter)}. Using default 'diagnostic'")
         status_list = ['diagnostic']
     
+    # Exclude congenital heart procedure studies (not coronary angiograms)
+    congenital_mask = pd.Series(False, index=df.index)
+    if "series_description" in df.columns:
+        congenital_mask = df["series_description"].str.contains(
+            "CONGENITAL", case=False, na=False
+        )
+        n_congenital = congenital_mask.sum()
+        if n_congenital > 0:
+            logger.info(
+                "Excluding %d videos from %d congenital-procedure studies",
+                n_congenital,
+                df.loc[congenital_mask, "StudyInstanceUID"].nunique(),
+            )
+
+    # Exclude studies where every stenosis value is -1 or NaN (no coronary data)
+    stenosis_cols = [c for c in df.columns if c.endswith("_stenosis")]
+    no_stenosis_mask = pd.Series(False, index=df.index)
+    if stenosis_cols:
+        stenosis_vals = df[stenosis_cols].apply(pd.to_numeric, errors="coerce")
+        no_stenosis_mask = ((stenosis_vals == -1) | stenosis_vals.isna()).all(axis=1)
+        n_no_stenosis = no_stenosis_mask.sum()
+        if n_no_stenosis > 0:
+            logger.info(
+                "Excluding %d videos with all stenosis = -1/NaN",
+                n_no_stenosis,
+            )
+
     # Apply filters
     filtered_df = df.loc[
         (df["status"].isin(status_list)) &
         (df["main_structure_name"].isin(main_structures)) &
-        (df["contrast_agent_class"] == contrast_agent_class)
+        (df["contrast_agent_class"] == contrast_agent_class) &
+        ~congenital_mask &
+        ~no_stenosis_mask
     ].copy()
-    
+
     logger.info(f"Dataset filtered from {len(df)} to {len(filtered_df)} rows")
     logger.info(f"Status filter applied: {status_list}")
     return filtered_df

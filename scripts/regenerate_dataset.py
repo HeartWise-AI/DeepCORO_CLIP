@@ -102,13 +102,31 @@ def main():
     logger.info("Parquet saved (%d rows)", len(df))
 
     # ── 6. Filter for inference (diagnostic + Left/Right Coronary + contrast) ─
+    #      Also exclude congenital-procedure studies and studies with no stenosis data.
+    congenital_mask = df["series_description"].str.contains(
+        "CONGENITAL", case=False, na=False
+    )
+    stenosis_cols = [c for c in df.columns if c.endswith("_stenosis")]
+    stenosis_vals = df[stenosis_cols].apply(pd.to_numeric, errors="coerce")
+    no_stenosis_mask = ((stenosis_vals == -1) | stenosis_vals.isna()).all(axis=1)
+
+    n_cong = congenital_mask.sum()
+    n_nosten = no_stenosis_mask.sum()
+    if n_cong:
+        logger.info("Excluding %d congenital-procedure videos (%d studies)",
+                     n_cong, df.loc[congenital_mask, "StudyInstanceUID"].nunique())
+    if n_nosten:
+        logger.info("Excluding %d videos with all stenosis = -1/NaN", n_nosten)
+
     mask = (
         (df["status"] == "diagnostic")
         & (df["main_structure_name"].isin(["Left Coronary", "Right Coronary"]))
         & (df["contrast_agent_class"] == 1)
+        & ~congenital_mask
+        & ~no_stenosis_mask
     )
     df_diag = df.loc[mask].copy()
-    logger.info("Diagnostic + Left/Right + contrast=1: %d rows", len(df_diag))
+    logger.info("Diagnostic + Left/Right + contrast=1 (excl. congenital): %d rows", len(df_diag))
 
     # ── 7. Map Split: test → inference (to match existing convention) ────────
     df_diag["Split"] = df_diag["Split"].replace({"test": "inference"})

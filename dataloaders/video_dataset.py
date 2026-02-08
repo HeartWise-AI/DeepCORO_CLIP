@@ -42,6 +42,7 @@ class VideoDataset(torch.utils.data.Dataset):
         groupby_column: str = "StudyInstanceUID",
         num_videos: int = 1,
         shuffle_videos: bool = True,
+        view_column: Optional[str] = None,
         **kwargs,
     ):
         self.filename: str = data_filename
@@ -49,12 +50,15 @@ class VideoDataset(torch.utils.data.Dataset):
         self.datapoint_loc_label: str = datapoint_loc_label
         self.debug_mode: bool = debug_mode
         self.backbone: str = backbone
-        
+
         # Multi-video parameters
         self.multi_video: bool = multi_video
         self.groupby_column: str = groupby_column
         self.num_videos: int = num_videos
         self.shuffle_videos: bool = shuffle_videos
+
+        # View embedding parameter (per-video view/angle class column)
+        self.view_column: Optional[str] = view_column
         
         # Initialize general versions first, potentially overridden by backbone specifics
         self.num_frames: int = num_frames
@@ -88,7 +92,7 @@ class VideoDataset(torch.utils.data.Dataset):
         self.target_label: Optional[List[str]] = target_label
         self.external_test_location: Optional[str] = kwargs.pop("external_test_location", None)
 
-        self.fnames, self.outcomes, self.target_indexes = self.load_data(
+        self.fnames, self.outcomes, self.target_indexes, self.view_classes = self.load_data(
             self.split, self.target_label
         )
 
@@ -101,10 +105,10 @@ class VideoDataset(torch.utils.data.Dataset):
         return len(self.valid_indices)
 
     def load_data(
-        self, 
-        split: Union[str, RunMode], 
+        self,
+        split: Union[str, RunMode],
         target_labels: Optional[List[str]]
-    ) -> Tuple[List[str], Optional[List[Optional[dict]]], Optional[dict]]:
+    ) -> Tuple[List[str], Optional[List[Optional[dict]]], Optional[dict], Optional[List]]:
         """
         Load data from the CSV file and extract filenames and outcomes.
         For multi-video mode, groups videos by groupby_column.
@@ -114,10 +118,11 @@ class VideoDataset(torch.utils.data.Dataset):
             target_labels (list): List of target label column names
 
         Returns:
-            tuple: (filenames, outcomes, target_indices)
+            tuple: (filenames, outcomes, target_indices, view_classes)
             For multi-video: filenames is a list of lists of filenames per group
             For single-video: filenames is a list of filenames
             For inference mode: outcomes is a list of None values (consistent between modes)
+            view_classes: parallel list of per-video view class strings (multi-video only), or None
         """
         # Read the "α" separated file using pandas
         file_path = os.path.join(self.filename)
@@ -132,7 +137,7 @@ class VideoDataset(torch.utils.data.Dataset):
         split_dataset = data[data[split_col] == split_str]
         if split_dataset.empty:
             raise ValueError(f"No data found in {self.filename} for split {split_str}")
-        
+
         # Handle target indices for multi-head case
         if target_labels is None or split == RunMode.INFERENCE:
             target_indices = None
@@ -144,21 +149,29 @@ class VideoDataset(torch.utils.data.Dataset):
                 except KeyError:
                     raise ValueError(f"Target label '{label}' not found in data columns")
 
+        # Check if view_column exists in data
+        has_view_column = (
+            self.view_column is not None
+            and self.view_column in data.columns
+        )
+
         if self.multi_video:
             # Group by specified column
             print("Loading multi-video data... grouping by ", self.groupby_column)
             grouped_data = split_dataset.groupby(self.groupby_column)
             group_fnames = []
             group_outcomes = []
+            group_view_classes = [] if has_view_column else None
 
             for group_id, group in grouped_data:
                 group_videos = []
+                group_views = [] if has_view_column else None
                 group_outcome = None
                 skip_group = True
-                
+
                 for row_id, row in group.iterrows():
                     file_path = row[filename_col]
-   
+
                     # Check if the video file exists
                     if not os.path.exists(file_path):
                         print(f"Skipping group {row_id} in {group_id} because video {file_path} does not exist.")
@@ -182,14 +195,19 @@ class VideoDataset(torch.utils.data.Dataset):
                             group_outcome = row_outcomes
                     skip_group = False
                     group_videos.append(file_path)
-                
+                    if has_view_column:
+                        view_val = row[self.view_column]
+                        group_views.append(str(view_val) if not pd.isna(view_val) else "Other")
+
                 if skip_group:
                     continue
-                
+
                 group_fnames.append(group_videos)
-                group_outcomes.append(group_outcome) 
-                            
-            return group_fnames, group_outcomes, target_indices
+                group_outcomes.append(group_outcome)
+                if has_view_column:
+                    group_view_classes.append(group_views)
+
+            return group_fnames, group_outcomes, target_indices, group_view_classes
         else:
             # Original single-video logic
             fnames = []
@@ -215,10 +233,10 @@ class VideoDataset(torch.utils.data.Dataset):
                             row_outcomes[label] = value
                     if skip_row:
                         continue
-                    
+
                     outcomes.append(row_outcomes)
                     fnames.append(file_name)
-                    
+
                 else:
                     # Inference mode or no taget labels
                     fnames.append(file_name)
@@ -226,9 +244,9 @@ class VideoDataset(torch.utils.data.Dataset):
             if not target_indices:
                 # For inference mode, return a list of None values to maintain consistency
                 # with multi-video mode and avoid TypeError in __getitem__
-                return fnames, [None] * len(fnames), None
-            
-            return fnames, outcomes, target_indices
+                return fnames, [None] * len(fnames), None, None
+
+            return fnames, outcomes, target_indices, None
 
     def _validate_all_videos(self):
         print("Validating all videos in dataset...")
@@ -279,40 +297,47 @@ class VideoDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, index: int) -> tuple:
         actual_idx: int = self.valid_indices[index]
-        
+
         if self.multi_video:
             group_fnames_in_item = self.fnames[actual_idx] # List of all video paths for this item's group
-            outcome_for_item = self.outcomes[actual_idx] 
-            
-            current_selected_fnames: List[str]
-            # Select video fnames to load, based on self.num_videos and shuffle_videos
+            outcome_for_item = self.outcomes[actual_idx]
+            group_views_in_item = (
+                self.view_classes[actual_idx] if self.view_classes is not None else None
+            )
+
+            # Build paired list of (fname, view_class) for coordinated selection
+            if group_views_in_item is not None:
+                paired = list(zip(group_fnames_in_item, group_views_in_item))
+            else:
+                paired = [(f, None) for f in group_fnames_in_item]
+
+            # Select videos based on self.num_videos and shuffle_videos
             if self.shuffle_videos:
-                if len(group_fnames_in_item) > self.num_videos:
-                    current_selected_fnames = random.sample(group_fnames_in_item, self.num_videos)
+                if len(paired) > self.num_videos:
+                    paired = random.sample(paired, self.num_videos)
                 else:
-                    # Take all available videos from the group; they are not further shuffled among themselves here.
-                    # If self.num_videos is larger, padding will occur later.
-                    current_selected_fnames = list(group_fnames_in_item) # Make a copy if shuffle_videos implies modification later (not the case here but good practice)
-                    random.shuffle(current_selected_fnames) # Shuffle the selected videos if shuffle_videos is true
-            else: # Not self.shuffle_videos
-                current_selected_fnames = group_fnames_in_item[:self.num_videos]
-            
+                    paired = list(paired)
+                    random.shuffle(paired)
+            else:
+                paired = paired[:self.num_videos]
+
             loaded_video_numpy_arrays: List[np.ndarray] = []
-            processed_fnames: List[str] = [] # Stores actual fnames or "PAD"
+            processed_fnames: List[str] = []
+            processed_views: List[Optional[str]] = []
 
             first_video_shape_info: Optional[Tuple[int, ...]] = None
-            first_video_dtype_info: Optional[Any] = None # Using Any for np.dtype
+            first_video_dtype_info: Optional[Any] = None
 
             # Load selected videos
-            for video_fname in current_selected_fnames:
+            for video_fname, view_cls in paired:
                 try:
                     video_np = load_video(
                         video_fname,
                         n_frames=self.num_frames,
                         resize=self.resize,
                         normalize=self.normalize,
-                        mean=self.mean[0], # Note: uses only the first element of the mean list
-                        std=self.std[0],   # Note: uses only the first element of the std list
+                        mean=self.mean[0],
+                        std=self.std[0],
                         video_transforms=self.video_transforms,
                         rand_augment=self.rand_augment,
                         backbone=self.backbone,
@@ -320,68 +345,64 @@ class VideoDataset(torch.utils.data.Dataset):
                     )
                     loaded_video_numpy_arrays.append(video_np)
                     processed_fnames.append(video_fname)
-                    if first_video_shape_info is None: # Capture shape and dtype from first successfully loaded video
+                    processed_views.append(view_cls)
+                    if first_video_shape_info is None:
                         first_video_shape_info = video_np.shape
                         first_video_dtype_info = video_np.dtype
                 except Exception as e:
-                    # If a specific video fails to load, propagate the error.
-                    # The original __getitem__ raised RuntimeError here.
                     raise RuntimeError(f"Failed to load video {video_fname}: {str(e)}") from e
-            
+
             # Pad with zero-videos if fewer than self.num_videos were loaded/selected
             num_actually_loaded = len(loaded_video_numpy_arrays)
             num_to_pad = self.num_videos - num_actually_loaded
 
             if num_to_pad > 0:
                 pad_shape: Tuple[int, ...]
-                pad_dtype: Any # Using Any for np.dtype
+                pad_dtype: Any
 
                 if first_video_shape_info is not None and first_video_dtype_info is not None:
                     pad_shape = first_video_shape_info
                     pad_dtype = first_video_dtype_info
                 else:
-                    # Fallback if no videos were loaded (e.g., current_selected_fnames was empty initially)
-                    # Default to 3 channels (RGB)
                     channels = 3
                     pad_shape = (self.num_frames, self.resize, self.resize, channels)
                     pad_dtype = np.dtype(np.float32) if self.normalize else np.dtype(np.uint8)
-                
+
                 for _ in range(num_to_pad):
                     padding_video_np = np.zeros(pad_shape, dtype=pad_dtype)
                     loaded_video_numpy_arrays.append(padding_video_np)
-                    processed_fnames.append("PAD") # Mark filename for padded slots
+                    processed_fnames.append("PAD")
+                    processed_views.append("PAD")
 
             # Stack all video arrays (actual + padded) into a single numpy array
             final_stacked_videos_np: np.ndarray
             if not loaded_video_numpy_arrays:
-                # This case occurs if self.num_videos is 0.
-                # For self.num_videos > 0, padding ensures the list is not empty.
-                channels = 3 # Default assumption
+                channels = 3
                 dtype_for_empty = np.dtype(np.float32) if self.normalize else np.dtype(np.uint8)
                 final_stacked_videos_np = np.empty(
-                    (0, self.num_frames, self.resize, self.resize, channels), 
+                    (0, self.num_frames, self.resize, self.resize, channels),
                     dtype=dtype_for_empty
                 )
             else:
-                # All arrays in loaded_video_numpy_arrays should now have the same shape,
-                # and there should be self.num_videos of them.
                 final_stacked_videos_np = np.stack(loaded_video_numpy_arrays, axis=0)
-            
-            # Ensure the number of processed fnames and the first dimension of the stacked videos match self.num_videos
-            # This helps catch errors if self.num_videos is positive.
+
+            # Validation assertions
             if self.num_videos > 0:
                 if len(processed_fnames) != self.num_videos:
                      raise AssertionError(f"Internal logic error: Mismatch in length of processed_fnames ({len(processed_fnames)}) and self.num_videos ({self.num_videos})")
                 if final_stacked_videos_np.shape[0] != self.num_videos:
                      raise AssertionError(f"Internal logic error: Mismatch in final_stacked_videos_np.shape[0] ({final_stacked_videos_np.shape[0]}) and self.num_videos ({self.num_videos})")
-            elif self.num_videos == 0: # If num_videos is 0, expect empty lists/arrays
+            elif self.num_videos == 0:
                 if len(processed_fnames) != 0:
                     raise AssertionError(f"Internal logic error: processed_fnames should be empty when self.num_videos is 0, but got {len(processed_fnames)}")
                 if final_stacked_videos_np.shape[0] != 0:
                     raise AssertionError(f"Internal logic error: final_stacked_videos_np.shape[0] should be 0 when self.num_videos is 0, but got {final_stacked_videos_np.shape[0]}")
-                
+
+            # Return view classes if view_column is configured
+            if self.view_classes is not None:
+                return final_stacked_videos_np, outcome_for_item, processed_fnames, processed_views
             return final_stacked_videos_np, outcome_for_item, processed_fnames
-        
+
         else: # Single video logic (remains unchanged from original)
             video_fname: str = self.fnames[actual_idx]
             try:
@@ -398,15 +419,27 @@ class VideoDataset(torch.utils.data.Dataset):
                     stride=self.stride,
                 )
             except Exception as e:
-                raise RuntimeError(f"Failed to load video {video_fname}: {str(e)}") from e   
-            
+                raise RuntimeError(f"Failed to load video {video_fname}: {str(e)}") from e
+
             return video, self.outcomes[actual_idx], video_fname
     
-def custom_collate_fn(batch: list[tuple[np.ndarray, Optional[dict], Union[str, List[str]]]], labels_map: dict = None) -> dict: # Adjusted type hint for paths
-    videos, targets, paths = zip(*batch)
+def custom_collate_fn(
+    batch: list[tuple],
+    labels_map: dict = None,
+    view_labels_map: dict = None,
+    num_view_classes: int = 12,
+) -> dict:
+    # Detect whether batch items include view_classes (4-tuple vs 3-tuple)
+    has_view_classes = len(batch[0]) == 4
+
+    if has_view_classes:
+        videos, targets, paths, view_classes_list = zip(*batch)
+    else:
+        videos, targets, paths = zip(*batch)
+        view_classes_list = None
+
     # Multi-video: videos[0] is np.ndarray [num_videos, F, H, W, C]
     if isinstance(videos[0], np.ndarray) and videos[0].ndim == 5:
-        # All videos in the batch now have the same shape[0] due to padding in __getitem__
         videos_tensor = torch.stack([torch.from_numpy(v) for v in videos])  # [B, num_videos, F, H, W, C]
         B = videos_tensor.shape[0]
         N = videos_tensor.shape[1] # num_videos
@@ -417,22 +450,20 @@ def custom_collate_fn(batch: list[tuple[np.ndarray, Optional[dict], Union[str, L
         N = 1
     else:
         raise ValueError(f"Unexpected video format or shape: type {type(videos[0])}, ndim {videos[0].ndim if isinstance(videos[0], np.ndarray) else 'N/A'}")
-    # Permute to [B, N, C, F, H, W]
 
     video_indices = torch.arange(B).repeat_interleave(N) if N > 1 else None
-    
+
     # Convert targets to tensor
     temp_targets_dict: dict = defaultdict(list)
     for target in targets:
         if target is not None:
             for k, v in target.items():
                 temp_targets_dict[k].append(v)
-    
+
     # Apply labels_map to convert categorical strings to integers
     final_targets_dict = {}
     for k, v in temp_targets_dict.items():
         if labels_map and k in labels_map:
-            # This is a categorical column - convert strings to integers
             mapped_values = []
             for value in v:
                 if isinstance(value, str):
@@ -441,19 +472,37 @@ def custom_collate_fn(batch: list[tuple[np.ndarray, Optional[dict], Union[str, L
                     else:
                         raise ValueError(f"Label '{value}' not found in labels_map for column '{k}'. Available labels: {list(labels_map[k].keys())}")
                 else:
-                    # Value is already numeric
                     mapped_values.append(value)
-            final_targets_dict[k] = torch.tensor(mapped_values, dtype=torch.long)  # Use long for categorical
+            final_targets_dict[k] = torch.tensor(mapped_values, dtype=torch.long)
         else:
-            # This is a numerical column - convert to float
             final_targets_dict[k] = torch.tensor(v, dtype=torch.float32)
-    
-    return {
+
+    # Build view_ids tensor if view classes are present
+    view_ids_tensor = None
+    if view_classes_list is not None and view_labels_map is not None:
+        pad_id = num_view_classes  # PAD ID is the last class
+        batch_view_ids = []
+        for sample_views in view_classes_list:
+            sample_ids = []
+            for vc in sample_views:
+                if vc == "PAD" or vc is None:
+                    sample_ids.append(pad_id)
+                elif vc in view_labels_map:
+                    sample_ids.append(view_labels_map[vc])
+                else:
+                    sample_ids.append(pad_id)  # Unknown view → PAD
+            batch_view_ids.append(sample_ids)
+        view_ids_tensor = torch.tensor(batch_view_ids, dtype=torch.long)  # [B, N]
+
+    result = {
         "videos": videos_tensor,
         "targets": final_targets_dict,
         "video_indices": video_indices,
-        "video_fname": paths
+        "video_fname": paths,
     }
+    if view_ids_tensor is not None:
+        result["view_ids"] = view_ids_tensor
+    return result
 
 def get_distributed_video_dataloader(
     config: Any,
@@ -469,6 +518,9 @@ def get_distributed_video_dataloader(
     num_videos: Optional[int] = None,
     shuffle_videos: Optional[bool] = None,
     labels_map: Optional[dict] = None,
+    view_column: Optional[str] = None,
+    view_labels_map: Optional[dict] = None,
+    num_view_classes: int = 12,
 ) -> DataLoader:
     # Create the video dataset with multi-video parameters
     video_dataset = VideoDataset(
@@ -487,18 +539,24 @@ def get_distributed_video_dataloader(
         groupby_column=groupby_column if groupby_column is not None else getattr(config, 'groupby_column', 'StudyInstanceUID'),
         num_videos=num_videos if num_videos is not None else getattr(config, 'num_videos', 1),
         shuffle_videos=shuffle_videos if shuffle_videos is not None else getattr(config, 'shuffle_videos', True),
+        view_column=view_column,
     )
 
     # Create a sampler for distributed training
     sampler = DistributedUtils.DS.DistributedSampler(
-        video_dataset, 
-        shuffle=shuffle, 
-        num_replicas=num_replicas, 
+        video_dataset,
+        shuffle=shuffle,
+        num_replicas=num_replicas,
         rank=rank
     )
 
-    # Create a partial function to bind labels_map to the collate function
-    collate_fn_with_labels_map = partial(custom_collate_fn, labels_map=labels_map)
+    # Create a partial function to bind labels_map and view_labels_map to the collate function
+    collate_fn_bound = partial(
+        custom_collate_fn,
+        labels_map=labels_map,
+        view_labels_map=view_labels_map,
+        num_view_classes=num_view_classes,
+    )
 
     # Create the dataloader
     return DataLoader(
@@ -508,6 +566,6 @@ def get_distributed_video_dataloader(
         num_workers=config.num_workers,
         pin_memory=True,
         drop_last=drop_last,
-        collate_fn=collate_fn_with_labels_map,
+        collate_fn=collate_fn_bound,
         worker_init_fn=seed_worker,
     )

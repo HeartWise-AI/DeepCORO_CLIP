@@ -10,7 +10,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 print_usage() {
-    echo "Usage: $0 --base_config BASE_CONFIG_PATH --sweep_config SWEEP_CONFIG_PATH --selected_gpus GPU_IDS --count COUNT"
+    echo "Usage: $0 --base_config BASE_CONFIG_PATH --sweep_config SWEEP_CONFIG_PATH --selected_gpus GPU_IDS --count COUNT [--master_port PORT]"
     echo ""
     echo "Examples:"
     echo "  # Run 5 sweep agents on GPU 3 with single video config"
@@ -24,6 +24,7 @@ print_usage() {
     echo "  --sweep_config     Path to the sweep configuration file (required)"
     echo "  --selected_gpus    Comma-separated list of GPU IDs to use (required)"
     echo "  --count           Number of runs to execute (required)"
+    echo "  --master_port     Torchrun master port to use (optional, default: 29500)"
     echo "  --help, -h         Display this help message"
     exit 1
 }
@@ -33,12 +34,13 @@ SELECTED_GPUS=""
 BASE_CONFIG_PATH=""
 SWEEP_CONFIG_PATH=""
 COUNT=""
+MASTER_PORT="29500"
 
 # Activate virtual environment
 source .venv/bin/activate
 
 # Set NCCL environment variables for multi-GPU training
-export MASTER_PORT=29505
+export MASTER_PORT="${MASTER_PORT}"
 export NCCL_P2P_LEVEL=NVL
 export NCCL_ALGO=Tree
 export NCCL_MIN_NCHANNELS=4
@@ -62,6 +64,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --count)
             COUNT="$2"
+            shift 2
+            ;;
+        --master_port)
+            MASTER_PORT="$2"
             shift 2
             ;;
         --help|-h)
@@ -145,6 +151,16 @@ else
     exit 1
 fi
 
+# Update the sweep config with the selected master port
+echo -e "${BLUE}Updating --master_port in ${SWEEP_CONFIG_PATH}...${NC}"
+if sed -i "s/--master_port=[0-9]*/--master_port=$MASTER_PORT/" "${SWEEP_CONFIG_PATH}"; then
+    echo -e "${GREEN}Updated --master_port to $MASTER_PORT in ${SWEEP_CONFIG_PATH}${NC}"
+    echo ""
+else
+    echo -e "${RED}Failed to update --master_port in ${SWEEP_CONFIG_PATH}${NC}"
+    exit 1
+fi
+
 # Update the sweep config to use the base_config path given via script args.
 echo -e "${BLUE}Updating base_config path in ${SWEEP_CONFIG_PATH}...${NC}"
 if sed -i '/--base_config/{n;s|.*|  - "'"$BASE_CONFIG_PATH"'"|;}' "${SWEEP_CONFIG_PATH}"; then
@@ -194,6 +210,7 @@ echo ""
 export NCCL_DEBUG=WARNING
 export CUDA_VISIBLE_DEVICES="${SELECTED_GPUS}"
 export OMP_NUM_THREADS=1
+export MASTER_PORT="${MASTER_PORT}"
 
 # Run the sweep and extract the SWEEP_ID while displaying logs
 echo -e "${BLUE}Initializing W&B Sweep...${NC}"

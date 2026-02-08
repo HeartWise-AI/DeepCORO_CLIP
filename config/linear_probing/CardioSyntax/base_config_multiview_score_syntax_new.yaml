@@ -139,3 +139,5 @@ labels_map:
     high: 3
 # Inference parameters
 inference_model_path: !!str outputs/DeepCORO_video_linear_probing/DeepCORO_video_linear_probing_multiview_improved_cls_token/g3cd6n40_20250707-114757/models/best_model_epoch_19.pt
+dataset_mean: [110.4954833984375, 110.4954833984375, 110.4954833984375]
+dataset_std: [37.805782318115234, 37.805782318115234, 37.805782318115234]

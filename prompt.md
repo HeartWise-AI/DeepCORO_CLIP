@@ -105,6 +105,11 @@ bash scripts/runner.sh \
   --run_mode inference \
   --use_wandb false
 
+bash scripts/runner.sh \
+  --selected_gpus 2 \
+  --base_config config/inference/base_config_full_4828_POST_PCI.yaml \
+  --run_mode inference \
+  --use_wandb false
 # Run 100-study subset inference
 bash scripts/runner.sh \
   --selected_gpus 0 \

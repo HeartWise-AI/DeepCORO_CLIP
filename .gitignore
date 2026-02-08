@@ -64,3 +64,9 @@ api_key.json
 
 # Videos
 *.avi
+
+# Log files
+*.log
+
+# Backup files
+*.backup

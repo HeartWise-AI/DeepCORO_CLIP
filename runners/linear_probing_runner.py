@@ -83,6 +83,10 @@ class LinearProbingRunner:
         self.lr_scheduler: LRScheduler = lr_scheduler
         self.loss_fn: Loss = loss_fn
         self.output_dir: str = output_dir
+        # Embedding capture for PCI analysis
+        self._captured_embeddings = []
+        self._embedding_hook_handle = None
+
         self.best_val_loss = float("inf")
         self.best_epoch = -1
         # For simplicity: check the config for a known scheduler_name
@@ -563,6 +567,9 @@ class LinearProbingRunner:
         
         self.linear_probing.train(False)
         
+        # Setup embedding capture for PCI analysis
+        self._setup_embedding_capture()
+        
         # Define compute_ci flag
         compute_ci: bool = False
         
@@ -680,6 +687,60 @@ class LinearProbingRunner:
         """
         self.validate()
     
+
+    def _setup_embedding_capture(self):
+        """Setup hook to capture pooled embeddings before classification heads."""
+        self._captured_embeddings = []
+        
+        def capture_hook(module, input, output):
+            # input[0] is the pooled embedding [B, D] or [B, 2*D] for hybrid
+            if isinstance(input, tuple):
+                emb = input[0].detach().cpu()
+            else:
+                emb = input.detach().cpu()
+            self._captured_embeddings.append(emb)
+        
+        # Hook into the first classification head to capture its input
+        # Handle DDP wrapping
+        model = self.linear_probing.module if hasattr(self.linear_probing, 'module') else self.linear_probing
+        first_head_name = list(model.mil_model.heads.keys())[0]
+        first_head = model.mil_model.heads[first_head_name]
+        self._embedding_hook_handle = first_head.register_forward_hook(capture_hook)
+        print(f"[INFO] Embedding capture hook registered on head '{first_head_name}'")
+
+    def _remove_embedding_capture(self):
+        """Remove the embedding capture hook."""
+        if self._embedding_hook_handle is not None:
+            self._embedding_hook_handle.remove()
+            self._embedding_hook_handle = None
+
+    def _save_embeddings(
+        self,
+        accumulated_names: list,
+        output_path: str,
+    ) -> None:
+        """Save captured embeddings to a file."""
+        if not self._captured_embeddings:
+            print("[WARNING] No embeddings captured to save")
+            return
+        
+        # Concatenate all embeddings
+        embeddings_tensor = torch.cat(self._captured_embeddings, dim=0)
+        
+        # Save as torch file
+        save_dict = {
+            'study_ids': accumulated_names,
+            'embeddings': embeddings_tensor,
+            'embedding_dim': embeddings_tensor.shape[1],
+        }
+        
+        torch.save(save_dict, output_path)
+        print(f"[INFO] Saved {len(accumulated_names)} embeddings to {output_path}")
+        print(f"[INFO] Embedding shape: {embeddings_tensor.shape}")
+        
+        # Clear captured embeddings
+        self._captured_embeddings = []
+
     def inference(self) -> None:
         """
         Run inference on the test dataset and return metrics.
@@ -687,6 +748,9 @@ class LinearProbingRunner:
         assert len(self.val_loader) > 0, "Test loader is empty"
         
         self.linear_probing.train(False)
+        
+        # Setup embedding capture for PCI analysis
+        self._setup_embedding_capture()
         
         # Synchronize before inference starts
         DistributedUtils.sync_process_group(
@@ -746,6 +810,11 @@ class LinearProbingRunner:
                 accumulated_preds=accumulated_preds,
                 accumulated_targets=None,
             )
+            
+            # Save embeddings for PCI analysis
+            embeddings_path = os.path.join(self.output_dir, "predictions", "study_embeddings.pt")
+            self._save_embeddings(accumulated_names, embeddings_path)
+            self._remove_embedding_capture()
 
     def _save_checkpoint(
         self, 

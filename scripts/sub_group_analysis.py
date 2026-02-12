@@ -125,7 +125,6 @@ else:
 
 if compute_metrics:
     lesion_types = ['stenosis_binary', 'stenosis', 'cto', 'thrombus', 'calcif_binary']
-    # lesion_types = ['stenosis']
 
     arteries = (
         "left_main",

@@ -44,6 +44,10 @@ dependencies = [
     "seaborn>=0.13.2",
     "pyarrow>=19.0.1",
     "fvcore>=0.1.5.post20221221",
+    "gdcm>=1.1",
+    "display>=1.0.0",
+    "pylibjpeg>=2.1.0",
+    "pylibjpeg-libjpeg>=2.3.0",
 ]
 
 [project.optional-dependencies]

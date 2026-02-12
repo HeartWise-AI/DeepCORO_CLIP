@@ -219,7 +219,7 @@ class LinearProbingProject(BaseProject):
 
         # Add video encoder parameters if not fully frozen
         if self.config.video_freeze_ratio < 1.0:
-             param_groups.append({
+            param_groups.append({
                 'params': video_encoder.parameters(), 
                 'lr': self.config.video_encoder_lr, 
                 'name': 'video_encoder',
@@ -320,7 +320,7 @@ class LinearProbingProject(BaseProject):
         
         val_loader: DataLoader = get_distributed_video_dataloader(
             config=self.config, 
-            split=self.config.run_mode, 
+            split=RunMode.VALIDATE, 
             mean=mean.tolist(),
             std=std.tolist(),
             shuffle=False,

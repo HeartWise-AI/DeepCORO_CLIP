@@ -18,11 +18,26 @@ Usage:
         --n-bootstrap 1000 \\
         --seed 42
 
-Output files (saved to --output-dir):
-    - prevalence_per_lesion_type.csv
-    - classification_subgroups_ci.csv
-    - regression_subgroups_ci.csv
-    - global_metrics_ci.csv
+Output structure (saved to --output-dir):
+    <output-dir>/
+    ├── classification_subgroups_ci.csv      # Combined (all subgroups)
+    ├── regression_subgroups_ci.csv          # Combined (all subgroups)
+    ├── global_metrics_ci.csv                # Combined (all subgroups)
+    ├── prevalence_per_lesion_type.csv
+    └── per_subgroup/
+        ├── all/
+        │   ├── classification_ci.csv
+        │   ├── regression_ci.csv
+        │   └── global_metrics_ci.csv
+        ├── Male/
+        │   ├── classification_ci.csv
+        │   ├── regression_ci.csv
+        │   └── global_metrics_ci.csv
+        ├── Female/
+        │   └── ...
+        ├── age_lt_50/
+        │   └── ...
+        └── ...
 """
 
 import os
@@ -34,8 +49,10 @@ import pandas as pd
 
 from tqdm import tqdm
 from sklearn.metrics import (
+    f1_score,
     roc_curve,
     roc_auc_score,
+    precision_score,
     confusion_matrix, 
     average_precision_score,
     mean_absolute_error,
@@ -93,6 +110,7 @@ def parse_args() -> argparse.Namespace:
 
 
 args = parse_args()
+os.makedirs(args.output_dir, exist_ok=True)
 get_sex = args.get_sex
 get_age = args.get_age
 compute_metrics = not args.skip_metrics
@@ -297,7 +315,7 @@ if compute_metrics:
         rng = np.random.RandomState(seed)
 
         n_failed = 0
-        auc, auprc, sensitivity, specificity = [], [], [], []
+        auc, auprc, sensitivity, specificity, precision, f1 = [], [], [], [], [], []
         for _ in range(n_bootstrap):
             indices = rng.choice(len(y_true), size=len(y_true), replace=True)
 
@@ -318,6 +336,10 @@ if compute_metrics:
                     sensitivity.append(tp / (tp + fn))
                 if (tn + fp) > 0:
                     specificity.append(tn / (tn + fp))
+                if (tp + fp) > 0:
+                    precision.append(tp / (tp + fp))
+                if (tp + fp) > 0 and (tp + fn) > 0:
+                    f1.append(2 * tp / (2 * tp + fp + fn))
 
             except ValueError:
                 continue
@@ -326,7 +348,9 @@ if compute_metrics:
             'auc': safe_ci(auc),
             'auprc': safe_ci(auprc),
             'sensitivity': safe_ci(sensitivity),
-            'specificity': safe_ci(specificity)
+            'specificity': safe_ci(specificity),
+            'precision': safe_ci(precision),
+            'f1': safe_ci(f1)
         }
 
     def bootstrap_regression_metrics(
@@ -409,7 +433,13 @@ if compute_metrics:
                         'sensitivity_ci_upper': bootstrap_metrics_results['sensitivity']['ci_upper'],
                         'specificity': bootstrap_metrics_results['specificity']['mean'],
                         'specificity_ci_lower': bootstrap_metrics_results['specificity']['ci_lower'],
-                        'specificity_ci_upper': bootstrap_metrics_results['specificity']['ci_upper']
+                        'specificity_ci_upper': bootstrap_metrics_results['specificity']['ci_upper'],
+                        'precision': bootstrap_metrics_results['precision']['mean'],
+                        'precision_ci_lower': bootstrap_metrics_results['precision']['ci_lower'],
+                        'precision_ci_upper': bootstrap_metrics_results['precision']['ci_upper'],
+                        'f1': bootstrap_metrics_results['f1']['mean'],
+                        'f1_ci_lower': bootstrap_metrics_results['f1']['ci_lower'],
+                        'f1_ci_upper': bootstrap_metrics_results['f1']['ci_upper']
                     })
 
                 elif mode == 'regression':
@@ -481,7 +511,13 @@ if compute_metrics:
                     'micro_sensitivity_ci_upper': bootstrap_metrics_results['sensitivity']['ci_upper'],
                     'micro_specificity': bootstrap_metrics_results['specificity']['mean'],
                     'micro_specificity_ci_lower': bootstrap_metrics_results['specificity']['ci_lower'],
-                    'micro_specificity_ci_upper': bootstrap_metrics_results['specificity']['ci_upper']
+                    'micro_specificity_ci_upper': bootstrap_metrics_results['specificity']['ci_upper'],
+                    'micro_precision': bootstrap_metrics_results['precision']['mean'],
+                    'micro_precision_ci_lower': bootstrap_metrics_results['precision']['ci_lower'],
+                    'micro_precision_ci_upper': bootstrap_metrics_results['precision']['ci_upper'],
+                    'micro_f1': bootstrap_metrics_results['f1']['mean'],
+                    'micro_f1_ci_lower': bootstrap_metrics_results['f1']['ci_lower'],
+                    'micro_f1_ci_upper': bootstrap_metrics_results['f1']['ci_upper']
                 })
 
         # Compute global MAE across all arteries (for regression lesion types like stenosis)
@@ -544,3 +580,23 @@ if compute_metrics:
     print(f"\nClassification results saved. Shape: {df_results_classification_subgroups_ci.shape}")
     print(f"Regression results saved. Shape: {df_results_regression_subgroups_ci.shape}")
     print(f"Global/micro-averaged results saved. Shape: {df_results_micro_ci.shape}")
+    
+    per_subgroup_dir = os.path.join(args.output_dir, 'per_subgroup')
+    os.makedirs(per_subgroup_dir, exist_ok=True)
+    
+    for subgroup_name in subgroups.keys():
+        subgroup_dir = os.path.join(per_subgroup_dir, subgroup_name.replace(' ', '_').replace('>', 'gt').replace('<', 'lt'))
+        os.makedirs(subgroup_dir, exist_ok=True)
+        
+        df_cls = df_results_classification_subgroups_ci[df_results_classification_subgroups_ci['subgroup'] == subgroup_name]
+        df_reg = df_results_regression_subgroups_ci[df_results_regression_subgroups_ci['subgroup'] == subgroup_name]
+        df_micro = df_results_micro_ci[df_results_micro_ci['subgroup'] == subgroup_name]
+        
+        if len(df_cls) > 0:
+            df_cls.to_csv(os.path.join(subgroup_dir, 'classification_ci.csv'), index=False)
+        if len(df_reg) > 0:
+            df_reg.to_csv(os.path.join(subgroup_dir, 'regression_ci.csv'), index=False)
+        if len(df_micro) > 0:
+            df_micro.to_csv(os.path.join(subgroup_dir, 'global_metrics_ci.csv'), index=False)
+    
+    print(f"Per-subgroup results saved to: {per_subgroup_dir}")

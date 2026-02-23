@@ -74,8 +74,9 @@ output_dir: outputs/DeepCORO_video_linear_probing/sarra_stenosis70_inference
 # Model checkpoint for inference
 inference_model_path: /media/data1/ravram/bestmodelstenosis70/best_model_epoch_18.pt
 # Pre-computed training statistics
-dataset_mean: [122.15185546875, 122.15185546875, 122.15185546875]
-dataset_std: [28.585073471069336, 28.585073471069336, 28.585073471069336]
+# Hardcoded dataset statistics for deterministic inference
+mean: [110.4954833984375, 110.4954833984375, 110.4954833984375]
+std: [37.805782318115234, 37.805782318115234, 37.805782318115234]
 # CI parameters
 ci_confidence_level: 0.95
 ci_n_bootstrap: 1000

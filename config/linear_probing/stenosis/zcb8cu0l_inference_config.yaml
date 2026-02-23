@@ -1063,5 +1063,5 @@ train_pooling_params: true
 view_column: null
 num_view_classes: 0
 view_labels_map: null
-dataset_mean: null
-dataset_std: null
+dataset_mean: [122.09012603759766, 122.09012603759766, 122.09012603759766]
+dataset_std: [28.790834426879883, 28.790834426879883, 28.790834426879883]

@@ -1,4 +1,33 @@
+"""
+Subgroup analysis with bootstrap confidence intervals for classification and regression metrics.
+
+Usage:
+    # Basic usage with defaults
+    python scripts/sub_group_analysis.py
+
+    # Custom input/output paths
+    python scripts/sub_group_analysis.py --input-csv /path/to/predictions.csv --output-dir ./results
+
+    # Faster run with fewer bootstrap samples
+    python scripts/sub_group_analysis.py --n-bootstrap 100
+
+    # Full example
+    python scripts/sub_group_analysis.py \\
+        --input-csv /path/to/predictions.csv \\
+        --output-dir ./results \\
+        --n-bootstrap 1000 \\
+        --seed 42
+
+Output files (saved to --output-dir):
+    - prevalence_per_lesion_type.csv
+    - classification_subgroups_ci.csv
+    - regression_subgroups_ci.csv
+    - global_metrics_ci.csv
+"""
+
+import os
 import ast
+import argparse
 import pydicom
 import numpy as np
 import pandas as pd
@@ -14,9 +43,59 @@ from sklearn.metrics import (
     r2_score
 )
 
-get_sex = False
-get_age = False
-compute_metrics = True
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Subgroup analysis with bootstrap confidence intervals for classification and regression metrics."
+    )
+    
+    parser.add_argument(
+        "--input-csv",
+        type=str,
+        default="/media/data1/jdelfrate/DeepCORO_CLIP/sarra_results/preds_with_true_filled_20251020_233850_with_sex_and_age.csv",
+        help="Path to input CSV with predictions and ground truth."
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=".",
+        help="Directory to save output CSVs."
+    )
+    parser.add_argument(
+        "--n-bootstrap",
+        type=int,
+        default=1000,
+        help="Number of bootstrap iterations for confidence intervals."
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for reproducibility."
+    )
+    parser.add_argument(
+        "--get-sex",
+        action="store_true",
+        help="Extract sex from ECG metadata (requires additional data files)."
+    )
+    parser.add_argument(
+        "--get-age",
+        action="store_true",
+        help="Extract age from DICOM files (requires additional data files)."
+    )
+    parser.add_argument(
+        "--skip-metrics",
+        action="store_true",
+        help="Skip metrics computation (only run data preparation)."
+    )
+    
+    return parser.parse_args()
+
+
+args = parse_args()
+get_sex = args.get_sex
+get_age = args.get_age
+compute_metrics = not args.skip_metrics
 
 df_video = None
 if get_sex:
@@ -121,7 +200,7 @@ if get_age:
     df_results.to_csv('/media/data1/jdelfrate/DeepCORO_CLIP/sarra_results/preds_with_true_filled_20251020_233850_with_sex_and_age.csv', index=False)
 
 else:
-    df_results = pd.read_csv('/media/data1/jdelfrate/DeepCORO_CLIP/sarra_results/preds_with_true_filled_20251020_233850_with_sex_and_age.csv')
+    df_results = pd.read_csv(args.input_csv)
 
 if compute_metrics:
     lesion_types = ['stenosis_binary', 'stenosis', 'cto', 'thrombus', 'calcif_binary']
@@ -148,6 +227,7 @@ if compute_metrics:
     )
 
     subgroups = {
+        "all": df_results,
         "Male": df_results[df_results.sex == 'MALE'],
         "Female": df_results[df_results.sex == 'FEMALE'],
         "age <= 50": df_results[df_results.age <= 50],
@@ -192,7 +272,7 @@ if compute_metrics:
     df_prevalence = pd.DataFrame(prevalence_summary)
     print("\nPrevalence per lesion type (across all arteries):")
     print(df_prevalence)
-    df_prevalence.to_csv('prevalence_per_lesion_type.csv', index=False)
+    df_prevalence.to_csv(os.path.join(args.output_dir, 'prevalence_per_lesion_type.csv'), index=False)
 
     def compute_best_threshold(y_true: list[float], y_pred: list[float]) -> float:
         fpr, tpr, thresholds = roc_curve(y_true, y_pred)
@@ -310,7 +390,7 @@ if compute_metrics:
                     continue
                 
                 if mode == 'classification':
-                    bootstrap_metrics_results = bootstrap_classification_metrics(y_true, y_pred)
+                    bootstrap_metrics_results = bootstrap_classification_metrics(y_true, y_pred, args.n_bootstrap, args.seed)
 
                     classification_results.append({
                         'artery': artery,
@@ -333,7 +413,7 @@ if compute_metrics:
                     })
 
                 elif mode == 'regression':
-                    bootstrap_metrics_results = bootstrap_regression_metrics(y_true, y_pred)
+                    bootstrap_metrics_results = bootstrap_regression_metrics(y_true, y_pred, args.n_bootstrap, args.seed)
 
                     regression_results.append({
                         'artery': artery,
@@ -379,7 +459,7 @@ if compute_metrics:
                     print(f"Skipping micro {lesion_type} for subgroup {subgroup} - less than 2 unique values")
                     continue
 
-                bootstrap_metrics_results = bootstrap_classification_metrics(all_y_true, all_y_pred)
+                bootstrap_metrics_results = bootstrap_classification_metrics(all_y_true, all_y_pred, args.n_bootstrap, args.seed)
 
                 micro_results.append({
                     'lesion_type': lesion_type,
@@ -428,7 +508,7 @@ if compute_metrics:
                     print(f"Skipping global {lesion_type} for subgroup {subgroup} - less than 2 unique values")
                     continue
 
-                bootstrap_metrics_results = bootstrap_regression_metrics(all_y_true, all_y_pred)
+                bootstrap_metrics_results = bootstrap_regression_metrics(all_y_true, all_y_pred, args.n_bootstrap, args.seed)
 
                 micro_results.append({
                     'lesion_type': lesion_type,
@@ -453,11 +533,14 @@ if compute_metrics:
                     'global_pearson_r_ci_upper': bootstrap_metrics_results['pearson_r']['ci_upper'],
                 })
 
-    # df_results_classification_subgroups_ci = pd.DataFrame(classification_results)
+    df_results_classification_subgroups_ci = pd.DataFrame(classification_results)
     df_results_regression_subgroups_ci = pd.DataFrame(regression_results)
     df_results_micro_ci = pd.DataFrame(micro_results)
-    # df_results_classification_subgroups_ci.to_csv('preds_with_true_filled_20251020_233850_with_sex_and_age_classification_subgroups_ci.csv', index=False)
-    df_results_regression_subgroups_ci.to_csv('preds_with_true_filled_20251020_233850_with_sex_and_age_regression_subgroups_ci.csv', index=False)
-    df_results_micro_ci.to_csv('preds_with_true_filled_20251020_233850_with_sex_and_age_global_metrics_ci.csv', index=False)
-    print(f"\nGlobal/micro-averaged results saved. Shape: {df_results_micro_ci.shape}")
-    print(df_results_micro_ci)
+    
+    df_results_classification_subgroups_ci.to_csv(os.path.join(args.output_dir, 'classification_subgroups_ci.csv'), index=False)
+    df_results_regression_subgroups_ci.to_csv(os.path.join(args.output_dir, 'regression_subgroups_ci.csv'), index=False)
+    df_results_micro_ci.to_csv(os.path.join(args.output_dir, 'global_metrics_ci.csv'), index=False)
+    
+    print(f"\nClassification results saved. Shape: {df_results_classification_subgroups_ci.shape}")
+    print(f"Regression results saved. Shape: {df_results_regression_subgroups_ci.shape}")
+    print(f"Global/micro-averaged results saved. Shape: {df_results_micro_ci.shape}")

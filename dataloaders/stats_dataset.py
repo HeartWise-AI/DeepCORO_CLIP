@@ -62,7 +62,7 @@ class StatsDataset(torch.utils.data.Dataset):
         for _, row in data.iterrows():
             file_name = row.iloc[filename_index]
             file_mode = str(row.iloc[split_index]).lower().strip()
-
+            
             if split in ["all", file_mode] and os.path.exists(file_name):
                 fnames.append(file_name)
                 if target_index is not None:

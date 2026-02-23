@@ -13,6 +13,7 @@ Usage:
 
 import sys
 import os
+import re
 import argparse
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
@@ -124,7 +125,6 @@ NON_RCA_VESSELS = [
     "om1_stenosis", "om2_stenosis", "bx_stenosis", "lvp_stenosis"
 ]
 RIGHT_DOMINANCE_DEPENDENT_VESSELS = ["pda_stenosis", "posterolateral_stenosis"]
-LEFT_DOMINANCE_DEPENDENT_VESSELS = ["pda_stenosis", "lvp_stenosis"]
 
 # ──────────────────────────────────────────────────────────────────────────
 # Formatting Functions
@@ -361,13 +361,25 @@ def create_report(row: pd.Series, coronary_specific_report: bool = True) -> str:
     dom_lower = dom_raw.lower()
     has_graft = ("pontage" in str(row.get("Conclusion", "")).lower()) or (row.get("bypass_graft", 0) == 1)
 
-    # Extend RCA/non-RCA sets based on dominance
+    # Override dominance when anatomy proves left-dominant:
+    # lvp_stenosis > 0 means the LVP was evaluated and diseased, which only
+    # exists in left-dominant (or co-dominant) hearts.
+    lvp_val = pd.to_numeric(row.get("lvp_stenosis", 0), errors="coerce") or 0
+    if lvp_val > 0:
+        dom_lower = "left dominant"
+        dom_raw = "left dominant"
+
+    # Extend RCA/non-RCA sets based on dominance.
+    # In left-dominant hearts LVP is the posterior vessel (LVP ≡ PDA), so
+    # PDA is excluded — LVP already covers it in NON_RCA_VESSELS.
+    # In right-dominant hearts PDA is the posterior vessel and LVP does not
+    # exist anatomically, so LVP is excluded from non-RCA.
     if "right" in dom_lower:
         rca_extended = RCA_VESSELS + RIGHT_DOMINANCE_DEPENDENT_VESSELS
-        non_rca_extended = NON_RCA_VESSELS
+        non_rca_extended = [v for v in NON_RCA_VESSELS if v != "lvp_stenosis"]
     else:  # left- or co-dominant
         rca_extended = RCA_VESSELS
-        non_rca_extended = NON_RCA_VESSELS + LEFT_DOMINANCE_DEPENDENT_VESSELS
+        non_rca_extended = NON_RCA_VESSELS  # LVP already included, no PDA needed
 
     # Choose which vessel list to describe
     if coronary_specific_report:
@@ -524,43 +536,98 @@ def create_report(row: pd.Series, coronary_specific_report: bool = True) -> str:
 # Data Processing Functions
 # ──────────────────────────────────────────────────────────────────────────
 
+# GT pcidone columns grouped by coronary side
+_LCA_PCIDONE_COLS = [
+    "left_main_pcidone", "prox_lad_pcidone", "mid_lad_pcidone", "dist_lad_pcidone",
+    "D1_pcidone", "D2_pcidone", "prox_lcx_pcidone", "mid_lcx_pcidone", "dist_lcx_pcidone",
+    "om1_pcidone", "om2_pcidone", "bx_pcidone", "lvp_pcidone",
+]
+_RCA_PCIDONE_COLS = [
+    "prox_rca_pcidone", "mid_rca_pcidone", "dist_rca_pcidone",
+    "pda_pcidone", "posterolateral_pcidone", "right_marginal_pcidone",
+]
+
+
+def _study_has_pci_on_side(df: pd.DataFrame) -> pd.Series:
+    """Return a boolean Series: True when the GT *_pcidone columns confirm
+    that a PCI was actually performed on the video's coronary side.
+
+    For non-LCA/RCA rows (e.g. "Femoral", "Other", "Catheter") we return
+    True so that stent=1 on those rows still triggers PCI status (legacy
+    behaviour).  These rows are filtered out before inference anyway.
+
+    If no *_pcidone columns are present, falls back to True (trust the
+    stent_presence_class classifier as before).
+    """
+    lca_cols = [c for c in _LCA_PCIDONE_COLS if c in df.columns]
+    rca_cols = [c for c in _RCA_PCIDONE_COLS if c in df.columns]
+
+    if not lca_cols and not rca_cols:
+        return pd.Series(True, index=df.index)
+
+    lca_any = (df[lca_cols].apply(pd.to_numeric, errors="coerce").fillna(0) > 0).any(axis=1) if lca_cols else pd.Series(False, index=df.index)
+    rca_any = (df[rca_cols].apply(pd.to_numeric, errors="coerce").fillna(0) > 0).any(axis=1) if rca_cols else pd.Series(False, index=df.index)
+
+    is_left = df["main_structure_name"].eq("Left Coronary")
+    is_right = df["main_structure_name"].eq("Right Coronary")
+
+    # LCA/RCA → check GT pcidone on that side; everything else → True (legacy)
+    return (is_left & lca_any) | (is_right & rca_any) | (~is_left & ~is_right)
+
+
 def assign_procedure_status(df: pd.DataFrame) -> pd.DataFrame:
     """
     Assign procedure status based on PCI (stent) presence and timing.
-    
+
     This function creates three mutually-exclusive status categories:
     - "PCI": Current procedure has stent placement
     - "POST_PCI": Current procedure is after a previous PCI in the same study/artery
     - "diagnostic": Diagnostic procedure with no previous PCI
-    
+
+    Two key rules:
+    1. stent_presence_class=1 → always PCI (never diagnostic), even if the
+       structure classifier assigned the wrong coronary side.
+    2. The PCI *cascade* (POST_PCI for later videos) only triggers when GT
+       *_pcidone confirms PCI on that coronary side.  If pcidone=0 on the
+       labelled side, the stent=1 video is skipped (PCI status) but does NOT
+       contaminate neighbouring videos on that side — they stay diagnostic.
+
     Args:
         df: Input DataFrame with stent_presence_class and related columns
-    
+
     Returns:
         DataFrame with added 'status' column
     """
     logger.info("Assigning procedure status based on PCI timing...")
-    
+
     df_copy = df.copy()
-    
+
     # ── 1. Ensure the column exists up front ────────────────────────────────────────
     df_copy["status"] = "unknown"          # will be overwritten below
 
-    # ── 2. Convenience flags ────────────────────────────────────────────────────────
-    df_copy["is_pci"] = df_copy["stent_presence_class"].eq(1)
+    # ── 2a. stent=1 → always PCI for the video itself ──────────────────────────────
+    df_copy["has_stent"] = df_copy["stent_presence_class"].eq(1)
 
-    # cumulative "has PCI already been seen *earlier* in this study AND artery?"
+    # ── 2b. Cascade only when GT pcidone confirms PCI on this side ──────────────────
+    gt_pci_on_side = _study_has_pci_on_side(df_copy)
+    df_copy["is_pci_cascade"] = df_copy["has_stent"] & gt_pci_on_side
+
+    skipped = (df_copy["has_stent"] & ~gt_pci_on_side).sum()
+    if skipped:
+        logger.info("Stent=1 but pcidone=0 on labelled side: %d videos "
+                     "(marked PCI but no cascade)", skipped)
+
+    # cumulative "has confirmed PCI already been seen *earlier* in this study+artery?"
     group_cols = ["StudyInstanceUID", "main_structure_name"]
     df_copy["pci_seen_before"] = (
         df_copy
-        .groupby(group_cols, sort=False)["is_pci"]
-        .cumsum()            # running total …
-        .shift(fill_value=0) # … but *before* the current row
+        .groupby(group_cols, sort=False)["is_pci_cascade"]
+        .transform(lambda g: g.cumsum().shift(fill_value=0))
         .astype(bool)
     )
 
     # ── 3. Build the three mutually-exclusive conditions ───────────────────────────
-    cond_pci        = df_copy["is_pci"]
+    cond_pci        = df_copy["has_stent"]              # stent=1 → always PCI
     cond_post_pci   = (~cond_pci
                        & df_copy["pci_seen_before"]
                        & df_copy["contrast_agent_class"].eq(1))
@@ -573,12 +640,12 @@ def assign_procedure_status(df: pd.DataFrame) -> pd.DataFrame:
     df_copy.loc[cond_diagnostic, "status"] = "diagnostic"
 
     # ── 5. (Optional) tidy-up helper columns ───────────────────────────────────────
-    df_copy.drop(columns=["is_pci", "pci_seen_before"], inplace=True)
+    df_copy.drop(columns=["has_stent", "is_pci_cascade", "pci_seen_before"], inplace=True)
 
     # Log status distribution
     status_counts = df_copy["status"].value_counts()
     logger.info(f"Status distribution: {status_counts.to_dict()}")
-    
+
     return df_copy
 
 
@@ -612,13 +679,42 @@ def apply_hard_filters(df: pd.DataFrame, config: Dict[str, Any]) -> pd.DataFrame
         logger.warning(f"Invalid status filter type: {type(status_filter)}. Using default 'diagnostic'")
         status_list = ['diagnostic']
     
+    # Exclude congenital heart procedure studies (not coronary angiograms)
+    congenital_mask = pd.Series(False, index=df.index)
+    if "series_description" in df.columns:
+        congenital_mask = df["series_description"].str.contains(
+            "CONGENITAL", case=False, na=False
+        )
+        n_congenital = congenital_mask.sum()
+        if n_congenital > 0:
+            logger.info(
+                "Excluding %d videos from %d congenital-procedure studies",
+                n_congenital,
+                df.loc[congenital_mask, "StudyInstanceUID"].nunique(),
+            )
+
+    # Exclude studies where every stenosis value is -1 or NaN (no coronary data)
+    stenosis_cols = [c for c in df.columns if c.endswith("_stenosis")]
+    no_stenosis_mask = pd.Series(False, index=df.index)
+    if stenosis_cols:
+        stenosis_vals = df[stenosis_cols].apply(pd.to_numeric, errors="coerce")
+        no_stenosis_mask = ((stenosis_vals == -1) | stenosis_vals.isna()).all(axis=1)
+        n_no_stenosis = no_stenosis_mask.sum()
+        if n_no_stenosis > 0:
+            logger.info(
+                "Excluding %d videos with all stenosis = -1/NaN",
+                n_no_stenosis,
+            )
+
     # Apply filters
     filtered_df = df.loc[
         (df["status"].isin(status_list)) &
         (df["main_structure_name"].isin(main_structures)) &
-        (df["contrast_agent_class"] == contrast_agent_class)
+        (df["contrast_agent_class"] == contrast_agent_class) &
+        ~congenital_mask &
+        ~no_stenosis_mask
     ].copy()
-    
+
     logger.info(f"Dataset filtered from {len(df)} to {len(filtered_df)} rows")
     logger.info(f"Status filter applied: {status_list}")
     return filtered_df
@@ -692,6 +788,70 @@ def load_data(data_path: str) -> pd.DataFrame:
     return df
 
 
+def _extract_acq_time_from_filename(fn: str) -> Optional[float]:
+    """Extract DICOM acquisition datetime (YYYYMMDDHHMMSS) from the SOP Instance UID in the filename.
+
+    Many DICOM SOP UIDs embed the acquisition datetime as YYYYMMDDHHMMSS.
+    This is more reliable than series_time (which can be a transfer/storage
+    timestamp with corrupted hour values).
+
+    Returns the full 14-digit datetime as a float so that procedures spanning
+    midnight sort correctly (the date portion increments across midnight).
+    """
+    fn = str(fn)
+    basename = fn.rsplit("/", 1)[-1]
+    # The SOP UID is after the first '_' in StudyUID_SOPInstanceUID.dcm.avi
+    parts = basename.split("_", 1)
+    if len(parts) < 2:
+        return None
+    sop = parts[1]
+    m = re.search(r"(20[12]\d[01]\d[0-3]\d\d{6})", sop)
+    if m:
+        return float(m.group(1))
+    return None
+
+
+def sort_by_study_and_time(df: pd.DataFrame) -> pd.DataFrame:
+    """Sort DataFrame by StudyInstanceUID and acquisition time.
+
+    The most reliable time source is the DICOM acquisition timestamp
+    embedded in the SOP Instance UID portion of the filename (YYYYMMDDHHMMSS).
+    series_time / SeriesTime is used as a fallback for videos without a
+    filename timestamp.  If FileName is absent entirely, we fall back to
+    series_time / SeriesTime alone.
+
+    Returns the sorted DataFrame (temp columns are dropped).
+    """
+    if "StudyInstanceUID" not in df.columns:
+        logger.warning("No StudyInstanceUID column — skipping temporal sort")
+        return df
+
+    # Primary: acquisition time from filename
+    if "FileName" in df.columns:
+        df["_acq_time"] = df["FileName"].apply(_extract_acq_time_from_filename)
+        acq_coverage = df["_acq_time"].notna().sum()
+        logger.info("Extracted acquisition time from filenames: %d / %d (%.1f%%)",
+                     acq_coverage, len(df), 100.0 * acq_coverage / len(df))
+    else:
+        df["_acq_time"] = np.nan
+        logger.info("No FileName column — using series_time/SeriesTime only")
+
+    # Fallback: series_time / SeriesTime
+    if "series_time" in df.columns:
+        fallback = pd.to_numeric(df["series_time"], errors="coerce")
+        fallback = fallback.where(fallback > 0)  # -1 means missing
+    elif "SeriesTime" in df.columns:
+        fallback = pd.to_numeric(df["SeriesTime"], errors="coerce")
+    else:
+        fallback = pd.Series(np.nan, index=df.index)
+
+    df["_sort_time"] = df["_acq_time"].fillna(fallback)
+    df = df.sort_values(["StudyInstanceUID", "_sort_time"], na_position="last")
+    df.drop(columns=["_acq_time", "_sort_time"], inplace=True)
+    logger.info("Sorted data by StudyInstanceUID and acquisition time")
+    return df
+
+
 def process_dataset(
     input_path: str,
     output_dir: str,
@@ -699,7 +859,7 @@ def process_dataset(
 ) -> None:
     """
     Main dataset processing pipeline.
-    
+
     Args:
         input_path: Path to input data file
         output_dir: Directory to save processed data
@@ -708,21 +868,18 @@ def process_dataset(
     # Create output directory
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    
+
     # Load data
     df = load_data(input_path)
-    
+
     # Apply mapping if needed
     if 'apply_mappings' in config and config['apply_mappings']:
         if 'main_structure_class' in df.columns:
             df['main_structure_name'] = df['main_structure_class'].map(MAIN_STRUCTURE_MAP)
         if 'dominance_class' in df.columns:
             df['dominance_name'] = df['dominance_class'].map(DOMINANCE_MAP)
-        
-        # Sort by StudyInstanceUID and SeriesTime for proper temporal ordering
-        if 'StudyInstanceUID' in df.columns and 'SeriesTime' in df.columns:
-            df = df.sort_values(['StudyInstanceUID', 'SeriesTime'])
-            logger.info("Sorted data by StudyInstanceUID and SeriesTime for temporal ordering")
+
+        df = sort_by_study_and_time(df)
     
     # Assign procedure status based on PCI timing (if enabled and required columns exist)
     if config.get('assign_status', True):

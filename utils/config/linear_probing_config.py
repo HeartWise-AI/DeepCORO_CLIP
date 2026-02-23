@@ -96,9 +96,12 @@ class LinearProbingConfig(HeartWiseConfig):
     ci_confidence_level: float = 0.95  # 95% confidence interval
     ci_n_bootstrap: int = 1000  # Number of bootstrap samples
 
+    # Pooling optimisation toggle
+    train_pooling_params: bool = True  # When False, attention/cls_token params are frozen (old behaviour)
+
     # View embedding parameters (EchoJEPA-style angle embeddings)
     view_column: Optional[str] = None  # CSV column for per-video view class (e.g., "view_class")
-    num_view_classes: int = 12  # Number of real view classes (excluding PAD)
+    num_view_classes: int = 0  # Number of real view classes (excluding PAD)
     view_labels_map: Optional[Dict[str, int]] = None  # Mapping from view class string to integer ID
 
     # Pre-computed dataset statistics (optional - if None, will be calculated)

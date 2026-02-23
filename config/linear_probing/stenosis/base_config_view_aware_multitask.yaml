@@ -1,6 +1,7 @@
 # Full multitask config: stenosis regression + stenosis_binary + calcif_binary + cto + thrombus
 # stenosis_binary auto-derived: left_main >=50%, others >=70%
 # With 3.0x head_weights for low-prevalence distal/branch segments (stenosis regression)
+# VIEW-AWARE: Uses EchoJEPA-style angle embeddings per video before MIL aggregation
 
 # Pipeline parameters
 pipeline_project: !!str DeepCORO_video_linear_probing
@@ -8,10 +9,10 @@ base_checkpoint_path: !!str outputs
 run_mode: !!str train
 epochs: !!int 25
 seed: !!int 42
-tag: !!str mvit_pretrained_multiview_weighted_distal
+tag: !!str mvit_view_aware_multitask
 # wandb parameters
-name: !!str DeepCORO_stenosis_weighted_distal
-project: !!str DeepCORO_stenosis_weighted_distal
+name: !!str DeepCORO_view_aware_multitask
+project: !!str DeepCORO_view_aware_multitask
 entity: !!str mhi_ai
 use_wandb: !!bool true
 # Training parameters
@@ -25,7 +26,29 @@ lr_step_period: !!int 4
 factor: !!float 0.16090885523071338
 num_hard_restarts_cycles: !!int 3
 warm_restart_tmult: !!float 2.0
+
+# =============================================================================
+# View Embedding Parameters (EchoJEPA-style angle embeddings)
+# =============================================================================
+view_column: !!str view_class
+num_view_classes: !!int 12
+view_labels_map:
+  AP: 0
+  AP Caudal: 1
+  AP Cranial: 2
+  LAO Caudal: 3
+  LAO Cranial: 4
+  LAO Lateral: 5
+  LAO Straight: 6
+  Other: 7
+  RAO Caudal: 8
+  RAO Cranial: 9
+  RAO Lateral: 10
+  RAO Straight: 11
+
+# =============================================================================
 # Dataset parameters
+# =============================================================================
 data_filename: !!str /media/data1/datasets/DeepCoro_CLIP/CTO_THROMBUS_STENOSIS_70_CALCIF_inference_with_binary.csv
 num_workers: !!int 10
 batch_size: !!int 4

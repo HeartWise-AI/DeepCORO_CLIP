@@ -1,0 +1,96 @@
+command:
+  - ${env}
+  - torchrun
+  - "--nproc_per_node=1"
+  - "--master_port=29509"
+  - "scripts/main.py"
+  - "--base_config"
+  - "config/linear_probing/stenosis/base_config_multiview_weighted_distal_simple_new_dataset.yaml"
+  - ${args}
+name: "sweep_trainable_pooling_allheads"
+project: "DeepCORO_stenosis_weighted_distal"
+entity: "mhi_ai"
+method: bayes
+metric:
+  name: best_val_loss
+  goal: minimize
+parameters:
+  # =============================================================
+  # KEY SWEEP TARGETS: Pooling LRs (never properly tuned before)
+  # =============================================================
+
+  # Attention pooling (V, U, w matrices) - param group: attention_pooling
+  attention_lr:
+    distribution: log_uniform_values
+    min: 0.00005
+    max: 0.005
+  attention_weight_decay:
+    distribution: log_uniform_values
+    min: 0.000001
+    max: 0.001
+
+  # CLS token pooling (cls_token + across-video attn) - param group: cls_token_pooling
+  attention_across_lr:
+    distribution: log_uniform_values
+    min: 0.00005
+    max: 0.005
+  attention_across_weight_decay:
+    distribution: log_uniform_values
+    min: 0.000001
+    max: 0.0001
+
+  # Within-video attention (hierarchical cls_token processing)
+  attention_within_lr:
+    distribution: log_uniform_values
+    min: 0.0005
+    max: 0.005
+  attention_within_weight_decay:
+    distribution: log_uniform_values
+    min: 0.000001
+    max: 0.0001
+
+  # =============================================================
+  # Attention architecture
+  # =============================================================
+  num_attention_heads:
+    values: [6, 8]
+  dropout_attention:
+    distribution: uniform
+    min: 0.15
+    max: 0.45
+
+  # =============================================================
+  # Video encoder (keep range tight, already well-tuned)
+  # =============================================================
+  video_encoder_lr:
+    distribution: log_uniform_values
+    min: 0.000002
+    max: 0.00002
+  video_freeze_ratio:
+    distribution: uniform
+    min: 0.75
+    max: 0.85
+
+  # =============================================================
+  # Scheduler
+  # =============================================================
+  num_warmup_percent:
+    distribution: uniform
+    min: 0.05
+    max: 0.15
+  scheduler_name:
+    values: ["cosine_with_warmup"]
+
+  # =============================================================
+  # Fixed params
+  # =============================================================
+  num_workers:
+    values: [4]
+  batch_size:
+    values: [8, 12]
+
+early_terminate:
+  type: hyperband
+  min_iter: 4
+  eta: 2
+  s: 2

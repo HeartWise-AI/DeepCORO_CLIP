@@ -130,10 +130,15 @@ class LinearProbingProject(BaseProject):
         # Calculate dataset statistics
         mean, std = calculate_dataset_statistics_ddp(self.config)        
         
-        # View embedding parameters
+        # View embedding parameters — only enable when view_column is set in the YAML
         view_column = getattr(self.config, 'view_column', None)
         view_labels_map = getattr(self.config, 'view_labels_map', None)
-        num_view_classes = getattr(self.config, 'num_view_classes', 0)
+        if view_column:
+            num_view_classes = getattr(self.config, 'num_view_classes', 0)
+            print(f"View embeddings ENABLED: view_column='{view_column}', {num_view_classes} view classes + 1 PAD")
+        else:
+            num_view_classes = 0
+            print("View embeddings DISABLED (no view_column in config)")
 
         # Get dataloaders with multi-video parameters
         train_loader: DataLoader = get_distributed_video_dataloader(
@@ -202,8 +207,6 @@ class LinearProbingProject(BaseProject):
 
         # Initialize Multi-Instance Linear Probing model
         print(f"Initializing Multi-Instance Linear Probing model with pooling mode: {self.config.pooling_mode}")
-        if num_view_classes > 0:
-            print(f"  View embeddings enabled: {num_view_classes} view classes + 1 PAD")
         mil_model: MultiInstanceLinearProbing = ModelRegistry.get("multi_instance_linear_probing")(
             embedding_dim=embedding_dim,
             head_structure=self.config.head_structure,
@@ -247,7 +250,7 @@ class LinearProbingProject(BaseProject):
             })
             
         # Add attention parameters if applicable (potentially different LR/WD)
-        if self.config.pooling_mode == "attention":
+        if "attention" in self.config.pooling_mode and self.config.train_pooling_params:
             # Combine all attention-specific parameters (V, U, w) into one group
             attention_params = itertools.chain(
                 mil_model.module.attention_V.parameters(),
@@ -260,6 +263,33 @@ class LinearProbingProject(BaseProject):
                 'name': 'attention_pooling',
                 'weight_decay': self.config.attention_weight_decay,
             })
+
+        # Add CLS token parameters if applicable
+        if "cls_token" in self.config.pooling_mode and self.config.train_pooling_params:
+            cls_params = [mil_model.module.cls_token]
+            if hasattr(mil_model.module, 'cls_attention_within'):
+                cls_params_iter = itertools.chain(
+                    cls_params,
+                    mil_model.module.cls_attention_within.parameters(),
+                    mil_model.module.cls_attention_across.parameters(),
+                    mil_model.module.cls_norm_within.parameters(),
+                    mil_model.module.cls_norm_across.parameters(),
+                )
+            else:
+                cls_params_iter = itertools.chain(
+                    cls_params,
+                    mil_model.module.cls_attention.parameters(),
+                    mil_model.module.cls_norm.parameters(),
+                )
+            param_groups.append({
+                'params': cls_params_iter,
+                'lr': self.config.attention_across_lr,
+                'name': 'cls_token_pooling',
+                'weight_decay': self.config.attention_across_weight_decay,
+            })
+
+        if not self.config.train_pooling_params:
+            print("NOTE: train_pooling_params=False — attention/cls_token params are FROZEN (old behaviour)")
 
         # Add view embedding parameters if applicable
         if num_view_classes > 0 and hasattr(mil_model.module, 'view_embedding'):
@@ -337,10 +367,15 @@ class LinearProbingProject(BaseProject):
         # Calculate dataset statistics
         mean, std = calculate_dataset_statistics_ddp(self.config)
 
-        # View embedding parameters
+        # View embedding parameters — only enable when view_column is set in the YAML
         view_column = getattr(self.config, 'view_column', None)
         view_labels_map = getattr(self.config, 'view_labels_map', None)
-        num_view_classes = getattr(self.config, 'num_view_classes', 0)
+        if view_column:
+            num_view_classes = getattr(self.config, 'num_view_classes', 0)
+            print(f"View embeddings ENABLED: view_column='{view_column}', {num_view_classes} view classes + 1 PAD")
+        else:
+            num_view_classes = 0
+            print("View embeddings DISABLED (no view_column in config)")
 
         val_loader: DataLoader = get_distributed_video_dataloader(
             config=self.config,

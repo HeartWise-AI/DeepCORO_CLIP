@@ -74,7 +74,6 @@ NON_RCA_VESSELS = [
     "om1_stenosis", "om2_stenosis", "bx_stenosis", "lvp_stenosis"
 ]
 RIGHT_DOMINANCE_DEPENDENT_VESSELS = ["pda_stenosis", "posterolateral_stenosis"]
-LEFT_DOMINANCE_DEPENDENT_VESSELS = ["pda_stenosis"]
 
 # ──────────────────────────────────────────────────────────────────────────
 # Formatting Functions
@@ -322,6 +321,10 @@ def _study_has_pci_on_side(df: pd.DataFrame) -> pd.Series:
     """Return a boolean Series: True when the GT *_pcidone columns confirm
     that a PCI was actually performed on the video's coronary side.
 
+    For non-LCA/RCA rows (e.g. "Femoral", "Other", "Catheter") we return
+    True so that stent=1 on those rows still triggers PCI status (legacy
+    behaviour).  These rows are filtered out before inference anyway.
+
     If no *_pcidone columns are present, falls back to True (trust the
     stent_presence_class classifier as before).
     """
@@ -329,17 +332,15 @@ def _study_has_pci_on_side(df: pd.DataFrame) -> pd.Series:
     rca_cols = [c for c in _RCA_PCIDONE_COLS if c in df.columns]
 
     if not lca_cols and not rca_cols:
-        # No GT available — fall back to stent_presence_class
         return pd.Series(True, index=df.index)
 
-    # Per-row: does the study have any pcidone > 0 for this video's side?
     lca_any = (df[lca_cols].apply(pd.to_numeric, errors="coerce").fillna(0) > 0).any(axis=1) if lca_cols else pd.Series(False, index=df.index)
     rca_any = (df[rca_cols].apply(pd.to_numeric, errors="coerce").fillna(0) > 0).any(axis=1) if rca_cols else pd.Series(False, index=df.index)
 
-    is_left = df["main_structure_name"] == "Left Coronary"
-    is_right = df["main_structure_name"] == "Right Coronary"
+    is_left = df["main_structure_name"].eq("Left Coronary")
+    is_right = df["main_structure_name"].eq("Right Coronary")
 
-    # True when the GT says PCI happened on this video's artery side
+    # LCA/RCA → check GT pcidone on that side; everything else → True (legacy)
     return (is_left & lca_any) | (is_right & rca_any) | (~is_left & ~is_right)
 
 
@@ -579,6 +580,47 @@ def _extract_acq_time_from_filename(fn: str) -> Optional[float]:
     return None
 
 
+def sort_by_study_and_time(df: pd.DataFrame) -> pd.DataFrame:
+    """Sort DataFrame by StudyInstanceUID and acquisition time.
+
+    The most reliable time source is the DICOM acquisition timestamp
+    embedded in the SOP Instance UID portion of the filename (YYYYMMDDHHMMSS).
+    series_time / SeriesTime is used as a fallback for videos without a
+    filename timestamp.  If FileName is absent entirely, we fall back to
+    series_time / SeriesTime alone.
+
+    Returns the sorted DataFrame (temp columns are dropped).
+    """
+    if "StudyInstanceUID" not in df.columns:
+        logger.warning("No StudyInstanceUID column — skipping temporal sort")
+        return df
+
+    # Primary: acquisition time from filename
+    if "FileName" in df.columns:
+        df["_acq_time"] = df["FileName"].apply(_extract_acq_time_from_filename)
+        acq_coverage = df["_acq_time"].notna().sum()
+        logger.info("Extracted acquisition time from filenames: %d / %d (%.1f%%)",
+                     acq_coverage, len(df), 100.0 * acq_coverage / len(df))
+    else:
+        df["_acq_time"] = np.nan
+        logger.info("No FileName column — using series_time/SeriesTime only")
+
+    # Fallback: series_time / SeriesTime
+    if "series_time" in df.columns:
+        fallback = pd.to_numeric(df["series_time"], errors="coerce")
+        fallback = fallback.where(fallback > 0)  # -1 means missing
+    elif "SeriesTime" in df.columns:
+        fallback = pd.to_numeric(df["SeriesTime"], errors="coerce")
+    else:
+        fallback = pd.Series(np.nan, index=df.index)
+
+    df["_sort_time"] = df["_acq_time"].fillna(fallback)
+    df = df.sort_values(["StudyInstanceUID", "_sort_time"], na_position="last")
+    df.drop(columns=["_acq_time", "_sort_time"], inplace=True)
+    logger.info("Sorted data by StudyInstanceUID and acquisition time")
+    return df
+
+
 def process_dataset(
     input_path: str,
     output_dir: str,
@@ -586,7 +628,7 @@ def process_dataset(
 ) -> None:
     """
     Main dataset processing pipeline.
-    
+
     Args:
         input_path: Path to input data file
         output_dir: Directory to save processed data
@@ -595,43 +637,18 @@ def process_dataset(
     # Create output directory
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    
+
     # Load data
     df = load_data(input_path)
-    
+
     # Apply mapping if needed
     if 'apply_mappings' in config and config['apply_mappings']:
         if 'main_structure_class' in df.columns:
             df['main_structure_name'] = df['main_structure_class'].map(MAIN_STRUCTURE_MAP)
         if 'dominance_class' in df.columns:
             df['dominance_name'] = df['dominance_class'].map(DOMINANCE_MAP)
-        
-        # Sort by StudyInstanceUID and acquisition time for proper temporal ordering.
-        # The most reliable time source is the DICOM acquisition timestamp embedded
-        # in the SOP Instance UID portion of the filename (YYYYMMDDHHMMSS pattern).
-        # series_time can be a transfer/storage time with corrupted values that break
-        # sort order within a study, so we only use it as a fallback.
-        if 'StudyInstanceUID' in df.columns and 'FileName' in df.columns:
-            df['_acq_time'] = df['FileName'].apply(_extract_acq_time_from_filename)
-            acq_coverage = df['_acq_time'].notna().sum()
-            logger.info("Extracted acquisition time from filenames: %d / %d (%.1f%%)",
-                        acq_coverage, len(df), 100.0 * acq_coverage / len(df))
 
-            # Fallback to series_time / SeriesTime for videos without filename timestamps
-            if 'series_time' in df.columns:
-                fallback = pd.to_numeric(df['series_time'], errors='coerce')
-                fallback = fallback.where(fallback > 0)  # -1 means missing
-            elif 'SeriesTime' in df.columns:
-                fallback = pd.to_numeric(df['SeriesTime'], errors='coerce')
-            else:
-                fallback = pd.Series(np.nan, index=df.index)
-
-            df['_sort_time'] = df['_acq_time'].fillna(fallback)
-            df = df.sort_values(['StudyInstanceUID', '_sort_time'], na_position='last')
-            df.drop(columns=['_acq_time', '_sort_time'], inplace=True)
-            logger.info("Sorted data by StudyInstanceUID and acquisition time")
-        elif 'StudyInstanceUID' in df.columns:
-            logger.warning("No FileName column — cannot extract acquisition time")
+        df = sort_by_study_and_time(df)
     
     # Assign procedure status based on PCI timing (if enabled and required columns exist)
     if config.get('assign_status', True):

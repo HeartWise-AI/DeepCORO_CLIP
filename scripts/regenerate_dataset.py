@@ -2,12 +2,19 @@
 """
 Regenerate Dataset with Bug Fixes
 
-Applies three fixes to the dataset pipeline:
-1. SeriesTime sort bug: Use series_time (int64, full coverage) instead of
-   SeriesTime (float64, ~86% NaN) for temporal ordering.
-2. Dominance override: If lvp_stenosis > 0, force left-dominant regardless of label.
-3. LVP/PDA mutual exclusivity: In left-dominant hearts exclude PDA (LVP ≡ PDA);
-   in right-dominant hearts exclude LVP.
+Applies the following fixes to the dataset pipeline:
+1. Acquisition-time sort: Use DICOM timestamps from SOP UIDs in filenames
+   (YYYYMMDDHHMMSS) for correct temporal ordering, including procedures
+   that span midnight.  Falls back to series_time / SeriesTime.
+2. PCI cascade gating: stent_presence_class=1 → always PCI, but the
+   POST_PCI cascade only triggers when GT *_pcidone confirms PCI on the
+   labelled coronary side.
+3. Dominance override: If lvp_stenosis > 0, force left-dominant regardless
+   of the dominance label.
+4. LVP/PDA mutual exclusivity: In left-dominant hearts exclude PDA
+   (LVP ≡ PDA); in right-dominant hearts exclude LVP.
+5. Congenital exclusion: Filter out congenital-procedure studies and
+   studies with all stenosis = -1/NaN from inference.
 
 Outputs:
   - Updated parquet with corrected status assignments
@@ -29,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from dataset_creation.generate_dataset import (
     assign_procedure_status,
     create_report,
-    _extract_acq_time_from_filename,
+    sort_by_study_and_time,
     MAIN_STRUCTURE_MAP,
     DOMINANCE_MAP,
 )
@@ -64,35 +71,15 @@ def main():
     if "dominance_class" in df.columns:
         df["dominance_name"] = df["dominance_class"].map(DOMINANCE_MAP)
 
-    # ── 3. Sort by acquisition time from filename (FIX #1) ──────────────────
-    # The DICOM acquisition timestamp embedded in SOP Instance UIDs is the most
-    # reliable time source.  series_time can be a transfer/storage timestamp
-    # with corrupted hour values that break sort order within a study.
-    logger.info("Extracting acquisition time from filenames...")
-    df["_acq_time"] = df["FileName"].apply(_extract_acq_time_from_filename)
-    acq_coverage = df["_acq_time"].notna().sum()
-    logger.info("Filename acq_time: %d / %d (%.1f%%)",
-                acq_coverage, len(df), 100.0 * acq_coverage / len(df))
-
-    # Fallback to series_time for videos without filename timestamps
-    if "series_time" in df.columns:
-        fallback = pd.to_numeric(df["series_time"], errors="coerce")
-        fallback = fallback.where(fallback > 0)
-    elif "SeriesTime" in df.columns:
-        fallback = pd.to_numeric(df["SeriesTime"], errors="coerce")
-    else:
-        fallback = pd.Series(np.nan, index=df.index)
-
-    df["_sort_time"] = df["_acq_time"].fillna(fallback)
-    df = df.sort_values(["StudyInstanceUID", "_sort_time"], na_position="last")
-    df.drop(columns=["_acq_time", "_sort_time"], inplace=True)
-    logger.info("Sorted by StudyInstanceUID + acquisition time")
+    # ── 3. Sort by acquisition time (shared helper) ──────────────────────────
+    df = sort_by_study_and_time(df)
 
     # ── 4. Re-assign status ──────────────────────────────────────────────────
     df = assign_procedure_status(df)
 
     if old_status is not None:
-        changed = (df["status"].values != old_status.values).sum()
+        # Use index-aligned comparison (not .values) so row reordering is safe
+        changed = (df["status"] != old_status.reindex(df.index)).sum()
         logger.info("Status changes vs original: %d / %d (%.2f%%)",
                      changed, len(df), 100.0 * changed / len(df))
 
@@ -132,7 +119,7 @@ def main():
     df_diag["Split"] = df_diag["Split"].replace({"test": "inference"})
     logger.info("Split distribution:\n%s", df_diag["Split"].value_counts())
 
-    # ── 8. Generate reports (FIX #2 + #3: dominance override + LVP/PDA) ─────
+    # ── 8. Generate reports (dominance override + LVP/PDA) ───────────────────
     logger.info("Generating reports for %d diagnostic videos...", len(df_diag))
     df_diag["Report"] = df_diag.progress_apply(
         lambda r: create_report(r, coronary_specific_report=True), axis=1

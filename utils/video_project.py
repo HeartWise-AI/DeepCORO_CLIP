@@ -4,6 +4,7 @@ from typing import Tuple
 from torch.utils.data import DataLoader
 
 from utils.config.heartwise_config import HeartWiseConfig
+from utils.enums import RunMode
 from dataloaders.stats_dataset import get_stats_dataloader
 
 def calculate_dataset_statistics_ddp(config: HeartWiseConfig) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -17,7 +18,12 @@ def calculate_dataset_statistics_ddp(config: HeartWiseConfig) -> Tuple[torch.Ten
         Tuple[torch.Tensor, torch.Tensor]: Mean and standard deviation tensors
     """
     # Check if pre-computed mean/std are provided in config
-    if hasattr(config, 'dataset_mean') and hasattr(config, 'dataset_std') and config.dataset_mean is not None and config.dataset_std is not None:
+    has_precomputed = (
+        hasattr(config, 'dataset_mean') and hasattr(config, 'dataset_std')
+        and config.dataset_mean is not None and config.dataset_std is not None
+    )
+
+    if has_precomputed:
         mean = torch.tensor(config.dataset_mean)
         std = torch.tensor(config.dataset_std)
         if config.is_ref_device:
@@ -26,6 +32,15 @@ def calculate_dataset_statistics_ddp(config: HeartWiseConfig) -> Tuple[torch.Ten
             print(f"Std:  {std.tolist()}")
             print("===========================\n")
         return mean, std
+
+    # For inference/test modes, dataset_mean and dataset_std MUST be provided
+    # to avoid computing statistics from the wrong split.
+    if config.run_mode in (RunMode.INFERENCE, RunMode.TEST):
+        raise ValueError(
+            f"run_mode is '{config.run_mode}' but dataset_mean/dataset_std are not set in the config. "
+            "You must provide pre-computed training set statistics (dataset_mean and dataset_std) "
+            "for inference/test to ensure consistent normalization."
+        )
 
     mean, std = None, None
 

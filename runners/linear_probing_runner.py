@@ -363,15 +363,21 @@ class LinearProbingRunner:
         """
         # Move videos to device
         batch_video = batch['videos'].to(self.config.device)
-        
+
         # Move targets to device
         batch_targets = batch['targets']
         for k, v in batch_targets.items():
             batch_targets[k] = v.to(self.config.device)
-            
+
+        # Move view_ids to device if present (EchoJEPA-style angle embeddings)
+        view_ids = batch.get('view_ids', None)
+        if view_ids is not None:
+            view_ids = view_ids.to(self.config.device)
+
         return {
             "batch_video": batch_video,
             "batch_targets": batch_targets,
+            "view_ids": view_ids,
         }
     
     def _run_batch(
@@ -388,23 +394,24 @@ class LinearProbingRunner:
         )
     
     def _train_step(
-        self, 
+        self,
         batch_video: torch.Tensor,
-        batch_targets: Dict[str, torch.Tensor]
+        batch_targets: Dict[str, torch.Tensor],
+        view_ids: torch.Tensor = None,
     ) -> StepFnResults:
         # Clear gradients only if this is the first step in accumulation
         if self.step % self.config.gradient_accumulation_steps == 0:
             if self.optimizer is not None:
                 self.optimizer.zero_grad()
-                
+
         # Forward pass with autocast for mixed precision
         with torch.amp.autocast('cuda', enabled=self.config.use_amp, dtype=torch.float16):
             try:
                 if self.config.use_amp:
                     batch_video = batch_video.to(dtype=torch.float16)
-                     
+
                 outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
-                    batch_video
+                    batch_video, view_ids=view_ids
                 )
             except Exception as e:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")
@@ -469,19 +476,20 @@ class LinearProbingRunner:
         }
         
     def _val_step(
-        self, 
+        self,
         batch_video: torch.Tensor,
         batch_targets: Dict[str, torch.Tensor],
-    ) -> StepFnResults:                
+        view_ids: torch.Tensor = None,
+    ) -> StepFnResults:
         # Forward pass with autocast for mixed precision
         with torch.no_grad():
             try:
                 # Convert inputs to float16 if AMP is enabled
                 if self.config.use_amp:
                     batch_video = batch_video.to(dtype=torch.float16)
-                
+
                 outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
-                    batch_video
+                    batch_video, view_ids=view_ids
                 )
             except Exception as e:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")
@@ -525,19 +533,20 @@ class LinearProbingRunner:
         }
 
     def _inference_step(
-        self, 
+        self,
         batch_video: torch.Tensor,
-        batch_targets: Dict[str, torch.Tensor] # Unused - parsed to match signature of _val_step and _train_step
-    ) -> StepFnResults:        
+        batch_targets: Dict[str, torch.Tensor],  # Unused - parsed to match signature
+        view_ids: torch.Tensor = None,
+    ) -> StepFnResults:
         # Forward pass with autocast for mixed precision
         with torch.no_grad():
             try:
                 # Convert inputs to float16 if AMP is enabled
                 if self.config.use_amp:
                     batch_video = batch_video.to(dtype=torch.float16)
-                
+
                 outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
-                    batch_video
+                    batch_video, view_ids=view_ids
                 )
             except Exception as e:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")

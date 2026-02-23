@@ -70,3 +70,7 @@ api_key.json
 
 # Backup files
 *.backup
+
+# Dev tracking files
+RESTORE.json
+.claude/*.local.md

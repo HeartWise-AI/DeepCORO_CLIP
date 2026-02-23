@@ -14,7 +14,7 @@ from tqdm import tqdm
 import torch.nn.functional as F
 from scipy import stats
 
-sys.path.insert(0, '/volume/DeepCORO_CLIP')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Load the comparison results
 results_df = pd.read_csv('outputs/pci_comparison/pci_embedding_comparison.csv')
@@ -55,6 +55,7 @@ bootstrap_similarities = []
 # For non-PCI cases, we'll simulate what would happen with different random seeds
 # by adding small noise to embeddings (simulating video sampling variation)
 np.random.seed(42)
+torch.manual_seed(42)
 
 for i in tqdm(range(n_bootstrap), desc="Bootstrap iterations"):
     similarities = []
@@ -77,7 +78,8 @@ for i in tqdm(range(n_bootstrap), desc="Bootstrap iterations"):
             ).item()
             similarities.append(cos_sim)
 
-    bootstrap_similarities.append(np.mean(similarities))
+    if similarities:
+        bootstrap_similarities.append(np.mean(similarities))
 
 print(f"\nBootstrap results (n={n_bootstrap}):")
 print(f"  Mean similarity: {np.mean(bootstrap_similarities):.4f}")
@@ -118,7 +120,8 @@ ax2.set_title('PRE vs POST Embedding Similarity by PCI Status', fontsize=14, fon
 t_stat, p_val = stats.ttest_ind(pci_done['cosine_similarity'], no_pci['cosine_similarity'])
 y_max = 1.15
 ax2.plot([1, 1, 2, 2], [1.05, 1.08, 1.08, 1.05], 'k-', linewidth=1.5)
-ax2.text(1.5, 1.09, f'p < 0.0001\nt = {t_stat:.1f}', ha='center', fontsize=11, fontweight='bold')
+p_label = f'p = {p_val:.2e}' if p_val >= 0.0001 else 'p < 0.0001'
+ax2.text(1.5, 1.09, f'{p_label}\nt = {t_stat:.1f}', ha='center', fontsize=11, fontweight='bold')
 ax2.set_ylim(0, 1.2)
 
 # 3. Embedding change (1 - cosine_sim)

@@ -1,0 +1,96 @@
+# Post-PCI Embedding Extraction Config
+# Extracts study-level embeddings from post-PCI angiography videos
+
+pipeline_project: !!str DeepCORO_video_linear_probing
+base_checkpoint_path: !!str outputs
+run_mode: !!str inference
+epochs: !!int 1
+seed: !!int 42
+
+# wandb parameters - disabled for inference
+name: !!str DeepCORO_post_pci_embeddings
+project: !!str DeepCORO_PCI_comparison
+entity: !!str mhi_ai
+use_wandb: !!bool false
+
+# Training parameters (required by config even for inference)
+scheduler_name: !!str cosine_with_warmup
+num_warmup_percent: !!float 0.08
+optimizer: !!str AdamW
+use_amp: !!bool true
+gradient_accumulation_steps: !!int 1
+lr_step_period: !!int 10
+factor: !!float 0.1
+num_hard_restarts_cycles: !!int 3
+warm_restart_tmult: !!float 2.0
+
+# Video Encoder learning rates (required by config)
+video_encoder_lr: !!float 0.00001
+video_encoder_weight_decay: !!float 0.00001
+
+# Dataset parameters - POST-PCI videos
+data_filename: !!str data/PCI_embedding_analysis/post_pci_videos.csv
+num_workers: !!int 8
+batch_size: !!int 4
+multi_video: !!bool true
+groupby_column: !!str StudyInstanceUID
+num_videos: !!int 10
+shuffle_videos: !!bool false
+datapoint_loc_label: !!str FileName
+target_label: [dummy_target]
+rand_augment: !!bool false
+resize: !!int 224
+frames: !!int 16
+stride: !!int 2
+tag: !!str post_pci_embeddings
+
+# CLS Token Configuration for study-level embeddings
+pooling_mode: !!str attention+cls_token
+separate_video_attention: !!bool true
+num_attention_heads: !!int 8
+normalization_strategy: !!str post_norm
+use_cls_token: !!bool true
+
+# Video Encoder parameters
+model_name: !!str mvit
+aggregator_depth: !!int 1
+num_heads: !!int 16
+video_freeze_ratio: !!float 1.0
+dropout: !!float 0.0
+pretrained: !!bool true
+
+# Use trained checkpoint
+video_encoder_checkpoint_path: !!str outputs/DeepCORO_clip/dev_deep_coro_clip_single_video/8av1xygm_20250605-083820_best_single_video/checkpoints/checkpoint.pt
+
+aggregate_videos_tokens: !!bool false
+per_video_pool: !!bool false
+output_dir: !!str outputs/pci_comparison/post_pci/
+
+# Head structure (dummy for inference - embeddings captured before heads)
+head_linear_probing:
+  dummy_target: !!str cls_token_linear_probing_regression
+
+head_structure:
+  dummy_target: !!int 1
+
+head_dropout:
+  dummy_target: !!float 0.0
+
+loss_structure:
+  dummy_target: !!str mae
+
+head_lr:
+  dummy_target: !!float 0.0001
+
+head_weight_decay:
+  dummy_target: !!float 0.00001
+
+head_weights:
+  dummy_target: !!float 1.0
+
+head_task:
+  dummy_target: !!str regression
+
+labels_map:
+  dummy_target:
+    dummy_target: !!str regression

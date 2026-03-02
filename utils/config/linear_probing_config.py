@@ -1,5 +1,5 @@
-from typing import Dict, List, Any
-from dataclasses import dataclass
+from typing import Dict, List, Any, Optional
+from dataclasses import dataclass, field
 import os
 
 from utils.registry import ConfigRegistry
@@ -95,3 +95,17 @@ class LinearProbingConfig(HeartWiseConfig):
     # Confidence interval settings
     ci_confidence_level: float = 0.95  # 95% confidence interval
     ci_n_bootstrap: int = 1000  # Number of bootstrap samples
+
+    # Pooling optimisation toggle
+    train_pooling_params: bool = True  # When False, attention/cls_token params are frozen (old behaviour)
+
+    # View embedding parameters (EchoJEPA-style angle embeddings)
+    view_column: Optional[str] = None  # CSV column for per-video view class (e.g., "view_class")
+    num_view_classes: int = 0  # Number of real view classes (excluding PAD)
+    view_labels_map: Optional[Dict[str, int]] = None  # Mapping from view class string to integer ID
+    view_embedding_lr: Optional[float] = None  # Dedicated LR for view embeddings (falls back to attention_lr)
+    view_embedding_weight_decay: Optional[float] = None  # Dedicated WD for view embeddings (falls back to attention_weight_decay)
+
+    # Pre-computed dataset statistics (optional - if None, will be calculated)
+    dataset_mean: List[float] = None  # Pre-computed mean for normalization
+    dataset_std: List[float] = None  # Pre-computed std for normalization

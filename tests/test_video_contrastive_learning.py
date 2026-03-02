@@ -81,7 +81,8 @@ class DummyDataset(Dataset):
             "videos": torch.from_numpy(video),
             "encoded_texts": encoded_texts,
             "attention_mask": attention_mask,
-            "paths": self.video_paths[idx]
+            "paths": self.video_paths[idx],
+            "main_structure": torch.tensor(idx % 2, dtype=torch.long),
         }
     
     def get_video_paths(self, sid=None):
@@ -217,10 +218,12 @@ class TestVideoContrastiveLearning(unittest.TestCase):
         videos = batch["videos"]
         input_ids = batch["encoded_texts"]["input_ids"]
         attention_mask = batch["encoded_texts"]["attention_mask"]
+        main_structure = batch["main_structure"]
         metrics, embeddings = self.runner._train_step(
             videos=videos, 
             input_ids=input_ids, 
-            attention_mask=attention_mask
+            attention_mask=attention_mask,
+            main_structure=main_structure
         )
         self.assertIsInstance(metrics, dict)
         self.assertIsInstance(metrics["loss"], float)
@@ -234,10 +237,12 @@ class TestVideoContrastiveLearning(unittest.TestCase):
         videos = batch["videos"]
         input_ids = batch["encoded_texts"]["input_ids"]
         attention_mask = batch["encoded_texts"]["attention_mask"]
+        main_structure = batch["main_structure"]
         metrics, embeddings = self.runner._val_step(
             videos=videos, 
             input_ids=input_ids, 
-            attention_mask=attention_mask
+            attention_mask=attention_mask,
+            main_structure=main_structure
         )
         self.assertIsInstance(metrics, dict)
         self.assertIsInstance(embeddings, dict)

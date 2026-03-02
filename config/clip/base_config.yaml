@@ -20,7 +20,7 @@ multi_video: !!bool false
 num_videos: !!int 1
 groupby_column: !!str StudyInstanceUID
 shuffle_videos: !!bool true
-batch_size: !!int 64
+batch_size: !!int 24
 # Seed
 seed: !!int 42
 # Model parameters

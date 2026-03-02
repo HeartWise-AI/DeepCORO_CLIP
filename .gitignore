@@ -55,6 +55,7 @@ data/
 # Sweep
 wandb/
 logs/
+results/
 
 # CSV
 *.csv
@@ -63,3 +64,13 @@ api_key.json
 
 # Videos
 *.avi
+
+# Log files
+*.log
+
+# Backup files
+*.backup
+
+# Dev tracking files
+RESTORE.json
+.claude/*.local.md

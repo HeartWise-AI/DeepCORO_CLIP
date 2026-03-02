@@ -36,7 +36,7 @@ factor: !!float 0.1
 loss_name: !!str siglip_ddp
 video_weight_decay: !!float 0.000022030638569939196
 text_weight_decay: !!float 0.0000002104425351098601
-gradient_accumulation_steps: !!int 2
+gradient_accumulation_steps: !!int 1
 num_hard_restarts_cycles: !!float 1.0
 warm_restart_tmult: !!int 2
 # Model architecture parameters

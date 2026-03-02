@@ -22,21 +22,40 @@ class DistributedUtils:
 
     @staticmethod
     def ddp_setup(gpu_id: int, world_size: int):
-        # Use gloo backend for CPU
+        """Initialise the default process group with a robust rank/device mapping."""
+        # Resolve ranks from the launcher when available. torchrun exports both
+        # LOCAL_RANK (device index on the node) and RANK (global process id).
+        env_local_rank = os.environ.get("LOCAL_RANK")
+        env_rank = os.environ.get("RANK")
+
+        if env_local_rank is not None:
+            local_rank = int(env_local_rank)
+        elif isinstance(gpu_id, int):
+            local_rank = gpu_id
+        else:
+            local_rank = 0
+
+        if env_rank is not None:
+            rank = int(env_rank)
+        elif isinstance(gpu_id, int):
+            rank = gpu_id
+        else:
+            rank = 0
+
+        # Use gloo backend when CUDA is not available, otherwise NCCL.
         backend = 'gloo'
-        
-        # Only set CUDA device if CUDA is available
+
         if torch.cuda.is_available():
-            torch.cuda.set_device(gpu_id)
+            torch.cuda.set_device(local_rank)
             backend = 'nccl'
-            print(f"Using CUDA device {gpu_id}")
-        
-        # Initialize process group
+            print(f"Using CUDA device {local_rank} for global rank {rank}")
+
+        # Initialise the process group using the resolved rank information.
         DistributedUtils.dist.init_process_group(
             backend=backend,
             init_method='env://',
             world_size=world_size,
-            rank=gpu_id
+            rank=rank
         )
         
         
@@ -45,18 +64,19 @@ class DistributedUtils:
         """
         Cleanup the DistributedDataParallel.
         """
-        destroy_process_group()
+        if dist.is_initialized():
+            destroy_process_group()
 
     @staticmethod
     def sync_process_group(
-        world_size: int, 
+        world_size: int,
         device_ids: int
     ):
         """
         Synchronize the process group across all devices.
         """
-        if world_size > 1:
-            torch.distributed.barrier(device_ids=[device_ids])
+        if world_size > 1 and dist.is_initialized():
+            torch.distributed.barrier()
     
     @staticmethod
     def gather_loss(

@@ -1,0 +1,108 @@
+command:
+  - ${env}
+  - "scripts/sweep_runner.sh"
+  - "--nproc_per_node=1"
+  - "--master_port=29600"
+  - "scripts/main.py"
+  - "--base_config"
+  - "config/linear_probing/stenosis/base_config_view_aware_multitask.yaml"
+  - ${args}
+name: "sweep_view_aware_multitask_v2"
+project: "DeepCORO_view_aware_multitask"
+entity: "mhi_ai"
+method: bayes
+metric:
+  name: best_val_loss
+  goal: minimize
+parameters:
+  # =============================================================
+  # VIEW EMBEDDING (new - decoupled from attention LR)
+  # =============================================================
+  view_embedding_lr:
+    distribution: log_uniform_values
+    min: 0.00005
+    max: 0.005
+  view_embedding_weight_decay:
+    distribution: log_uniform_values
+    min: 0.001
+    max: 0.05
+
+  # =============================================================
+  # KEY SWEEP TARGETS: Pooling LRs
+  # =============================================================
+
+  # Attention pooling (V, U, w matrices) - param group: attention_pooling
+  attention_lr:
+    distribution: log_uniform_values
+    min: 0.00005
+    max: 0.005
+  attention_weight_decay:
+    distribution: log_uniform_values
+    min: 0.000001
+    max: 0.001
+
+  # CLS token pooling (cls_token + across-video attn) - param group: cls_token_pooling
+  attention_across_lr:
+    distribution: log_uniform_values
+    min: 0.00005
+    max: 0.005
+  attention_across_weight_decay:
+    distribution: log_uniform_values
+    min: 0.000001
+    max: 0.0001
+
+  # Within-video attention (hierarchical cls_token processing)
+  attention_within_lr:
+    distribution: log_uniform_values
+    min: 0.0005
+    max: 0.005
+  attention_within_weight_decay:
+    distribution: log_uniform_values
+    min: 0.000001
+    max: 0.0001
+
+  # =============================================================
+  # Attention architecture
+  # =============================================================
+  num_attention_heads:
+    values: [6, 8]
+  dropout_attention:
+    distribution: uniform
+    min: 0.15
+    max: 0.45
+
+  # =============================================================
+  # Video encoder (keep range tight, already well-tuned)
+  # =============================================================
+  video_encoder_lr:
+    distribution: log_uniform_values
+    min: 0.000002
+    max: 0.00002
+  video_freeze_ratio:
+    distribution: uniform
+    min: 0.75
+    max: 0.85
+
+  # =============================================================
+  # Scheduler
+  # =============================================================
+  num_warmup_percent:
+    distribution: uniform
+    min: 0.05
+    max: 0.15
+  scheduler_name:
+    values: ["cosine_with_warmup"]
+
+  # =============================================================
+  # Fixed params
+  # =============================================================
+  num_workers:
+    values: [4]
+  batch_size:
+    values: [4, 8]
+
+early_terminate:
+  type: hyperband
+  min_iter: 4
+  eta: 2
+  s: 2

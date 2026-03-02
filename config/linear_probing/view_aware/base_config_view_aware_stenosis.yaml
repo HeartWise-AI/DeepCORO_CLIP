@@ -1,0 +1,278 @@
+# View-Aware Multi-Video Stenosis Regression
+# Uses EchoJEPA-style angle embeddings: each video gets a learnable view class
+# embedding added to its representation before MIL aggregation.
+
+# Pipeline parameters
+pipeline_project: !!str DeepCORO_video_linear_probing
+base_checkpoint_path: !!str outputs
+run_mode: !!str train
+epochs: !!int 25
+seed: !!int 42
+tag: !!str mvit_view_aware_stenosis
+# wandb parameters
+name: !!str DeepCORO_view_aware_stenosis
+project: !!str DeepCORO_view_aware_stenosis
+entity: !!str mhi_ai
+use_wandb: !!bool true
+# Training parameters
+scheduler_name: !!str cosine_with_warmup
+num_warmup_percent: !!float 0.069
+optimizer: !!str AdamW
+use_amp: !!bool true
+gradient_accumulation_steps: !!int 1
+# Scheduler parameters
+lr_step_period: !!int 4
+factor: !!float 0.161
+num_hard_restarts_cycles: !!int 3
+warm_restart_tmult: !!float 2.0
+
+# =============================================================================
+# View Embedding Parameters (EchoJEPA-style angle embeddings)
+# =============================================================================
+view_column: !!str view_class
+num_view_classes: !!int 12
+view_labels_map:
+  AP: 0
+  AP Caudal: 1
+  AP Cranial: 2
+  LAO Caudal: 3
+  LAO Cranial: 4
+  LAO Lateral: 5
+  LAO Straight: 6
+  Other: 7
+  RAO Caudal: 8
+  RAO Cranial: 9
+  RAO Lateral: 10
+  RAO Straight: 11
+
+# =============================================================================
+# Dataset parameters
+# =============================================================================
+data_filename: !!str /media/data1/datasets/DeepCoro_CLIP/CTO_THROMBUS_STENOSIS_70_CALCIF_inference.csv
+num_workers: !!int 10
+batch_size: !!int 4
+multi_video: !!bool true
+groupby_column: !!str 'StudyInstanceUID'
+num_videos: !!int 10
+shuffle_videos: !!bool true
+datapoint_loc_label: !!str FileName
+target_label:
+  - prox_rca_stenosis
+  - mid_rca_stenosis
+  - dist_rca_stenosis
+  - pda_stenosis
+  - posterolateral_stenosis
+  - left_main_stenosis
+  - prox_lad_stenosis
+  - mid_lad_stenosis
+  - dist_lad_stenosis
+  - D1_stenosis
+  - D2_stenosis
+  - prox_lcx_stenosis
+  - mid_lcx_stenosis
+  - dist_lcx_stenosis
+  - om1_stenosis
+  - om2_stenosis
+  - bx_stenosis
+  - lvp_stenosis
+rand_augment: !!bool true
+resize: !!int 224
+frames: !!int 16
+stride: !!int 1
+
+# =============================================================================
+# CLS Token / Attention Pooling Configuration
+# =============================================================================
+pooling_mode: !!str attention+cls_token
+separate_video_attention: !!bool false
+num_attention_heads: !!int 8
+normalization_strategy: !!str pre_norm
+use_cls_token: !!bool true
+attention_hidden: !!int 256
+dropout_attention: !!float 0.299
+
+# =============================================================================
+# Video Encoder parameters
+# =============================================================================
+model_name: !!str mvit
+aggregator_depth: !!int 1
+num_heads: !!int 16
+video_freeze_ratio: !!float 0.799
+dropout: !!float 0.196
+pretrained: !!bool true
+
+# =============================================================================
+# Learning rates
+# =============================================================================
+video_encoder_lr: !!float 5.497e-06
+video_encoder_weight_decay: !!float 4.450e-07
+attention_within_lr: !!float 0.00415
+attention_across_lr: !!float 0.00203
+attention_weight_decay: !!float 0.00005
+attention_lr: !!float 0.0015
+attention_within_weight_decay: !!float 6.304e-05
+attention_across_weight_decay: !!float 6.811e-06
+head_lr: !!float 3e-4
+head_weight_decay: !!float 1e-5
+video_encoder_checkpoint_path: !!str /media/data1/models/DeepCoro_CLIP/8av1xygm_20250605-083820_best_single_video/checkpoints/best_model_epoch_9.pt
+aggregate_videos_tokens: !!bool false
+per_video_pool: !!bool false
+output_dir: !!str outputs/
+
+# =============================================================================
+# Head configuration - 18 stenosis regression targets
+# =============================================================================
+head_structure:
+  prox_rca_stenosis: !!int 1
+  mid_rca_stenosis: !!int 1
+  dist_rca_stenosis: !!int 1
+  pda_stenosis: !!int 1
+  posterolateral_stenosis: !!int 1
+  left_main_stenosis: !!int 1
+  prox_lad_stenosis: !!int 1
+  mid_lad_stenosis: !!int 1
+  dist_lad_stenosis: !!int 1
+  D1_stenosis: !!int 1
+  D2_stenosis: !!int 1
+  prox_lcx_stenosis: !!int 1
+  mid_lcx_stenosis: !!int 1
+  dist_lcx_stenosis: !!int 1
+  om1_stenosis: !!int 1
+  om2_stenosis: !!int 1
+  bx_stenosis: !!int 1
+  lvp_stenosis: !!int 1
+head_dropout:
+  prox_rca_stenosis: !!float 0.2
+  mid_rca_stenosis: !!float 0.2
+  dist_rca_stenosis: !!float 0.2
+  pda_stenosis: !!float 0.2
+  posterolateral_stenosis: !!float 0.2
+  left_main_stenosis: !!float 0.2
+  prox_lad_stenosis: !!float 0.2
+  mid_lad_stenosis: !!float 0.2
+  dist_lad_stenosis: !!float 0.2
+  D1_stenosis: !!float 0.2
+  D2_stenosis: !!float 0.2
+  prox_lcx_stenosis: !!float 0.2
+  mid_lcx_stenosis: !!float 0.2
+  dist_lcx_stenosis: !!float 0.2
+  om1_stenosis: !!float 0.2
+  om2_stenosis: !!float 0.2
+  bx_stenosis: !!float 0.2
+  lvp_stenosis: !!float 0.2
+loss_structure:
+  prox_rca_stenosis: !!str huber
+  mid_rca_stenosis: !!str huber
+  dist_rca_stenosis: !!str huber
+  pda_stenosis: !!str huber
+  posterolateral_stenosis: !!str huber
+  left_main_stenosis: !!str huber
+  prox_lad_stenosis: !!str huber
+  mid_lad_stenosis: !!str huber
+  dist_lad_stenosis: !!str huber
+  D1_stenosis: !!str huber
+  D2_stenosis: !!str huber
+  prox_lcx_stenosis: !!str huber
+  mid_lcx_stenosis: !!str huber
+  dist_lcx_stenosis: !!str huber
+  om1_stenosis: !!str huber
+  om2_stenosis: !!str huber
+  bx_stenosis: !!str huber
+  lvp_stenosis: !!str huber
+head_lr:
+  prox_rca_stenosis: !!float 0.0005
+  mid_rca_stenosis: !!float 0.0005
+  dist_rca_stenosis: !!float 0.0005
+  pda_stenosis: !!float 0.0005
+  posterolateral_stenosis: !!float 0.0005
+  left_main_stenosis: !!float 0.0005
+  prox_lad_stenosis: !!float 0.0005
+  mid_lad_stenosis: !!float 0.0005
+  dist_lad_stenosis: !!float 0.0005
+  D1_stenosis: !!float 0.0005
+  D2_stenosis: !!float 0.0005
+  prox_lcx_stenosis: !!float 0.0005
+  mid_lcx_stenosis: !!float 0.0005
+  dist_lcx_stenosis: !!float 0.0005
+  om1_stenosis: !!float 0.0005
+  om2_stenosis: !!float 0.0005
+  bx_stenosis: !!float 0.0005
+  lvp_stenosis: !!float 0.0005
+head_weight_decay:
+  prox_rca_stenosis: !!float 0.000005
+  mid_rca_stenosis: !!float 0.000005
+  dist_rca_stenosis: !!float 0.000005
+  pda_stenosis: !!float 0.000005
+  posterolateral_stenosis: !!float 0.000005
+  left_main_stenosis: !!float 0.000005
+  prox_lad_stenosis: !!float 0.000005
+  mid_lad_stenosis: !!float 0.000005
+  dist_lad_stenosis: !!float 0.000005
+  D1_stenosis: !!float 0.000005
+  D2_stenosis: !!float 0.000005
+  prox_lcx_stenosis: !!float 0.000005
+  mid_lcx_stenosis: !!float 0.000005
+  dist_lcx_stenosis: !!float 0.000005
+  om1_stenosis: !!float 0.000005
+  om2_stenosis: !!float 0.000005
+  bx_stenosis: !!float 0.000005
+  lvp_stenosis: !!float 0.000005
+head_weights:
+  prox_rca_stenosis: !!float 2.0
+  mid_rca_stenosis: !!float 2.0
+  left_main_stenosis: !!float 2.0
+  prox_lad_stenosis: !!float 2.0
+  mid_lad_stenosis: !!float 2.0
+  prox_lcx_stenosis: !!float 2.0
+  dist_rca_stenosis: !!float 3.0
+  pda_stenosis: !!float 3.0
+  posterolateral_stenosis: !!float 3.0
+  dist_lad_stenosis: !!float 3.0
+  D1_stenosis: !!float 3.0
+  D2_stenosis: !!float 3.0
+  mid_lcx_stenosis: !!float 3.0
+  dist_lcx_stenosis: !!float 3.0
+  om1_stenosis: !!float 3.0
+  om2_stenosis: !!float 3.0
+  bx_stenosis: !!float 3.0
+  lvp_stenosis: !!float 6.0
+head_task:
+  prox_rca_stenosis: !!str regression
+  mid_rca_stenosis: !!str regression
+  dist_rca_stenosis: !!str regression
+  pda_stenosis: !!str regression
+  posterolateral_stenosis: !!str regression
+  left_main_stenosis: !!str regression
+  prox_lad_stenosis: !!str regression
+  mid_lad_stenosis: !!str regression
+  dist_lad_stenosis: !!str regression
+  D1_stenosis: !!str regression
+  D2_stenosis: !!str regression
+  prox_lcx_stenosis: !!str regression
+  mid_lcx_stenosis: !!str regression
+  dist_lcx_stenosis: !!str regression
+  om1_stenosis: !!str regression
+  om2_stenosis: !!str regression
+  bx_stenosis: !!str regression
+  lvp_stenosis: !!str regression
+labels_map:
+  prox_rca_stenosis: {normal: 0, abnormal: 1}
+  mid_rca_stenosis: {normal: 0, abnormal: 1}
+  dist_rca_stenosis: {normal: 0, abnormal: 1}
+  pda_stenosis: {normal: 0, abnormal: 1}
+  posterolateral_stenosis: {normal: 0, abnormal: 1}
+  left_main_stenosis: {normal: 0, abnormal: 1}
+  prox_lad_stenosis: {normal: 0, abnormal: 1}
+  mid_lad_stenosis: {normal: 0, abnormal: 1}
+  dist_lad_stenosis: {normal: 0, abnormal: 1}
+  D1_stenosis: {normal: 0, abnormal: 1}
+  D2_stenosis: {normal: 0, abnormal: 1}
+  prox_lcx_stenosis: {normal: 0, abnormal: 1}
+  mid_lcx_stenosis: {normal: 0, abnormal: 1}
+  dist_lcx_stenosis: {normal: 0, abnormal: 1}
+  om1_stenosis: {normal: 0, abnormal: 1}
+  om2_stenosis: {normal: 0, abnormal: 1}
+  bx_stenosis: {normal: 0, abnormal: 1}
+  lvp_stenosis: {normal: 0, abnormal: 1}
+dataset_mean: [110.4954833984375, 110.4954833984375, 110.4954833984375]
+dataset_std: [37.805782318115234, 37.805782318115234, 37.805782318115234]

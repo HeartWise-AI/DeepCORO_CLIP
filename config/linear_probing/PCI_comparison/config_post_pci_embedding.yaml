@@ -1,0 +1,53 @@
+# Post-PCI Embedding Extraction Config
+
+pipeline_project: !!str DeepCORO_PCI_embedding_extraction
+run_mode: !!str inference
+epochs: !!int 1
+seed: !!int 42
+
+# wandb parameters
+name: !!str DeepCORO_post_pci_embeddings
+project: !!str DeepCORO_PCI_comparison
+entity: !!str mhi_ai
+use_wandb: !!bool false
+
+# Dataset parameters - POST-PCI videos
+data_filename: !!str data/reports_with_alpha_separator_diagnostic_and_POST_PCI.csv
+num_workers: !!int 8
+batch_size: !!int 4
+multi_video: !!bool true
+groupby_column: !!str StudyInstanceUID
+num_videos: !!int 10
+shuffle_videos: !!bool false
+datapoint_loc_label: !!str FileName
+target_label: []
+rand_augment: !!bool false
+resize: !!int 224
+frames: !!int 16
+stride: !!int 2
+tag: !!str post_pci_embeddings
+split_filter: !!str POST_PCI
+
+# CLS Token Configuration
+pooling_mode: !!str attention+cls_token
+separate_video_attention: !!bool true
+num_attention_heads: !!int 8
+normalization_strategy: !!str post_norm
+use_cls_token: !!bool true
+
+# Video Encoder parameters
+model_name: !!str mvit
+aggregator_depth: !!int 1
+num_heads: !!int 16
+video_freeze_ratio: !!float 1.0
+dropout: !!float 0.0
+pretrained: !!bool true
+
+video_encoder_checkpoint_path: !!str outputs/DeepCORO_clip/dev_deep_coro_clip_single_video/8av1xygm_20250605-083820_best_single_video/checkpoints/checkpoint.pt
+
+aggregate_videos_tokens: !!bool false
+per_video_pool: !!bool false
+output_dir: !!str outputs/pci_comparison/
+
+save_embeddings: !!bool true
+embedding_output_file: !!str post_pci_study_embeddings.pt

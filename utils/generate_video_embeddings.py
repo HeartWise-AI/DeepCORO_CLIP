@@ -30,7 +30,7 @@ def load_checkpoint(
         f"[BaseProject] Loading checkpoint: {checkpoint_path}"
     )
     
-    return torch.load(checkpoint_path, map_location='cpu', weights_only=True)
+    return torch.load(checkpoint_path, map_location='cpu', weights_only=False)
 
 def generate_video_embeddings():
     video_dataset: VideoDataset = VideoDataset(

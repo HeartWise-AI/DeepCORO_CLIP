@@ -1,0 +1,367 @@
+# MACE Core Events PCI 30d to 24mo Inference Configuration
+# For predicting MACE events at multiple timepoints (30d, 180d, 365d, 730d) on PCI patients
+
+# Pipeline parameters
+pipeline_project: !!str DeepCORO_video_linear_probing
+base_checkpoint_path: !!str outputs
+run_mode: !!str inference
+epochs: !!int 25
+seed: !!int 42
+tag: !!str MACE_core_events_PCI_30d_to_24mo_inference
+# wandb parameters
+name: !!str DeepCORO_MACE_core_events_PCI_30d_to_24mo_inference
+project: !!str DeepCORO_MACE_core_events_PCI_30d_to_24mo
+entity: !!str mhi_ai
+use_wandb: !!bool false
+# Training parameters
+scheduler_name: !!str cosine_with_warmup
+num_warmup_percent: !!float 0.08130699913696995
+optimizer: !!str RAdam
+use_amp: !!bool true
+gradient_accumulation_steps: !!int 1
+# Scheduler parameters
+lr_step_period: !!int 4
+factor: !!float 0.2923324829602549
+num_hard_restarts_cycles: !!int 3
+warm_restart_tmult: !!float 2.0
+# Dataset parameters
+data_filename: !!str /volume/DeepCORO_CLIP_DATASET/deepcoro_mace_core_events_PCI_30day_to_24mo.csv
+# Hardcoded dataset statistics
+dataset_mean: [110.4954833984375, 110.4954833984375, 110.4954833984375]
+dataset_std: [37.805782318115234, 37.805782318115234, 37.805782318115234]
+num_workers: !!int 8
+batch_size: !!int 10
+multi_video: !!bool true
+groupby_column: !!str 'StudyInstanceUID'
+num_videos: !!int 10
+shuffle_videos: !!bool true
+datapoint_loc_label: !!str FileName
+target_label:
+# 30 day outcomes
+- MACE_CV_Death_30d
+- MACE_Urgent_Revasc_30d
+- MACE_Non_Fatal_MI_30d
+- Complete_Occlusion_30d
+- MACE_Core_Events_30d
+# 180 day outcomes
+- MACE_CV_Death_180d
+- MACE_Urgent_Revasc_180d
+- MACE_Non_Fatal_MI_180d
+- Complete_Occlusion_180d
+- MACE_Core_Events_180d
+# 365 day outcomes
+- MACE_CV_Death_365d
+- MACE_Urgent_Revasc_365d
+- MACE_Non_Fatal_MI_365d
+- Complete_Occlusion_365d
+- MACE_Core_Events_365d
+# 730 day outcomes
+- MACE_CV_Death_730d
+- MACE_Urgent_Revasc_730d
+- MACE_Non_Fatal_MI_730d
+- Complete_Occlusion_730d
+- MACE_Core_Events_730d
+rand_augment: !!bool false
+resize: !!int 224
+frames: !!int 16
+stride: !!int 1
+# CLS Token Configuration
+pooling_mode: !!str attention+cls_token
+separate_video_attention: !!bool false
+num_attention_heads: !!int 16
+normalization_strategy: !!str post_norm
+use_cls_token: !!bool true
+attention_hidden: !!int 128
+dropout_attention: !!float 0.2915605971581885
+# Video Encoder parameters
+model_name: !!str mvit
+aggregator_depth: !!int 1
+num_heads: !!int 16
+video_freeze_ratio: !!float 0.7573402770077375
+dropout: !!float 0.06526867044646452
+pretrained: !!bool true
+# Learning rates
+video_encoder_lr: !!float 1.7451349067839527e-05
+video_encoder_weight_decay: !!float 7.482873173793454e-06
+# Attention learning rates
+attention_within_lr: !!float 0.0036932901687933887
+attention_across_lr: !!float 0.002785858840352699
+attention_weight_decay: !!float 5.0e-05
+attention_lr: !!float 0.0001
+attention_within_weight_decay: !!float 4.6451409609491175e-05
+attention_across_weight_decay: !!float 4.3452983870096386e-05
+video_encoder_checkpoint_path: !!str /media/data1/models/DeepCoro_CLIP/8av1xygm_20250605-083820_best_single_video/checkpoints/best_model_epoch_9.pt
+aggregate_videos_tokens: !!bool false
+per_video_pool: !!bool false
+output_dir: !!str outputs/
+# Confidence interval parameters
+ci_confidence_level: !!float 0.95
+ci_n_bootstrap: !!int 1000
+# Linear Probing parameters
+head_linear_probing:
+  # 30 day outcomes
+  MACE_CV_Death_30d: !!str cls_token_linear_probing
+  MACE_Urgent_Revasc_30d: !!str cls_token_linear_probing
+  MACE_Non_Fatal_MI_30d: !!str cls_token_linear_probing
+  Complete_Occlusion_30d: !!str cls_token_linear_probing
+  MACE_Core_Events_30d: !!str cls_token_linear_probing
+  # 180 day outcomes
+  MACE_CV_Death_180d: !!str cls_token_linear_probing
+  MACE_Urgent_Revasc_180d: !!str cls_token_linear_probing
+  MACE_Non_Fatal_MI_180d: !!str cls_token_linear_probing
+  Complete_Occlusion_180d: !!str cls_token_linear_probing
+  MACE_Core_Events_180d: !!str cls_token_linear_probing
+  # 365 day outcomes
+  MACE_CV_Death_365d: !!str cls_token_linear_probing
+  MACE_Urgent_Revasc_365d: !!str cls_token_linear_probing
+  MACE_Non_Fatal_MI_365d: !!str cls_token_linear_probing
+  Complete_Occlusion_365d: !!str cls_token_linear_probing
+  MACE_Core_Events_365d: !!str cls_token_linear_probing
+  # 730 day outcomes
+  MACE_CV_Death_730d: !!str cls_token_linear_probing
+  MACE_Urgent_Revasc_730d: !!str cls_token_linear_probing
+  MACE_Non_Fatal_MI_730d: !!str cls_token_linear_probing
+  Complete_Occlusion_730d: !!str cls_token_linear_probing
+  MACE_Core_Events_730d: !!str cls_token_linear_probing
+head_structure:
+  # 30 day outcomes
+  MACE_CV_Death_30d: !!int 1
+  MACE_Urgent_Revasc_30d: !!int 1
+  MACE_Non_Fatal_MI_30d: !!int 1
+  Complete_Occlusion_30d: !!int 1
+  MACE_Core_Events_30d: !!int 1
+  # 180 day outcomes
+  MACE_CV_Death_180d: !!int 1
+  MACE_Urgent_Revasc_180d: !!int 1
+  MACE_Non_Fatal_MI_180d: !!int 1
+  Complete_Occlusion_180d: !!int 1
+  MACE_Core_Events_180d: !!int 1
+  # 365 day outcomes
+  MACE_CV_Death_365d: !!int 1
+  MACE_Urgent_Revasc_365d: !!int 1
+  MACE_Non_Fatal_MI_365d: !!int 1
+  Complete_Occlusion_365d: !!int 1
+  MACE_Core_Events_365d: !!int 1
+  # 730 day outcomes
+  MACE_CV_Death_730d: !!int 1
+  MACE_Urgent_Revasc_730d: !!int 1
+  MACE_Non_Fatal_MI_730d: !!int 1
+  Complete_Occlusion_730d: !!int 1
+  MACE_Core_Events_730d: !!int 1
+head_dropout:
+  # 30 day outcomes
+  MACE_CV_Death_30d: !!float 0.2
+  MACE_Urgent_Revasc_30d: !!float 0.2
+  MACE_Non_Fatal_MI_30d: !!float 0.2
+  Complete_Occlusion_30d: !!float 0.2
+  MACE_Core_Events_30d: !!float 0.2
+  # 180 day outcomes
+  MACE_CV_Death_180d: !!float 0.2
+  MACE_Urgent_Revasc_180d: !!float 0.2
+  MACE_Non_Fatal_MI_180d: !!float 0.2
+  Complete_Occlusion_180d: !!float 0.2
+  MACE_Core_Events_180d: !!float 0.2
+  # 365 day outcomes
+  MACE_CV_Death_365d: !!float 0.2
+  MACE_Urgent_Revasc_365d: !!float 0.2
+  MACE_Non_Fatal_MI_365d: !!float 0.2
+  Complete_Occlusion_365d: !!float 0.2
+  MACE_Core_Events_365d: !!float 0.2
+  # 730 day outcomes
+  MACE_CV_Death_730d: !!float 0.2
+  MACE_Urgent_Revasc_730d: !!float 0.2
+  MACE_Non_Fatal_MI_730d: !!float 0.2
+  Complete_Occlusion_730d: !!float 0.2
+  MACE_Core_Events_730d: !!float 0.2
+loss_structure:
+  # 30 day outcomes
+  MACE_CV_Death_30d: !!str bce_logit
+  MACE_Urgent_Revasc_30d: !!str bce_logit
+  MACE_Non_Fatal_MI_30d: !!str bce_logit
+  Complete_Occlusion_30d: !!str bce_logit
+  MACE_Core_Events_30d: !!str bce_logit
+  # 180 day outcomes
+  MACE_CV_Death_180d: !!str bce_logit
+  MACE_Urgent_Revasc_180d: !!str bce_logit
+  MACE_Non_Fatal_MI_180d: !!str bce_logit
+  Complete_Occlusion_180d: !!str bce_logit
+  MACE_Core_Events_180d: !!str bce_logit
+  # 365 day outcomes
+  MACE_CV_Death_365d: !!str bce_logit
+  MACE_Urgent_Revasc_365d: !!str bce_logit
+  MACE_Non_Fatal_MI_365d: !!str bce_logit
+  Complete_Occlusion_365d: !!str bce_logit
+  MACE_Core_Events_365d: !!str bce_logit
+  # 730 day outcomes
+  MACE_CV_Death_730d: !!str bce_logit
+  MACE_Urgent_Revasc_730d: !!str bce_logit
+  MACE_Non_Fatal_MI_730d: !!str bce_logit
+  Complete_Occlusion_730d: !!str bce_logit
+  MACE_Core_Events_730d: !!str bce_logit
+head_lr:
+  # 30 day outcomes
+  MACE_CV_Death_30d: !!float 0.0001
+  MACE_Urgent_Revasc_30d: !!float 0.0001088038761830687
+  MACE_Non_Fatal_MI_30d: !!float 0.00017424329796205074
+  Complete_Occlusion_30d: !!float 0.00013136965983239626
+  MACE_Core_Events_30d: !!float 0.000285698212409275
+  # 180 day outcomes
+  MACE_CV_Death_180d: !!float 0.0001
+  MACE_Urgent_Revasc_180d: !!float 0.0001088038761830687
+  MACE_Non_Fatal_MI_180d: !!float 0.00017424329796205074
+  Complete_Occlusion_180d: !!float 0.00013136965983239626
+  MACE_Core_Events_180d: !!float 0.000285698212409275
+  # 365 day outcomes
+  MACE_CV_Death_365d: !!float 0.0001
+  MACE_Urgent_Revasc_365d: !!float 0.0001088038761830687
+  MACE_Non_Fatal_MI_365d: !!float 0.00017424329796205074
+  Complete_Occlusion_365d: !!float 0.00013136965983239626
+  MACE_Core_Events_365d: !!float 0.000285698212409275
+  # 730 day outcomes
+  MACE_CV_Death_730d: !!float 0.0001
+  MACE_Urgent_Revasc_730d: !!float 0.0001088038761830687
+  MACE_Non_Fatal_MI_730d: !!float 0.00017424329796205074
+  Complete_Occlusion_730d: !!float 0.00013136965983239626
+  MACE_Core_Events_730d: !!float 0.000285698212409275
+head_weight_decay:
+  # 30 day outcomes
+  MACE_CV_Death_30d: !!float 5.0e-06
+  MACE_Urgent_Revasc_30d: !!float 5.733819595754293e-06
+  MACE_Non_Fatal_MI_30d: !!float 5.793476444126293e-06
+  Complete_Occlusion_30d: !!float 2.66245119241381e-06
+  MACE_Core_Events_30d: !!float 3.646101526762893e-07
+  # 180 day outcomes
+  MACE_CV_Death_180d: !!float 5.0e-06
+  MACE_Urgent_Revasc_180d: !!float 5.733819595754293e-06
+  MACE_Non_Fatal_MI_180d: !!float 5.793476444126293e-06
+  Complete_Occlusion_180d: !!float 2.66245119241381e-06
+  MACE_Core_Events_180d: !!float 3.646101526762893e-07
+  # 365 day outcomes
+  MACE_CV_Death_365d: !!float 5.0e-06
+  MACE_Urgent_Revasc_365d: !!float 5.733819595754293e-06
+  MACE_Non_Fatal_MI_365d: !!float 5.793476444126293e-06
+  Complete_Occlusion_365d: !!float 2.66245119241381e-06
+  MACE_Core_Events_365d: !!float 3.646101526762893e-07
+  # 730 day outcomes
+  MACE_CV_Death_730d: !!float 5.0e-06
+  MACE_Urgent_Revasc_730d: !!float 5.733819595754293e-06
+  MACE_Non_Fatal_MI_730d: !!float 5.793476444126293e-06
+  Complete_Occlusion_730d: !!float 2.66245119241381e-06
+  MACE_Core_Events_730d: !!float 3.646101526762893e-07
+head_weights:
+  # 30 day outcomes - higher weights for rare events
+  MACE_CV_Death_30d: !!float 10.0
+  MACE_Urgent_Revasc_30d: !!float 1.0
+  MACE_Non_Fatal_MI_30d: !!float 10.0
+  Complete_Occlusion_30d: !!float 1.0
+  MACE_Core_Events_30d: !!float 2.0
+  # 180 day outcomes
+  MACE_CV_Death_180d: !!float 10.0
+  MACE_Urgent_Revasc_180d: !!float 1.0
+  MACE_Non_Fatal_MI_180d: !!float 10.0
+  Complete_Occlusion_180d: !!float 1.0
+  MACE_Core_Events_180d: !!float 2.0
+  # 365 day outcomes
+  MACE_CV_Death_365d: !!float 10.0
+  MACE_Urgent_Revasc_365d: !!float 1.0
+  MACE_Non_Fatal_MI_365d: !!float 10.0
+  Complete_Occlusion_365d: !!float 1.0
+  MACE_Core_Events_365d: !!float 2.0
+  # 730 day outcomes
+  MACE_CV_Death_730d: !!float 10.0
+  MACE_Urgent_Revasc_730d: !!float 1.0
+  MACE_Non_Fatal_MI_730d: !!float 10.0
+  Complete_Occlusion_730d: !!float 1.0
+  MACE_Core_Events_730d: !!float 2.0
+head_task:
+  # 30 day outcomes
+  MACE_CV_Death_30d: !!str binary_classification
+  MACE_Urgent_Revasc_30d: !!str binary_classification
+  MACE_Non_Fatal_MI_30d: !!str binary_classification
+  Complete_Occlusion_30d: !!str binary_classification
+  MACE_Core_Events_30d: !!str binary_classification
+  # 180 day outcomes
+  MACE_CV_Death_180d: !!str binary_classification
+  MACE_Urgent_Revasc_180d: !!str binary_classification
+  MACE_Non_Fatal_MI_180d: !!str binary_classification
+  Complete_Occlusion_180d: !!str binary_classification
+  MACE_Core_Events_180d: !!str binary_classification
+  # 365 day outcomes
+  MACE_CV_Death_365d: !!str binary_classification
+  MACE_Urgent_Revasc_365d: !!str binary_classification
+  MACE_Non_Fatal_MI_365d: !!str binary_classification
+  Complete_Occlusion_365d: !!str binary_classification
+  MACE_Core_Events_365d: !!str binary_classification
+  # 730 day outcomes
+  MACE_CV_Death_730d: !!str binary_classification
+  MACE_Urgent_Revasc_730d: !!str binary_classification
+  MACE_Non_Fatal_MI_730d: !!str binary_classification
+  Complete_Occlusion_730d: !!str binary_classification
+  MACE_Core_Events_730d: !!str binary_classification
+labels_map:
+  # 30 day outcomes
+  MACE_CV_Death_30d:
+    0: !!int 0
+    1: !!int 1
+  MACE_Urgent_Revasc_30d:
+    0: !!int 0
+    1: !!int 1
+  MACE_Non_Fatal_MI_30d:
+    0: !!int 0
+    1: !!int 1
+  Complete_Occlusion_30d:
+    0: !!int 0
+    1: !!int 1
+  MACE_Core_Events_30d:
+    0: !!int 0
+    1: !!int 1
+  # 180 day outcomes
+  MACE_CV_Death_180d:
+    0: !!int 0
+    1: !!int 1
+  MACE_Urgent_Revasc_180d:
+    0: !!int 0
+    1: !!int 1
+  MACE_Non_Fatal_MI_180d:
+    0: !!int 0
+    1: !!int 1
+  Complete_Occlusion_180d:
+    0: !!int 0
+    1: !!int 1
+  MACE_Core_Events_180d:
+    0: !!int 0
+    1: !!int 1
+  # 365 day outcomes
+  MACE_CV_Death_365d:
+    0: !!int 0
+    1: !!int 1
+  MACE_Urgent_Revasc_365d:
+    0: !!int 0
+    1: !!int 1
+  MACE_Non_Fatal_MI_365d:
+    0: !!int 0
+    1: !!int 1
+  Complete_Occlusion_365d:
+    0: !!int 0
+    1: !!int 1
+  MACE_Core_Events_365d:
+    0: !!int 0
+    1: !!int 1
+  # 730 day outcomes
+  MACE_CV_Death_730d:
+    0: !!int 0
+    1: !!int 1
+  MACE_Urgent_Revasc_730d:
+    0: !!int 0
+    1: !!int 1
+  MACE_Non_Fatal_MI_730d:
+    0: !!int 0
+    1: !!int 1
+  Complete_Occlusion_730d:
+    0: !!int 0
+    1: !!int 1
+  MACE_Core_Events_730d:
+    0: !!int 0
+    1: !!int 1
+# Inference model path
+inference_model_path: !!str /media/data1/ravram/bestmodelstenosis70/best_model_epoch_18.pt

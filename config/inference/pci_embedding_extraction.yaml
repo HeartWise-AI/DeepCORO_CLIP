@@ -1,0 +1,96 @@
+# PCI Embedding Extraction Configuration
+# For comparing PRE vs POST PCI study-level embeddings
+
+# Pipeline parameters
+pipeline_project: !!str DeepCORO_video_linear_probing
+base_checkpoint_path: !!str outputs
+run_mode: !!str inference
+epochs: !!int 1
+seed: !!int 42
+tag: !!str pci_embedding_extraction
+
+# wandb parameters
+name: !!str pci_embedding_extraction
+project: !!str pci_embedding_extraction
+entity: !!str mhi_ai
+use_wandb: !!bool false
+
+# Training parameters (required but not used for inference)
+scheduler_name: !!str cosine_with_warmup
+num_warmup_percent: !!float 0.1
+optimizer: !!str AdamW
+use_amp: !!bool true
+gradient_accumulation_steps: !!int 1
+lr_step_period: !!int 4
+factor: !!float 0.1
+num_hard_restarts_cycles: !!int 3
+warm_restart_tmult: !!float 2.0
+
+# Dataset parameters - PRE-PCI (diagnostic) studies
+data_filename: !!str /media/data1/ravram/DeepCORO_CLIP_FULL/CTO_THROMBUS_STENOSIS_70_CALCIF_inference.csv
+dataset_mean: [110.4954833984375, 110.4954833984375, 110.4954833984375]
+dataset_std: [37.805782318115234, 37.805782318115234, 37.805782318115234]
+num_workers: !!int 4
+batch_size: !!int 2
+multi_video: !!bool true
+groupby_column: !!str 'StudyInstanceUID'
+num_videos: !!int 10
+shuffle_videos: !!bool false  # Don't shuffle for reproducible extraction
+datapoint_loc_label: !!str FileName
+target_label: ["dummy_target"]
+rand_augment: !!bool false
+resize: !!int 224
+frames: !!int 16
+stride: !!int 1
+
+# Model architecture - must match training
+pooling_mode: !!str attention+cls_token
+separate_video_attention: !!bool false
+num_attention_heads: !!int 6
+normalization_strategy: !!str pre_norm
+use_cls_token: !!bool true
+attention_hidden: !!int 256
+dropout_attention: !!float 0.0  # No dropout for inference
+
+# Video Encoder parameters
+model_name: !!str mvit
+aggregator_depth: !!int 1
+num_heads: !!int 16
+video_freeze_ratio: !!float 1.0  # Frozen for inference
+dropout: !!float 0.0
+pretrained: !!bool true
+video_encoder_checkpoint_path: !!str /volume/Deep-Coro-final-branch/data/checkpoint/checkpoint.pt
+aggregate_videos_tokens: !!bool false
+per_video_pool: !!bool false
+
+# Learning rates (required but not used for inference)
+video_encoder_lr: !!float 0.00001
+video_encoder_weight_decay: !!float 0.00001
+head_lr:
+  dummy: !!float 0.001
+head_weight_decay:
+  dummy: !!float 0.00001
+
+# Output
+output_dir: !!str outputs/pci_comparison/
+
+# Use trained model for inference
+inference_model_path: !!str /media/data1/ravram/bestmodelstenosis70/best_model_epoch_18.pt
+
+# Minimal head structure (needed for model initialization but not used for embedding extraction)
+head_structure:
+  dummy: !!int 1
+head_linear_probing:
+  dummy: !!str cls_token_linear_probing
+head_dropout:
+  dummy: !!float 0.0
+head_weights:
+  dummy: !!float 1.0
+head_task:
+  dummy: !!str binary_classification
+loss_structure:
+  dummy: !!str bce_logit
+labels_map:
+  dummy:
+    normal: !!int 0
+    abnormal: !!int 1

@@ -9,6 +9,8 @@ from utils.loss.losses import (
     SiglipLoss, SiglipLossDDP, 
     InfoNCELoss
 )
+from utils.loss.multi_positive_infonce import MultiPositiveInfoNCELoss
+from utils.registry import LossRegistry
 
 
 class TestLosses:
@@ -168,6 +170,22 @@ class TestLosses:
         
         # The absolute values will vary, but what's important is that the loss
         # function can handle different batch sizes without numerical issues
+
+    def test_multi_positive_infonce_loss(self):
+        """Ensure multi-positive InfoNCE produces a finite scalar."""
+        logits = torch.randn(4, 4, requires_grad=True)
+        pos_mask = torch.eye(4)
+        loss_fn = MultiPositiveInfoNCELoss()
+        loss = loss_fn(logits, pos_mask)
+        assert loss.ndim == 0
+        assert torch.isfinite(loss)
+        loss.backward()
+        assert logits.grad is not None
+
+    def test_multi_positive_loss_registered(self):
+        """Verify the registry exposes the multi-positive InfoNCE loss."""
+        loss_cls = LossRegistry.get(LossType.MULTI_POSITIVE_INFONCE)
+        assert issubclass(loss_cls, MultiPositiveInfoNCELoss)
 
 
 # DDP tests would need to be run in a multi-GPU environment with proper setup

@@ -82,6 +82,40 @@ class TextEncoder(nn.Module):
         for i, (_, param) in enumerate(all_named_params):
             if i < (total_count - train_count):
                 param.requires_grad = False
+    
+    def update_freeze_ratio(self, new_freeze_ratio: float):
+        """
+        Dynamically update the freeze ratio during training.
+        
+        Args:
+            new_freeze_ratio: New freeze ratio (0.0 = all trainable, 1.0 = all frozen)
+        """
+        self.freeze_ratio = new_freeze_ratio
+        
+        # First, unfreeze all BERT parameters
+        for param in self.bert.parameters():
+            param.requires_grad = True
+        
+        # Then apply the new freeze ratio
+        if self.freeze_ratio == 0.0:  # If freeze_ratio is 0, don't freeze anything
+            return
+            
+        all_named_params = list(self.bert.named_parameters())
+        total_count = len(all_named_params)
+        train_count = int(self.freeze_ratio * total_count)
+        
+        # Freeze the bottom portion, keep top `train_count` trainable
+        for i, (name, param) in enumerate(all_named_params):
+            if i < (total_count - train_count):
+                param.requires_grad = False
+        
+        # Count trainable parameters for logging
+        trainable_params = sum(p.numel() for p in self.bert.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in self.bert.parameters())
+        trainable_percent = (trainable_params / total_params) * 100 if total_params > 0 else 0
+        
+        print(f"[TextEncoder] Updated freeze_ratio to {new_freeze_ratio:.2f}")
+        print(f"[TextEncoder] Trainable parameters: {trainable_params:,} / {total_params:,} ({trainable_percent:.1f}%)")
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
         """Forward pass of the text encoder.

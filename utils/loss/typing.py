@@ -14,6 +14,7 @@ from utils.loss.losses import (
     MultiClassFocalLoss,
     BinaryFocalLoss
 )
+from utils.loss.multitask_loss import MultitaskLoss
 
 
 @dataclass
@@ -30,7 +31,8 @@ class Loss:
         BCEWithLogitsLoss,
         CrossEntropyLoss,
         MultiClassFocalLoss,
-        BinaryFocalLoss
+        BinaryFocalLoss,
+        MultitaskLoss
     ]
     
     def run(self, **kwargs):

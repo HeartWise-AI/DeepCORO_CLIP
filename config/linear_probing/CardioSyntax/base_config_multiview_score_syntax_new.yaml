@@ -139,3 +139,5 @@ labels_map:
     high: 3
 # Inference parameters
 inference_model_path: !!str /media/data1/models/DeepCoro_CLIP/CardioSyntax/rxt2fz27_20250711-171619/models/best_model_epoch_17.pt
+dataset_mean: [110.4954833984375, 110.4954833984375, 110.4954833984375]
+dataset_std: [37.805782318115234, 37.805782318115234, 37.805782318115234]

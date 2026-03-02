@@ -120,7 +120,7 @@ class TestMultiVideoDataset(unittest.TestCase):
         )
         
         # Get the first item
-        multi_stack, encoded, sid = dataset[0]
+        multi_stack, encoded, sid, tree_label = dataset[0]
         
         # Check the types and shapes
         self.assertIsInstance(multi_stack, np.ndarray)
@@ -129,12 +129,13 @@ class TestMultiVideoDataset(unittest.TestCase):
         self.assertIn("input_ids", encoded)
         self.assertIn("attention_mask", encoded)
         self.assertIsInstance(sid, str)
+        self.assertEqual(tree_label, -1)
         
         # Test padding when fewer videos available than num_videos
         # Check zero padding for study with fewer videos
         if len(dataset.study_to_videos["study2"]) < 4:
             # Get the second study item
-            multi_stack, _, _ = dataset[1]  # study2 index
+            multi_stack, _, _, _ = dataset[1]  # study2 index
             
             # The first videos should be non-zero (actual videos)
             first_videos_sum = np.sum(multi_stack[:len(dataset.study_to_videos["study2"])])
@@ -255,12 +256,14 @@ class TestMultiVideoDataset(unittest.TestCase):
             (
                 np.zeros((4, 16, 224, 224, 3), dtype=np.float32),
                 {"input_ids": torch.zeros(512), "attention_mask": torch.ones(512)},
-                "study1"
+                "study1",
+                0,
             ),
             (
                 np.ones((4, 16, 224, 224, 3), dtype=np.float32),
                 {"input_ids": torch.ones(512), "attention_mask": torch.ones(512)},
-                "study2"
+                "study2",
+                1,
             )
         ]
         
@@ -282,6 +285,7 @@ class TestMultiVideoDataset(unittest.TestCase):
         
         self.assertEqual(len(collated["paths"]), 2)
         self.assertEqual(collated["paths"][0], "study1")
+        self.assertTrue(torch.equal(collated["main_structure"], torch.tensor([0, 1])))
 
 
 if __name__ == '__main__':

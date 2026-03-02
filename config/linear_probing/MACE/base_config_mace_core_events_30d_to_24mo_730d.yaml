@@ -1,0 +1,128 @@
+pipeline_project: DeepCORO_video_linear_probing
+base_checkpoint_path: outputs
+run_mode: train
+epochs: 50
+seed: 42
+name: DeepCORO_MACE_CORE_EVENTS_730d_PCI_sweep
+project: DeepCORO_MACE_CORE_EVENTS_730d_PCI
+entity: mhi_ai
+tag: MACE_CORE_EVENTS_730d_PCI
+use_wandb: true
+device: 0
+world_size: 1
+is_ref_device: true
+output_dir: outputs
+head_lr:
+  MACE_CV_Death_730d: 0.0001
+  MACE_Urgent_Revasc_730d: 0.0001088038761830687
+  MACE_Non_Fatal_MI_730d: 0.00017424329796205074
+  Complete_Occlusion_730d: 0.00013136965983239626
+  MACE_Core_Events_730d: 0.000285698212409275
+scheduler_name: cosine_with_warmup
+lr_step_period: 4
+factor: 0.2923324829602549
+optimizer: RAdam
+head_weight_decay:
+  MACE_CV_Death_730d: 5.0e-06
+  MACE_Urgent_Revasc_730d: 5.733819595754293e-06
+  MACE_Non_Fatal_MI_730d: 5.793476444126293e-06
+  Complete_Occlusion_730d: 2.66245119241381e-06
+  MACE_Core_Events_730d: 3.646101526762893e-07
+video_encoder_weight_decay: 7.482873173793454e-06
+use_amp: true
+gradient_accumulation_steps: 1
+num_warmup_percent: 0.08130699913696995
+num_hard_restarts_cycles: 3
+warm_restart_tmult: 2.0
+data_filename: /volume/DeepCORO_CLIP_DATASET/deepcoro_mace_core_events_PCI_30day_to_24mo.csv
+num_workers: 8
+batch_size: 10
+datapoint_loc_label: FileName
+target_label:
+  - MACE_CV_Death_730d
+  - MACE_Urgent_Revasc_730d
+  - MACE_Non_Fatal_MI_730d
+  - Complete_Occlusion_730d
+  - MACE_Core_Events_730d
+rand_augment: true
+resize: 224
+frames: 16
+stride: 1
+model_name: mvit
+aggregator_depth: 1
+num_heads: 16
+video_freeze_ratio: 0.7573402770077375
+dropout: 0.06526867044646452
+pretrained: true
+video_encoder_checkpoint_path: /media/data1/models/DeepCoro_CLIP/8av1xygm_20250605-083820_best_single_video/checkpoints/best_model_epoch_9.pt
+video_encoder_lr: 1.7451349067839527e-05
+head_structure:
+  MACE_CV_Death_730d: 1
+  MACE_Urgent_Revasc_730d: 1
+  MACE_Non_Fatal_MI_730d: 1
+  Complete_Occlusion_730d: 1
+  MACE_Core_Events_730d: 1
+loss_structure:
+  MACE_CV_Death_730d: bce_logit
+  MACE_Urgent_Revasc_730d: bce_logit
+  MACE_Non_Fatal_MI_730d: bce_logit
+  Complete_Occlusion_730d: bce_logit
+  MACE_Core_Events_730d: bce_logit
+head_weights:
+  MACE_CV_Death_730d: 1.0
+  MACE_Urgent_Revasc_730d: 1.0
+  MACE_Non_Fatal_MI_730d: 10.0
+  Complete_Occlusion_730d: 1.0
+  MACE_Core_Events_730d: 2.0
+head_dropout:
+  MACE_CV_Death_730d: 0.2
+  MACE_Urgent_Revasc_730d: 0.2
+  MACE_Non_Fatal_MI_730d: 0.2
+  Complete_Occlusion_730d: 0.2
+  MACE_Core_Events_730d: 0.2
+head_task:
+  MACE_CV_Death_730d: binary_classification
+  MACE_Urgent_Revasc_730d: binary_classification
+  MACE_Non_Fatal_MI_730d: binary_classification
+  Complete_Occlusion_730d: binary_classification
+  MACE_Core_Events_730d: binary_classification
+labels_map:
+  MACE_CV_Death_730d:
+    0: 0
+    1: 1
+  MACE_Urgent_Revasc_730d:
+    0: 0
+    1: 1
+  MACE_Non_Fatal_MI_730d:
+    0: 0
+    1: 1
+  Complete_Occlusion_730d:
+    0: 0
+    1: 1
+  MACE_Core_Events_730d:
+    0: 0
+    1: 1
+multi_video: true
+groupby_column: StudyInstanceUID
+num_videos: 10
+shuffle_videos: true
+pooling_mode: attention+cls_token
+attention_hidden: 128
+dropout_attention: 0.2915605971581885
+attention_lr: 0.0001
+attention_weight_decay: 5.0e-05
+use_cls_token: true
+num_attention_heads: 16
+separate_video_attention: false
+normalization_strategy: post_norm
+attention_within_lr: 0.0036932901687933887
+attention_across_lr: 0.002785858840352699
+attention_within_weight_decay: 4.6451409609491175e-05
+attention_across_weight_decay: 4.3452983870096386e-05
+aggregate_videos_tokens: false
+per_video_pool: false
+inference_model_path: /media/data1/ravram/bestmodelstenosis70/best_model_epoch_18.pt
+ci_confidence_level: 0.95
+ci_n_bootstrap: 1000
+dataset_mean: [110.4954833984375, 110.4954833984375, 110.4954833984375]
+dataset_std: [37.805782318115234, 37.805782318115234, 37.805782318115234]

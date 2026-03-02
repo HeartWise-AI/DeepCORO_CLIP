@@ -41,10 +41,32 @@ class LossType(str, Enum):
     # Multi-head loss
     MULTI_HEAD = "multi_head" # Multi-head loss
     
+    # Multitask losses
+    MULTITASK = "multitask" # Multitask loss combining contrastive, captioning, and masked modeling
+    
     # Custom losses
     MULTICLASS_FOCAL = "multiclass_focal" # Multi-class Focal Loss
     BINARY_FOCAL = "binary_focal" # Binary Focal Loss
-    
+
+    # CLIP losses
+    CLIP = "clip"
+
+    # SigLIP variants
+    SIGLIP_PAIRWISE = "siglip_pairwise"
+    SIGLIP2_BCE = "siglip2_bce"
+    SIGLIP2_BCE_DDP = "siglip2_bce_ddp"
+    SIGLIP2_MULTI_POSITIVE = "siglip2_multi_positive"
+    SIGLIP2_COMBINED = "siglip2_combined"
+
+    # LOCCA losses
+    LOCCA_CAPTION = "locca_caption"
+    LOCCA_COMBINED = "locca_combined"
+    LOCCA_GROUNDED = "locca_grounded"
+    LOCCA_REFERRING = "locca_referring"
+
+    # Multi-positive
+    MULTI_POSITIVE_INFONCE = "multi_positive_infonce"
+
     def __str__(self):
         return self.value
     

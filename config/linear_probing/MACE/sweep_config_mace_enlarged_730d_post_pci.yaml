@@ -1,0 +1,185 @@
+command:
+  - torchrun
+  - "--nproc_per_node=1"
+  - "--master_port=29510"
+  - "scripts/main.py"
+  - "--base_config"
+  - "config/linear_probing/MACE/base_config_mace_enlarged_730d_post_pci.yaml"
+  - ${args}
+name: "DeepCORO_MACE_ENLARGED_730d_POST_PCI"
+project: "DeepCORO_MACE_ENLARGED_730d_POST_PCI"
+entity: "mhi_ai"
+method: bayes
+metric:
+  name: best_val_loss
+  goal: minimize
+parameters:
+  pooling_mode:
+    values: ["cls_token", "attention+cls_token"]
+  use_cls_token:
+    values: [true]
+  num_attention_heads:
+    values: [8, 16, 24]
+  separate_video_attention:
+    values: [false, true]
+  normalization_strategy:
+    values: ["post_norm", "pre_norm"]
+
+  attention_within_lr:
+    distribution: uniform
+    min: 0.0005
+    max: 0.005
+  attention_across_lr:
+    distribution: uniform
+    min: 0.0005
+    max: 0.003
+  attention_within_weight_decay:
+    distribution: uniform
+    min: 0.000001
+    max: 0.0001
+  attention_across_weight_decay:
+    distribution: uniform
+    min: 0.000001
+    max: 0.0001
+
+  aggregate_videos_tokens:
+    values: [false]
+  batch_size:
+    values: [6, 8, 10]
+  dropout:
+    distribution: uniform
+    min: 0.05
+    max: 0.25
+  dropout_attention:
+    distribution: uniform
+    min: 0.1
+    max: 0.3
+  entity:
+    values: ["mhi_ai"]
+  factor:
+    distribution: uniform
+    min: 0.1
+    max: 0.7
+
+  head_lr.MACE_CV_Death_730d:
+    distribution: uniform
+    min: 0.00005
+    max: 0.0002
+  head_lr.MACE_Non_Fatal_MI_730d:
+    distribution: uniform
+    min: 0.00005
+    max: 0.0002
+  head_lr.MACE_Non_Fatal_Stroke_730d:
+    distribution: uniform
+    min: 0.00005
+    max: 0.0002
+  head_lr.MACE_Urgent_Revasc_730d:
+    distribution: uniform
+    min: 0.00005
+    max: 0.0002
+  head_lr.MACE_HF_Hosp_730d:
+    distribution: uniform
+    min: 0.00005
+    max: 0.0002
+  head_lr.MACE_Arrhythmia_730d:
+    distribution: uniform
+    min: 0.00005
+    max: 0.0002
+  head_lr.MACE_Cardiogenic_Shock_730d:
+    distribution: uniform
+    min: 0.00005
+    max: 0.0002
+  head_lr.Complete_Occlusion_730d:
+    distribution: uniform
+    min: 0.00005
+    max: 0.0002
+  head_lr.MACE_Core_Events_730d:
+    distribution: uniform
+    min: 0.00005
+    max: 0.0002
+  head_lr.MACE_Enlarged_730d:
+    distribution: uniform
+    min: 0.00005
+    max: 0.0002
+
+  head_weight_decay.MACE_CV_Death_730d:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.MACE_Non_Fatal_MI_730d:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.MACE_Non_Fatal_Stroke_730d:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.MACE_Urgent_Revasc_730d:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.MACE_HF_Hosp_730d:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.MACE_Arrhythmia_730d:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.MACE_Cardiogenic_Shock_730d:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.Complete_Occlusion_730d:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.MACE_Core_Events_730d:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+  head_weight_decay.MACE_Enlarged_730d:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.00001
+
+  attention_hidden:
+    values: [128, 256, 512]
+  lr_step_period:
+    values: [4, 6, 8]
+  name:
+    values: ["DeepCORO_MACE_ENLARGED_730d_POST_PCI"]
+  num_videos:
+    values: [2, 3, 4]
+  num_warmup_percent:
+    distribution: uniform
+    min: 0.02
+    max: 0.15
+  optimizer:
+    values: [AdamW, RAdam]
+  per_video_pool:
+    values: [false, true]
+  project:
+    values: ["DeepCORO_MACE_ENLARGED_730d_POST_PCI"]
+  scheduler_name:
+    values: ["linear_warmup", "cosine_with_warmup", "cosine_with_hard_restarts_with_warmup"]
+  stride:
+    values: [1, 2, 3]
+  video_encoder_lr:
+    distribution: uniform
+    min: 0.00005
+    max: 0.0001
+  video_encoder_weight_decay:
+    distribution: uniform
+    min: 0.0000001
+    max: 0.000001
+  video_freeze_ratio:
+    distribution: uniform
+    min: 0.7
+    max: 1.0
+early_terminate:
+  type: hyperband
+  min_iter: 3
+  eta: 2
+  s: 2
+run_mode: train

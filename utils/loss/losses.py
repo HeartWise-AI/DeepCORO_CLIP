@@ -239,17 +239,23 @@ class SiglipLossDDP(nn.Module):
             torch.Tensor: Scalar loss value
         """        
         with autocast('cuda', enabled=False):
-            # 1) Gather features from all GPUs.
-            video_features_all = gather_all(video_features)
-            text_features_all  = gather_all(text_features)
+            # 1) Gather features from all GPUs using fp16 to cut communication volume.
+            video_features_half = gather_all(video_features.half())
+            text_features_half  = gather_all(text_features.half())
 
-            # 2) Normalize the gathered features.
-            video_features_all = F.normalize(video_features_all.float(), dim=1)
-            text_features_all  = F.normalize(text_features_all.float(), dim=1)
+            # 2) Normalize the gathered features in fp32 for numerical stability.
+            video_features_all = F.normalize(video_features_half.float(), dim=1)
+            text_features_all  = F.normalize(text_features_half.float(), dim=1)
 
-            # 3) Compute global similarity matrix of shape [N, N],
-            # where N is the total global batch size.
-            similarity_matrix = torch.matmul(video_features_all, text_features_all.t())
+            # 3) Compute global similarity matrix in manageable chunks to avoid long-running kernels.
+            total_samples = video_features_all.size(0)
+            chunk_size = 1024 if total_samples > 1024 else total_samples
+            similarity_chunks = []
+            for start in range(0, total_samples, chunk_size):
+                end = start + chunk_size
+                v_chunk = video_features_all[start:end]
+                similarity_chunks.append(torch.matmul(v_chunk, text_features_all.t()))
+            similarity_matrix = torch.cat(similarity_chunks, dim=0)
 
             # 4) Apply SIGLIP gating function: g(x) = x * sigmoid(x)
             gated_similarity = similarity_matrix * torch.sigmoid(similarity_matrix)

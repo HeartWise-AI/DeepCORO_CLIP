@@ -1,0 +1,1067 @@
+pipeline_project: DeepCORO_video_linear_probing
+base_checkpoint_path: outputs
+run_mode: inference
+epochs: 25
+seed: 42
+name: DeepCORO_stenosis_weighted_distal
+project: DeepCORO_stenosis_weighted_distal
+entity: mhi_ai
+tag: mvit_pretrained_multiview_weighted_distal
+use_wandb: false
+device: 0
+world_size: 1
+is_ref_device: true
+output_dir: outputs/DeepCORO_video_linear_probing/DeepCORO_stenosis_weighted_distal/zcb8cu0l_inference
+head_lr:
+  prox_rca_stenosis: 0.0005
+  mid_rca_stenosis: 0.0005
+  dist_rca_stenosis: 0.0005
+  pda_stenosis: 0.0005
+  posterolateral_stenosis: 0.0005
+  left_main_stenosis: 0.0005
+  prox_lad_stenosis: 0.0005
+  mid_lad_stenosis: 0.0005
+  dist_lad_stenosis: 0.0005
+  D1_stenosis: 0.0005
+  D2_stenosis: 0.0005
+  prox_lcx_stenosis: 0.0005
+  mid_lcx_stenosis: 0.0005
+  dist_lcx_stenosis: 0.0005
+  om1_stenosis: 0.0005
+  om2_stenosis: 0.0005
+  bx_stenosis: 0.0005
+  lvp_stenosis: 0.0005
+  prox_rca_stenosis_binary: 0.0003
+  mid_rca_stenosis_binary: 0.0003
+  dist_rca_stenosis_binary: 0.0003
+  pda_stenosis_binary: 0.0003
+  posterolateral_stenosis_binary: 0.0003
+  left_main_stenosis_binary: 0.0003
+  prox_lad_stenosis_binary: 0.0003
+  mid_lad_stenosis_binary: 0.0003
+  dist_lad_stenosis_binary: 0.0003
+  D1_stenosis_binary: 0.0003
+  D2_stenosis_binary: 0.0003
+  prox_lcx_stenosis_binary: 0.0003
+  mid_lcx_stenosis_binary: 0.0003
+  dist_lcx_stenosis_binary: 0.0003
+  om1_stenosis_binary: 0.0003
+  om2_stenosis_binary: 0.0003
+  bx_stenosis_binary: 0.0003
+  lvp_stenosis_binary: 0.0003
+  prox_rca_calcif_binary: 0.0003
+  mid_rca_calcif_binary: 0.0003
+  dist_rca_calcif_binary: 0.0003
+  pda_calcif_binary: 0.0003
+  posterolateral_calcif_binary: 0.0003
+  left_main_calcif_binary: 0.0003
+  prox_lad_calcif_binary: 0.0003
+  mid_lad_calcif_binary: 0.0003
+  dist_lad_calcif_binary: 0.0003
+  D1_calcif_binary: 0.0003
+  D2_calcif_binary: 0.0003
+  prox_lcx_calcif_binary: 0.0003
+  mid_lcx_calcif_binary: 0.0003
+  dist_lcx_calcif_binary: 0.0003
+  om1_calcif_binary: 0.0003
+  om2_calcif_binary: 0.0003
+  bx_calcif_binary: 0.0003
+  lvp_calcif_binary: 0.0003
+  prox_rca_cto: 0.0003
+  mid_rca_cto: 0.0003
+  dist_rca_cto: 0.0003
+  pda_cto: 0.0003
+  posterolateral_cto: 0.0003
+  left_main_cto: 0.0003
+  prox_lad_cto: 0.0003
+  mid_lad_cto: 0.0003
+  dist_lad_cto: 0.0003
+  D1_cto: 0.0003
+  D2_cto: 0.0003
+  prox_lcx_cto: 0.0003
+  mid_lcx_cto: 0.0003
+  dist_lcx_cto: 0.0003
+  om1_cto: 0.0003
+  om2_cto: 0.0003
+  bx_cto: 0.0003
+  lvp_cto: 0.0003
+  prox_rca_thrombus: 0.0003
+  mid_rca_thrombus: 0.0003
+  dist_rca_thrombus: 0.0003
+  pda_thrombus: 0.0003
+  posterolateral_thrombus: 0.0003
+  left_main_thrombus: 0.0003
+  prox_lad_thrombus: 0.0003
+  mid_lad_thrombus: 0.0003
+  dist_lad_thrombus: 0.0003
+  D1_thrombus: 0.0003
+  D2_thrombus: 0.0003
+  prox_lcx_thrombus: 0.0003
+  mid_lcx_thrombus: 0.0003
+  dist_lcx_thrombus: 0.0003
+  om1_thrombus: 0.0003
+  om2_thrombus: 0.0003
+  bx_thrombus: 0.0003
+  lvp_thrombus: 0.0003
+scheduler_name: cosine_with_warmup
+lr_step_period: 4
+factor: 0.16090885523071338
+optimizer: AdamW
+head_weight_decay:
+  prox_rca_stenosis: 5.0e-06
+  mid_rca_stenosis: 5.0e-06
+  dist_rca_stenosis: 5.0e-06
+  pda_stenosis: 5.0e-06
+  posterolateral_stenosis: 5.0e-06
+  left_main_stenosis: 5.0e-06
+  prox_lad_stenosis: 5.0e-06
+  mid_lad_stenosis: 5.0e-06
+  dist_lad_stenosis: 5.0e-06
+  D1_stenosis: 5.0e-06
+  D2_stenosis: 5.0e-06
+  prox_lcx_stenosis: 5.0e-06
+  mid_lcx_stenosis: 5.0e-06
+  dist_lcx_stenosis: 5.0e-06
+  om1_stenosis: 5.0e-06
+  om2_stenosis: 5.0e-06
+  bx_stenosis: 5.0e-06
+  lvp_stenosis: 5.0e-06
+  prox_rca_stenosis_binary: 1.0e-05
+  mid_rca_stenosis_binary: 1.0e-05
+  dist_rca_stenosis_binary: 1.0e-05
+  pda_stenosis_binary: 1.0e-05
+  posterolateral_stenosis_binary: 1.0e-05
+  left_main_stenosis_binary: 1.0e-05
+  prox_lad_stenosis_binary: 1.0e-05
+  mid_lad_stenosis_binary: 1.0e-05
+  dist_lad_stenosis_binary: 1.0e-05
+  D1_stenosis_binary: 1.0e-05
+  D2_stenosis_binary: 1.0e-05
+  prox_lcx_stenosis_binary: 1.0e-05
+  mid_lcx_stenosis_binary: 1.0e-05
+  dist_lcx_stenosis_binary: 1.0e-05
+  om1_stenosis_binary: 1.0e-05
+  om2_stenosis_binary: 1.0e-05
+  bx_stenosis_binary: 1.0e-05
+  lvp_stenosis_binary: 1.0e-05
+  prox_rca_calcif_binary: 1.0e-05
+  mid_rca_calcif_binary: 1.0e-05
+  dist_rca_calcif_binary: 1.0e-05
+  pda_calcif_binary: 1.0e-05
+  posterolateral_calcif_binary: 1.0e-05
+  left_main_calcif_binary: 1.0e-05
+  prox_lad_calcif_binary: 1.0e-05
+  mid_lad_calcif_binary: 1.0e-05
+  dist_lad_calcif_binary: 1.0e-05
+  D1_calcif_binary: 1.0e-05
+  D2_calcif_binary: 1.0e-05
+  prox_lcx_calcif_binary: 1.0e-05
+  mid_lcx_calcif_binary: 1.0e-05
+  dist_lcx_calcif_binary: 1.0e-05
+  om1_calcif_binary: 1.0e-05
+  om2_calcif_binary: 1.0e-05
+  bx_calcif_binary: 1.0e-05
+  lvp_calcif_binary: 1.0e-05
+  prox_rca_cto: 1.0e-05
+  mid_rca_cto: 1.0e-05
+  dist_rca_cto: 1.0e-05
+  pda_cto: 1.0e-05
+  posterolateral_cto: 1.0e-05
+  left_main_cto: 1.0e-05
+  prox_lad_cto: 1.0e-05
+  mid_lad_cto: 1.0e-05
+  dist_lad_cto: 1.0e-05
+  D1_cto: 1.0e-05
+  D2_cto: 1.0e-05
+  prox_lcx_cto: 1.0e-05
+  mid_lcx_cto: 1.0e-05
+  dist_lcx_cto: 1.0e-05
+  om1_cto: 1.0e-05
+  om2_cto: 1.0e-05
+  bx_cto: 1.0e-05
+  lvp_cto: 1.0e-05
+  prox_rca_thrombus: 1.0e-05
+  mid_rca_thrombus: 1.0e-05
+  dist_rca_thrombus: 1.0e-05
+  pda_thrombus: 5.0e-05
+  posterolateral_thrombus: 1.0e-05
+  left_main_thrombus: 1.0e-05
+  prox_lad_thrombus: 1.0e-05
+  mid_lad_thrombus: 1.0e-05
+  dist_lad_thrombus: 1.0e-05
+  D1_thrombus: 1.0e-05
+  D2_thrombus: 1.0e-05
+  prox_lcx_thrombus: 1.0e-05
+  mid_lcx_thrombus: 1.0e-05
+  dist_lcx_thrombus: 1.0e-05
+  om1_thrombus: 1.0e-05
+  om2_thrombus: 1.0e-05
+  bx_thrombus: 1.0e-05
+  lvp_thrombus: 1.0e-05
+video_encoder_weight_decay: 4.4495284358638e-07
+use_amp: true
+gradient_accumulation_steps: 1
+num_warmup_percent: 0.08852107314693095
+num_hard_restarts_cycles: 3
+warm_restart_tmult: 2.0
+data_filename: /media/data1/datasets/DeepCoro_CLIP/CTO_THROMBUS_STENOSIS_70_CALCIF_inference_with_binary.csv
+num_workers: 4
+batch_size: 12
+datapoint_loc_label: FileName
+target_label:
+- prox_rca_stenosis
+- mid_rca_stenosis
+- dist_rca_stenosis
+- pda_stenosis
+- posterolateral_stenosis
+- left_main_stenosis
+- prox_lad_stenosis
+- mid_lad_stenosis
+- dist_lad_stenosis
+- D1_stenosis
+- D2_stenosis
+- prox_lcx_stenosis
+- mid_lcx_stenosis
+- dist_lcx_stenosis
+- om1_stenosis
+- om2_stenosis
+- bx_stenosis
+- lvp_stenosis
+- prox_rca_stenosis_binary
+- mid_rca_stenosis_binary
+- dist_rca_stenosis_binary
+- pda_stenosis_binary
+- posterolateral_stenosis_binary
+- left_main_stenosis_binary
+- prox_lad_stenosis_binary
+- mid_lad_stenosis_binary
+- dist_lad_stenosis_binary
+- D1_stenosis_binary
+- D2_stenosis_binary
+- prox_lcx_stenosis_binary
+- mid_lcx_stenosis_binary
+- dist_lcx_stenosis_binary
+- om1_stenosis_binary
+- om2_stenosis_binary
+- bx_stenosis_binary
+- lvp_stenosis_binary
+- prox_rca_calcif_binary
+- mid_rca_calcif_binary
+- dist_rca_calcif_binary
+- pda_calcif_binary
+- posterolateral_calcif_binary
+- left_main_calcif_binary
+- prox_lad_calcif_binary
+- mid_lad_calcif_binary
+- dist_lad_calcif_binary
+- D1_calcif_binary
+- D2_calcif_binary
+- prox_lcx_calcif_binary
+- mid_lcx_calcif_binary
+- dist_lcx_calcif_binary
+- om1_calcif_binary
+- om2_calcif_binary
+- bx_calcif_binary
+- lvp_calcif_binary
+- prox_rca_cto
+- mid_rca_cto
+- dist_rca_cto
+- pda_cto
+- posterolateral_cto
+- left_main_cto
+- prox_lad_cto
+- mid_lad_cto
+- dist_lad_cto
+- D1_cto
+- D2_cto
+- prox_lcx_cto
+- mid_lcx_cto
+- dist_lcx_cto
+- om1_cto
+- om2_cto
+- bx_cto
+- lvp_cto
+- prox_rca_thrombus
+- mid_rca_thrombus
+- dist_rca_thrombus
+- pda_thrombus
+- posterolateral_thrombus
+- left_main_thrombus
+- prox_lad_thrombus
+- mid_lad_thrombus
+- dist_lad_thrombus
+- D1_thrombus
+- D2_thrombus
+- prox_lcx_thrombus
+- mid_lcx_thrombus
+- dist_lcx_thrombus
+- om1_thrombus
+- om2_thrombus
+- bx_thrombus
+- lvp_thrombus
+rand_augment: false
+resize: 224
+frames: 16
+stride: 1
+model_name: mvit
+aggregator_depth: 1
+num_heads: 16
+video_freeze_ratio: 0.8483198470912667
+dropout: 0.19626902693861784
+pretrained: true
+video_encoder_checkpoint_path: /media/data1/models/DeepCoro_CLIP/8av1xygm_20250605-083820_best_single_video/checkpoints/best_model_epoch_9.pt
+video_encoder_lr: 5.908576744303851e-06
+head_structure:
+  prox_rca_stenosis: 1
+  mid_rca_stenosis: 1
+  dist_rca_stenosis: 1
+  pda_stenosis: 1
+  posterolateral_stenosis: 1
+  left_main_stenosis: 1
+  prox_lad_stenosis: 1
+  mid_lad_stenosis: 1
+  dist_lad_stenosis: 1
+  D1_stenosis: 1
+  D2_stenosis: 1
+  prox_lcx_stenosis: 1
+  mid_lcx_stenosis: 1
+  dist_lcx_stenosis: 1
+  om1_stenosis: 1
+  om2_stenosis: 1
+  bx_stenosis: 1
+  lvp_stenosis: 1
+  prox_rca_stenosis_binary: 1
+  mid_rca_stenosis_binary: 1
+  dist_rca_stenosis_binary: 1
+  pda_stenosis_binary: 1
+  posterolateral_stenosis_binary: 1
+  left_main_stenosis_binary: 1
+  prox_lad_stenosis_binary: 1
+  mid_lad_stenosis_binary: 1
+  dist_lad_stenosis_binary: 1
+  D1_stenosis_binary: 1
+  D2_stenosis_binary: 1
+  prox_lcx_stenosis_binary: 1
+  mid_lcx_stenosis_binary: 1
+  dist_lcx_stenosis_binary: 1
+  om1_stenosis_binary: 1
+  om2_stenosis_binary: 1
+  bx_stenosis_binary: 1
+  lvp_stenosis_binary: 1
+  prox_rca_calcif_binary: 1
+  mid_rca_calcif_binary: 1
+  dist_rca_calcif_binary: 1
+  pda_calcif_binary: 1
+  posterolateral_calcif_binary: 1
+  left_main_calcif_binary: 1
+  prox_lad_calcif_binary: 1
+  mid_lad_calcif_binary: 1
+  dist_lad_calcif_binary: 1
+  D1_calcif_binary: 1
+  D2_calcif_binary: 1
+  prox_lcx_calcif_binary: 1
+  mid_lcx_calcif_binary: 1
+  dist_lcx_calcif_binary: 1
+  om1_calcif_binary: 1
+  om2_calcif_binary: 1
+  bx_calcif_binary: 1
+  lvp_calcif_binary: 1
+  prox_rca_cto: 1
+  mid_rca_cto: 1
+  dist_rca_cto: 1
+  pda_cto: 1
+  posterolateral_cto: 1
+  left_main_cto: 1
+  prox_lad_cto: 1
+  mid_lad_cto: 1
+  dist_lad_cto: 1
+  D1_cto: 1
+  D2_cto: 1
+  prox_lcx_cto: 1
+  mid_lcx_cto: 1
+  dist_lcx_cto: 1
+  om1_cto: 1
+  om2_cto: 1
+  bx_cto: 1
+  lvp_cto: 1
+  prox_rca_thrombus: 1
+  mid_rca_thrombus: 1
+  dist_rca_thrombus: 1
+  pda_thrombus: 1
+  posterolateral_thrombus: 1
+  left_main_thrombus: 1
+  prox_lad_thrombus: 1
+  mid_lad_thrombus: 1
+  dist_lad_thrombus: 1
+  D1_thrombus: 1
+  D2_thrombus: 1
+  prox_lcx_thrombus: 1
+  mid_lcx_thrombus: 1
+  dist_lcx_thrombus: 1
+  om1_thrombus: 1
+  om2_thrombus: 1
+  bx_thrombus: 1
+  lvp_thrombus: 1
+loss_structure:
+  prox_rca_stenosis: huber
+  mid_rca_stenosis: huber
+  dist_rca_stenosis: huber
+  pda_stenosis: huber
+  posterolateral_stenosis: huber
+  left_main_stenosis: huber
+  prox_lad_stenosis: huber
+  mid_lad_stenosis: huber
+  dist_lad_stenosis: huber
+  D1_stenosis: huber
+  D2_stenosis: huber
+  prox_lcx_stenosis: huber
+  mid_lcx_stenosis: huber
+  dist_lcx_stenosis: huber
+  om1_stenosis: huber
+  om2_stenosis: huber
+  bx_stenosis: huber
+  lvp_stenosis: huber
+  prox_rca_stenosis_binary: bce_logit
+  mid_rca_stenosis_binary: bce_logit
+  dist_rca_stenosis_binary: bce_logit
+  pda_stenosis_binary: bce_logit
+  posterolateral_stenosis_binary: bce_logit
+  left_main_stenosis_binary: bce_logit
+  prox_lad_stenosis_binary: bce_logit
+  mid_lad_stenosis_binary: bce_logit
+  dist_lad_stenosis_binary: bce_logit
+  D1_stenosis_binary: bce_logit
+  D2_stenosis_binary: bce_logit
+  prox_lcx_stenosis_binary: bce_logit
+  mid_lcx_stenosis_binary: bce_logit
+  dist_lcx_stenosis_binary: bce_logit
+  om1_stenosis_binary: bce_logit
+  om2_stenosis_binary: bce_logit
+  bx_stenosis_binary: bce_logit
+  lvp_stenosis_binary: bce_logit
+  prox_rca_calcif_binary: bce_logit
+  mid_rca_calcif_binary: bce_logit
+  dist_rca_calcif_binary: bce_logit
+  pda_calcif_binary: bce_logit
+  posterolateral_calcif_binary: bce_logit
+  left_main_calcif_binary: bce_logit
+  prox_lad_calcif_binary: bce_logit
+  mid_lad_calcif_binary: bce_logit
+  dist_lad_calcif_binary: bce_logit
+  D1_calcif_binary: bce_logit
+  D2_calcif_binary: bce_logit
+  prox_lcx_calcif_binary: bce_logit
+  mid_lcx_calcif_binary: bce_logit
+  dist_lcx_calcif_binary: bce_logit
+  om1_calcif_binary: bce_logit
+  om2_calcif_binary: bce_logit
+  bx_calcif_binary: bce_logit
+  lvp_calcif_binary: bce_logit
+  prox_rca_cto: bce_logit
+  mid_rca_cto: bce_logit
+  dist_rca_cto: bce_logit
+  pda_cto: bce_logit
+  posterolateral_cto: bce_logit
+  left_main_cto: bce_logit
+  prox_lad_cto: bce_logit
+  mid_lad_cto: bce_logit
+  dist_lad_cto: bce_logit
+  D1_cto: bce_logit
+  D2_cto: bce_logit
+  prox_lcx_cto: bce_logit
+  mid_lcx_cto: bce_logit
+  dist_lcx_cto: bce_logit
+  om1_cto: bce_logit
+  om2_cto: bce_logit
+  bx_cto: bce_logit
+  lvp_cto: bce_logit
+  prox_rca_thrombus: bce_logit
+  mid_rca_thrombus: bce_logit
+  dist_rca_thrombus: bce_logit
+  pda_thrombus: bce_logit
+  posterolateral_thrombus: bce_logit
+  left_main_thrombus: bce_logit
+  prox_lad_thrombus: bce_logit
+  mid_lad_thrombus: bce_logit
+  dist_lad_thrombus: bce_logit
+  D1_thrombus: bce_logit
+  D2_thrombus: bce_logit
+  prox_lcx_thrombus: bce_logit
+  mid_lcx_thrombus: bce_logit
+  dist_lcx_thrombus: bce_logit
+  om1_thrombus: bce_logit
+  om2_thrombus: bce_logit
+  bx_thrombus: bce_logit
+  lvp_thrombus: bce_logit
+head_weights:
+  prox_rca_stenosis: 2.0
+  mid_rca_stenosis: 2.0
+  left_main_stenosis: 2.0
+  prox_lad_stenosis: 2.0
+  mid_lad_stenosis: 2.0
+  prox_lcx_stenosis: 2.0
+  dist_rca_stenosis: 3.0
+  pda_stenosis: 3.0
+  posterolateral_stenosis: 3.0
+  dist_lad_stenosis: 3.0
+  D1_stenosis: 3.0
+  D2_stenosis: 3.0
+  mid_lcx_stenosis: 3.0
+  dist_lcx_stenosis: 3.0
+  om1_stenosis: 3.0
+  om2_stenosis: 3.0
+  bx_stenosis: 3.0
+  lvp_stenosis: 6.0
+  prox_rca_stenosis_binary: 1.0
+  mid_rca_stenosis_binary: 1.0
+  dist_rca_stenosis_binary: 1.0
+  pda_stenosis_binary: 1.0
+  posterolateral_stenosis_binary: 1.0
+  left_main_stenosis_binary: 1.0
+  prox_lad_stenosis_binary: 1.0
+  mid_lad_stenosis_binary: 1.0
+  dist_lad_stenosis_binary: 1.0
+  D1_stenosis_binary: 1.0
+  D2_stenosis_binary: 1.0
+  prox_lcx_stenosis_binary: 1.0
+  mid_lcx_stenosis_binary: 1.0
+  dist_lcx_stenosis_binary: 1.0
+  om1_stenosis_binary: 1.0
+  om2_stenosis_binary: 1.0
+  bx_stenosis_binary: 1.0
+  lvp_stenosis_binary: 1.0
+  prox_rca_calcif_binary: 1.0
+  mid_rca_calcif_binary: 1.0
+  dist_rca_calcif_binary: 1.0
+  pda_calcif_binary: 1.0
+  posterolateral_calcif_binary: 1.0
+  left_main_calcif_binary: 1.0
+  prox_lad_calcif_binary: 1.0
+  mid_lad_calcif_binary: 1.0
+  dist_lad_calcif_binary: 1.0
+  D1_calcif_binary: 1.0
+  D2_calcif_binary: 1.0
+  prox_lcx_calcif_binary: 1.0
+  mid_lcx_calcif_binary: 1.0
+  dist_lcx_calcif_binary: 1.0
+  om1_calcif_binary: 1.0
+  om2_calcif_binary: 1.0
+  bx_calcif_binary: 1.0
+  lvp_calcif_binary: 1.0
+  prox_rca_cto: 1.0
+  mid_rca_cto: 1.0
+  dist_rca_cto: 1.0
+  pda_cto: 1.0
+  posterolateral_cto: 1.0
+  left_main_cto: 1.0
+  prox_lad_cto: 1.0
+  mid_lad_cto: 1.0
+  dist_lad_cto: 1.0
+  D1_cto: 1.0
+  D2_cto: 1.0
+  prox_lcx_cto: 1.0
+  mid_lcx_cto: 1.0
+  dist_lcx_cto: 1.0
+  om1_cto: 1.0
+  om2_cto: 1.0
+  bx_cto: 1.0
+  lvp_cto: 1.0
+  prox_rca_thrombus: 1.0
+  mid_rca_thrombus: 1.0
+  dist_rca_thrombus: 1.0
+  pda_thrombus: 1.0
+  posterolateral_thrombus: 1.0
+  left_main_thrombus: 1.0
+  prox_lad_thrombus: 1.0
+  mid_lad_thrombus: 1.0
+  dist_lad_thrombus: 1.0
+  D1_thrombus: 1.0
+  D2_thrombus: 1.0
+  prox_lcx_thrombus: 1.0
+  mid_lcx_thrombus: 1.0
+  dist_lcx_thrombus: 1.0
+  om1_thrombus: 1.0
+  om2_thrombus: 1.0
+  bx_thrombus: 1.0
+  lvp_thrombus: 1.0
+head_dropout:
+  prox_rca_stenosis: 0.2
+  mid_rca_stenosis: 0.2
+  dist_rca_stenosis: 0.2
+  pda_stenosis: 0.2
+  posterolateral_stenosis: 0.2
+  left_main_stenosis: 0.2
+  prox_lad_stenosis: 0.2
+  mid_lad_stenosis: 0.2
+  dist_lad_stenosis: 0.2
+  D1_stenosis: 0.2
+  D2_stenosis: 0.2
+  prox_lcx_stenosis: 0.2
+  mid_lcx_stenosis: 0.2
+  dist_lcx_stenosis: 0.2
+  om1_stenosis: 0.2
+  om2_stenosis: 0.2
+  bx_stenosis: 0.2
+  lvp_stenosis: 0.2
+  prox_rca_stenosis_binary: 0.2
+  mid_rca_stenosis_binary: 0.2
+  dist_rca_stenosis_binary: 0.2
+  pda_stenosis_binary: 0.2
+  posterolateral_stenosis_binary: 0.2
+  left_main_stenosis_binary: 0.2
+  prox_lad_stenosis_binary: 0.2
+  mid_lad_stenosis_binary: 0.2
+  dist_lad_stenosis_binary: 0.2
+  D1_stenosis_binary: 0.2
+  D2_stenosis_binary: 0.2
+  prox_lcx_stenosis_binary: 0.2
+  mid_lcx_stenosis_binary: 0.2
+  dist_lcx_stenosis_binary: 0.2
+  om1_stenosis_binary: 0.2
+  om2_stenosis_binary: 0.2
+  bx_stenosis_binary: 0.2
+  lvp_stenosis_binary: 0.2
+  prox_rca_calcif_binary: 0.2
+  mid_rca_calcif_binary: 0.2
+  dist_rca_calcif_binary: 0.2
+  pda_calcif_binary: 0.2
+  posterolateral_calcif_binary: 0.2
+  left_main_calcif_binary: 0.2
+  prox_lad_calcif_binary: 0.2
+  mid_lad_calcif_binary: 0.2
+  dist_lad_calcif_binary: 0.2
+  D1_calcif_binary: 0.2
+  D2_calcif_binary: 0.2
+  prox_lcx_calcif_binary: 0.2
+  mid_lcx_calcif_binary: 0.2
+  dist_lcx_calcif_binary: 0.2
+  om1_calcif_binary: 0.2
+  om2_calcif_binary: 0.2
+  bx_calcif_binary: 0.2
+  lvp_calcif_binary: 0.2
+  prox_rca_cto: 0.2
+  mid_rca_cto: 0.2
+  dist_rca_cto: 0.2
+  pda_cto: 0.2
+  posterolateral_cto: 0.2
+  left_main_cto: 0.2
+  prox_lad_cto: 0.2
+  mid_lad_cto: 0.2
+  dist_lad_cto: 0.2
+  D1_cto: 0.2
+  D2_cto: 0.2
+  prox_lcx_cto: 0.2
+  mid_lcx_cto: 0.2
+  dist_lcx_cto: 0.2
+  om1_cto: 0.2
+  om2_cto: 0.2
+  bx_cto: 0.2
+  lvp_cto: 0.2
+  prox_rca_thrombus: 0.2
+  mid_rca_thrombus: 0.2
+  dist_rca_thrombus: 0.2
+  pda_thrombus: 0.2
+  posterolateral_thrombus: 0.2
+  left_main_thrombus: 0.2
+  prox_lad_thrombus: 0.2
+  mid_lad_thrombus: 0.2
+  dist_lad_thrombus: 0.2
+  D1_thrombus: 0.2
+  D2_thrombus: 0.2
+  prox_lcx_thrombus: 0.2
+  mid_lcx_thrombus: 0.2
+  dist_lcx_thrombus: 0.2
+  om1_thrombus: 0.2
+  om2_thrombus: 0.2
+  bx_thrombus: 0.2
+  lvp_thrombus: 0.2
+head_task:
+  prox_rca_stenosis: regression
+  mid_rca_stenosis: regression
+  dist_rca_stenosis: regression
+  pda_stenosis: regression
+  posterolateral_stenosis: regression
+  left_main_stenosis: regression
+  prox_lad_stenosis: regression
+  mid_lad_stenosis: regression
+  dist_lad_stenosis: regression
+  D1_stenosis: regression
+  D2_stenosis: regression
+  prox_lcx_stenosis: regression
+  mid_lcx_stenosis: regression
+  dist_lcx_stenosis: regression
+  om1_stenosis: regression
+  om2_stenosis: regression
+  bx_stenosis: regression
+  lvp_stenosis: regression
+  prox_rca_stenosis_binary: binary_classification
+  mid_rca_stenosis_binary: binary_classification
+  dist_rca_stenosis_binary: binary_classification
+  pda_stenosis_binary: binary_classification
+  posterolateral_stenosis_binary: binary_classification
+  left_main_stenosis_binary: binary_classification
+  prox_lad_stenosis_binary: binary_classification
+  mid_lad_stenosis_binary: binary_classification
+  dist_lad_stenosis_binary: binary_classification
+  D1_stenosis_binary: binary_classification
+  D2_stenosis_binary: binary_classification
+  prox_lcx_stenosis_binary: binary_classification
+  mid_lcx_stenosis_binary: binary_classification
+  dist_lcx_stenosis_binary: binary_classification
+  om1_stenosis_binary: binary_classification
+  om2_stenosis_binary: binary_classification
+  bx_stenosis_binary: binary_classification
+  lvp_stenosis_binary: binary_classification
+  prox_rca_calcif_binary: binary_classification
+  mid_rca_calcif_binary: binary_classification
+  dist_rca_calcif_binary: binary_classification
+  pda_calcif_binary: binary_classification
+  posterolateral_calcif_binary: binary_classification
+  left_main_calcif_binary: binary_classification
+  prox_lad_calcif_binary: binary_classification
+  mid_lad_calcif_binary: binary_classification
+  dist_lad_calcif_binary: binary_classification
+  D1_calcif_binary: binary_classification
+  D2_calcif_binary: binary_classification
+  prox_lcx_calcif_binary: binary_classification
+  mid_lcx_calcif_binary: binary_classification
+  dist_lcx_calcif_binary: binary_classification
+  om1_calcif_binary: binary_classification
+  om2_calcif_binary: binary_classification
+  bx_calcif_binary: binary_classification
+  lvp_calcif_binary: binary_classification
+  prox_rca_cto: binary_classification
+  mid_rca_cto: binary_classification
+  dist_rca_cto: binary_classification
+  pda_cto: binary_classification
+  posterolateral_cto: binary_classification
+  left_main_cto: binary_classification
+  prox_lad_cto: binary_classification
+  mid_lad_cto: binary_classification
+  dist_lad_cto: binary_classification
+  D1_cto: binary_classification
+  D2_cto: binary_classification
+  prox_lcx_cto: binary_classification
+  mid_lcx_cto: binary_classification
+  dist_lcx_cto: binary_classification
+  om1_cto: binary_classification
+  om2_cto: binary_classification
+  bx_cto: binary_classification
+  lvp_cto: binary_classification
+  prox_rca_thrombus: binary_classification
+  mid_rca_thrombus: binary_classification
+  dist_rca_thrombus: binary_classification
+  pda_thrombus: binary_classification
+  posterolateral_thrombus: binary_classification
+  left_main_thrombus: binary_classification
+  prox_lad_thrombus: binary_classification
+  mid_lad_thrombus: binary_classification
+  dist_lad_thrombus: binary_classification
+  D1_thrombus: binary_classification
+  D2_thrombus: binary_classification
+  prox_lcx_thrombus: binary_classification
+  mid_lcx_thrombus: binary_classification
+  dist_lcx_thrombus: binary_classification
+  om1_thrombus: binary_classification
+  om2_thrombus: binary_classification
+  bx_thrombus: binary_classification
+  lvp_thrombus: binary_classification
+labels_map:
+  prox_rca_stenosis:
+    normal: 0
+    abnormal: 1
+  mid_rca_stenosis:
+    normal: 0
+    abnormal: 1
+  dist_rca_stenosis:
+    normal: 0
+    abnormal: 1
+  pda_stenosis:
+    normal: 0
+    abnormal: 1
+  posterolateral_stenosis:
+    normal: 0
+    abnormal: 1
+  left_main_stenosis:
+    normal: 0
+    abnormal: 1
+  prox_lad_stenosis:
+    normal: 0
+    abnormal: 1
+  mid_lad_stenosis:
+    normal: 0
+    abnormal: 1
+  dist_lad_stenosis:
+    normal: 0
+    abnormal: 1
+  D1_stenosis:
+    normal: 0
+    abnormal: 1
+  D2_stenosis:
+    normal: 0
+    abnormal: 1
+  prox_lcx_stenosis:
+    normal: 0
+    abnormal: 1
+  mid_lcx_stenosis:
+    normal: 0
+    abnormal: 1
+  dist_lcx_stenosis:
+    normal: 0
+    abnormal: 1
+  om1_stenosis:
+    normal: 0
+    abnormal: 1
+  om2_stenosis:
+    normal: 0
+    abnormal: 1
+  bx_stenosis:
+    normal: 0
+    abnormal: 1
+  lvp_stenosis:
+    normal: 0
+    abnormal: 1
+  prox_rca_stenosis_binary:
+    normal: 0
+    abnormal: 1
+  mid_rca_stenosis_binary:
+    normal: 0
+    abnormal: 1
+  dist_rca_stenosis_binary:
+    normal: 0
+    abnormal: 1
+  pda_stenosis_binary:
+    normal: 0
+    abnormal: 1
+  posterolateral_stenosis_binary:
+    normal: 0
+    abnormal: 1
+  left_main_stenosis_binary:
+    normal: 0
+    abnormal: 1
+  prox_lad_stenosis_binary:
+    normal: 0
+    abnormal: 1
+  mid_lad_stenosis_binary:
+    normal: 0
+    abnormal: 1
+  dist_lad_stenosis_binary:
+    normal: 0
+    abnormal: 1
+  D1_stenosis_binary:
+    normal: 0
+    abnormal: 1
+  D2_stenosis_binary:
+    normal: 0
+    abnormal: 1
+  prox_lcx_stenosis_binary:
+    normal: 0
+    abnormal: 1
+  mid_lcx_stenosis_binary:
+    normal: 0
+    abnormal: 1
+  dist_lcx_stenosis_binary:
+    normal: 0
+    abnormal: 1
+  om1_stenosis_binary:
+    normal: 0
+    abnormal: 1
+  om2_stenosis_binary:
+    normal: 0
+    abnormal: 1
+  bx_stenosis_binary:
+    normal: 0
+    abnormal: 1
+  lvp_stenosis_binary:
+    normal: 0
+    abnormal: 1
+  prox_rca_calcif_binary:
+    normal: 0
+    abnormal: 1
+  mid_rca_calcif_binary:
+    normal: 0
+    abnormal: 1
+  dist_rca_calcif_binary:
+    normal: 0
+    abnormal: 1
+  pda_calcif_binary:
+    normal: 0
+    abnormal: 1
+  posterolateral_calcif_binary:
+    normal: 0
+    abnormal: 1
+  left_main_calcif_binary:
+    normal: 0
+    abnormal: 1
+  prox_lad_calcif_binary:
+    normal: 0
+    abnormal: 1
+  mid_lad_calcif_binary:
+    normal: 0
+    abnormal: 1
+  dist_lad_calcif_binary:
+    normal: 0
+    abnormal: 1
+  D1_calcif_binary:
+    normal: 0
+    abnormal: 1
+  D2_calcif_binary:
+    normal: 0
+    abnormal: 1
+  prox_lcx_calcif_binary:
+    normal: 0
+    abnormal: 1
+  mid_lcx_calcif_binary:
+    normal: 0
+    abnormal: 1
+  dist_lcx_calcif_binary:
+    normal: 0
+    abnormal: 1
+  om1_calcif_binary:
+    normal: 0
+    abnormal: 1
+  om2_calcif_binary:
+    normal: 0
+    abnormal: 1
+  bx_calcif_binary:
+    normal: 0
+    abnormal: 1
+  lvp_calcif_binary:
+    normal: 0
+    abnormal: 1
+  prox_rca_cto:
+    normal: 0
+    abnormal: 1
+  mid_rca_cto:
+    normal: 0
+    abnormal: 1
+  dist_rca_cto:
+    normal: 0
+    abnormal: 1
+  pda_cto:
+    normal: 0
+    abnormal: 1
+  posterolateral_cto:
+    normal: 0
+    abnormal: 1
+  left_main_cto:
+    normal: 0
+    abnormal: 1
+  prox_lad_cto:
+    normal: 0
+    abnormal: 1
+  mid_lad_cto:
+    normal: 0
+    abnormal: 1
+  dist_lad_cto:
+    normal: 0
+    abnormal: 1
+  D1_cto:
+    normal: 0
+    abnormal: 1
+  D2_cto:
+    normal: 0
+    abnormal: 1
+  prox_lcx_cto:
+    normal: 0
+    abnormal: 1
+  mid_lcx_cto:
+    normal: 0
+    abnormal: 1
+  dist_lcx_cto:
+    normal: 0
+    abnormal: 1
+  om1_cto:
+    normal: 0
+    abnormal: 1
+  om2_cto:
+    normal: 0
+    abnormal: 1
+  bx_cto:
+    normal: 0
+    abnormal: 1
+  lvp_cto:
+    normal: 0
+    abnormal: 1
+  prox_rca_thrombus:
+    normal: 0
+    abnormal: 1
+  mid_rca_thrombus:
+    normal: 0
+    abnormal: 1
+  dist_rca_thrombus:
+    normal: 0
+    abnormal: 1
+  pda_thrombus:
+    normal: 0
+    abnormal: 1
+  posterolateral_thrombus:
+    normal: 0
+    abnormal: 1
+  left_main_thrombus:
+    normal: 0
+    abnormal: 1
+  prox_lad_thrombus:
+    normal: 0
+    abnormal: 1
+  mid_lad_thrombus:
+    normal: 0
+    abnormal: 1
+  dist_lad_thrombus:
+    normal: 0
+    abnormal: 1
+  D1_thrombus:
+    normal: 0
+    abnormal: 1
+  D2_thrombus:
+    normal: 0
+    abnormal: 1
+  prox_lcx_thrombus:
+    normal: 0
+    abnormal: 1
+  mid_lcx_thrombus:
+    normal: 0
+    abnormal: 1
+  dist_lcx_thrombus:
+    normal: 0
+    abnormal: 1
+  om1_thrombus:
+    normal: 0
+    abnormal: 1
+  om2_thrombus:
+    normal: 0
+    abnormal: 1
+  bx_thrombus:
+    normal: 0
+    abnormal: 1
+  lvp_thrombus:
+    normal: 0
+    abnormal: 1
+multi_video: true
+groupby_column: StudyInstanceUID
+num_videos: 10
+shuffle_videos: false
+pooling_mode: attention+cls_token
+attention_hidden: 256
+dropout_attention: 0.24113476171193088
+attention_lr: 8.078142815403988e-05
+attention_weight_decay: 1.4069088107251271e-06
+use_cls_token: true
+num_attention_heads: 6
+separate_video_attention: false
+normalization_strategy: pre_norm
+attention_within_lr: 0.001000481418808649
+attention_across_lr: 0.00019263167321309713
+attention_within_weight_decay: 2.6005736539929244e-06
+attention_across_weight_decay: 1.1024580099326852e-05
+aggregate_videos_tokens: false
+per_video_pool: false
+inference_model_path: /volume/DeepCORO_CLIP/outputs/DeepCORO_video_linear_probing/DeepCORO_stenosis_weighted_distal/zcb8cu0l_20260213-033432/models/best_model_epoch_11.pt
+ci_confidence_level: 0.95
+ci_n_bootstrap: 1000
+train_pooling_params: true
+view_column: null
+num_view_classes: 0
+view_labels_map: null
+dataset_mean: [122.09012603759766, 122.09012603759766, 122.09012603759766]
+dataset_std: [28.790834426879883, 28.790834426879883, 28.790834426879883]

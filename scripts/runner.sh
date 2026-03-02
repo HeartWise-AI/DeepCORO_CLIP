@@ -102,21 +102,27 @@ yq eval -i ".use_wandb = $USE_WANDB" "$CONFIG_PATH"
 
 echo -e "${BLUE}========================================\n${NC}"
 
+# Calculate number of GPUs from the comma-separated list
+NUM_GPUS=$(echo $SELECTED_GPUS | tr ',' '\n' | wc -l)
+
 # Print training configuration
 echo -e "${BLUE}Starting training with:${NC}"
 echo "Selected GPUs: $SELECTED_GPUS (Total: $NUM_GPUS GPUs)"
 echo "Config path: $CONFIG_PATH"
 
-# Calculate number of GPUs from the comma-separated list
-NUM_GPUS=$(echo $SELECTED_GPUS | tr ',' '\n' | wc -l)
-
-# Environment variables for better DDP performance
+# Environment variables for better DDP performance (mirrors scripts/run_sweep.sh)
+export MASTER_PORT=29505
+export NCCL_P2P_LEVEL=NVL
+export NCCL_ALGO=Tree
+export NCCL_MIN_NCHANNELS=4
+export NCCL_SHM_DISABLE=0
+export NCCL_NET_GDR_LEVEL=PHB
 export NCCL_DEBUG=WARNING
 export CUDA_VISIBLE_DEVICES=$SELECTED_GPUS
 export OMP_NUM_THREADS=1
 
-# Run the training
-torchrun \
+# Run the training using virtual environment Python
+.venv/bin/python -m torch.distributed.run \
     --nproc_per_node=$NUM_GPUS \
     --master_port=29500 \
     --nnodes=1 \

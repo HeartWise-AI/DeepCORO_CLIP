@@ -64,25 +64,26 @@ except ImportError:
 def load_report_data_once(report_path: str) -> Tuple[pd.DataFrame, Dict[str, List]]:
     """Load the report data once and create filename mapping for reuse."""
     print(f"🔄 Loading report data ONCE from: {report_path}")
-    
+
     try:
-        df_report = pd.read_csv(report_path, sep='α', on_bad_lines='skip')
+        df_report = pd.read_csv(report_path, sep='α', on_bad_lines='skip', engine='python')
         print(f"✅ Loaded report: {len(df_report):,} rows")
         print(f"   Columns: {len(df_report.columns)}")
-        
+
         # Create filename mapping for fast lookups
+        # Map by FULL PATH since FileName column contains full paths
         print("🗺️ Creating filename mapping for fast epoch processing...")
         filename_map = {}
-        
+
         for _, row in tqdm(df_report.iterrows(), total=len(df_report), desc="Building filename map"):
-            filename = row['FileName']
-            if filename not in filename_map:
-                filename_map[filename] = []
-            filename_map[filename].append(row)
-        
-        print(f"✅ Created filename mapping: {len(filename_map):,} unique filenames")
+            filepath = row['FileName']  # This is the full path
+            if filepath not in filename_map:
+                filename_map[filepath] = []
+            filename_map[filepath].append(row)
+
+        print(f"✅ Created filename mapping: {len(filename_map):,} unique file paths")
         return df_report, filename_map
-        
+
     except Exception as e:
         print(f"❌ Error loading report: {e}")
         return pd.DataFrame(), {}
@@ -132,20 +133,27 @@ def load_validation_epoch(epoch_path: str) -> pd.DataFrame:
 def merge_epoch_with_report_mapping(df_epoch: pd.DataFrame, filename_map: Dict[str, List]) -> pd.DataFrame:
     """Fast merge using pre-built filename mapping."""
     print("   ⚡ Fast merging with pre-built filename mapping...")
-    
-    if 'FileName' not in df_epoch.columns:
-        print("   ❌ FileName not found in epoch data")
+
+    # Check for either 'FileName' or 'video_path' column
+    filename_col = None
+    if 'FileName' in df_epoch.columns:
+        filename_col = 'FileName'
+    elif 'video_path' in df_epoch.columns:
+        filename_col = 'video_path'
+    else:
+        print(f"   ❌ Neither 'FileName' nor 'video_path' found in epoch data. Available columns: {df_epoch.columns.tolist()}")
         return pd.DataFrame()
-    
+
     merged_rows = []
     missing_filenames = 0
-    
+
     for _, epoch_row in df_epoch.iterrows():
-        filename = epoch_row['FileName']
-        
-        if filename in filename_map:
-            report_rows = filename_map[filename]
-            
+        filepath = epoch_row[filename_col]  # This is the full path
+
+        # Use the FULL PATH for matching (both report and epoch have full paths)
+        if filepath in filename_map:
+            report_rows = filename_map[filepath]
+
             for report_row in report_rows:
                 merged_row = epoch_row.to_dict()
                 if hasattr(report_row, 'to_dict'):
@@ -155,13 +163,13 @@ def merge_epoch_with_report_mapping(df_epoch: pd.DataFrame, filename_map: Dict[s
                 merged_rows.append(merged_row)
         else:
             missing_filenames += 1
-    
+
     if missing_filenames > 0:
-        print(f"   ⚠️ Warning: {missing_filenames} filenames from epoch not found in report")
-    
+        print(f"   ⚠️ Warning: {missing_filenames} file paths from epoch not found in report")
+
     merged_df = pd.DataFrame(merged_rows)
     print(f"   ✅ Fast merge completed: {len(merged_df):,} rows")
-    
+
     return merged_df
 
 def get_target_vessels_for_study(dominance_name: str, has_left: bool, has_right: bool) -> List[str]:
@@ -679,14 +687,22 @@ def run_multi_epoch_analysis_parallel(
     # Step 2: Create ground truth mappings from first epoch (all epochs have same mappings)
     print(f"\n2️⃣ Creating ground truth mappings from sample epoch...")
     gt_mappings = {}
-    
+
     # Find first epoch file to create mappings
     epoch_files = []
-    files_dir = os.path.join(predictions_dir, "files")
     for epoch_num in range(epoch_range[0], epoch_range[1] + 1):
-        epoch_file = os.path.join(files_dir, f"val_epoch{epoch_num}.csv")
-        if os.path.exists(epoch_file):
-            epoch_files.append((epoch_num, epoch_file))
+        # Try multiple file naming patterns and locations (check predictions_dir first, then files subdir)
+        possible_patterns = [
+            os.path.join(predictions_dir, f"val_predictions_epoch_{epoch_num}.csv"),
+            os.path.join(predictions_dir, f"val_epoch{epoch_num}.csv"),
+            os.path.join(predictions_dir, "files", f"val_predictions_epoch_{epoch_num}.csv"),
+            os.path.join(predictions_dir, "files", f"val_epoch{epoch_num}.csv"),
+        ]
+
+        for epoch_file in possible_patterns:
+            if os.path.exists(epoch_file):
+                epoch_files.append((epoch_num, epoch_file))
+                break
     
     if epoch_files:
         # Use first epoch to create GT mappings
@@ -861,12 +877,20 @@ def run_multi_epoch_analysis_optimized(
     # Step 3: Find epoch files
     print(f"\n3️⃣ Finding epoch files...")
     epoch_files = []
-    files_dir = os.path.join(predictions_dir, "files")
-    
+
     for epoch_num in range(epoch_range[0], epoch_range[1] + 1):
-        epoch_file = os.path.join(files_dir, f"val_epoch{epoch_num}.csv")
-        if os.path.exists(epoch_file):
-            epoch_files.append((epoch_num, epoch_file))
+        # Try multiple file naming patterns and locations (check predictions_dir first, then files subdir)
+        possible_patterns = [
+            os.path.join(predictions_dir, f"val_predictions_epoch_{epoch_num}.csv"),
+            os.path.join(predictions_dir, f"val_epoch{epoch_num}.csv"),
+            os.path.join(predictions_dir, "files", f"val_predictions_epoch_{epoch_num}.csv"),
+            os.path.join(predictions_dir, "files", f"val_epoch{epoch_num}.csv"),
+        ]
+
+        for epoch_file in possible_patterns:
+            if os.path.exists(epoch_file):
+                epoch_files.append((epoch_num, epoch_file))
+                break
     
     print(f"✅ Found {len(epoch_files)} epoch files")
     

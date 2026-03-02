@@ -1,7 +1,7 @@
 import os
 import torch
 from typing import Any, Optional, Dict
-from torch.amp.grad_scaler import GradScaler
+from torch.amp import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
 import itertools
@@ -46,26 +46,24 @@ class VideoMILWrapper(torch.nn.Module):
         self.mil_model = mil_model
         self.num_videos: int = num_videos
 
-    def forward(self, x: torch.Tensor, video_indices: Optional[torch.Tensor] = None) -> Dict[str, torch.Tensor]:
+    def forward(
+        self,
+        x: torch.Tensor,
+        video_indices: Optional[torch.Tensor] = None,
+        view_ids: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
         """Wrapper forward pass.
 
         This helper guarantees that the **MultiInstanceLinearProbing** module
         always receives a 3-D tensor of shape ``[B, N, D]`` where *N* is the
         number of video segments associated with each sample.
 
-        In the typical *single-video* case, ``video_indices`` will be ``None``
-        and the underlying ``VideoEncoder`` already returns a tensor of shape
-        ``[B, D]`` (aggregated representation).  We therefore unsqueeze a
-        singleton *N* dimension so that it becomes ``[B, 1, D]``.
-
-        When ``multi_video=True`` the dataloader supplies inputs of shape
-        ``[B, N, C, F, H, W]``.  If the encoder is configured with
-        ``aggregate_videos_tokens=False`` it will naturally produce the
-        expected ``[B, N, D]`` tensor.  However, if
-        ``aggregate_videos_tokens=True`` the encoder will *already* pool over
-        the *N* dimension and output ``[B, D]``.  In this scenario we again
-        expand the aggregated vector so that downstream MIL logic continues
-        to work (with ``N = 1``).
+        Args
+        ----
+        x:  Input videos tensor.
+        video_indices:  Optional mapping from videos to batch items.
+        view_ids:  Optional ``[B, N]`` long tensor of per-video view class IDs
+            (EchoJEPA-style angle embeddings).  Forwarded to the MIL model.
         """
 
         # ------------------------------------------------------------------
@@ -84,12 +82,10 @@ class VideoMILWrapper(torch.nn.Module):
             embeddings = embeddings.unsqueeze(1)  # [B, 1, D]
 
         elif embeddings.ndim == 3 and embeddings.shape[1] > self.num_videos:
-            #print(f"Received flat patch tokens [B, N*L, D]. Reshaping into [B, N, L, D]")
             # Received flat patch tokens [B, N*L, D].  Reshape into
             # hierarchical layout [B, N, L, D] so that the MIL head can
             # perform two-level attention.
             B, NL, D = embeddings.shape  # noqa: N806
-            #print(f"embeddings.shape: {embeddings.shape}")
             if NL % self.num_videos != 0:
                 raise ValueError(
                     f"Number of tokens (NL={NL}) is not divisible by the "
@@ -115,7 +111,7 @@ class VideoMILWrapper(torch.nn.Module):
         # ------------------------------------------------------------------
         # 4) Forward through the MIL head(s)
         # ------------------------------------------------------------------
-        return self.mil_model(embeddings, mask=attention_mask)
+        return self.mil_model(embeddings, mask=attention_mask, view_ids=view_ids)
 
 @ProjectRegistry.register("DeepCORO_video_linear_probing")
 @ProjectRegistry.register("DeepCORO_video_linear_probing_cardio_syntax")
@@ -134,10 +130,20 @@ class LinearProbingProject(BaseProject):
         # Calculate dataset statistics
         mean, std = calculate_dataset_statistics_ddp(self.config)        
         
+        # View embedding parameters — only enable when view_column is set in the YAML
+        view_column = getattr(self.config, 'view_column', None)
+        view_labels_map = getattr(self.config, 'view_labels_map', None)
+        if view_column:
+            num_view_classes = getattr(self.config, 'num_view_classes', 0)
+            print(f"View embeddings ENABLED: view_column='{view_column}', {num_view_classes} view classes + 1 PAD")
+        else:
+            num_view_classes = 0
+            print("View embeddings DISABLED (no view_column in config)")
+
         # Get dataloaders with multi-video parameters
         train_loader: DataLoader = get_distributed_video_dataloader(
-            config=self.config, 
-            split=RunMode.TRAIN, 
+            config=self.config,
+            split=RunMode.TRAIN,
             mean=mean.tolist(),
             std=std.tolist(),
             shuffle=True,
@@ -149,10 +155,13 @@ class LinearProbingProject(BaseProject):
             num_videos=self.config.num_videos,
             shuffle_videos=self.config.shuffle_videos,
             labels_map=getattr(self.config, 'labels_map', None),
+            view_column=view_column,
+            view_labels_map=view_labels_map,
+            num_view_classes=num_view_classes,
         )
         val_loader: DataLoader = get_distributed_video_dataloader(
-            config=self.config, 
-            split=RunMode.VALIDATE, 
+            config=self.config,
+            split=RunMode.VALIDATE,
             mean=mean.tolist(),
             std=std.tolist(),
             shuffle=False,
@@ -164,6 +173,9 @@ class LinearProbingProject(BaseProject):
             num_videos=self.config.num_videos,
             shuffle_videos=False,  # Don't shuffle validation videos
             labels_map=getattr(self.config, 'labels_map', None),
+            view_column=view_column,
+            view_labels_map=view_labels_map,
+            num_view_classes=num_view_classes,
         )        
         
         # Initialize video encoder backbone for linear probing
@@ -196,21 +208,22 @@ class LinearProbingProject(BaseProject):
         # Initialize Multi-Instance Linear Probing model
         print(f"Initializing Multi-Instance Linear Probing model with pooling mode: {self.config.pooling_mode}")
         mil_model: MultiInstanceLinearProbing = ModelRegistry.get("multi_instance_linear_probing")(
-            embedding_dim=embedding_dim, 
+            embedding_dim=embedding_dim,
             head_structure=self.config.head_structure,
-            pooling_mode=self.config.pooling_mode, 
-            attention_hidden=self.config.attention_hidden, 
-            dropout=self.config.dropout_attention, 
+            pooling_mode=self.config.pooling_mode,
+            attention_hidden=self.config.attention_hidden,
+            dropout=self.config.dropout_attention,
+            num_view_classes=num_view_classes,
         )
         mil_model = mil_model.to(self.config.device).float()
-        
+
         # Distribute MIL model
         mil_model = DistributedUtils.DDP(
-            mil_model, 
+            mil_model,
             device_ids=[self.config.device],
             find_unused_parameters=True
         )
-        
+
         # Wrap both models
         linear_probing = VideoMILWrapper(video_encoder, mil_model, self.config.num_videos)
                 
@@ -219,7 +232,7 @@ class LinearProbingProject(BaseProject):
 
         # Add video encoder parameters if not fully frozen
         if self.config.video_freeze_ratio < 1.0:
-             param_groups.append({
+            param_groups.append({
                 'params': video_encoder.parameters(), 
                 'lr': self.config.video_encoder_lr, 
                 'name': 'video_encoder',
@@ -237,7 +250,7 @@ class LinearProbingProject(BaseProject):
             })
             
         # Add attention parameters if applicable (potentially different LR/WD)
-        if self.config.pooling_mode == "attention":
+        if "attention" in self.config.pooling_mode and self.config.train_pooling_params:
             # Combine all attention-specific parameters (V, U, w) into one group
             attention_params = itertools.chain(
                 mil_model.module.attention_V.parameters(),
@@ -249,6 +262,44 @@ class LinearProbingProject(BaseProject):
                 'lr': self.config.attention_lr,
                 'name': 'attention_pooling',
                 'weight_decay': self.config.attention_weight_decay,
+            })
+
+        # Add CLS token parameters if applicable
+        if "cls_token" in self.config.pooling_mode and self.config.train_pooling_params:
+            cls_params = [mil_model.module.cls_token]
+            if hasattr(mil_model.module, 'cls_attention_within'):
+                cls_params_iter = itertools.chain(
+                    cls_params,
+                    mil_model.module.cls_attention_within.parameters(),
+                    mil_model.module.cls_attention_across.parameters(),
+                    mil_model.module.cls_norm_within.parameters(),
+                    mil_model.module.cls_norm_across.parameters(),
+                )
+            else:
+                cls_params_iter = itertools.chain(
+                    cls_params,
+                    mil_model.module.cls_attention.parameters(),
+                    mil_model.module.cls_norm.parameters(),
+                )
+            param_groups.append({
+                'params': cls_params_iter,
+                'lr': self.config.attention_across_lr,
+                'name': 'cls_token_pooling',
+                'weight_decay': self.config.attention_across_weight_decay,
+            })
+
+        if not self.config.train_pooling_params:
+            print("NOTE: train_pooling_params=False — attention/cls_token params are FROZEN (old behaviour)")
+
+        # Add view embedding parameters if applicable
+        if num_view_classes > 0 and hasattr(mil_model.module, 'view_embedding'):
+            ve_lr = self.config.view_embedding_lr if self.config.view_embedding_lr is not None else self.config.attention_lr
+            ve_wd = self.config.view_embedding_weight_decay if self.config.view_embedding_weight_decay is not None else self.config.attention_weight_decay
+            param_groups.append({
+                'params': mil_model.module.view_embedding.parameters(),
+                'lr': ve_lr,
+                'name': 'view_embedding',
+                'weight_decay': ve_wd,
             })
 
         # Initialize optimizer
@@ -271,7 +322,7 @@ class LinearProbingProject(BaseProject):
 
         # Initialize scaler
         print(f"Using AMP: {self.config.use_amp}")
-        scaler = GradScaler() if self.config.use_amp else None
+        scaler = GradScaler('cuda') if self.config.use_amp else None
         
         # Create loss function
         loss_fn = Loss(
@@ -316,11 +367,21 @@ class LinearProbingProject(BaseProject):
     def _setup_validation_objects(self) -> dict[str, Any]:
         """Setup objects for model validation/evaluation."""
         # Calculate dataset statistics
-        mean, std = calculate_dataset_statistics_ddp(self.config)        
-        
+        mean, std = calculate_dataset_statistics_ddp(self.config)
+
+        # View embedding parameters — only enable when view_column is set in the YAML
+        view_column = getattr(self.config, 'view_column', None)
+        view_labels_map = getattr(self.config, 'view_labels_map', None)
+        if view_column:
+            num_view_classes = getattr(self.config, 'num_view_classes', 0)
+            print(f"View embeddings ENABLED: view_column='{view_column}', {num_view_classes} view classes + 1 PAD")
+        else:
+            num_view_classes = 0
+            print("View embeddings DISABLED (no view_column in config)")
+
         val_loader: DataLoader = get_distributed_video_dataloader(
-            config=self.config, 
-            split=self.config.run_mode, 
+            config=self.config,
+            split=self.config.run_mode,
             mean=mean.tolist(),
             std=std.tolist(),
             shuffle=False,
@@ -332,8 +393,11 @@ class LinearProbingProject(BaseProject):
             num_videos=self.config.num_videos,
             shuffle_videos=False,  # Don't shuffle validation videos
             labels_map=getattr(self.config, 'labels_map', None),
-        )   
-                
+            view_column=view_column,
+            view_labels_map=view_labels_map,
+            num_view_classes=num_view_classes,
+        )
+
         # Initialize video encoder backbone for linear probing
         video_encoder: VideoEncoder = ModelRegistry.get("video_encoder")(
             backbone=self.config.model_name,
@@ -345,19 +409,20 @@ class LinearProbingProject(BaseProject):
             aggregator_depth=self.config.aggregator_depth,
             aggregate_videos_tokens=self.config.aggregate_videos_tokens,
             per_video_pool=self.config.per_video_pool,
-        )        
+        )
         video_encoder = video_encoder.to(self.config.device)
-        
-        # Get embedding dimension from encoder  
+
+        # Get embedding dimension from encoder
         embedding_dim = video_encoder.embedding_dim
-        
+
         # Initialize Multi-Instance Linear Probing model
         mil_model: MultiInstanceLinearProbing = ModelRegistry.get("multi_instance_linear_probing")(
-            embedding_dim=embedding_dim, 
+            embedding_dim=embedding_dim,
             head_structure=self.config.head_structure,
-            pooling_mode=self.config.pooling_mode, 
-            attention_hidden=self.config.attention_hidden, 
-            dropout=self.config.dropout_attention, 
+            pooling_mode=self.config.pooling_mode,
+            attention_hidden=self.config.attention_hidden,
+            dropout=self.config.dropout_attention,
+            num_view_classes=num_view_classes,
         )
         mil_model = mil_model.to(self.config.device)
 
@@ -445,7 +510,7 @@ class LinearProbingProject(BaseProject):
         device = self.config.device
         if isinstance(device, int):
             device = f"cuda:{device}"
-        checkpoint: dict[str, Any] = torch.load(path, map_location=device, weights_only=True)
+        checkpoint: dict[str, Any] = torch.load(path, map_location=device, weights_only=False)
         return checkpoint
 
     def _load_and_fix_checkpoint(self, path: str) -> dict[str, Any]:

@@ -252,35 +252,50 @@ class LinearProbingParser(BaseParser):
         for arg in unknown:
             if arg.startswith('--'):
                 meta, value = arg.split('=', 1)
-                key, head = meta.split('.', 1)
-                key = key.strip('--')
-                if key in self.supported_unknown_args:
-                    print(f"Processing unknown argument: --{key}.{head}={value}")
-                    if not hasattr(config, key):
-                        raise ValueError(f"Config object does not initially have the attribute '{key}' defined in the base config '{args.base_config}'.")
-                    
-                    # Get the attribute
-                    head_obj = getattr(config, key)
-                    print(f"Attribute '{key}' current value: {head_obj}")
-                    
-                    # Check if the attribute is a dictionary
-                    if not isinstance(head_obj, dict):
-                        raise TypeError(f"Attribute '{key}' must be a dictionary to handle dot notation, but found type {type(head_obj)}.")
+                key_full = meta.strip('--')
 
-                    # Check if the head exists in the dictionary
-                    if head not in head_obj:
-                        raise ValueError(
-                            f"The head '{head}' was not found in the dictionary attribute '{key}' loaded from the base configuration '{args.base_config}'. "
-                            f"Make sure base config has the correct attribute '{key}' defined."
-                        )
-                    
-                    # Convert the value to the expected type
-                    converted_value = self.supported_unknown_args[key](value)
-                    head_obj[head] = converted_value # head_obj is a mutable dictionary reference
-                    
-                    print(f"Updated attribute '{key}': {head_obj}")
+                # Check if this is a dot-notation arg (--key.head=value) or a simple scalar (--key=value)
+                if '.' in key_full:
+                    key, head = key_full.split('.', 1)
+                    if key in self.supported_unknown_args:
+                        print(f"Processing unknown argument: --{key}.{head}={value}")
+                        if not hasattr(config, key):
+                            raise ValueError(f"Config object does not initially have the attribute '{key}' defined in the base config '{args.base_config}'.")
+
+                        # Get the attribute
+                        head_obj = getattr(config, key)
+                        print(f"Attribute '{key}' current value: {head_obj}")
+
+                        # Check if the attribute is a dictionary
+                        if not isinstance(head_obj, dict):
+                            raise TypeError(f"Attribute '{key}' must be a dictionary to handle dot notation, but found type {type(head_obj)}.")
+
+                        # Check if the head exists in the dictionary
+                        if head not in head_obj:
+                            raise ValueError(
+                                f"The head '{head}' was not found in the dictionary attribute '{key}' loaded from the base configuration '{args.base_config}'. "
+                                f"Make sure base config has the correct attribute '{key}' defined."
+                            )
+
+                        # Convert the value to the expected type
+                        converted_value = self.supported_unknown_args[key](value)
+                        head_obj[head] = converted_value # head_obj is a mutable dictionary reference
+
+                        print(f"Updated attribute '{key}': {head_obj}")
+                    else:
+                        unsupported_unknown_args.append(arg)
                 else:
-                    unsupported_unknown_args.append(arg)
+                    # Simple scalar argument (no dot notation)
+                    if hasattr(config, key_full):
+                        current_val = getattr(config, key_full)
+                        if current_val is None:
+                            converted = float(value)
+                        else:
+                            converted = type(current_val)(value)
+                        setattr(config, key_full, converted)
+                        print(f"Updated scalar config: {key_full}={converted}")
+                    else:
+                        unsupported_unknown_args.append(arg)
 
         # Raise an error if there are unsupported unknown arguments
         if unsupported_unknown_args:

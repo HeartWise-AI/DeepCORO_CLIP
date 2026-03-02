@@ -103,6 +103,8 @@ class LinearProbingConfig(HeartWiseConfig):
     view_column: Optional[str] = None  # CSV column for per-video view class (e.g., "view_class")
     num_view_classes: int = 0  # Number of real view classes (excluding PAD)
     view_labels_map: Optional[Dict[str, int]] = None  # Mapping from view class string to integer ID
+    view_embedding_lr: Optional[float] = None  # Dedicated LR for view embeddings (falls back to attention_lr)
+    view_embedding_weight_decay: Optional[float] = None  # Dedicated WD for view embeddings (falls back to attention_weight_decay)
 
     # Pre-computed dataset statistics (optional - if None, will be calculated)
     dataset_mean: List[float] = None  # Pre-computed mean for normalization

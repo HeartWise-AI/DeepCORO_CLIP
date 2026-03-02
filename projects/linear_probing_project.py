@@ -293,11 +293,13 @@ class LinearProbingProject(BaseProject):
 
         # Add view embedding parameters if applicable
         if num_view_classes > 0 and hasattr(mil_model.module, 'view_embedding'):
+            ve_lr = self.config.view_embedding_lr if self.config.view_embedding_lr is not None else self.config.attention_lr
+            ve_wd = self.config.view_embedding_weight_decay if self.config.view_embedding_weight_decay is not None else self.config.attention_weight_decay
             param_groups.append({
                 'params': mil_model.module.view_embedding.parameters(),
-                'lr': self.config.attention_lr,  # Use attention LR for view embeddings
+                'lr': ve_lr,
                 'name': 'view_embedding',
-                'weight_decay': self.config.attention_weight_decay,
+                'weight_decay': ve_wd,
             })
 
         # Initialize optimizer

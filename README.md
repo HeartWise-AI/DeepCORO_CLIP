@@ -93,7 +93,7 @@ The project uses configuration files located in the `config/` directory:
 1. **CLIP Training** (`config/clip/sweep_config_*.yaml`, `config/clip/sweep_siglip_output_dataset_*.yaml`):
    - Hyperparameter search space for CLIP training
    - Supports both single and multi-video training
-   - `sweep_siglip_output_dataset_stability.yaml` surfaces conservative learning rate,
+   - `sweep_siglip_output_dataset_config.yaml` surfaces conservative learning rate,
      grad-clipping, and SigLIP weighting knobs for unstable SigLIP runs
 
 2. **Linear Probing** (`config/linear_probing/sweep_config.yaml`):
@@ -118,7 +118,7 @@ bash scripts/runner.sh --base_config config/clip/base_config.yaml --selected_gpu
 bash scripts/run_sweep.sh --base_config config/clip/base_config.yaml --sweep_config config/clip/sweep_config_single_video.yaml --selected_gpus 3 --count 5
 
 # SigLIP output dataset stability sweep (tunes grad clipping, AMP, and SigLIP weighting)
-bash scripts/run_sweep.sh --base_config config/clip/siglip_output_dataset_config.yaml --sweep_config config/clip/sweep_siglip_output_dataset_stability.yaml --selected_gpus 0,1 --count 10
+bash scripts/run_sweep.sh --base_config config/clip/siglip_output_dataset_config.yaml --sweep_config config/clip/sweep_siglip_output_dataset_config.yaml --selected_gpus 0,1 --count 10
 ```
 
 ### Run validation

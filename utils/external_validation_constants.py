@@ -70,6 +70,8 @@ BINARY_COLUMNS = [
     'dist_lcx_calcif_binary',
     'om1_calcif_binary',
     'om2_calcif_binary',
+    'bx_calcif_binary',
+    'lvp_calcif_binary',
     # CTO columns
     'prox_rca_cto',
     'mid_rca_cto',
@@ -87,6 +89,8 @@ BINARY_COLUMNS = [
     'dist_lcx_cto',
     'om1_cto',
     'om2_cto',
+    'bx_cto',
+    'lvp_cto',
     # Thrombus columns
     'prox_rca_thrombus',
     'mid_rca_thrombus',
@@ -103,7 +107,9 @@ BINARY_COLUMNS = [
     'mid_lcx_thrombus',
     'dist_lcx_thrombus',
     'om1_thrombus',
-    'om2_thrombus'
+    'om2_thrombus',
+    'bx_thrombus',
+    'lvp_thrombus'
 ]
 
 

@@ -344,7 +344,7 @@ heartwise-ai-deepcoro_clip/
 
 ## 🤝 Contributing
 
-Contributions to DeepECG_Docker repository are welcome! Please follow these steps to contribute:
+Contributions to DeepCoro_CLIP repository are welcome! Please follow these steps to contribute:
 
 1. Fork the repository
 2. Create a new branch for your feature or bug fix

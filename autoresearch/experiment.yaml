@@ -87,7 +87,7 @@ stride: 1
 model_name: mvit
 aggregator_depth: 1
 num_heads: 16
-video_freeze_ratio: 0.8483198470912667
+video_freeze_ratio: 0.95
 dropout: 0.19626902693861784
 pretrained: true
 video_encoder_checkpoint_path: /media/data1/models/DeepCoro_CLIP/8av1xygm_20250605-083820_best_single_video/checkpoints/best_model_epoch_9.pt
@@ -256,20 +256,8 @@ per_video_pool: false
 ci_confidence_level: 0.95
 ci_n_bootstrap: 1000
 train_pooling_params: true
-view_column: view_class
-num_view_classes: 12
-view_labels_map:
-  AP: 0
-  AP Caudal: 1
-  AP Cranial: 2
-  LAO Caudal: 3
-  LAO Cranial: 4
-  LAO Lateral: 5
-  LAO Straight: 6
-  Other: 7
-  RAO Caudal: 8
-  RAO Cranial: 9
-  RAO Lateral: 10
-  RAO Straight: 11
+view_column: null
+num_view_classes: 0
+view_labels_map: null
 dataset_mean: [122.09012603759766, 122.09012603759766, 122.09012603759766]
 dataset_std: [28.790834426879883, 28.790834426879883, 28.790834426879883]

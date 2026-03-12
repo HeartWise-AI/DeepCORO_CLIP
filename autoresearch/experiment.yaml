@@ -1,7 +1,7 @@
 pipeline_project: DeepCORO_video_linear_probing
 base_checkpoint_path: outputs
 run_mode: train
-epochs: 30
+epochs: 15
 seed: 42
 name: DeepIFR_baseline
 project: DeepIFR_baseline
@@ -80,7 +80,7 @@ target_label:
 - om1_IFRHYPER_binary
 - om2_IFRHYPER_binary
 - bx_IFRHYPER_binary
-rand_augment: false
+rand_augment: true
 resize: 224
 frames: 16
 stride: 1

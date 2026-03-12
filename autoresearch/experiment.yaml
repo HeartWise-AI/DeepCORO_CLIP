@@ -111,23 +111,23 @@ head_structure:
   om2_IFRHYPER_binary: 1
   bx_IFRHYPER_binary: 1
 loss_structure:
-  prox_rca_IFRHYPER_binary: bce_logit
-  mid_rca_IFRHYPER_binary: bce_logit
-  dist_rca_IFRHYPER_binary: bce_logit
-  pda_IFRHYPER_binary: bce_logit
-  posterolateral_IFRHYPER_binary: bce_logit
-  left_main_IFRHYPER_binary: bce_logit
-  prox_lad_IFRHYPER_binary: bce_logit
-  mid_lad_IFRHYPER_binary: bce_logit
-  dist_lad_IFRHYPER_binary: bce_logit
-  D1_IFRHYPER_binary: bce_logit
-  D2_IFRHYPER_binary: bce_logit
-  prox_lcx_IFRHYPER_binary: bce_logit
-  mid_lcx_IFRHYPER_binary: bce_logit
-  dist_lcx_IFRHYPER_binary: bce_logit
-  om1_IFRHYPER_binary: bce_logit
-  om2_IFRHYPER_binary: bce_logit
-  bx_IFRHYPER_binary: bce_logit
+  prox_rca_IFRHYPER_binary: binary_focal
+  mid_rca_IFRHYPER_binary: binary_focal
+  dist_rca_IFRHYPER_binary: binary_focal
+  pda_IFRHYPER_binary: binary_focal
+  posterolateral_IFRHYPER_binary: binary_focal
+  left_main_IFRHYPER_binary: binary_focal
+  prox_lad_IFRHYPER_binary: binary_focal
+  mid_lad_IFRHYPER_binary: binary_focal
+  dist_lad_IFRHYPER_binary: binary_focal
+  D1_IFRHYPER_binary: binary_focal
+  D2_IFRHYPER_binary: binary_focal
+  prox_lcx_IFRHYPER_binary: binary_focal
+  mid_lcx_IFRHYPER_binary: binary_focal
+  dist_lcx_IFRHYPER_binary: binary_focal
+  om1_IFRHYPER_binary: binary_focal
+  om2_IFRHYPER_binary: binary_focal
+  bx_IFRHYPER_binary: binary_focal
 head_weights:
   prox_rca_IFRHYPER_binary: 1.0
   mid_rca_IFRHYPER_binary: 1.0

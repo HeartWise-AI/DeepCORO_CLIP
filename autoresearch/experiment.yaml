@@ -13,23 +13,23 @@ world_size: 1
 is_ref_device: true
 output_dir: outputs/DeepCORO_video_linear_probing/DeepIFR_baseline
 head_lr:
-  prox_rca_IFRHYPER_binary: 0.001
-  mid_rca_IFRHYPER_binary: 0.001
-  dist_rca_IFRHYPER_binary: 0.001
-  pda_IFRHYPER_binary: 0.001
-  posterolateral_IFRHYPER_binary: 0.001
-  left_main_IFRHYPER_binary: 0.001
-  prox_lad_IFRHYPER_binary: 0.001
-  mid_lad_IFRHYPER_binary: 0.001
-  dist_lad_IFRHYPER_binary: 0.001
-  D1_IFRHYPER_binary: 0.001
-  D2_IFRHYPER_binary: 0.001
-  prox_lcx_IFRHYPER_binary: 0.001
-  mid_lcx_IFRHYPER_binary: 0.001
-  dist_lcx_IFRHYPER_binary: 0.001
-  om1_IFRHYPER_binary: 0.001
-  om2_IFRHYPER_binary: 0.001
-  bx_IFRHYPER_binary: 0.001
+  prox_rca_IFRHYPER_binary: 5.0e-05
+  mid_rca_IFRHYPER_binary: 5.0e-05
+  dist_rca_IFRHYPER_binary: 5.0e-05
+  pda_IFRHYPER_binary: 5.0e-05
+  posterolateral_IFRHYPER_binary: 5.0e-05
+  left_main_IFRHYPER_binary: 5.0e-05
+  prox_lad_IFRHYPER_binary: 5.0e-05
+  mid_lad_IFRHYPER_binary: 5.0e-05
+  dist_lad_IFRHYPER_binary: 5.0e-05
+  D1_IFRHYPER_binary: 5.0e-05
+  D2_IFRHYPER_binary: 5.0e-05
+  prox_lcx_IFRHYPER_binary: 5.0e-05
+  mid_lcx_IFRHYPER_binary: 5.0e-05
+  dist_lcx_IFRHYPER_binary: 5.0e-05
+  om1_IFRHYPER_binary: 5.0e-05
+  om2_IFRHYPER_binary: 5.0e-05
+  bx_IFRHYPER_binary: 5.0e-05
 scheduler_name: cosine_with_warmup
 lr_step_period: 4
 factor: 0.16090885523071338

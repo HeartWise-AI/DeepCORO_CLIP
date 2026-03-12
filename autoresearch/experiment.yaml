@@ -13,45 +13,45 @@ world_size: 1
 is_ref_device: true
 output_dir: outputs/DeepCORO_video_linear_probing/DeepIFR_baseline
 head_lr:
-  prox_rca_IFRHYPER_binary: 5.0e-05
-  mid_rca_IFRHYPER_binary: 5.0e-05
-  dist_rca_IFRHYPER_binary: 5.0e-05
-  pda_IFRHYPER_binary: 5.0e-05
-  posterolateral_IFRHYPER_binary: 5.0e-05
-  left_main_IFRHYPER_binary: 5.0e-05
-  prox_lad_IFRHYPER_binary: 5.0e-05
-  mid_lad_IFRHYPER_binary: 5.0e-05
-  dist_lad_IFRHYPER_binary: 5.0e-05
-  D1_IFRHYPER_binary: 5.0e-05
-  D2_IFRHYPER_binary: 5.0e-05
-  prox_lcx_IFRHYPER_binary: 5.0e-05
-  mid_lcx_IFRHYPER_binary: 5.0e-05
-  dist_lcx_IFRHYPER_binary: 5.0e-05
-  om1_IFRHYPER_binary: 5.0e-05
-  om2_IFRHYPER_binary: 5.0e-05
-  bx_IFRHYPER_binary: 5.0e-05
+  prox_rca_IFRHYPER_binary: 0.0003
+  mid_rca_IFRHYPER_binary: 0.0003
+  dist_rca_IFRHYPER_binary: 0.0003
+  pda_IFRHYPER_binary: 0.0003
+  posterolateral_IFRHYPER_binary: 0.0003
+  left_main_IFRHYPER_binary: 0.0003
+  prox_lad_IFRHYPER_binary: 0.0003
+  mid_lad_IFRHYPER_binary: 0.0003
+  dist_lad_IFRHYPER_binary: 0.0003
+  D1_IFRHYPER_binary: 0.0003
+  D2_IFRHYPER_binary: 0.0003
+  prox_lcx_IFRHYPER_binary: 0.0003
+  mid_lcx_IFRHYPER_binary: 0.0003
+  dist_lcx_IFRHYPER_binary: 0.0003
+  om1_IFRHYPER_binary: 0.0003
+  om2_IFRHYPER_binary: 0.0003
+  bx_IFRHYPER_binary: 0.0003
 scheduler_name: cosine_with_warmup
 lr_step_period: 4
 factor: 0.16090885523071338
 optimizer: AdamW
 head_weight_decay:
-  prox_rca_IFRHYPER_binary: 1.0e-05
-  mid_rca_IFRHYPER_binary: 1.0e-05
-  dist_rca_IFRHYPER_binary: 1.0e-05
-  pda_IFRHYPER_binary: 1.0e-05
-  posterolateral_IFRHYPER_binary: 1.0e-05
-  left_main_IFRHYPER_binary: 1.0e-05
-  prox_lad_IFRHYPER_binary: 1.0e-05
-  mid_lad_IFRHYPER_binary: 1.0e-05
-  dist_lad_IFRHYPER_binary: 1.0e-05
-  D1_IFRHYPER_binary: 1.0e-05
-  D2_IFRHYPER_binary: 1.0e-05
-  prox_lcx_IFRHYPER_binary: 1.0e-05
-  mid_lcx_IFRHYPER_binary: 1.0e-05
-  dist_lcx_IFRHYPER_binary: 1.0e-05
-  om1_IFRHYPER_binary: 1.0e-05
-  om2_IFRHYPER_binary: 1.0e-05
-  bx_IFRHYPER_binary: 1.0e-05
+  prox_rca_IFRHYPER_binary: 1.0e-03
+  mid_rca_IFRHYPER_binary: 1.0e-03
+  dist_rca_IFRHYPER_binary: 1.0e-03
+  pda_IFRHYPER_binary: 1.0e-03
+  posterolateral_IFRHYPER_binary: 1.0e-03
+  left_main_IFRHYPER_binary: 1.0e-03
+  prox_lad_IFRHYPER_binary: 1.0e-03
+  mid_lad_IFRHYPER_binary: 1.0e-03
+  dist_lad_IFRHYPER_binary: 1.0e-03
+  D1_IFRHYPER_binary: 1.0e-03
+  D2_IFRHYPER_binary: 1.0e-03
+  prox_lcx_IFRHYPER_binary: 1.0e-03
+  mid_lcx_IFRHYPER_binary: 1.0e-03
+  dist_lcx_IFRHYPER_binary: 1.0e-03
+  om1_IFRHYPER_binary: 1.0e-03
+  om2_IFRHYPER_binary: 1.0e-03
+  bx_IFRHYPER_binary: 1.0e-03
 video_encoder_weight_decay: 4.4495284358638e-07
 use_amp: true
 gradient_accumulation_steps: 1

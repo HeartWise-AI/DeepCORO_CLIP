@@ -60,7 +60,7 @@ num_hard_restarts_cycles: 3
 warm_restart_tmult: 2.0
 data_filename: /volume/DeepCORO_CLIP/data/deepifr_training_100studies.csv
 num_workers: 4
-batch_size: 12
+batch_size: 6
 datapoint_loc_label: FileName
 target_label:
 - prox_rca_IFRHYPER_binary

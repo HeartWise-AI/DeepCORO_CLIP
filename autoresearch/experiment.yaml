@@ -88,7 +88,7 @@ model_name: mvit
 aggregator_depth: 1
 num_heads: 16
 video_freeze_ratio: 0.8483198470912667
-dropout: 0.35
+dropout: 0.19626902693861784
 pretrained: true
 video_encoder_checkpoint_path: /media/data1/models/DeepCoro_CLIP/8av1xygm_20250605-083820_best_single_video/checkpoints/best_model_epoch_9.pt
 video_encoder_lr: 5.908576744303851e-06
@@ -147,23 +147,23 @@ head_weights:
   om2_IFRHYPER_binary: 1.0
   bx_IFRHYPER_binary: 1.0
 head_dropout:
-  prox_rca_IFRHYPER_binary: 0.4
-  mid_rca_IFRHYPER_binary: 0.4
-  dist_rca_IFRHYPER_binary: 0.4
-  pda_IFRHYPER_binary: 0.4
-  posterolateral_IFRHYPER_binary: 0.4
-  left_main_IFRHYPER_binary: 0.4
-  prox_lad_IFRHYPER_binary: 0.4
-  mid_lad_IFRHYPER_binary: 0.4
-  dist_lad_IFRHYPER_binary: 0.4
-  D1_IFRHYPER_binary: 0.4
-  D2_IFRHYPER_binary: 0.4
-  prox_lcx_IFRHYPER_binary: 0.4
-  mid_lcx_IFRHYPER_binary: 0.4
-  dist_lcx_IFRHYPER_binary: 0.4
-  om1_IFRHYPER_binary: 0.4
-  om2_IFRHYPER_binary: 0.4
-  bx_IFRHYPER_binary: 0.4
+  prox_rca_IFRHYPER_binary: 0.2
+  mid_rca_IFRHYPER_binary: 0.2
+  dist_rca_IFRHYPER_binary: 0.2
+  pda_IFRHYPER_binary: 0.2
+  posterolateral_IFRHYPER_binary: 0.2
+  left_main_IFRHYPER_binary: 0.2
+  prox_lad_IFRHYPER_binary: 0.2
+  mid_lad_IFRHYPER_binary: 0.2
+  dist_lad_IFRHYPER_binary: 0.2
+  D1_IFRHYPER_binary: 0.2
+  D2_IFRHYPER_binary: 0.2
+  prox_lcx_IFRHYPER_binary: 0.2
+  mid_lcx_IFRHYPER_binary: 0.2
+  dist_lcx_IFRHYPER_binary: 0.2
+  om1_IFRHYPER_binary: 0.2
+  om2_IFRHYPER_binary: 0.2
+  bx_IFRHYPER_binary: 0.2
 head_task:
   prox_rca_IFRHYPER_binary: binary_classification
   mid_rca_IFRHYPER_binary: binary_classification

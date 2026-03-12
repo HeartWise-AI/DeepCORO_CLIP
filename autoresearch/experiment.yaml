@@ -1,7 +1,7 @@
 pipeline_project: DeepCORO_video_linear_probing
 base_checkpoint_path: outputs
 run_mode: train
-epochs: 15
+epochs: 30
 seed: 42
 name: DeepIFR_baseline
 project: DeepIFR_baseline
@@ -129,18 +129,18 @@ loss_structure:
   om2_IFRHYPER_binary: bce_logit
   bx_IFRHYPER_binary: bce_logit
 head_weights:
-  prox_rca_IFRHYPER_binary: 2.0
-  mid_rca_IFRHYPER_binary: 2.0
+  prox_rca_IFRHYPER_binary: 1.0
+  mid_rca_IFRHYPER_binary: 1.0
   dist_rca_IFRHYPER_binary: 1.0
   pda_IFRHYPER_binary: 1.0
   posterolateral_IFRHYPER_binary: 1.0
   left_main_IFRHYPER_binary: 1.0
-  prox_lad_IFRHYPER_binary: 3.0
-  mid_lad_IFRHYPER_binary: 5.0
+  prox_lad_IFRHYPER_binary: 1.0
+  mid_lad_IFRHYPER_binary: 1.0
   dist_lad_IFRHYPER_binary: 1.0
   D1_IFRHYPER_binary: 1.0
   D2_IFRHYPER_binary: 1.0
-  prox_lcx_IFRHYPER_binary: 2.0
+  prox_lcx_IFRHYPER_binary: 1.0
   mid_lcx_IFRHYPER_binary: 1.0
   dist_lcx_IFRHYPER_binary: 1.0
   om1_IFRHYPER_binary: 1.0

@@ -244,7 +244,7 @@ dropout_attention: 0.24113476171193088
 attention_lr: 8.078142815403988e-05
 attention_weight_decay: 1.4069088107251271e-06
 use_cls_token: true
-num_attention_heads: 6
+num_attention_heads: 2
 separate_video_attention: false
 normalization_strategy: pre_norm
 attention_within_lr: 0.001000481418808649

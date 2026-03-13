@@ -1,8 +1,8 @@
 pipeline_project: DeepCORO_video_linear_probing
 base_checkpoint_path: outputs
 run_mode: train
-epochs: 15
-seed: 2024
+epochs: 20
+seed: 314
 name: DeepIFR_baseline
 project: DeepIFR_baseline
 entity: mhi_ai

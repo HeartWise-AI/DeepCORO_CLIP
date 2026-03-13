@@ -56,7 +56,7 @@ video_encoder_weight_decay: 4.4495284358638e-07
 use_amp: true
 gradient_accumulation_steps: 1
 num_warmup_percent: 0.2
-num_hard_restarts_cycles: 1
+num_hard_restarts_cycles: 3
 warm_restart_tmult: 2.0
 data_filename: /volume/DeepCORO_CLIP/data/deepifr_training_100studies.csv
 num_workers: 4
@@ -88,7 +88,7 @@ model_name: mvit
 aggregator_depth: 1
 num_heads: 16
 video_freeze_ratio: 0.0
-dropout: 0.19626902693861784
+dropout: 0.35
 pretrained: true
 video_encoder_checkpoint_path: /media/data1/models/DeepCoro_CLIP/8av1xygm_20250605-083820_best_single_video/checkpoints/best_model_epoch_9.pt
 video_encoder_lr: 5.908576744303851e-06

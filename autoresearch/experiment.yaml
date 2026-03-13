@@ -1,7 +1,7 @@
 pipeline_project: DeepCORO_video_linear_probing
 base_checkpoint_path: outputs
 run_mode: train
-epochs: 20
+epochs: 15
 seed: 314
 name: DeepIFR_baseline
 project: DeepIFR_baseline
@@ -237,7 +237,7 @@ labels_map:
 multi_video: true
 groupby_column: StudyInstanceUID
 num_videos: 10
-shuffle_videos: false
+shuffle_videos: true
 pooling_mode: attention+cls_token
 attention_hidden: 128
 dropout_attention: 0.24113476171193088

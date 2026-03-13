@@ -2,7 +2,7 @@ pipeline_project: DeepCORO_video_linear_probing
 base_checkpoint_path: outputs
 run_mode: train
 epochs: 15
-seed: 42
+seed: 123
 name: DeepIFR_baseline
 project: DeepIFR_baseline
 entity: mhi_ai
@@ -239,7 +239,7 @@ groupby_column: StudyInstanceUID
 num_videos: 10
 shuffle_videos: false
 pooling_mode: attention+cls_token
-attention_hidden: 64
+attention_hidden: 128
 dropout_attention: 0.24113476171193088
 attention_lr: 8.078142815403988e-05
 attention_weight_decay: 1.4069088107251271e-06

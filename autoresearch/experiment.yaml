@@ -55,7 +55,7 @@ head_weight_decay:
 video_encoder_weight_decay: 4.4495284358638e-07
 use_amp: true
 gradient_accumulation_steps: 1
-num_warmup_percent: 0.2
+num_warmup_percent: 0.35
 num_hard_restarts_cycles: 3
 warm_restart_tmult: 2.0
 data_filename: /volume/DeepCORO_CLIP/data/deepffr_training.csv
@@ -135,8 +135,8 @@ head_weights:
   pda_FFRHYPEREMIE_binary: 1.0
   posterolateral_FFRHYPEREMIE_binary: 1.0
   left_main_FFRHYPEREMIE_binary: 1.0
-  prox_lad_FFRHYPEREMIE_binary: 2.0
-  mid_lad_FFRHYPEREMIE_binary: 3.0
+  prox_lad_FFRHYPEREMIE_binary: 1.0
+  mid_lad_FFRHYPEREMIE_binary: 1.0
   dist_lad_FFRHYPEREMIE_binary: 1.0
   D1_FFRHYPEREMIE_binary: 1.0
   D2_FFRHYPEREMIE_binary: 1.0

@@ -2,7 +2,7 @@ pipeline_project: DeepCORO_video_linear_probing
 base_checkpoint_path: outputs
 run_mode: train
 epochs: 8
-seed: 314
+seed: 42
 name: DeepFFR_baseline
 project: DeepFFR_baseline
 entity: mhi_ai
@@ -13,23 +13,23 @@ world_size: 1
 is_ref_device: true
 output_dir: outputs/DeepCORO_video_linear_probing/DeepFFR_baseline
 head_lr:
-  prox_rca_FFRHYPEREMIE_binary: 0.001
-  mid_rca_FFRHYPEREMIE_binary: 0.001
-  dist_rca_FFRHYPEREMIE_binary: 0.001
-  pda_FFRHYPEREMIE_binary: 0.001
-  posterolateral_FFRHYPEREMIE_binary: 0.001
-  left_main_FFRHYPEREMIE_binary: 0.001
-  prox_lad_FFRHYPEREMIE_binary: 0.001
-  mid_lad_FFRHYPEREMIE_binary: 0.001
-  dist_lad_FFRHYPEREMIE_binary: 0.001
-  D1_FFRHYPEREMIE_binary: 0.001
-  D2_FFRHYPEREMIE_binary: 0.001
-  prox_lcx_FFRHYPEREMIE_binary: 0.001
-  mid_lcx_FFRHYPEREMIE_binary: 0.001
-  dist_lcx_FFRHYPEREMIE_binary: 0.001
-  om1_FFRHYPEREMIE_binary: 0.001
-  om2_FFRHYPEREMIE_binary: 0.001
-  bx_FFRHYPEREMIE_binary: 0.001
+  prox_rca_FFRHYPEREMIE_binary: 0.0003
+  mid_rca_FFRHYPEREMIE_binary: 0.0003
+  dist_rca_FFRHYPEREMIE_binary: 0.0003
+  pda_FFRHYPEREMIE_binary: 0.0003
+  posterolateral_FFRHYPEREMIE_binary: 0.0003
+  left_main_FFRHYPEREMIE_binary: 0.0003
+  prox_lad_FFRHYPEREMIE_binary: 0.0003
+  mid_lad_FFRHYPEREMIE_binary: 0.0003
+  dist_lad_FFRHYPEREMIE_binary: 0.0003
+  D1_FFRHYPEREMIE_binary: 0.0003
+  D2_FFRHYPEREMIE_binary: 0.0003
+  prox_lcx_FFRHYPEREMIE_binary: 0.0003
+  mid_lcx_FFRHYPEREMIE_binary: 0.0003
+  dist_lcx_FFRHYPEREMIE_binary: 0.0003
+  om1_FFRHYPEREMIE_binary: 0.0003
+  om2_FFRHYPEREMIE_binary: 0.0003
+  bx_FFRHYPEREMIE_binary: 0.0003
 scheduler_name: cosine_with_warmup
 lr_step_period: 4
 factor: 0.16090885523071338

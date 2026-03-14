@@ -2,7 +2,7 @@ pipeline_project: DeepCORO_video_linear_probing
 base_checkpoint_path: outputs
 run_mode: train
 epochs: 8
-seed: 314
+seed: 999
 name: DeepFFR_baseline
 project: DeepFFR_baseline
 entity: mhi_ai
@@ -244,7 +244,7 @@ dropout_attention: 0.24113476171193088
 attention_lr: 8.078142815403988e-05
 attention_weight_decay: 1.4069088107251271e-06
 use_cls_token: true
-num_attention_heads: 8
+num_attention_heads: 6
 separate_video_attention: false
 normalization_strategy: pre_norm
 attention_within_lr: 0.001000481418808649

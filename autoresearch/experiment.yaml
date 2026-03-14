@@ -147,23 +147,23 @@ head_weights:
   om2_FFRHYPEREMIE_binary: 1.0
   bx_FFRHYPEREMIE_binary: 1.0
 head_dropout:
-  prox_rca_FFRHYPEREMIE_binary: 0.0
-  mid_rca_FFRHYPEREMIE_binary: 0.0
-  dist_rca_FFRHYPEREMIE_binary: 0.0
-  pda_FFRHYPEREMIE_binary: 0.0
-  posterolateral_FFRHYPEREMIE_binary: 0.0
-  left_main_FFRHYPEREMIE_binary: 0.0
-  prox_lad_FFRHYPEREMIE_binary: 0.0
-  mid_lad_FFRHYPEREMIE_binary: 0.0
-  dist_lad_FFRHYPEREMIE_binary: 0.0
-  D1_FFRHYPEREMIE_binary: 0.0
-  D2_FFRHYPEREMIE_binary: 0.0
-  prox_lcx_FFRHYPEREMIE_binary: 0.0
-  mid_lcx_FFRHYPEREMIE_binary: 0.0
-  dist_lcx_FFRHYPEREMIE_binary: 0.0
-  om1_FFRHYPEREMIE_binary: 0.0
-  om2_FFRHYPEREMIE_binary: 0.0
-  bx_FFRHYPEREMIE_binary: 0.0
+  prox_rca_FFRHYPEREMIE_binary: 0.2
+  mid_rca_FFRHYPEREMIE_binary: 0.2
+  dist_rca_FFRHYPEREMIE_binary: 0.2
+  pda_FFRHYPEREMIE_binary: 0.2
+  posterolateral_FFRHYPEREMIE_binary: 0.2
+  left_main_FFRHYPEREMIE_binary: 0.2
+  prox_lad_FFRHYPEREMIE_binary: 0.2
+  mid_lad_FFRHYPEREMIE_binary: 0.2
+  dist_lad_FFRHYPEREMIE_binary: 0.2
+  D1_FFRHYPEREMIE_binary: 0.2
+  D2_FFRHYPEREMIE_binary: 0.2
+  prox_lcx_FFRHYPEREMIE_binary: 0.2
+  mid_lcx_FFRHYPEREMIE_binary: 0.2
+  dist_lcx_FFRHYPEREMIE_binary: 0.2
+  om1_FFRHYPEREMIE_binary: 0.2
+  om2_FFRHYPEREMIE_binary: 0.2
+  bx_FFRHYPEREMIE_binary: 0.2
 head_task:
   prox_rca_FFRHYPEREMIE_binary: binary_classification
   mid_rca_FFRHYPEREMIE_binary: binary_classification
@@ -240,8 +240,8 @@ num_videos: 10
 shuffle_videos: false
 pooling_mode: attention+cls_token
 attention_hidden: 128
-dropout_attention: 0.24113476171193088
-attention_lr: 8.078142815403988e-05
+dropout_attention: 0.1
+attention_lr: 5.0e-04
 attention_weight_decay: 1.4069088107251271e-06
 use_cls_token: true
 num_attention_heads: 6

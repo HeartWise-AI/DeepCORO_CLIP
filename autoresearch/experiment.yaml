@@ -2,7 +2,7 @@ pipeline_project: DeepCORO_video_linear_probing
 base_checkpoint_path: outputs
 run_mode: train
 epochs: 8
-seed: 314
+seed: 1337
 name: DeepFFR_baseline
 project: DeepFFR_baseline
 entity: mhi_ai
@@ -85,7 +85,7 @@ resize: 224
 frames: 16
 stride: 1
 model_name: mvit
-aggregator_depth: 2
+aggregator_depth: 1
 num_heads: 16
 video_freeze_ratio: 0.0
 dropout: 0.35

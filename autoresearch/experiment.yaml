@@ -55,8 +55,8 @@ head_weight_decay:
 video_encoder_weight_decay: 4.4495284358638e-07
 use_amp: true
 gradient_accumulation_steps: 1
-num_warmup_percent: 0.15
-num_hard_restarts_cycles: 3
+num_warmup_percent: 0.2
+num_hard_restarts_cycles: 5
 warm_restart_tmult: 2.0
 data_filename: /volume/DeepCORO_CLIP/data/deepffr_training.csv
 num_workers: 4

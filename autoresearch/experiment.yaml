@@ -83,7 +83,7 @@ target_label:
 rand_augment: true
 resize: 224
 frames: 16
-stride: 1
+stride: 2
 model_name: mvit
 aggregator_depth: 1
 num_heads: 16
@@ -238,7 +238,7 @@ multi_video: true
 groupby_column: StudyInstanceUID
 num_videos: 15
 shuffle_videos: false
-pooling_mode: mean
+pooling_mode: attention+cls_token
 attention_hidden: 128
 dropout_attention: 0.24113476171193088
 attention_lr: 8.078142815403988e-05

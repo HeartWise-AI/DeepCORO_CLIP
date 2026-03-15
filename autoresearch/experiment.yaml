@@ -13,23 +13,23 @@ world_size: 1
 is_ref_device: true
 output_dir: outputs/DeepCORO_video_linear_probing/DeepFFR_baseline
 head_lr:
-  prox_rca_FFRHYPEREMIE_binary: 0.0001
-  mid_rca_FFRHYPEREMIE_binary: 0.0001
-  dist_rca_FFRHYPEREMIE_binary: 0.0001
-  pda_FFRHYPEREMIE_binary: 0.0001
-  posterolateral_FFRHYPEREMIE_binary: 0.0001
-  left_main_FFRHYPEREMIE_binary: 0.0001
-  prox_lad_FFRHYPEREMIE_binary: 0.0001
-  mid_lad_FFRHYPEREMIE_binary: 0.0001
-  dist_lad_FFRHYPEREMIE_binary: 0.0001
-  D1_FFRHYPEREMIE_binary: 0.0001
-  D2_FFRHYPEREMIE_binary: 0.0001
-  prox_lcx_FFRHYPEREMIE_binary: 0.0001
-  mid_lcx_FFRHYPEREMIE_binary: 0.0001
-  dist_lcx_FFRHYPEREMIE_binary: 0.0001
-  om1_FFRHYPEREMIE_binary: 0.0001
-  om2_FFRHYPEREMIE_binary: 0.0001
-  bx_FFRHYPEREMIE_binary: 0.0001
+  prox_rca_FFRHYPEREMIE_binary: 0.0003
+  mid_rca_FFRHYPEREMIE_binary: 0.0003
+  dist_rca_FFRHYPEREMIE_binary: 0.0003
+  pda_FFRHYPEREMIE_binary: 0.0003
+  posterolateral_FFRHYPEREMIE_binary: 0.0003
+  left_main_FFRHYPEREMIE_binary: 0.0003
+  prox_lad_FFRHYPEREMIE_binary: 0.0003
+  mid_lad_FFRHYPEREMIE_binary: 0.0003
+  dist_lad_FFRHYPEREMIE_binary: 0.0003
+  D1_FFRHYPEREMIE_binary: 0.0003
+  D2_FFRHYPEREMIE_binary: 0.0003
+  prox_lcx_FFRHYPEREMIE_binary: 0.0003
+  mid_lcx_FFRHYPEREMIE_binary: 0.0003
+  dist_lcx_FFRHYPEREMIE_binary: 0.0003
+  om1_FFRHYPEREMIE_binary: 0.0003
+  om2_FFRHYPEREMIE_binary: 0.0003
+  bx_FFRHYPEREMIE_binary: 0.0003
 scheduler_name: cosine_with_warmup
 lr_step_period: 4
 factor: 0.16090885523071338
@@ -87,7 +87,7 @@ stride: 1
 model_name: mvit
 aggregator_depth: 1
 num_heads: 16
-video_freeze_ratio: 0.0
+video_freeze_ratio: 0.15
 dropout: 0.35
 pretrained: true
 video_encoder_checkpoint_path: /media/data1/models/DeepCoro_CLIP/8av1xygm_20250605-083820_best_single_video/checkpoints/best_model_epoch_9.pt

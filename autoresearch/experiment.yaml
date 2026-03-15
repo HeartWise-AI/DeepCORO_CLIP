@@ -55,7 +55,7 @@ head_weight_decay:
 video_encoder_weight_decay: 4.4495284358638e-07
 use_amp: true
 gradient_accumulation_steps: 1
-num_warmup_percent: 0.2
+num_warmup_percent: 0.15
 num_hard_restarts_cycles: 3
 warm_restart_tmult: 2.0
 data_filename: /volume/DeepCORO_CLIP/data/deepffr_training.csv
@@ -83,7 +83,7 @@ target_label:
 rand_augment: true
 resize: 224
 frames: 16
-stride: 2
+stride: 1
 model_name: mvit
 aggregator_depth: 1
 num_heads: 16

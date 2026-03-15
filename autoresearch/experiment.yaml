@@ -55,7 +55,7 @@ head_weight_decay:
 video_encoder_weight_decay: 4.4495284358638e-07
 use_amp: true
 gradient_accumulation_steps: 1
-num_warmup_percent: 0.2
+num_warmup_percent: 0.05
 num_hard_restarts_cycles: 3
 warm_restart_tmult: 2.0
 data_filename: /volume/DeepCORO_CLIP/data/deepffr_training.csv
@@ -246,7 +246,7 @@ attention_weight_decay: 1.4069088107251271e-06
 use_cls_token: true
 num_attention_heads: 6
 separate_video_attention: false
-normalization_strategy: post_norm
+normalization_strategy: pre_norm
 attention_within_lr: 0.001000481418808649
 attention_across_lr: 0.00019263167321309713
 attention_within_weight_decay: 2.6005736539929244e-06

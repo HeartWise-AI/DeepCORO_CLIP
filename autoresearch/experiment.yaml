@@ -60,7 +60,7 @@ num_hard_restarts_cycles: 3
 warm_restart_tmult: 2.0
 data_filename: /volume/DeepCORO_CLIP/data/deepffr_training.csv
 num_workers: 4
-batch_size: 12
+batch_size: 8
 datapoint_loc_label: FileName
 target_label:
 - prox_rca_FFRHYPEREMIE_binary
@@ -88,7 +88,7 @@ model_name: mvit
 aggregator_depth: 1
 num_heads: 16
 video_freeze_ratio: 0.0
-dropout: 0.1
+dropout: 0.35
 pretrained: true
 video_encoder_checkpoint_path: /media/data1/models/DeepCoro_CLIP/8av1xygm_20250605-083820_best_single_video/checkpoints/best_model_epoch_9.pt
 video_encoder_lr: 5.908576744303851e-06

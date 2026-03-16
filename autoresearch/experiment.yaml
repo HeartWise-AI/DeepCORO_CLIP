@@ -13,23 +13,23 @@ world_size: 1
 is_ref_device: true
 output_dir: outputs/DeepCORO_video_linear_probing/DeepFFR_baseline
 head_lr:
-  prox_rca_FFRHYPEREMIE_binary: 0.0004
-  mid_rca_FFRHYPEREMIE_binary: 0.0004
-  dist_rca_FFRHYPEREMIE_binary: 0.0004
-  pda_FFRHYPEREMIE_binary: 0.0004
-  posterolateral_FFRHYPEREMIE_binary: 0.0004
-  left_main_FFRHYPEREMIE_binary: 0.0004
-  prox_lad_FFRHYPEREMIE_binary: 0.0004
-  mid_lad_FFRHYPEREMIE_binary: 0.0004
-  dist_lad_FFRHYPEREMIE_binary: 0.0004
-  D1_FFRHYPEREMIE_binary: 0.0004
-  D2_FFRHYPEREMIE_binary: 0.0004
-  prox_lcx_FFRHYPEREMIE_binary: 0.0004
-  mid_lcx_FFRHYPEREMIE_binary: 0.0004
-  dist_lcx_FFRHYPEREMIE_binary: 0.0004
-  om1_FFRHYPEREMIE_binary: 0.0004
-  om2_FFRHYPEREMIE_binary: 0.0004
-  bx_FFRHYPEREMIE_binary: 0.0004
+  prox_rca_FFRHYPEREMIE_binary: 0.00055
+  mid_rca_FFRHYPEREMIE_binary: 0.00055
+  dist_rca_FFRHYPEREMIE_binary: 0.00055
+  pda_FFRHYPEREMIE_binary: 0.00055
+  posterolateral_FFRHYPEREMIE_binary: 0.00055
+  left_main_FFRHYPEREMIE_binary: 0.00055
+  prox_lad_FFRHYPEREMIE_binary: 0.00055
+  mid_lad_FFRHYPEREMIE_binary: 0.00055
+  dist_lad_FFRHYPEREMIE_binary: 0.00055
+  D1_FFRHYPEREMIE_binary: 0.00055
+  D2_FFRHYPEREMIE_binary: 0.00055
+  prox_lcx_FFRHYPEREMIE_binary: 0.00055
+  mid_lcx_FFRHYPEREMIE_binary: 0.00055
+  dist_lcx_FFRHYPEREMIE_binary: 0.00055
+  om1_FFRHYPEREMIE_binary: 0.00055
+  om2_FFRHYPEREMIE_binary: 0.00055
+  bx_FFRHYPEREMIE_binary: 0.00055
 scheduler_name: cosine_with_warmup
 lr_step_period: 4
 factor: 0.16090885523071338

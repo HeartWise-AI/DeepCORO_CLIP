@@ -30,7 +30,7 @@ head_lr:
   om1_FFRHYPEREMIE_binary: 0.0003
   om2_FFRHYPEREMIE_binary: 0.0003
   bx_FFRHYPEREMIE_binary: 0.0003
-scheduler_name: cosine
+scheduler_name: step
 lr_step_period: 4
 factor: 0.16090885523071338
 optimizer: AdamW

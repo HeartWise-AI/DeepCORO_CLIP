@@ -35,29 +35,29 @@ lr_step_period: 4
 factor: 0.16090885523071338
 optimizer: AdamW
 head_weight_decay:
-  prox_rca_FFRHYPEREMIE_binary: 1.0e-03
-  mid_rca_FFRHYPEREMIE_binary: 1.0e-03
-  dist_rca_FFRHYPEREMIE_binary: 1.0e-03
-  pda_FFRHYPEREMIE_binary: 1.0e-03
-  posterolateral_FFRHYPEREMIE_binary: 1.0e-03
-  left_main_FFRHYPEREMIE_binary: 1.0e-03
-  prox_lad_FFRHYPEREMIE_binary: 1.0e-03
-  mid_lad_FFRHYPEREMIE_binary: 1.0e-03
-  dist_lad_FFRHYPEREMIE_binary: 1.0e-03
-  D1_FFRHYPEREMIE_binary: 1.0e-03
-  D2_FFRHYPEREMIE_binary: 1.0e-03
-  prox_lcx_FFRHYPEREMIE_binary: 1.0e-03
-  mid_lcx_FFRHYPEREMIE_binary: 1.0e-03
-  dist_lcx_FFRHYPEREMIE_binary: 1.0e-03
-  om1_FFRHYPEREMIE_binary: 1.0e-03
-  om2_FFRHYPEREMIE_binary: 1.0e-03
-  bx_FFRHYPEREMIE_binary: 1.0e-03
+  prox_rca_FFRHYPEREMIE_binary: 1.0e-05
+  mid_rca_FFRHYPEREMIE_binary: 1.0e-05
+  dist_rca_FFRHYPEREMIE_binary: 1.0e-05
+  pda_FFRHYPEREMIE_binary: 1.0e-05
+  posterolateral_FFRHYPEREMIE_binary: 1.0e-05
+  left_main_FFRHYPEREMIE_binary: 1.0e-05
+  prox_lad_FFRHYPEREMIE_binary: 1.0e-05
+  mid_lad_FFRHYPEREMIE_binary: 1.0e-05
+  dist_lad_FFRHYPEREMIE_binary: 1.0e-05
+  D1_FFRHYPEREMIE_binary: 1.0e-05
+  D2_FFRHYPEREMIE_binary: 1.0e-05
+  prox_lcx_FFRHYPEREMIE_binary: 1.0e-05
+  mid_lcx_FFRHYPEREMIE_binary: 1.0e-05
+  dist_lcx_FFRHYPEREMIE_binary: 1.0e-05
+  om1_FFRHYPEREMIE_binary: 1.0e-05
+  om2_FFRHYPEREMIE_binary: 1.0e-05
+  bx_FFRHYPEREMIE_binary: 1.0e-05
 video_encoder_weight_decay: 4.4495284358638e-07
 use_amp: true
 gradient_accumulation_steps: 1
 num_warmup_percent: 0.2
 num_hard_restarts_cycles: 3
-warm_restart_tmult: 2.0
+warm_restart_tmult: 1.0
 data_filename: /volume/DeepCORO_CLIP/data/deepffr_training.csv
 num_workers: 4
 batch_size: 12

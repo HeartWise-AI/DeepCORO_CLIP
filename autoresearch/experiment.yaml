@@ -248,7 +248,7 @@ num_attention_heads: 6
 separate_video_attention: false
 normalization_strategy: pre_norm
 attention_within_lr: 0.001000481418808649
-attention_across_lr: 0.0005
+attention_across_lr: 5.0e-05
 attention_within_weight_decay: 2.6005736539929244e-06
 attention_across_weight_decay: 1.1024580099326852e-05
 aggregate_videos_tokens: false

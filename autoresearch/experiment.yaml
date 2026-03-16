@@ -60,7 +60,7 @@ num_hard_restarts_cycles: 3
 warm_restart_tmult: 2.0
 data_filename: /volume/DeepCORO_CLIP/data/deepffr_training.csv
 num_workers: 4
-batch_size: 10
+batch_size: 12
 datapoint_loc_label: FileName
 target_label:
 - prox_rca_FFRHYPEREMIE_binary
@@ -248,7 +248,7 @@ num_attention_heads: 6
 separate_video_attention: false
 normalization_strategy: pre_norm
 attention_within_lr: 0.001000481418808649
-attention_across_lr: 0.00019263167321309713
+attention_across_lr: 0.0005
 attention_within_weight_decay: 2.6005736539929244e-06
 attention_across_weight_decay: 1.1024580099326852e-05
 aggregate_videos_tokens: false

@@ -19,8 +19,8 @@ head_lr:
   pda_FFRHYPEREMIE_binary: 0.0003
   posterolateral_FFRHYPEREMIE_binary: 0.0003
   left_main_FFRHYPEREMIE_binary: 0.0003
-  prox_lad_FFRHYPEREMIE_binary: 0.0004
-  mid_lad_FFRHYPEREMIE_binary: 0.0005
+  prox_lad_FFRHYPEREMIE_binary: 0.0003
+  mid_lad_FFRHYPEREMIE_binary: 0.0003
   dist_lad_FFRHYPEREMIE_binary: 0.0003
   D1_FFRHYPEREMIE_binary: 0.0003
   D2_FFRHYPEREMIE_binary: 0.0003
@@ -81,7 +81,7 @@ target_label:
 - om2_FFRHYPEREMIE_binary
 - bx_FFRHYPEREMIE_binary
 rand_augment: true
-resize: 224
+resize: 192
 frames: 16
 stride: 1
 model_name: mvit

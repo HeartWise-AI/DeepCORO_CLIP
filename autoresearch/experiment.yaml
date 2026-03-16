@@ -53,7 +53,7 @@ head_weight_decay:
   om2_FFRHYPEREMIE_binary: 1.0e-05
   bx_FFRHYPEREMIE_binary: 1.0e-05
 video_encoder_weight_decay: 4.4495284358638e-07
-use_amp: true
+use_amp: false
 gradient_accumulation_steps: 1
 num_warmup_percent: 0.2
 num_hard_restarts_cycles: 3
@@ -240,7 +240,7 @@ num_videos: 15
 shuffle_videos: false
 pooling_mode: attention+cls_token
 attention_hidden: 128
-dropout_attention: 0.15
+dropout_attention: 0.24113476171193088
 attention_lr: 8.078142815403988e-05
 attention_weight_decay: 1.4069088107251271e-06
 use_cls_token: true

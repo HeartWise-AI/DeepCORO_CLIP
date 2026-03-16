@@ -1,7 +1,7 @@
 pipeline_project: DeepCORO_video_linear_probing
 base_checkpoint_path: outputs
 run_mode: train
-epochs: 1
+epochs: 8
 seed: 314
 name: DeepFFR_baseline
 project: DeepFFR_baseline
@@ -251,7 +251,7 @@ attention_within_lr: 0.001000481418808649
 attention_across_lr: 0.00019263167321309713
 attention_within_weight_decay: 2.6005736539929244e-06
 attention_across_weight_decay: 1.1024580099326852e-05
-aggregate_videos_tokens: false
+aggregate_videos_tokens: true
 per_video_pool: false
 ci_confidence_level: 0.95
 ci_n_bootstrap: 1000

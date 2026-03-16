@@ -57,10 +57,10 @@ use_amp: true
 gradient_accumulation_steps: 1
 num_warmup_percent: 0.2
 num_hard_restarts_cycles: 3
-warm_restart_tmult: 1.0
+warm_restart_tmult: 2.0
 data_filename: /volume/DeepCORO_CLIP/data/deepffr_training.csv
 num_workers: 4
-batch_size: 12
+batch_size: 10
 datapoint_loc_label: FileName
 target_label:
 - prox_rca_FFRHYPEREMIE_binary

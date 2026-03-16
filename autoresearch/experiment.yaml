@@ -236,7 +236,7 @@ labels_map:
     abnormal: 1
 multi_video: true
 groupby_column: StudyInstanceUID
-num_videos: 15
+num_videos: 18
 shuffle_videos: false
 pooling_mode: attention+cls_token
 attention_hidden: 128
@@ -255,7 +255,7 @@ aggregate_videos_tokens: false
 per_video_pool: false
 ci_confidence_level: 0.95
 ci_n_bootstrap: 1000
-train_pooling_params: false
+train_pooling_params: true
 view_column: null
 num_view_classes: 0
 view_labels_map: null

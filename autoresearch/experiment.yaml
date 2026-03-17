@@ -1,7 +1,7 @@
 pipeline_project: DeepCORO_video_linear_probing
 base_checkpoint_path: outputs
 run_mode: train
-epochs: 4
+epochs: 12
 seed: 314
 name: DeepFFR_baseline
 project: DeepFFR_baseline

@@ -1,13 +1,13 @@
 pipeline_project: DeepCORO_video_linear_probing
 base_checkpoint_path: outputs
 run_mode: train
-epochs: 12
+epochs: 8
 seed: 314
 name: DeepFFR_baseline
 project: DeepFFR_baseline
 entity: mhi_ai
 tag: mvit_pretrained_multiview_ffr
-use_wandb: false
+use_wandb: true
 device: 3
 world_size: 1
 is_ref_device: true

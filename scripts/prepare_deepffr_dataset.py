@@ -70,6 +70,10 @@ def main():
         n_stud = df_ffr.loc[df_ffr["Split"] == split, "StudyInstanceUID"].nunique()
         print(f"    {split}: {n_stud} studies, {n_rows} rows")
 
+    # Drop rows with NaN FileName
+    df_ffr = df_ffr.dropna(subset=["FileName"])
+    print(f"  Rows after dropping NaN FileName: {len(df_ffr)}")
+
     # Clean view_class
     df_ffr["view_class"] = df_ffr["view_class"].replace({"None": np.nan, "": np.nan})
     n_with_view = df_ffr["view_class"].notna().sum()

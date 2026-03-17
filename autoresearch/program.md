@@ -1,6 +1,6 @@
-# autoresearch — DeepIFR Training Optimization
+# autoresearch — DeepFFR Training Optimization
 
-Autonomous experimentation loop for optimizing IFR (Instantaneous Flow Reserve) prediction
+Autonomous experimentation loop for optimizing FFR Hyperemia (Fractional Flow Reserve) prediction
 from coronary angiography videos using the DeepCORO MViT encoder.
 
 Adapted from [karpathy/autoresearch](https://github.com/karpathy/autoresearch).
@@ -11,7 +11,7 @@ Adapted from [karpathy/autoresearch](https://github.com/karpathy/autoresearch).
 2. **Create the branch**: `git checkout -b autoresearch/<tag>` from current HEAD.
 3. **Read context files**:
    - This file (`autoresearch/program.md`) — rules and constraints
-   - `autoresearch/baseline_ifr.yaml` — immutable champion config (read-only reference)
+   - `autoresearch/experiment_ffr.yaml` — immutable champion config (read-only reference)
    - `autoresearch/experiment.yaml` — the ONLY file you modify
    - `autoresearch/run_experiment.sh` — how to launch experiments
    - `autoresearch/extract_metrics.py` — how to parse results
@@ -25,7 +25,7 @@ Adapted from [karpathy/autoresearch](https://github.com/karpathy/autoresearch).
 
 ## Goal
 
-Minimize `best_val_loss` (lower is better). This is the primary validation loss across all IFR heads.
+Maximize `mean_val_auc` (higher is better). This is the mean AUROC across all FFR heads with valid data. `mid_lad` is the most important vessel.
 
 ## What You Can Explore (via YAML only)
 
@@ -53,11 +53,12 @@ Minimize `best_val_loss` (lower is better). This is the primary validation loss 
 
 ### Strategy Notes
 
-- The dataset is very small (~100 train studies), so **overfitting is the main risk**
-- Higher dropout, weight decay, and freeze ratio may help generalization
-- Most vessels have very sparse IFR data — the NaN masking handles this
+- The dataset has 650 train studies (6.5x more than IFR), so there's more signal
+- FFR data availability: mid_lad 388, prox_lad 240, prox_rca 93, prox_lcx 91, mid_rca 86
+- Most vessels have sparse FFR data — the NaN masking handles this
 - `head_weights` can emphasize vessels with more data (mid_lad, prox_lad)
-- The encoder is pretrained on stenosis prediction — IFR is correlated but different
+- The encoder is pretrained on stenosis prediction — FFR is correlated but different
+- FFR threshold: <= 0.80 = abnormal (ischemic), > 0.80 = normal
 
 ## Running Experiments
 
@@ -70,7 +71,7 @@ Then extract metrics:
 python autoresearch/extract_metrics.py autoresearch/run.log
 ```
 
-**Time budget**: ~75 min per experiment (15 epochs, 100 studies, 10 videos, ~5 min/epoch).
+**Time budget**: ~75 min per experiment (15 epochs, 650 train studies, 10 videos, ~5 min/epoch).
 **Timeout**: The script has a 5400s (90 min) timeout. If exceeded, treat as crash.
 
 ## Logging Results
@@ -96,8 +97,8 @@ LOOP FOREVER:
 6. Extract: `python autoresearch/extract_metrics.py autoresearch/run.log`
 7. If extraction fails, check `tail -n 50 autoresearch/run.log` for errors
 8. Log results to `results.tsv`
-9. If val_loss improved → keep the commit, advance the branch
-10. If val_loss is equal or worse → `git reset --hard HEAD~1` to revert
+9. If mean_val_auc improved → keep the commit (this is the new KEEP commit)
+10. If mean_val_auc is equal or worse → revert with `git show <KEEP_COMMIT>:autoresearch/experiment.yaml > autoresearch/experiment.yaml` (NEVER use `git checkout -- autoresearch/experiment.yaml` as it reverts to HEAD which is the discarded config)
 11. Go to step 1
 
 ## Constraints
@@ -118,7 +119,8 @@ LOOP FOREVER:
 ## Tips
 
 - Start with small changes — one variable at a time
-- With only 100 train studies, regularization is key (dropout, weight decay, freeze ratio)
-- Consider upweighting vessels with more IFR data (mid_lad: 1057, prox_lad: 725)
+- 650 train studies allows for less regularization than IFR (100 studies)
+- Consider upweighting vessels with more FFR data (mid_lad: 388, prox_lad: 240)
 - If a direction shows promise, explore it further before moving on
 - If you plateau, try more radical changes (different freeze ratio, very different LR ranges)
+- Prioritize mid_lad AUROC alongside mean_val_auc (mid_lad is the most important vessel)

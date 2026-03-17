@@ -177,20 +177,19 @@ class VideoDataset(torch.utils.data.Dataset):
                         print(f"Skipping group {row_id} in {group_id} because video {file_path} does not exist.")
                         continue
 
-                    # If target labels are provided, ensure they are valid
+                    # If target labels are provided, extract values (NaN allowed for masking)
                     if target_indices is not None:
                         if group_outcome is None:  # Only get outcome once per group
                             row_outcomes = {}
-                            skip_row = False
+                            all_nan = True
                             for label in target_labels:
                                 value = row[label]
                                 if pd.isna(value):
-                                    print(f"Skipping group {row_id} in {group_id} because target '{label}' is missing.")
-                                    skip_row = True
-                                    break
+                                    row_outcomes[label] = float('nan')
                                 else:
                                     row_outcomes[label] = value
-                            if skip_row:
+                                    all_nan = False
+                            if all_nan:
                                 continue
                             group_outcome = row_outcomes
                     skip_group = False
@@ -221,17 +220,16 @@ class VideoDataset(torch.utils.data.Dataset):
                     continue
 
                 if target_indices is not None:
-                    skip_row = False
                     row_outcomes = {}
+                    all_nan = True
                     for label in target_labels:
                         value = row[label]
                         if pd.isna(value):
-                            print(f"Skipping video {file_name} because target '{label}' is missing.")
-                            skip_row = True
-                            break
+                            row_outcomes[label] = float('nan')
                         else:
                             row_outcomes[label] = value
-                    if skip_row:
+                            all_nan = False
+                    if all_nan:
                         continue
 
                     outcomes.append(row_outcomes)
@@ -465,15 +463,20 @@ def custom_collate_fn(
     for k, v in temp_targets_dict.items():
         if labels_map and k in labels_map:
             mapped_values = []
+            has_nan = False
             for value in v:
                 if isinstance(value, str):
                     if value in labels_map[k]:
                         mapped_values.append(labels_map[k][value])
                     else:
                         raise ValueError(f"Label '{value}' not found in labels_map for column '{k}'. Available labels: {list(labels_map[k].keys())}")
+                elif isinstance(value, float) and np.isnan(value):
+                    mapped_values.append(float('nan'))
+                    has_nan = True
                 else:
                     mapped_values.append(value)
-            final_targets_dict[k] = torch.tensor(mapped_values, dtype=torch.long)
+            # Use float32 when NaN values present (for masking), long otherwise
+            final_targets_dict[k] = torch.tensor(mapped_values, dtype=torch.float32 if has_nan else torch.long)
         else:
             final_targets_dict[k] = torch.tensor(v, dtype=torch.float32)
 

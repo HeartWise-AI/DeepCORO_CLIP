@@ -134,11 +134,13 @@ def compute_regression_metrics(
     wandb_wrapper: Optional[WandbWrapper] = None,
     is_ref_device: bool = False,
     confidence_level: float = 0.95,
-    n_bootstrap: int = 1000
+    n_bootstrap: int = 1000,
+    auc_threshold: Optional[float] = None,
+    labels_map: Optional[dict] = None,
 ) -> dict:
     """
     Compute regression metrics with confidence intervals.
-    
+
     Args:
         preds: Tensor of predictions
         targets: Tensor of targets
@@ -149,7 +151,9 @@ def compute_regression_metrics(
         is_ref_device: Whether the device is the reference device for logging
         confidence_level: Confidence level for the confidence intervals (e.g., 0.95)
         n_bootstrap: Number of bootstrap samples
-        
+        auc_threshold: If set, binarize regression targets at this threshold and compute AUC/AUPRC
+        labels_map: Label mappings for confusion matrix plots (optional)
+
     Returns:
         Dictionary of metrics with optional confidence intervals
     """
@@ -250,6 +254,56 @@ def compute_regression_metrics(
         except Exception as e:
             print(f"Error generating/logging regression plot for {head_name}: {e}")
             plt.close()
+
+    # ---- Regression-derived AUC: binarize GT at threshold, use raw preds as scores ----
+    if auc_threshold is not None:
+        try:
+            binary_targets = (targets_np >= auc_threshold).astype(int)
+
+            # Only compute if both classes are present
+            if len(np.unique(binary_targets)) >= 2:
+                # AUC & AUPRC via existing helpers
+                _compute_auc_metrics(
+                    preds=preds_np,
+                    targets=binary_targets,
+                    head_name=head_name,
+                    mode=mode,
+                    compute_ci=compute_ci,
+                    metrics=metrics,
+                    confidence_level=confidence_level,
+                    n_bootstrap=n_bootstrap,
+                    is_binary=True,
+                )
+
+                # Optimal threshold + confusion-matrix metrics
+                _compute_threshold_metrics(
+                    preds=preds_np,
+                    targets=binary_targets,
+                    head_name=head_name,
+                    mode=mode,
+                    compute_ci=compute_ci,
+                    metrics=metrics,
+                    confidence_level=confidence_level,
+                    n_bootstrap=n_bootstrap,
+                )
+
+                # Wandb confusion matrix plot
+                if is_ref_device and wandb_wrapper and wandb_wrapper.is_initialized():
+                    best_thr = metrics.get(f"{mode}/{head_name}_best_threshold", 0.5)
+                    pred_labels = (preds_np > best_thr).astype(int)
+                    if labels_map and head_name in labels_map:
+                        plot_confusion_matrix_wandb(
+                            labels_map=labels_map,
+                            pred_labels=pred_labels,
+                            all_targets=binary_targets,
+                            mode=mode,
+                            head_name=head_name,
+                            wandb_wrapper=wandb_wrapper,
+                        )
+            else:
+                print(f"Skipping regression AUC for {head_name}: only one class present after thresholding at {auc_threshold}")
+        except Exception as e:
+            print(f"Error computing regression-derived AUC for {head_name}: {e}")
 
     return metrics
 

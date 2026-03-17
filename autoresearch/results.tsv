@@ -1,1 +1,102 @@
 commit	val_loss	memory_gb	status	description
+8d9dec1	0.498289	4.0645	15.06	keep	baseline: 17 binary heads, bce_logit, 15 epochs, default hyperparams
+1b0fb3b	0.369516	4.4234	16.12	discard	view embeddings (12 classes) + dropout 0.35/0.4 — worse than baseline
+d78b82f	0.369665	4.4204	16.12	discard	view embeddings only (12 classes) — worse, extra params hurt with small data
+d7db731	0.000000	0.000000	0.00	crash	freeze_ratio 0.95 — OOM (freeze_ratio = unfrozen_ratio, not frozen_ratio)
+e17f6fa	0.506496	4.0582	23.48	keep	freeze_ratio 0.85->0.5 (more frozen): mean_auc +0.008, val_loss improved
+f3e90c5	0.506796	4.0572	9.07	keep	freeze_ratio 0.5->0.2: marginal improvement, much less memory (9GB)
+6cdc075	0.506955	4.0545	1.34	keep	fully frozen encoder (freeze=0.0): same perf, only 1.3GB memory
+6d637df	0.505615	4.1218	1.34	discard	head_lr 3e-4->1e-3: slightly worse, higher val_loss
+8f3868a	0.494411	4.0093	1.34	discard	head_lr 3e-4->5e-5: lower val_loss but worse AUC (underfitting)
+39c6ed9	0.506955	4.0545	1.34	discard	head_wd 1e-5->1e-3: identical results, no effect with frozen encoder
+5cf159a	0.463033	9.6772	1.34	discard	upweight mid_lad 5x, prox_lad 3x: hurt mean_auc, sparse heads underfitted
+8f326d9	0.487439	3.8989	1.34	discard	30 epochs: timed out at 19, overfitted, worse mean_auc
+f5ecc43	0.523566	4.0658	1.34	keep	rand_augment=true with frozen encoder: mean_auc +0.017, best so far
+37615b8	0.504510	4.0658	1.34	discard	attention heads 6->2: worse mean_auc, fewer heads hurt aggregation
+2de250f	0.510799	4.1514	1.34	discard	attention dropout 0.24->0.5: slightly worse, too much regularization
+89bb068	0.486555	4.1514	1.34	discard	head_dropout 0.2->0.4: much worse, too much head regularization
+78501cf	0.510799	4.6760	1.34	discard	grad_accum 1->4: no improvement, slower convergence
+8359099	0.504574	2.9256	0.80	discard	batch_size 12->6: unstable sparse heads, worse mean despite better key heads
+a346316	0.521137	2.9590	0.80	discard	warmup 0.089->0.2: close but dist_lad/D2 at 0 dragged mean down
+7b5323a	0.000000	0.0000	2.25	crash	binary_focal loss: BinaryFocalLoss has bce_loss attribute bug
+7aabee3	0.000000	0.0000	2.19	crash	attention_hidden 256->128: crashed due to stale binary_focal from bad revert
+b0d31f2	0.560157	3.9225	1.34	keep	attention_hidden 256->128: NEW BEST mean_auc +0.037, dist_rca perfect
+79eb059	0.569848	3.8808	1.34	keep	warmup 0.089->0.2 on top of attention_hidden=128: NEW BEST, left_main improved
+1b48589	0.537824	4.8071	1.34	discard	num_videos 10->5: worse, fewer videos = less signal
+b020edb	0.569928	3.8600	1.34	discard	head_lr 3e-4->1e-4: identical result, no effect
+90fb8fd	0.537492	4.7024	1.34	discard	attention_hidden 128->64: too small, worse than 128
+a9baed4	0.587854	3.6288	1.34	keep	seed 42->123: NEW BEST, different initialization finds better optimum
+08bf1a7	0.532180	4.0975	1.34	discard	seed 123->7: worse random init, D1/D2 very low
+6da040a	0.638352	3.6502	1.34	keep	seed 123->314: HUGE improvement, D2 perfect, prox_rca 0.875
+d0d6397	0.581788	3.6503	1.34	discard	seed 314->2024: worse overall despite dist_lad perfect
+c8369af	0.601376	3.6112	1.34	discard	epochs 15->20: overfitting in extra epochs, dist_lad crashed to 0
+1d49e59	0.589651	3.9190	1.34	discard	shuffle_videos true: worse, video ordering matters for attention
+21ce32e	0.579826	4.6340	1.34	discard	separate_video_attention true: more params, worse with small data
+50d7094	0.628045	3.6502	1.34	discard	hard_restarts 3->1: slightly worse, 3 cycles is better
+db49d80	0.639680	3.6376	1.34	keep	dropout 0.196->0.35: marginal improvement, prox_rca 0.889
+# --- FFR HYPEREMIA EXPERIMENTS (below) ---
+# commit	mean_val_auc	val_loss	memory_gb	status	description
+21619de	0.703200	3.7791	1.34	keep	FFR baseline: 17 binary heads, bce_logit, 15 epochs, best IFR hyperparams. mid_lad 0.607, prox_lad 0.716
+71bc38c	0.744000	3.7529	1.34	keep	epochs 15->8: mean_auc +0.041, val_loss improved. mid_lad 0.599, prox_rca 0.635
+ba09978	0.738100	3.8223	1.34	discard	head_lr 3e-4->1e-3: worse val_loss and mean_auc, higher LR not helpful
+exp3	0.586200	3.6001	1.34	discard	seed 314->42: worse mean_auc (D1=0, pda=0), lower val_loss but lower AUCs
+exp4	0.740500	3.7415	1.34	discard	dropout 0.35->0.2: marginal worse (-0.004), less regularization not helpful
+exp5	0.742700	3.7539	20.18	discard	unfreeze 50%: same mean_auc but 15x memory (20GB vs 1.3GB), not worth it
+exp6	0.621800	3.9499	1.34	discard	attention_hidden 128->256: worse mean_auc, D1=0, dist_rca=0.75 dropped
+exp7	0.731100	5.9802	1.34	discard	upweight mid_lad 3x, prox_lad 2x: worse mean_auc, distorts loss landscape
+exp8	0.713200	3.7625	1.34	discard	warmup 0.2->0.35: worse mean_auc, slower ramp-up hurts
+exp9	0.656300	4.9105	2.41	discard	batch_size 12->24: worse mean_auc, sparse heads worse with larger batches
+exp10	0.744000	3.7529	1.34	discard	head_dropout 0.2->0.0: identical, no effect (single linear layer)
+exp11	0.710500	3.7244	1.34	discard	attention_lr 5x, dropout_attention 0.24->0.1: worse mean_auc despite better val_loss
+f90eb9e	0.822900	3.7840	1.87	keep	num_videos 10->15: NEW BEST! D1=1.0, mid_rca=1.0, prox_lcx=0.692. mid_lad=0.582
+exp13	0.716300	3.5831	2.41	discard	num_videos 15->20: worse mean_auc, pda=0.0, prox_rca dropped
+exp14	0.822900	3.7840	1.87	discard	attention_heads 6->8: identical to KEEP, no effect
+exp15	0.599300	3.5908	1.87	discard	seed 314->999: much worse, pda=0.0, om2=0.5, prox_rca=0.385
+exp16	0.685800	3.7615	1.87	discard	rand_augment false: worse mean_auc, pda=0.0, augmentation clearly helps
+exp17	0.820700	3.7926	1.87	discard	dropout 0.35->0.5: marginal worse (-0.002), more dropout not helpful
+exp18	0.747600	3.6550	1.87	discard	epochs 8->4: worse warmup dynamics, mid_lad dropped 0.582->0.560
+exp19	0.822900	3.7840	1.87	discard	normalization_strategy pre_norm->post_norm: identical epoch 0 AUC, saved model worse
+exp20	0.706000	3.5624	1.87	discard	warmup 0.2->0.05: worse mean_auc (0.706), fast LR ramp destabilizes early training
+exp21	0.548400	3.5071	1.87	discard	per_video_pool false->true: much worse (0.548), many heads at chance level
+exp22	0.000000	0.0000	1.54	crash	aggregator_depth 1->2: state_dict mismatch, pretrained checkpoint has depth=1
+exp23	0.628600	3.6696	1.87	discard	seed 314->1337: much worse (0.629), D1=0 pda=0
+exp24	0.725900	3.5013	1.87	discard	dropout_attention 0.24->0.5: worse (0.726), too much attention regularization
+exp25	0.820500	3.7842	1.87	discard	attention_lr 8e-5->3e-4: marginal worse (0.821 vs 0.823)
+exp26	0.822900	3.7840	1.87	discard	use_cls_token true->false: identical result (0.823)
+exp27	0.821200	3.7552	1.87	discard	head_lr 3e-4->1e-4 with 15 videos: identical result (0.821)
+exp28	0.823100	3.7882	8.60	discard	video_freeze_ratio 0.0->0.15: identical AUC (0.823) but 4.6x more memory (8.6GB)
+exp29	0.487500	4.0533	1.86	discard	pooling_mode attention+cls_token->mean: much worse (0.488), attention IS needed
+exp30	0.778100	3.7912	1.87	discard	stride 1->2: worse (0.778), pda dropped from 1.0 to 0.5
+exp31	0.752200	3.7052	1.87	discard	warmup 0.2->0.15: worse (0.752), om2 and pda dropped
+exp32	0.822900	3.7840	1.87	discard	hard_restarts 3->5: identical (0.823), scheduler only affects later epochs
+exp33	0.818400	3.7576	1.87	discard	dropout 0.35->0.1: slightly worse (0.818), mid_rca dropped
+exp34	0.667800	2.9488	1.34	discard	batch_size 12->8: much worse (0.668), unstable sparse heads
+exp35	0.752100	4.3548	2.41	discard	batch_size 12->16: worse epoch 0 mean_auc (0.752), D1 dropped 1.0->0.5
+exp36	0.813200	3.5315	8.60	discard	freeze_ratio 0.0->0.15 + encoder_lr 1e-6 + epochs 12: epoch 0=0.813 worse, fine-tuning degraded later epochs
+exp37	0.756900	3.9136	1.87	discard	epochs 8->1: shorter warmup destabilized sparse heads, pda=0.5, mid_rca=0.833
+exp38	0.550700	0.0000	1.87	discard	aggregate_videos_tokens true: much worse (0.551), D1=0, left_main=0.31, killed early
+exp39	0.731600	0.0000	1.87	discard	train_pooling_params false: worse (0.732), frozen pooling can't adapt to FFR
+exp40	0.713900	0.0000	1.87	discard	num_videos 15->18: worse (0.714), more padding hurts, prox_rca=0.385
+exp47	0.822300	3.7658	1.87	discard	dropout 0.35->0.25: epoch 0=0.822 nearly identical to KEEP, later epochs degraded
+exp60	0.000000	0.0000	0.00	crash	batch_size 12->10: NCCL/TCPStore crash, no epochs completed
+exp61	0.684400	3.7178	1.87	discard	attention_across_lr 1.93e-4->5e-4: worse epoch 0 (0.764), D1 crashed to 0
+exp62	0.608300	3.4856	1.87	discard	attention_across_lr 1.93e-4->5e-5: much worse (0.689 epoch 0), prox_lcx crashed
+exp63	0.584100	3.7841	1.87	discard	attention_across_wd 1.1e-5->1e-3: epoch 0 identical (0.823) but later epochs degraded
+exp64	0.822900	3.7840	1.87	discard	attention_weight_decay 1.4e-6->1e-4: identical epoch 0 (0.823), killed early
+exp65	0.823100	3.7840	1.87	discard	per-head LR mid_lad 5e-4 prox_lad 4e-4: identical epoch 0 (0.823)
+exp66	0.000000	0.0000	0.00	crash	resize 224->192: shape mismatch, MViT requires 224x224
+exp67	0.826900	3.7844	1.87	discard	attention_lr 8.08e-5->3e-5: epoch 0 slightly better (0.827 vs 0.823) but within noise
+exp68	0.827200	3.7840	1.87	discard	attention_lr 8.08e-5->5e-5: epoch 0=0.827 (+0.004), marginal noise
+exp69	0.827200	3.7840	1.87	discard	attention_lr 8.08e-5->1e-5: epoch 0=0.827, same as 3e-5 and 5e-5
+exp70	0.826500	3.7840	1.87	discard	attention_lr 3e-5 + dropout 0.3: epoch 0=0.827, no additive benefit
+exp71	0.828700	3.8123	1.87	keep	head_lr 3e-4->5e-4: NEW BEST epoch 0 mean_auc=0.829, prox_rca 0.654
+exp72	0.828700	3.7840	1.87	discard	head_lr 5e-4 + attention_lr 3e-5: identical to exp71 (0.829), no additive effect
+exp73	0.774600	3.7840	1.87	discard	head_lr 5e-4->7e-4: worse (0.775), pda dropped to 0.5, too aggressive
+exp74	0.824400	3.7840	1.87	discard	head_lr 5e-4->6e-4: worse (0.824), mid_rca dropped to 0.958
+exp75	0.826900	3.7840	1.87	discard	head_lr 5e-4->4e-4: slightly worse (0.827 vs 0.829)
+exp76	0.828900	3.7840	1.87	discard	head_lr 5e-4->5.5e-4: identical to KEEP (0.829)
+exp77	0.820000	3.7840	1.87	discard	dropout_attention 0.241->0.2: worse (0.820), prox_lcx and prox_rca dropped
+exp78	0.823700	3.7840	1.87	discard	dropout_attention 0.241->0.3: worse (0.824), left_main dropped
+exp79	0.828700	3.7840	1.87	discard	head_dropout 0.2->0.1: identical (0.829), head dropout has no effect
+exp80	0.693600	3.7840	1.87	discard	batch_size 12->10 (with head_lr 5e-4): much worse (0.694), pda=0, sparse heads unstable
+exp81	0.759900	3.7840	1.87	discard	epochs 8->4: faster warmup hurt (0.760), pda/om2/prox_rca dropped

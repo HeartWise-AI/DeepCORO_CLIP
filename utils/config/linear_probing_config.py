@@ -106,6 +106,10 @@ class LinearProbingConfig(HeartWiseConfig):
     view_embedding_lr: Optional[float] = None  # Dedicated LR for view embeddings (falls back to attention_lr)
     view_embedding_weight_decay: Optional[float] = None  # Dedicated WD for view embeddings (falls back to attention_weight_decay)
 
+    # Regression AUC: compute binary AUC from regression heads by thresholding GT
+    # Maps head_name -> binarization threshold (e.g., {"left_main_stenosis": 50.0, "prox_rca_stenosis": 70.0})
+    regression_auc_heads: Optional[Dict[str, float]] = None
+
     # Pre-computed dataset statistics (optional - if None, will be calculated)
     dataset_mean: List[float] = None  # Pre-computed mean for normalization
     dataset_std: List[float] = None  # Pre-computed std for normalization

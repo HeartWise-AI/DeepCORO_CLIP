@@ -920,7 +920,7 @@ class LinearProbingRunner:
                 # Handle binary classification
                 if self.config.head_task[head] == MetricTask.BINARY_CLASSIFICATION:
                     preds: np.ndarray = preds_tensor.squeeze().detach().cpu().float().numpy()
-                    targets: np.ndarray = targets_tensor.squeeze().detach().cpu().int().numpy() if targets_tensor is not None else None
+                    targets: np.ndarray = targets_tensor.squeeze().detach().cpu().float().numpy() if targets_tensor is not None else None
                     predictions_dict[f'{head}_pred'] = preds
                     predictions_dict[f'{head}_true'] = targets
                     
@@ -935,7 +935,7 @@ class LinearProbingRunner:
                 elif self.config.head_task[head] == MetricTask.MULTICLASS_CLASSIFICATION:                        
                     # For multi-class, get both raw probabilities and predicted class
                     pred_labels: np.ndarray = preds_tensor.squeeze().detach().cpu().float().numpy()
-                    target_labels: np.ndarray = targets_tensor.squeeze().detach().cpu().int().numpy() if targets_tensor is not None else None
+                    target_labels: np.ndarray = targets_tensor.squeeze().detach().cpu().float().numpy() if targets_tensor is not None else None
                     
                     # Create index_to_label mapping
                     index_to_label = {v: k for k, v in self.config.labels_map[head].items()}
@@ -1130,8 +1130,9 @@ class LinearProbingRunner:
                                 f"should have logits of shape [B, 1], but got {logits.shape}"
                             )
                         preds: torch.Tensor = torch.sigmoid(logits.float())
-                        targets: torch.Tensor = targets.long()
-                        
+                        # Keep as float to preserve NaN for masking; convert to long after filtering
+                        targets: torch.Tensor = targets.float()
+
                     elif self.config.head_task[head_name] == MetricTask.MULTICLASS_CLASSIFICATION:
                         if logits.ndim != 2 or logits.shape[1] < 2:  # Expected shape: [B, C] with C > 1
                             raise ValueError(
@@ -1139,8 +1140,9 @@ class LinearProbingRunner:
                                 f"should have logits of shape [B, C] where C > 1 (Nb of classes), but got {logits.shape}"
                             )
                         preds: torch.Tensor = torch.softmax(logits.float(), dim=1)
-                        targets: torch.Tensor = targets.long()
-                        
+                        # Keep as float to preserve NaN for masking; convert to long after filtering
+                        targets: torch.Tensor = targets.float()
+
                     elif self.config.head_task[head_name] == MetricTask.REGRESSION:
                         preds: torch.Tensor = logits
                         targets: torch.Tensor = targets.float()
@@ -1269,7 +1271,21 @@ class LinearProbingRunner:
             # Gather accumulated predictions and targets for each head
             preds = torch.cat(accumulated_preds[head], dim=0)
             targets = torch.cat(accumulated_targets[head], dim=0)
-            
+
+            # Filter out NaN targets (missing data)
+            valid_mask = ~torch.isnan(targets)
+            n_valid = valid_mask.sum().item()
+            if n_valid < 2:
+                # Need at least 2 samples for meaningful metrics
+                continue
+            if not valid_mask.all():
+                preds = preds[valid_mask]
+                targets = targets[valid_mask]
+
+            # Convert targets to long for classification after NaN filtering
+            if self.config.head_task[head] in (MetricTask.BINARY_CLASSIFICATION, MetricTask.MULTICLASS_CLASSIFICATION):
+                targets = targets.long()
+
             if self.config.head_task[head] == MetricTask.BINARY_CLASSIFICATION:
                 # Compute classification metrics WITH CI
                 head_metrics = compute_binary_classification_metrics(
@@ -1299,17 +1315,23 @@ class LinearProbingRunner:
                     compute_ci=compute_ci
                 )
             elif self.config.head_task[head] == MetricTask.REGRESSION:
+                # Check if this regression head should also compute AUC
+                regression_auc_heads = getattr(self.config, 'regression_auc_heads', None) or {}
+                auc_threshold = regression_auc_heads.get(head, None)
+
                 # Compute regression metrics WITH CI
                 head_metrics = compute_regression_metrics(
                     preds=preds,
                     targets=targets,
                     head_name=head,
-                    mode=mode, 
+                    mode=mode,
                     wandb_wrapper=self.wandb_wrapper,
                     is_ref_device=self.config.is_ref_device,
                     confidence_level=getattr(self.config, 'ci_confidence_level', 0.95),
                     n_bootstrap=getattr(self.config, 'ci_n_bootstrap', 1000),
-                    compute_ci=compute_ci
+                    compute_ci=compute_ci,
+                    auc_threshold=auc_threshold,
+                    labels_map=getattr(self.config, 'labels_map', None),
                 )
             else:
                 raise ValueError(

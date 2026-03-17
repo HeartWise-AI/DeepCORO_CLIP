@@ -60,7 +60,7 @@ num_hard_restarts_cycles: 3
 warm_restart_tmult: 2.0
 data_filename: /volume/DeepCORO_CLIP/data/deepffr_training.csv
 num_workers: 4
-batch_size: 12
+batch_size: 10
 datapoint_loc_label: FileName
 target_label:
 - prox_rca_FFRHYPEREMIE_binary
@@ -147,23 +147,23 @@ head_weights:
   om2_FFRHYPEREMIE_binary: 1.0
   bx_FFRHYPEREMIE_binary: 1.0
 head_dropout:
-  prox_rca_FFRHYPEREMIE_binary: 0.1
-  mid_rca_FFRHYPEREMIE_binary: 0.1
-  dist_rca_FFRHYPEREMIE_binary: 0.1
-  pda_FFRHYPEREMIE_binary: 0.1
-  posterolateral_FFRHYPEREMIE_binary: 0.1
-  left_main_FFRHYPEREMIE_binary: 0.1
-  prox_lad_FFRHYPEREMIE_binary: 0.1
-  mid_lad_FFRHYPEREMIE_binary: 0.1
-  dist_lad_FFRHYPEREMIE_binary: 0.1
-  D1_FFRHYPEREMIE_binary: 0.1
-  D2_FFRHYPEREMIE_binary: 0.1
-  prox_lcx_FFRHYPEREMIE_binary: 0.1
-  mid_lcx_FFRHYPEREMIE_binary: 0.1
-  dist_lcx_FFRHYPEREMIE_binary: 0.1
-  om1_FFRHYPEREMIE_binary: 0.1
-  om2_FFRHYPEREMIE_binary: 0.1
-  bx_FFRHYPEREMIE_binary: 0.1
+  prox_rca_FFRHYPEREMIE_binary: 0.2
+  mid_rca_FFRHYPEREMIE_binary: 0.2
+  dist_rca_FFRHYPEREMIE_binary: 0.2
+  pda_FFRHYPEREMIE_binary: 0.2
+  posterolateral_FFRHYPEREMIE_binary: 0.2
+  left_main_FFRHYPEREMIE_binary: 0.2
+  prox_lad_FFRHYPEREMIE_binary: 0.2
+  mid_lad_FFRHYPEREMIE_binary: 0.2
+  dist_lad_FFRHYPEREMIE_binary: 0.2
+  D1_FFRHYPEREMIE_binary: 0.2
+  D2_FFRHYPEREMIE_binary: 0.2
+  prox_lcx_FFRHYPEREMIE_binary: 0.2
+  mid_lcx_FFRHYPEREMIE_binary: 0.2
+  dist_lcx_FFRHYPEREMIE_binary: 0.2
+  om1_FFRHYPEREMIE_binary: 0.2
+  om2_FFRHYPEREMIE_binary: 0.2
+  bx_FFRHYPEREMIE_binary: 0.2
 head_task:
   prox_rca_FFRHYPEREMIE_binary: binary_classification
   mid_rca_FFRHYPEREMIE_binary: binary_classification

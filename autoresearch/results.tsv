@@ -103,3 +103,4 @@ exp81	0.759900	3.7840	1.87	discard	epochs 8->4: faster warmup hurt (0.760), pda/
 exp82	0.584900	3.8123	1.87	keep	W&B baseline: frozen, epochs=8, head_lr=5e-4 (champion config). mid_lad=0.522, prox_lad=0.660
 exp83	0.530300	3.5077	1.87	discard	frozen epochs 8->20: timed out at 15/20, overfitting, mean_auc worse (0.530 vs 0.585)
 exp84	0.583100	3.8164	0.45	discard	unfreeze 20% (freeze_ratio 0.0->0.2): identical to frozen (0.583 vs 0.585), no improvement
+exp85	0.535700	3.5081	N/A	discard	unfreeze 20% + epochs 20 + encoder_lr 1e-6: timed out, overfitting (0.536 vs 0.585)

@@ -1,7 +1,7 @@
 pipeline_project: DeepCORO_video_linear_probing
 base_checkpoint_path: outputs
 run_mode: train
-epochs: 8
+epochs: 4
 seed: 314
 name: DeepFFR_baseline
 project: DeepFFR_baseline
@@ -60,7 +60,7 @@ num_hard_restarts_cycles: 3
 warm_restart_tmult: 2.0
 data_filename: /volume/DeepCORO_CLIP/data/deepffr_training.csv
 num_workers: 4
-batch_size: 10
+batch_size: 12
 datapoint_loc_label: FileName
 target_label:
 - prox_rca_FFRHYPEREMIE_binary

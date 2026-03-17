@@ -108,3 +108,4 @@ exp86	0.582100	3.8025	0.45	discard	unfreeze 20% + encoder_lr 5e-5: val_loss impr
 exp87	0.000000	0.0000	20.67	crash	unfreeze 10% + encoder_lr 1e-5: LayerNorm backward crash — freeze boundary splits LayerNorm block params
 exp88	0.575500	3.5827	0.36	discard	unfreeze 20% + encoder_lr 1e-5 + grad_accum 2 + 12ep: mid_lad 0.590 prox_lad 0.711 improved but overall AUC 0.575 < 0.585
 exp89	0.633100	3.5676	1.87	keep	seed 314->777: NEW BEST! pda=0.5 (was 0), prox_lad=0.747, prox_rca=0.673. Seed has huge impact.
+exp90	0.633200	3.5684	0.45	discard	unfreeze 20% + seed 777: identical to frozen (0.633), confirms unfreezing has no effect

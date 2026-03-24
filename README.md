@@ -1,6 +1,24 @@
 # DeepCORO_CLIP
 
-DeepCORO_CLIP is a deep learning model for echocardiography video interpretation using contrastive learning. It leverages a Multiscale Vision Transformer (mVIT) for video encoding and BioMedBERT for text encoding, trained on millions of video-report pairs.
+DeepCORO_CLIP is a multi-view foundation model for coronary angiography video-text analysis. It uses video-text contrastive learning to learn study-level representations from coronary angiography videos and associated reports, with downstream support for diagnostic, prognostic, and disease progression tasks.
+
+## 📘 Paper
+
+- **Title:** DeepCORO-CLIP: A Multi-View Foundation Model for Comprehensive Coronary Angiography Video-Text Analysis and External Validation
+- **arXiv:** https://arxiv.org/abs/2603.17675
+- **DOI:** https://doi.org/10.48550/arXiv.2603.17675
+- **Submitted:** March 18, 2026
+
+### Highlights From the Paper
+
+- Trained with video-text contrastive learning on **203,808 angiography videos** from **28,117 patients** across **32,473 studies** at the Montreal Heart Institute.
+- Externally validated on **4,249 studies** from the University of California, San Francisco.
+- Uses **multi-view aggregation with attention-based pooling** for study-level assessment across multiple angiographic projections.
+- Reported **AUROC 0.888** for significant stenosis detection internally and **0.89** on external validation.
+- Reported **13.6% mean absolute error** against core-lab quantitative coronary angiography for stenosis estimation, compared with **19.0%** for clinical reports.
+- Also reports strong performance for **chronic total occlusion**, **intracoronary thrombus**, and **coronary calcification** detection.
+- Transfer learning results in the paper include **one-year MACE prediction** with **AUROC 0.79** and **left ventricular ejection fraction estimation** with **7.3% mean absolute error**.
+- The paper reports a mean deployment inference time of **4.2 seconds**.
 
 ## 🚀 Features
 
@@ -357,10 +375,11 @@ Contributions to DeepCoro_CLIP repository are welcome! Please follow these steps
 If you find this repository useful, please cite our work:
 
 ```
-@article{,
-  title={},
-  author={},
-  journal={},
-  year={},
-  publisher={}
+@article{harrabi2026deepcoro_clip,
+  title={DeepCORO-CLIP: A Multi-View Foundation Model for Comprehensive Coronary Angiography Video-Text Analysis and External Validation},
+  author={Harrabi, Sarra and Wu, Yichen and Tison, Geoffrey H. and Ansari, Minhaj and Vukadinovic, Milos and Ouyang, David and Barrios, Joshua P. and Delfrate, Jacques and Avram, Robert},
+  journal={arXiv preprint arXiv:2603.17675},
+  year={2026},
+  doi={10.48550/arXiv.2603.17675}
 }
+```

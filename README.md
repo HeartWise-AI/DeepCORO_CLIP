@@ -249,6 +249,7 @@ docker run --rm --gpus all --ipc=host \
 **Notes:**
    - `scripts/external_validation.py` reads `EXTERNAL_VALIDATION_DATA_PATH` from the environment.
    - the downstream DeepCORO stage defaults to `inference` mode in the Docker workflow; set `DEEPCORO_RUN_MODE=auto` to restore schema-based selection or `DEEPCORO_RUN_MODE=val` to force validation
+   - set `EXTERNAL_VALIDATION_SKIP_VASOVISION=true` to bypass VasoVision entirely and run DeepCORO on all converted videos without the diagnostic/contrast/main-structure filtering step
    - The script expects the input manifest to be comma-separated, not `α`-separated.
    - A `DICOMPath`-only CSV is enough for the DICOM-to-AVI and VasoVision stages, but not for the full DeepCORO validation stage unless the downstream config is adjusted.
    - `scripts/runner.sh` now uses the active virtual environment inside the container, so no `.venv` symlink workaround is needed.

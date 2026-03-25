@@ -221,7 +221,7 @@ The API key is only used during the build and is **not** persisted in the final 
 * Mount the host folder containing the DICOM files at the same absolute path used in `DICOMPath`.
 * Set `EXTERNAL_VALIDATION_DATA_PATH` to the container path of your CSV.
 * Mount a host folder to `/workspace/results` if you want to keep outputs after the container exits.
-* Optionally mount a host folder to `/app/tmp` if you also want the temporary/intermediate files.
+* Optionally mount a host folder to `/app/tmp` if you also want the converted AVI files and other temporary/intermediate artifacts.
 
 Example:
 

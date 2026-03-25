@@ -100,7 +100,25 @@ def export_csv_artifacts(results_dir: Path, labeled_roots: list[tuple[str, Path]
     logger.info("Exported %d CSV artifacts to %s", exported_count, artifacts_dir)
 
 
-def get_deepcoro_target_labels(config_path: Path = DOCKER_BASE_CONFIG_PATH) -> list[str]:
+def resolve_deepcoro_base_config_path() -> Path:
+    configured_path = os.environ.get("DEEPCORO_BASE_CONFIG", "").strip()
+    if not configured_path:
+        return DOCKER_BASE_CONFIG_PATH
+
+    config_path = Path(configured_path)
+    if not config_path.is_absolute():
+        config_path = PROJECT_ROOT / config_path
+
+    if not config_path.exists():
+        raise FileNotFoundError(
+            f"DEEPCORO_BASE_CONFIG points to a missing file: {config_path}"
+        )
+
+    return config_path
+
+
+def get_deepcoro_target_labels(config_path: Optional[Path] = None) -> list[str]:
+    config_path = config_path or resolve_deepcoro_base_config_path()
     with config_path.open() as config_file:
         config = yaml.safe_load(config_file)
     return list(config.get("target_label", []))
@@ -145,6 +163,104 @@ def ensure_deepcoro_target_columns(df: pd.DataFrame) -> pd.DataFrame:
         )
 
     return df
+
+
+def _resolve_existing_project_path(path_value: str) -> Optional[Path]:
+    candidate = Path(path_value)
+    candidates = [candidate]
+    if not candidate.is_absolute():
+        candidates.append(PROJECT_ROOT / candidate)
+
+    for path in candidates:
+        if path.exists():
+            return path
+
+    return None
+
+
+def _path_suffix_match_length(reference_parts: tuple[str, ...], candidate_parts: tuple[str, ...]) -> int:
+    match_length = 0
+    for reference_part, candidate_part in zip(reversed(reference_parts), reversed(candidate_parts)):
+        if reference_part != candidate_part:
+            break
+        match_length += 1
+    return match_length
+
+
+def resolve_deepcoro_inference_model_path(config: dict) -> str:
+    override_path = os.environ.get("DEEPCORO_INFERENCE_MODEL_PATH", "").strip()
+    configured_path = override_path or str(config.get("inference_model_path", "")).strip()
+    if not configured_path:
+        return configured_path
+
+    existing_path = _resolve_existing_project_path(configured_path)
+    if existing_path is not None:
+        return str(existing_path.relative_to(PROJECT_ROOT)) if PROJECT_ROOT in existing_path.parents else str(existing_path)
+
+    reference_parts = Path(configured_path).parts
+    filename = Path(configured_path).name
+    candidate_roots = [
+        PROJECT_ROOT / "weights",
+        PROJECT_ROOT / "downloaded_deepcoro_clip_generic",
+        PROJECT_ROOT / "pretrained_models",
+    ]
+
+    matches: list[Path] = []
+    for candidate_root in candidate_roots:
+        if not candidate_root.exists():
+            continue
+        matches.extend(path for path in candidate_root.rglob(filename) if path.is_file())
+
+    if not matches:
+        logger.warning(
+            "Unable to resolve DeepCORO checkpoint path %r; leaving it unchanged.",
+            configured_path,
+        )
+        return configured_path
+
+    best_match = max(
+        matches,
+        key=lambda path: _path_suffix_match_length(reference_parts, path.parts),
+    )
+    if PROJECT_ROOT in best_match.parents:
+        resolved_path = str(best_match.relative_to(PROJECT_ROOT))
+    else:
+        resolved_path = str(best_match)
+
+    logger.info(
+        "Resolved DeepCORO checkpoint path %r to %s",
+        configured_path,
+        resolved_path,
+    )
+    return resolved_path
+
+
+def prepare_runtime_deepcoro_config(
+    filtered_csv_path: Path,
+    deepcoro_run_mode: str,
+    base_config_path: Optional[Path] = None,
+) -> Path:
+    base_config_path = base_config_path or resolve_deepcoro_base_config_path()
+    with base_config_path.open() as config_file:
+        config = yaml.safe_load(config_file)
+
+    config["data_filename"] = str((Path("tmp") / filtered_csv_path.name).as_posix())
+    config["base_checkpoint_path"] = str((Path("results") / "outputs").as_posix())
+    config["run_mode"] = deepcoro_run_mode
+    config["use_wandb"] = False
+    config["inference_model_path"] = resolve_deepcoro_inference_model_path(config)
+
+    runtime_config_path = PROJECT_ROOT / "tmp" / f"{base_config_path.stem}.runtime.yaml"
+    runtime_config_path.parent.mkdir(parents=True, exist_ok=True)
+    with runtime_config_path.open("w") as runtime_config_file:
+        yaml.safe_dump(config, runtime_config_file, sort_keys=False)
+
+    logger.info(
+        "Prepared runtime DeepCORO config at %s using base config %s",
+        runtime_config_path,
+        base_config_path,
+    )
+    return runtime_config_path
 
 
 def resolve_deepcoro_run_mode(
@@ -758,13 +874,22 @@ def main(args: dict):
             if df_preprocessed.empty:
                 raise RuntimeError("No rows remain after VasoVision filtering and diagnostic-status selection")
 
-        deepcoro_run_mode = resolve_deepcoro_run_mode(df_preprocessed)
+        deepcoro_base_config_path = resolve_deepcoro_base_config_path()
+        deepcoro_run_mode = resolve_deepcoro_run_mode(
+            df_preprocessed,
+            config_path=deepcoro_base_config_path,
+        )
         df_preprocessed['Split'] = deepcoro_run_mode
 
         # Save dataframe
         filtered_csv = tmp_dir / "df_preprocessed_filtered.csv"
         df_preprocessed.to_csv(filtered_csv, index=False, sep='α')
         mirror_to_workspace_tmp(filtered_csv)
+        runtime_deepcoro_config_path = prepare_runtime_deepcoro_config(
+            filtered_csv_path=filtered_csv,
+            deepcoro_run_mode=deepcoro_run_mode,
+            base_config_path=deepcoro_base_config_path,
+        )
         
            
         # Initialize deepcoro_clip
@@ -777,7 +902,7 @@ def main(args: dict):
         bash_command = (
             "bash scripts/runner.sh "
             "--use_wandb false "
-            "--base_config config/linear_probing/stenosis/docker_base_config.yaml "
+            f"--base_config {runtime_deepcoro_config_path} "
             f"--run_mode {deepcoro_run_mode} "
             "--selected_gpus 0"
         )

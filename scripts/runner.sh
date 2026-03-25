@@ -110,6 +110,14 @@ echo -e "${BLUE}Starting training with:${NC}"
 echo "Selected GPUs: $SELECTED_GPUS (Total: $NUM_GPUS GPUs)"
 echo "Config path: $CONFIG_PATH"
 
+if [ -n "$VIRTUAL_ENV" ] && [ -x "$VIRTUAL_ENV/bin/python" ]; then
+    PYTHON_BIN="$VIRTUAL_ENV/bin/python"
+elif [ -x ".venv/bin/python" ]; then
+    PYTHON_BIN=".venv/bin/python"
+else
+    PYTHON_BIN="$(command -v python)"
+fi
+
 # Environment variables for better DDP performance (mirrors scripts/run_sweep.sh)
 export MASTER_PORT=29505
 export NCCL_P2P_LEVEL=NVL
@@ -121,8 +129,8 @@ export NCCL_DEBUG=WARNING
 export CUDA_VISIBLE_DEVICES=$SELECTED_GPUS
 export OMP_NUM_THREADS=1
 
-# Run the training using virtual environment Python
-.venv/bin/python -m torch.distributed.run \
+# Run the training using the active virtual environment Python
+"$PYTHON_BIN" -m torch.distributed.run \
     --nproc_per_node=$NUM_GPUS \
     --master_port=29500 \
     --nnodes=1 \

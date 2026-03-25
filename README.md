@@ -186,33 +186,76 @@ bash scripts/runner.sh --use_wandb false --base_config config/linear_probing/ste
 ```
 
 ## 🐳 Docker Setup
-Optionally, you can build a Docker container to run training, validation, and inference pipelines. 
-For the **validation pipeline**, please set up your huggingface API key in `api_key.json` as weights will be publicly available only upon publication.
+Optionally, you can build a Docker container to validate and run the inference pipeline. The current Docker workflow is centered on `scripts/external_validation.py`, which expects a regular comma-separated CSV input and will internally:
+
+- convert DICOM cine files to AVI
+- generate intermediate `α`-separated CSVs under `/app/tmp`
+- run VasoVision preprocessing
+- run DeepCORO linear-probing validation via `scripts/runner.sh`
+
+Input CSV guidance:
+
+- `DICOMPath` is required by `scripts/external_validation.py`
+- for the full downstream DeepCORO validation step, the CSV must also contain the target columns expected by `config/linear_probing/stenosis/docker_base_config.yaml`
+- use [scripts/preprocess_dataset_template.csv](/home/jdelfrate/DeepCORO_CLIP/scripts/preprocess_dataset_template.csv) as the input template for a custom dataset
+- use [scripts/prepare_input_for_preprocess.py](/home/jdelfrate/DeepCORO_CLIP/scripts/prepare_input_for_preprocess.py) to normalize a custom CSV into the expected format
+
+The container must be able to see the files referenced in `DICOMPath`. If your CSV contains absolute host paths, mount that host path into the container at the exact same container path.
 
 ### Build Docker Image
+
+Model weights (VasoVision and DeepCORO-CLIP) are downloaded at build time using a Docker BuildKit secret. Place your `api_key.json` (containing `HUGGING_FACE_API_KEY`) in the project root, then build:
+
 ``` bash
-docker build -t deepcoro_clip-docker .
+DOCKER_BUILDKIT=1 docker build \
+  --secret id=api_key,src=api_key.json \
+  -t deepcoro_clip-docker .
 ```
+
+The API key is only used during the build and is **not** persisted in the final image.
 
 ### Run Docker
 **Requirements:**
-* Make sure your CSV file is in the data folder : `$(pwd)/data` can be replaced by the absolute path to that folder
-* Create a folder results : `$(pwd)/results` can be replaced by the absolute path to that folder
-* Make sure you have a column `FileName` with root path fined as `/app/videos` : `$(pwd)/videos` can be replaced by the absolute path to your base video folder path
-``` bash
-docker run -it --gpus all --shm-size=32g --memory=64g --ipc=host --network=host -v $(pwd)/data:/app/data -v $(pwd)/results:/app/results -v $(pwd)/videos:/app/videos deepcoro_clip-docker
-```
-**Inside the container:**
-Once connected to the docker container:
-1. **For validation and inference:** Follow step 3. only from the `Environment Setup` section above
-2. **For training:** Follow step 3. 5. and 6. from the `Environment Setup` section above
-3. **Download pretrained weights:**
-``` bash
-python utils/download_pretrained_weights.py
-```
-The pretrained weights will be in the folder `/app/pretrained_models`.
+* Provide a comma-separated CSV with a `DICOMPath` column.
+* If you want the full DeepCORO validation stage to run, include the task/label columns expected by `config/linear_probing/stenosis/docker_base_config.yaml`.
+* Mount the host folder containing the DICOM files at the same absolute path used in `DICOMPath`.
+* Set `EXTERNAL_VALIDATION_DATA_PATH` to the container path of your CSV.
+* Mount a host folder to `/workspace/results` if you want to keep outputs after the container exits.
+* Optionally mount a host folder to `/app/tmp` if you also want the temporary/intermediate files.
 
-4. **Run your pipeline:** Select the appropriate command from the `Run Modes` section above
+Example:
+
+``` bash
+docker run --rm --gpus all --ipc=host \
+  -e EXTERNAL_VALIDATION_DATA_PATH=/app/data/input.csv \
+  -v /path/to/your/dicoms:/path/to/your/dicoms \
+  -v /path/to/your/input.csv:/app/data/input.csv \
+  -v /path/to/your/results:/workspace/results \
+  -v /path/to/your/tmp:/app/tmp \
+  deepcoro_clip-docker \
+  python scripts/external_validation.py
+```
+
+**Outputs and intermediate files:**
+   - temporary converted AVIs and intermediate CSVs are written under `/app/tmp` and are persisted to the host if you mount `/path/to/your/tmp:/app/tmp`
+   - final results are written under the configured `output_folder` (default: `results/`, which maps to `/workspace/results` in the example above)
+   - all pipeline CSV files are also copied into `/workspace/results/csv_artifacts/` for easier host-side access
+   - typical CSV artifacts include:
+     `tmp__df_preprocessed.csv` for the post-DICOM-conversion manifest,
+     `tmp__df_vaso_info.csv` for VasoVision/Orion predictions,
+     `tmp__df_preprocessed_filtered.csv` for the merged and filtered dataframe passed to DeepCORO,
+     and `results__...prediction...csv` files for final VasoVision and DeepCORO predictions
+
+**Notes:**
+   - `scripts/external_validation.py` reads `EXTERNAL_VALIDATION_DATA_PATH` from the environment.
+   - the downstream DeepCORO stage defaults to `inference` mode in the Docker workflow; set `DEEPCORO_RUN_MODE=auto` to restore schema-based selection or `DEEPCORO_RUN_MODE=val` to force validation
+   - The script expects the input manifest to be comma-separated, not `α`-separated.
+   - A `DICOMPath`-only CSV is enough for the DICOM-to-AVI and VasoVision stages, but not for the full DeepCORO validation stage unless the downstream config is adjusted.
+   - `scripts/runner.sh` now uses the active virtual environment inside the container, so no `.venv` symlink workaround is needed.
+   - `--ipc=host` is recommended for this inference pipeline because PyTorch video loading can exhaust Docker's default shared memory allocation. If you do not want to share the host IPC namespace, use a sufficiently large `--shm-size` instead.
+   - if you use `--rm` without mounting `/workspace/results`, the generated result files are removed with the container.
+   - it is better to create the host output folders yourself first, for example `mkdir -p /path/to/your/results /path/to/your/tmp`, to avoid Docker creating them as `root`.
+   - files written through the mounted results folder are typically owned by `root` because the container runs as root by default; if you want host-owned outputs, you can try adding `--user $(id -u):$(id -g)` to `docker run` if your mounted folders have compatible permissions.
 
 
 ## Model Architecture

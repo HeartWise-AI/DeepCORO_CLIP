@@ -11,6 +11,17 @@ Preprocesses a coronary angiography dataset for the Orion/validation pipeline. U
 
 These two must be present for the renames to apply. All other columns are optional; only those present in your CSV are processed.
 
+## Study-Level Granularity
+
+The validation input is **study-level**, not purely patient-level.
+
+- A single patient (`ss_patient_id`) can have **multiple** `ss_event_cath_id` values.
+- Each `ss_event_cath_id` represents one study / cath event and is handled independently downstream.
+- If a patient has multiple studies, the ground truth may differ between studies.
+- Within a single study, all DICOMs belonging to that study should share the same ground truth.
+- In practice, this means you may have multiple rows with the same `ss_patient_id`, but different `ss_event_cath_id` values and different `DICOMPath` values.
+- If you expand one study into multiple DICOM rows, duplicate the same study-level labels across all rows from that study.
+
 ## Optional columns
 
 ### Stenosis (regression)

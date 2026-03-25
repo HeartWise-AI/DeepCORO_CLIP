@@ -106,6 +106,47 @@ def get_deepcoro_target_labels(config_path: Path = DOCKER_BASE_CONFIG_PATH) -> l
     return list(config.get("target_label", []))
 
 
+def should_fill_missing_deepcoro_targets() -> bool:
+    requested_mode = os.environ.get("DEEPCORO_RUN_MODE", "inference").strip().lower()
+    return requested_mode in {"val", "auto"}
+
+
+def should_skip_vasovision() -> bool:
+    value = os.environ.get("EXTERNAL_VALIDATION_SKIP_VASOVISION", "").strip().lower()
+    return value in {"1", "true", "yes", "y"}
+
+
+def ensure_deepcoro_target_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Preserve the full DeepCORO target schema for validation-capable Docker runs.
+    Missing columns are created and missing values are filled with 0.0 under the
+    user's stated assumption that empty target cells represent negative/normal.
+    """
+    if not should_fill_missing_deepcoro_targets():
+        return df
+
+    target_labels = get_deepcoro_target_labels()
+    if not target_labels:
+        return df
+
+    missing_columns = [label for label in target_labels if label not in df.columns]
+    for label in missing_columns:
+        df[label] = 0.0
+
+    existing_target_labels = [label for label in target_labels if label in df.columns]
+    if existing_target_labels:
+        df[existing_target_labels] = df[existing_target_labels].fillna(0.0)
+
+    if missing_columns:
+        logger.info(
+            "Added %d missing DeepCORO target columns with default 0.0 values. Examples: %s",
+            len(missing_columns),
+            missing_columns[:5],
+        )
+
+    return df
+
+
 def resolve_deepcoro_run_mode(
     df: pd.DataFrame,
     config_path: Path = DOCKER_BASE_CONFIG_PATH,
@@ -424,11 +465,17 @@ def preprocess_dataset(
         rename_map['ss_event_cath_id'] = 'StudyInstanceUID'
     df.rename(columns=rename_map, inplace=True)
 
+    df = ensure_deepcoro_target_columns(df)
+
+    protected_columns = set(get_deepcoro_target_labels()) if should_fill_missing_deepcoro_targets() else set()
+
     # Identify and remove empty columns
     empty_columns = []
     for column in df.columns.tolist():
         value_counts = df[column].value_counts()
         if value_counts.empty:
+            if column in protected_columns:
+                continue
             empty_columns.append(column)
             print(f"EMPTY COLUMN: {column}")
             print('--------------------------------')
@@ -638,72 +685,78 @@ def main(args: dict):
 
         args['data_path'] = tmp_dir / "df_preprocessed.csv"
 
-        # Initialize VasoVision
-        vaso_vision_hugging_face_model_name: str = MODEL_MAPPING['vaso_vision']['hugging_face_model_name']
-        args['model_path'] = get_model_path(model=vaso_vision_hugging_face_model_name)
-        
-        # Setup orion config for VisionVision
-        vaso_vision_orion_config: dict = setup_orion_config(
-            args=args,
-            default_model_config=MODEL_MAPPING['vaso_vision']['config']
-        )        
-        
-        if not args['debug']:
-            df_vaso_info: pd.DataFrame = orion_video_training_and_eval.perform_inference(
-                config=vaso_vision_orion_config,
-                split='inference',
-                log_wandb=False
+        if should_skip_vasovision():
+            logger.info(
+                "Skipping VasoVision preprocessing because EXTERNAL_VALIDATION_SKIP_VASOVISION is enabled. "
+                "DeepCORO will use all converted videos without diagnostic filtering."
             )
-        
-            df_vaso_info.rename(
-                columns={'filename': 'FileName'}, 
-                inplace=True
-            )
-        
-            # Save vaso info dataframe
-            vaso_info_csv = tmp_dir / "df_vaso_info.csv"
-            df_vaso_info.to_csv(vaso_info_csv, index=False, sep='α')
-            mirror_to_workspace_tmp(vaso_info_csv)
-            
         else:
-            df_vaso_info = pd.read_csv(tmp_dir / "df_vaso_info.csv", sep='α')
-
-        
-        # process vaso info dataframe
-        df_vaso_info = clean_vaso_info_dataframe(df_vaso_info)
-        if 'FileName' not in df_vaso_info.columns:
-            raise ValueError("VasoVision output does not contain FileName")
-
-        df_preprocessed = pd.merge(
-            df_preprocessed, df_vaso_info, on='FileName', how='left'
-        )
-        validate_vaso_merge(df_preprocessed)
-        print(df_preprocessed.columns.tolist())
-        
-        # Get procedure status
-        df_preprocessed = df_preprocessed.sort_values(['StudyInstanceUID', 'SeriesTimes']) # Sort by study instance uid and series times first
-
-        # Keep rows only if main_structure is right or left dominant
-        df_preprocessed = df_preprocessed[
-            (
-                (df_preprocessed['main_structure'].astype(int) == vaso_vision_orion_config['labels_map']['main_structure']['Right Coronary']) | 
-                (df_preprocessed['main_structure'].astype(int) == vaso_vision_orion_config['labels_map']['main_structure']['Left Coronary'])
+            # Initialize VasoVision
+            vaso_vision_hugging_face_model_name: str = MODEL_MAPPING['vaso_vision']['hugging_face_model_name']
+            args['model_path'] = get_model_path(model=vaso_vision_hugging_face_model_name)
+            
+            # Setup orion config for VisionVision
+            vaso_vision_orion_config: dict = setup_orion_config(
+                args=args,
+                default_model_config=MODEL_MAPPING['vaso_vision']['config']
             )        
-        ]
+            
+            if not args['debug']:
+                df_vaso_info: pd.DataFrame = orion_video_training_and_eval.perform_inference(
+                    config=vaso_vision_orion_config,
+                    split='inference',
+                    log_wandb=False
+                )
+            
+                df_vaso_info.rename(
+                    columns={'filename': 'FileName'}, 
+                    inplace=True
+                )
+            
+                # Save vaso info dataframe
+                vaso_info_csv = tmp_dir / "df_vaso_info.csv"
+                df_vaso_info.to_csv(vaso_info_csv, index=False, sep='α')
+                mirror_to_workspace_tmp(vaso_info_csv)
+                
+            else:
+                df_vaso_info = pd.read_csv(tmp_dir / "df_vaso_info.csv", sep='α')
 
-        # Assign procedure status
-        df_preprocessed = assign_procedure_status(df=df_preprocessed)
+            
+            # process vaso info dataframe
+            df_vaso_info = clean_vaso_info_dataframe(df_vaso_info)
+            if 'FileName' not in df_vaso_info.columns:
+                raise ValueError("VasoVision output does not contain FileName")
 
-        # Keep rows only if contrast agent detected and status is diagnostic
-        df_preprocessed = df_preprocessed[
-            (
-                df_preprocessed['contrast_agent'] == vaso_vision_orion_config['labels_map']['contrast_agent']['yes']
-            ) & (
-                df_preprocessed['status'] == 'diagnostic'
+            df_preprocessed = pd.merge(
+                df_preprocessed, df_vaso_info, on='FileName', how='left'
             )
-        ]
-        if df_preprocessed.empty:
-            raise RuntimeError("No rows remain after VasoVision filtering and diagnostic-status selection")
+            validate_vaso_merge(df_preprocessed)
+            print(df_preprocessed.columns.tolist())
+            
+            # Get procedure status
+            df_preprocessed = df_preprocessed.sort_values(['StudyInstanceUID', 'SeriesTimes']) # Sort by study instance uid and series times first
+
+            # Keep rows only if main_structure is right or left dominant
+            df_preprocessed = df_preprocessed[
+                (
+                    (df_preprocessed['main_structure'].astype(int) == vaso_vision_orion_config['labels_map']['main_structure']['Right Coronary']) | 
+                    (df_preprocessed['main_structure'].astype(int) == vaso_vision_orion_config['labels_map']['main_structure']['Left Coronary'])
+                )        
+            ]
+
+            # Assign procedure status
+            df_preprocessed = assign_procedure_status(df=df_preprocessed)
+
+            # Keep rows only if contrast agent detected and status is diagnostic
+            df_preprocessed = df_preprocessed[
+                (
+                    df_preprocessed['contrast_agent'] == vaso_vision_orion_config['labels_map']['contrast_agent']['yes']
+                ) & (
+                    df_preprocessed['status'] == 'diagnostic'
+                )
+            ]
+            if df_preprocessed.empty:
+                raise RuntimeError("No rows remain after VasoVision filtering and diagnostic-status selection")
 
         deepcoro_run_mode = resolve_deepcoro_run_mode(df_preprocessed)
         df_preprocessed['Split'] = deepcoro_run_mode

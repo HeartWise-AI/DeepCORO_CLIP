@@ -1064,3 +1064,5 @@ labels_map:
     abnormal: 1
 # Inference parameters
 inference_model_path: !!str weights/deepcoro_clip_generic/cnw09vn8_01062025-140448/best_model_epoch_3.pt
+dataset_mean: [122.09012603759766, 122.09012603759766, 122.09012603759766]
+dataset_std: [28.790834426879883, 28.790834426879883, 28.790834426879883]

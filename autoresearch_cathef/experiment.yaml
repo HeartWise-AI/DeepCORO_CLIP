@@ -2,7 +2,7 @@ pipeline_project: DeepCORO_video_linear_probing
 base_checkpoint_path: outputs
 run_mode: train
 epochs: 3
-seed: 42
+seed: 777
 
 name: autoresearch_cathef
 project: autoresearch_cathef
@@ -49,7 +49,7 @@ video_encoder_weight_decay: 2.0e-06
 
 multi_video: true
 groupby_column: StudyInstanceUID
-num_videos: 4
+num_videos: 2
 shuffle_videos: true
 
 pooling_mode: cls_token

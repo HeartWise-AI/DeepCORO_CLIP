@@ -27,7 +27,7 @@ warm_restart_tmult: 2.0
 
 data_filename: /volume/DeepCORO_CLIP/output_dataset/CathEF_8av1xygm_splits/CathEF_10pct_with_view.csv
 num_workers: 4
-batch_size: 16
+batch_size: 8
 datapoint_loc_label: FileName
 target_label:
 - Value
@@ -35,7 +35,7 @@ target_label:
 rand_augment: false
 resize: 224
 frames: 16
-stride: 2
+stride: 1
 
 model_name: mvit
 aggregator_depth: 1

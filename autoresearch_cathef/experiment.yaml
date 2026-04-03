@@ -16,7 +16,7 @@ is_ref_device: true
 output_dir: outputs/DeepCORO_video_linear_probing/autoresearch_cathef
 
 scheduler_name: cosine_with_warmup
-num_warmup_percent: 0.2
+num_warmup_percent: 0.1
 optimizer: AdamW
 use_amp: true
 gradient_accumulation_steps: 1
@@ -69,22 +69,10 @@ aggregate_videos_tokens: false
 per_video_pool: false
 train_pooling_params: true
 
-# View embedding ON
-view_column: view_class
-num_view_classes: 12
-view_labels_map:
-  AP: 0
-  AP Caudal: 1
-  AP Cranial: 2
-  LAO Caudal: 3
-  LAO Cranial: 4
-  LAO Lateral: 5
-  LAO Straight: 6
-  Other: 7
-  RAO Caudal: 8
-  RAO Cranial: 9
-  RAO Lateral: 10
-  RAO Straight: 11
+# View embedding OFF
+view_column: null
+num_view_classes: 0
+view_labels_map: null
 
 head_structure:
   Value: 1

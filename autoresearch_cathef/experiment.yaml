@@ -32,7 +32,7 @@ datapoint_loc_label: FileName
 target_label:
 - Value
 - y_true_cat
-rand_augment: false
+rand_augment: true
 resize: 224
 frames: 16
 stride: 2
@@ -90,7 +90,7 @@ head_task:
   Value: regression
   y_true_cat: binary_classification
 head_lr:
-  Value: 0.0005
+  Value: 0.001
   y_true_cat: 0.0003
 head_weight_decay:
   Value: 1.0e-05

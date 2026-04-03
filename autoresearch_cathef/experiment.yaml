@@ -60,7 +60,7 @@ attention_weight_decay: 5.0e-05
 use_cls_token: true
 num_attention_heads: 4
 separate_video_attention: false
-normalization_strategy: pre_norm
+normalization_strategy: post_norm
 attention_within_lr: 0.002
 attention_across_lr: 0.0012
 attention_within_weight_decay: 5.0e-05

@@ -41,7 +41,7 @@ model_name: mvit
 aggregator_depth: 1
 num_heads: 16
 video_freeze_ratio: 1.0
-dropout: 0.05
+dropout: 0.15
 pretrained: true
 video_encoder_checkpoint_path: /media/data1/models/DeepCoro_CLIP/8av1xygm_20250605-083820_best_single_video/checkpoints/best_model_epoch_9.pt
 video_encoder_lr: 8.0e-06
@@ -96,7 +96,7 @@ head_weights:
   Value: 1.0
   y_true_cat: 1.0
 head_dropout:
-  Value: 0.2
+  Value: 0.1
   y_true_cat: 0.2
 head_task:
   Value: regression

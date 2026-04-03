@@ -19,7 +19,7 @@ scheduler_name: cosine_with_warmup
 num_warmup_percent: 0.1
 optimizer: AdamW
 use_amp: true
-gradient_accumulation_steps: 1
+gradient_accumulation_steps: 2
 lr_step_period: 4
 factor: 0.1
 num_hard_restarts_cycles: 3
@@ -60,7 +60,7 @@ attention_weight_decay: 5.0e-05
 use_cls_token: true
 num_attention_heads: 4
 separate_video_attention: false
-normalization_strategy: post_norm
+normalization_strategy: pre_norm
 attention_within_lr: 0.002
 attention_across_lr: 0.0012
 attention_within_weight_decay: 5.0e-05

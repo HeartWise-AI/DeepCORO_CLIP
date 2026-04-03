@@ -59,7 +59,7 @@ attention_lr: 0.0001
 attention_weight_decay: 5.0e-05
 use_cls_token: true
 num_attention_heads: 4
-separate_video_attention: true
+separate_video_attention: false
 normalization_strategy: pre_norm
 attention_within_lr: 0.002
 attention_across_lr: 0.0012
@@ -102,7 +102,7 @@ head_task:
   Value: regression
   y_true_cat: binary_classification
 head_lr:
-  Value: 0.0003
+  Value: 0.001
   y_true_cat: 0.0003
 head_weight_decay:
   Value: 1.0e-05

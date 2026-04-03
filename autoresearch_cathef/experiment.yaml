@@ -52,7 +52,7 @@ groupby_column: StudyInstanceUID
 num_videos: 4
 shuffle_videos: true
 
-pooling_mode: attention
+pooling_mode: cls_token
 attention_hidden: 128
 dropout_attention: 0.2
 attention_lr: 0.0001
@@ -69,10 +69,22 @@ aggregate_videos_tokens: false
 per_video_pool: false
 train_pooling_params: true
 
-# View embedding (off by default - will test on/off)
-view_column: null
-num_view_classes: 0
-view_labels_map: null
+# View embedding ON
+view_column: view_class
+num_view_classes: 12
+view_labels_map:
+  AP: 0
+  AP Caudal: 1
+  AP Cranial: 2
+  LAO Caudal: 3
+  LAO Cranial: 4
+  LAO Lateral: 5
+  LAO Straight: 6
+  Other: 7
+  RAO Caudal: 8
+  RAO Cranial: 9
+  RAO Lateral: 10
+  RAO Straight: 11
 
 head_structure:
   Value: 1

@@ -27,7 +27,7 @@ warm_restart_tmult: 2.0
 
 data_filename: /volume/DeepCORO_CLIP/output_dataset/CathEF_8av1xygm_splits/CathEF_10pct_with_view.csv
 num_workers: 4
-batch_size: 8
+batch_size: 4
 datapoint_loc_label: FileName
 target_label:
 - Value
@@ -96,7 +96,7 @@ head_weights:
   Value: 1.0
   y_true_cat: 1.0
 head_dropout:
-  Value: 0.1
+  Value: 0.2
   y_true_cat: 0.2
 head_task:
   Value: regression

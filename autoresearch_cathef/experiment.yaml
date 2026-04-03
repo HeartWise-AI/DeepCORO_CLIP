@@ -2,7 +2,7 @@ pipeline_project: DeepCORO_video_linear_probing
 base_checkpoint_path: outputs
 run_mode: train
 epochs: 3
-seed: 123
+seed: 42
 
 name: autoresearch_cathef
 project: autoresearch_cathef
@@ -16,7 +16,7 @@ is_ref_device: true
 output_dir: outputs/DeepCORO_video_linear_probing/autoresearch_cathef
 
 scheduler_name: cosine_with_warmup
-num_warmup_percent: 0.1
+num_warmup_percent: 0.2
 optimizer: AdamW
 use_amp: true
 gradient_accumulation_steps: 1

@@ -52,7 +52,7 @@ groupby_column: StudyInstanceUID
 num_videos: 4
 shuffle_videos: true
 
-pooling_mode: attention+cls_token
+pooling_mode: attention
 attention_hidden: 128
 dropout_attention: 0.2
 attention_lr: 0.0001

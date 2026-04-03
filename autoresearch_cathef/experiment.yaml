@@ -19,7 +19,7 @@ scheduler_name: cosine_with_warmup
 num_warmup_percent: 0.1
 optimizer: AdamW
 use_amp: true
-gradient_accumulation_steps: 2
+gradient_accumulation_steps: 1
 lr_step_period: 4
 factor: 0.1
 num_hard_restarts_cycles: 3
@@ -93,7 +93,7 @@ head_lr:
   Value: 0.001
   y_true_cat: 0.0003
 head_weight_decay:
-  Value: 1.0e-05
+  Value: 1.0e-04
   y_true_cat: 1.0e-05
 
 labels_map:

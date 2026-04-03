@@ -27,7 +27,7 @@ warm_restart_tmult: 2.0
 
 data_filename: /volume/DeepCORO_CLIP/output_dataset/CathEF_8av1xygm_splits/CathEF_10pct_with_view.csv
 num_workers: 4
-batch_size: 4
+batch_size: 16
 datapoint_loc_label: FileName
 target_label:
 - Value

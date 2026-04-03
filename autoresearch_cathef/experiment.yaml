@@ -49,7 +49,7 @@ video_encoder_weight_decay: 2.0e-06
 
 multi_video: true
 groupby_column: StudyInstanceUID
-num_videos: 2
+num_videos: 4
 shuffle_videos: true
 
 pooling_mode: cls_token
@@ -90,7 +90,7 @@ head_task:
   Value: regression
   y_true_cat: binary_classification
 head_lr:
-  Value: 0.0012
+  Value: 0.001
   y_true_cat: 0.0003
 head_weight_decay:
   Value: 1.0e-05

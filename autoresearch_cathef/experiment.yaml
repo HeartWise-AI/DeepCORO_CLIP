@@ -16,7 +16,7 @@ is_ref_device: true
 output_dir: outputs/DeepCORO_video_linear_probing/autoresearch_cathef
 
 scheduler_name: cosine_with_warmup
-num_warmup_percent: 0.25
+num_warmup_percent: 0.2
 optimizer: AdamW
 use_amp: true
 gradient_accumulation_steps: 1
@@ -41,7 +41,7 @@ model_name: mvit
 aggregator_depth: 1
 num_heads: 16
 video_freeze_ratio: 1.0
-dropout: 0.15
+dropout: 0.2
 pretrained: true
 video_encoder_checkpoint_path: /media/data1/models/DeepCoro_CLIP/8av1xygm_20250605-083820_best_single_video/checkpoints/best_model_epoch_9.pt
 video_encoder_lr: 8.0e-06

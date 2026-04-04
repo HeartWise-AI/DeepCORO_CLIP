@@ -90,8 +90,8 @@ head_task:
   Value: regression
   y_true_cat: binary_classification
 head_lr:
-  Value: 0.0009
-  y_true_cat: 0.0003
+  Value: 0.01
+  y_true_cat: 0.003
 head_weight_decay:
   Value: 1.0e-05
   y_true_cat: 1.0e-05

@@ -2,7 +2,7 @@ pipeline_project: DeepCORO_video_linear_probing
 base_checkpoint_path: outputs
 run_mode: train
 epochs: 3
-seed: 42
+seed: 555
 
 name: autoresearch_cathef
 project: autoresearch_cathef
@@ -69,22 +69,10 @@ aggregate_videos_tokens: false
 per_video_pool: false
 train_pooling_params: true
 
-# View embedding ON
-view_column: view_class
-num_view_classes: 12
-view_labels_map:
-  AP: 0
-  AP Caudal: 1
-  AP Cranial: 2
-  LAO Caudal: 3
-  LAO Cranial: 4
-  LAO Lateral: 5
-  LAO Straight: 6
-  Other: 7
-  RAO Caudal: 8
-  RAO Cranial: 9
-  RAO Lateral: 10
-  RAO Straight: 11
+# View embedding OFF
+view_column: null
+num_view_classes: 0
+view_labels_map: null
 
 head_structure:
   Value: 1

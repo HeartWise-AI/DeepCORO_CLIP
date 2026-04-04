@@ -66,7 +66,7 @@ attention_across_lr: 0.0012
 attention_within_weight_decay: 5.0e-05
 attention_across_weight_decay: 5.0e-05
 aggregate_videos_tokens: false
-per_video_pool: true
+per_video_pool: false
 train_pooling_params: true
 
 # View embedding OFF
@@ -81,8 +81,8 @@ loss_structure:
   Value: mae
   y_true_cat: bce_logit
 head_weights:
-  Value: 0.0001
-  y_true_cat: 0.0001
+  Value: 0.00005
+  y_true_cat: 0.00005
 head_dropout:
   Value: 0.2
   y_true_cat: 0.2

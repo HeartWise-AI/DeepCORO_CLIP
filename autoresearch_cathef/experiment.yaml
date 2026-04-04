@@ -81,8 +81,8 @@ loss_structure:
   Value: mae
   y_true_cat: bce_logit
 head_weights:
-  Value: 0.00005
-  y_true_cat: 0.00005
+  Value: 0.00001
+  y_true_cat: 0.00001
 head_dropout:
   Value: 0.2
   y_true_cat: 0.2

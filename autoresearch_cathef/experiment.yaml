@@ -27,7 +27,7 @@ warm_restart_tmult: 2.0
 
 data_filename: /volume/DeepCORO_CLIP/output_dataset/CathEF_8av1xygm_splits/CathEF_10pct_with_view.csv
 num_workers: 4
-batch_size: 8
+batch_size: 12
 datapoint_loc_label: FileName
 target_label:
 - Value
@@ -58,7 +58,7 @@ dropout_attention: 0.2
 attention_lr: 0.0001
 attention_weight_decay: 5.0e-05
 use_cls_token: true
-num_attention_heads: 8
+num_attention_heads: 4
 separate_video_attention: false
 normalization_strategy: pre_norm
 attention_within_lr: 0.002

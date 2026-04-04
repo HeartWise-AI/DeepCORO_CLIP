@@ -2,7 +2,7 @@ pipeline_project: DeepCORO_video_linear_probing
 base_checkpoint_path: outputs
 run_mode: train
 epochs: 3
-seed: 42
+seed: 99
 
 name: autoresearch_cathef
 project: autoresearch_cathef
@@ -35,7 +35,7 @@ target_label:
 rand_augment: true
 resize: 224
 frames: 16
-stride: 1
+stride: 2
 
 model_name: mvit
 aggregator_depth: 1

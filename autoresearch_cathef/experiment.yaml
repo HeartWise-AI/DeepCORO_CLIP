@@ -54,7 +54,7 @@ shuffle_videos: true
 
 pooling_mode: cls_token
 attention_hidden: 128
-dropout_attention: 0.2
+dropout_attention: 0.1
 attention_lr: 0.0001
 attention_weight_decay: 5.0e-05
 use_cls_token: true
@@ -90,7 +90,7 @@ head_task:
   Value: regression
   y_true_cat: binary_classification
 head_lr:
-  Value: 0.0011
+  Value: 0.001
   y_true_cat: 0.0003
 head_weight_decay:
   Value: 1.0e-05

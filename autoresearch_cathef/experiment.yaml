@@ -2,7 +2,7 @@ pipeline_project: DeepCORO_video_linear_probing
 base_checkpoint_path: outputs
 run_mode: train
 epochs: 3
-seed: 7
+seed: 42
 
 name: autoresearch_cathef
 project: autoresearch_cathef
@@ -91,7 +91,7 @@ head_task:
   y_true_cat: binary_classification
 head_lr:
   Value: 0.001
-  y_true_cat: 0.0003
+  y_true_cat: 0.0001
 head_weight_decay:
   Value: 1.0e-05
   y_true_cat: 1.0e-05

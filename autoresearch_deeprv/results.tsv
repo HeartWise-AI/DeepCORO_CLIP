@@ -10,3 +10,4 @@ exp7	0.3818	0.6180	-	REVERT	freeze_ratio=0.95 (was 0.9) - worse
 exp8	0.3822	0.6190	-	REVERT	freeze_ratio=0.8 (was 0.9) - worse
 exp9	0.3836	0.6103	-	REVERT	freeze_ratio=1.0 (fully frozen) - worse
 exp10	0.3818	0.6185	-	REVERT	num_attention_heads=8 (was 4) - worse
+exp11	0.3813	0.6178	-	REVERT	num_attention_heads=2 (was 4) - worse

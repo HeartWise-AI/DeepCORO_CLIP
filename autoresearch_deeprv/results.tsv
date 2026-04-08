@@ -7,3 +7,4 @@ exp4	0.3613	0.6665	6.0	KEEP	num_videos=6 (was 2) - NEW BEST slightly
 exp5	-	-	OOM	CRASH	num_videos=8 (was 6) - OOM/timeout crash
 exp6	0.3613	0.6672	-	KEEP	separate_video_attention=true (was false) - marginal NEW BEST
 exp7	0.3818	0.6180	-	REVERT	freeze_ratio=0.95 (was 0.9) - worse
+exp8	0.3822	0.6190	-	REVERT	freeze_ratio=0.8 (was 0.9) - worse

@@ -1,0 +1,2 @@
+commit	best_val_loss	mean_val_auc	memory_gb	status	description
+exp0_baseline	0.3559	0.6564	4.46	BASELINE	baseline: pooling=attention+cls_token, num_videos=4, freeze=0.9, lr=8e-6, batch=8, stride=2

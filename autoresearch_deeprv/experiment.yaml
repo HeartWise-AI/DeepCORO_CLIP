@@ -57,7 +57,7 @@ dropout_attention: 0.2
 attention_lr: 0.0001
 attention_weight_decay: 5.0e-05
 use_cls_token: true
-num_attention_heads: 8
+num_attention_heads: 4
 separate_video_attention: true
 normalization_strategy: pre_norm
 attention_within_lr: 0.002

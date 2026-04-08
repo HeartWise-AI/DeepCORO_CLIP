@@ -34,7 +34,7 @@ target_label:
 rand_augment: false
 resize: 224
 frames: 16
-stride: 2
+stride: 1
 
 model_name: mvit
 aggregator_depth: 1

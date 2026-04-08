@@ -48,7 +48,7 @@ video_encoder_weight_decay: 2.0e-06
 
 multi_video: true
 groupby_column: StudyInstanceUID
-num_videos: 6
+num_videos: 8
 shuffle_videos: true
 
 pooling_mode: attention+cls_token

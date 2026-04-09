@@ -49,3 +49,4 @@ exp46	0.4569	0.6857	-	REVERT	video_encoder_lr=1.2e-5 (was 8e-6) - worse
 exp47	0.4407	0.6782	-	REVERT	dropout=0.2+head_dropout=0.3 - worse
 exp48	0.3974	0.6807	-	REVERT	batch_size=16 (was 12) - worse
 exp49	-	-	-	CRASH	video_encoder_weight_decay=1e-5 - timeout (too slow)
+exp50	0.4507	0.6803	-	REVERT	attention_across_lr=0.002 (was 0.0012) - worse

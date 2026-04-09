@@ -55,3 +55,4 @@ exp52	0.4636	0.6901	-	REVERT	num_attention_heads=6 (was 4) - same/marginal
 exp53	0.457	0.6786	-	REVERT	batch_size=10 (was 12) - worse
 exp54	0.4655	0.6902	-	REVERT	head_lr=0.0035 (was 0.004) - marginally worse
 exp55	0.472	0.6244	-	REVERT	per_video_pool=true (was false) - much worse
+exp56	0.4508	0.6866	-	REVERT	head_lr=0.0045 (was 0.004) - worse

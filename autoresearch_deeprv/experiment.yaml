@@ -83,7 +83,7 @@ head_dropout:
 head_task:
   Outcome: binary_classification
 head_lr:
-  Outcome: 0.0045
+  Outcome: 0.004
 head_weight_decay:
   Outcome: 1.0e-05
 

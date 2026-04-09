@@ -32,3 +32,4 @@ exp29	0.3539	0.5807	-	REVERT	seed=123 (was 42) - much worse
 exp30	0.4684	0.6685	-	REVERT	seed=777 (was 42) - worse
 exp31	0.4123	0.6611	-	REVERT	dropout_attention=0.1 (was 0.2) - worse
 exp32	0.3462	0.6370	-	REVERT	dropout_attention=0.35 (was 0.2) - worse
+exp33	0.4601	0.6469	-	REVERT	warmup=0.2 (was 0.1) - worse

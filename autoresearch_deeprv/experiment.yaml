@@ -52,7 +52,7 @@ num_videos: 6
 shuffle_videos: true
 
 pooling_mode: attention+cls_token
-attention_hidden: 64
+attention_hidden: 128
 dropout_attention: 0.2
 attention_lr: 0.0001
 attention_weight_decay: 5.0e-05

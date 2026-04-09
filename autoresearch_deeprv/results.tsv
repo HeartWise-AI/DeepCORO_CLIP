@@ -40,3 +40,4 @@ exp37	0.461	0.6914	-	KEEP	head_lr=0.004 (was 0.003) - NEW BEST
 exp38	0.4066	0.6909	-	REVERT	head_lr=0.006 (was 0.004) - slightly worse
 exp39	0.3318	0.6798	-	REVERT	num_videos=4 (was 6) - worse
 exp40	0.4628	0.6900	-	REVERT	attention_lr=0.0005 (was 0.0001) - slightly worse
+exp41	0.462	0.6908	-	REVERT	head_dropout=0.1 (was 0.2) - marginally worse

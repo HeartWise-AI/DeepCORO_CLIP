@@ -28,3 +28,4 @@ exp25	0.4537	0.6890	-	REVERT	head_dropout=0.4 (was 0.2) - same/marginal worse
 exp26	0.452	0.6773	-	REVERT	video_encoder_lr=2e-5 (was 8e-6) - worse
 exp27	0.3777	0.6355	-	REVERT	attention_hidden=256 (was 128) - worse
 exp28	0.4276	0.6811	-	REVERT	attention_hidden=64 (was 128) - worse
+exp29	0.3539	0.5807	-	REVERT	seed=123 (was 42) - much worse

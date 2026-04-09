@@ -2,7 +2,7 @@ pipeline_project: DeepCORO_video_linear_probing
 base_checkpoint_path: outputs
 run_mode: train
 epochs: 3
-seed: 123
+seed: 42
 
 name: autoresearch_deeprv
 project: autoresearch_deeprv

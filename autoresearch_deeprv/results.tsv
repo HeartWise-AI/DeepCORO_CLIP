@@ -14,3 +14,4 @@ exp11	0.3813	0.6178	-	REVERT	num_attention_heads=2 (was 4) - worse
 exp12	0.3799	0.6625	-	REVERT	batch_size=4 (was 8) - slightly worse
 exp13	0.4022	0.6689	-	KEEP	batch_size=12 (was 8) - NEW BEST
 exp14	0.4252	0.6815	-	KEEP	stride=1 (was 2) - NEW BEST big jump
+exp15	1.2616	0.6353	-	REVERT	head_weights Outcome=3.0 (was 1.0) - worse

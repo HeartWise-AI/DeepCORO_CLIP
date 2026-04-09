@@ -77,7 +77,7 @@ head_structure:
 loss_structure:
   Outcome: bce_logit
 head_weights:
-  Outcome: 3.0
+  Outcome: 1.0
 head_dropout:
   Outcome: 0.2
 head_task:

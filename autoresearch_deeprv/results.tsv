@@ -57,3 +57,4 @@ exp54	0.4655	0.6902	-	REVERT	head_lr=0.0035 (was 0.004) - marginally worse
 exp55	0.472	0.6244	-	REVERT	per_video_pool=true (was false) - much worse
 exp56	0.4508	0.6866	-	REVERT	head_lr=0.0045 (was 0.004) - worse
 exp57	0.4432	0.6836	-	REVERT	seed=2025 (was 42) - worse
+exp58	0.4632	0.6902	-	REVERT	attention_within_lr=0.003 (was 0.004) - marginally worse

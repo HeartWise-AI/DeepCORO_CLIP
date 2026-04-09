@@ -46,3 +46,4 @@ exp43	0.4627	0.6901	-	REVERT	head_weight_decay=0 (was 1e-5) - slightly worse
 exp44	0.3913	0.6714	-	REVERT	seed=314 (was 42) - worse
 exp45	0.4628	0.6900	-	REVERT	attention_within_lr=0.006 (was 0.004) - slightly worse
 exp46	0.4569	0.6857	-	REVERT	video_encoder_lr=1.2e-5 (was 8e-6) - worse
+exp47	0.4407	0.6782	-	REVERT	dropout=0.2+head_dropout=0.3 - worse

@@ -17,3 +17,4 @@ exp14	0.4252	0.6815	-	KEEP	stride=1 (was 2) - NEW BEST big jump
 exp15	1.2616	0.6353	-	REVERT	head_weights Outcome=3.0 (was 1.0) - worse
 exp16	0.6375	0.6814	-	REVERT	head_weights Outcome=1.5 (was 1.0) - marginally worse
 exp17	0.4336	0.6839	-	KEEP	head_lr=0.001 (was 0.0005) - NEW BEST
+exp18	0.4535	0.6889	-	KEEP	head_lr=0.002 (was 0.001) - NEW BEST

@@ -61,3 +61,4 @@ exp58	0.4632	0.6902	-	REVERT	attention_within_lr=0.003 (was 0.004) - marginally 
 exp59	0.462	0.6903	-	REVERT	head_dropout=0.15 (was 0.2) - marginally worse
 exp60	0.4837	0.6813	-	REVERT	dropout=0.1 (was 0.15) - worse
 exp61	0.361	0.6779	-	REVERT	attention_across_lr=0.0016 (was 0.0012) - worse
+exp62	0.4214	0.6912	-	REVERT	seed=555 (was 42) - marginally worse (0.6914 vs 0.6912)

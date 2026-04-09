@@ -44,7 +44,7 @@ dropout: 0.15
 pretrained: true
 video_encoder_checkpoint_path: /media/data1/models/DeepCoro_CLIP/8av1xygm_20250605-083820_best_single_video/checkpoints/best_model_epoch_9.pt
 video_encoder_lr: 8.0e-06
-video_encoder_weight_decay: 1.0e-05
+video_encoder_weight_decay: 2.0e-06
 
 multi_video: true
 groupby_column: StudyInstanceUID

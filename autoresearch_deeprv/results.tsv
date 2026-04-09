@@ -36,3 +36,4 @@ exp33	0.4601	0.6469	-	REVERT	warmup=0.2 (was 0.1) - worse
 exp34	0.3479	0.6860	-	REVERT	grad_accum=2 (effective batch 24) - slightly worse
 exp35	0.4542	0.6883	-	REVERT	normalization_strategy=post_norm (was pre_norm) - marginally worse
 exp36	0.4655	0.6901	-	KEEP	head_lr=0.003 (was 0.002) - NEW BEST
+exp37	0.461	0.6914	-	KEEP	head_lr=0.004 (was 0.003) - NEW BEST

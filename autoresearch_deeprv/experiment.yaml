@@ -65,7 +65,7 @@ attention_across_lr: 0.0012
 attention_within_weight_decay: 5.0e-05
 attention_across_weight_decay: 5.0e-05
 aggregate_videos_tokens: false
-per_video_pool: false
+per_video_pool: true
 train_pooling_params: true
 
 view_column: null

@@ -79,7 +79,7 @@ loss_structure:
 head_weights:
   Outcome: 1.0
 head_dropout:
-  Outcome: 0.2
+  Outcome: 0.4
 head_task:
   Outcome: binary_classification
 head_lr:

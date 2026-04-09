@@ -20,3 +20,4 @@ exp17	0.4336	0.6839	-	KEEP	head_lr=0.001 (was 0.0005) - NEW BEST
 exp18	0.4535	0.6889	-	KEEP	head_lr=0.002 (was 0.001) - NEW BEST
 exp19	0.4373	0.6862	-	REVERT	head_lr=0.005 (was 0.002) - slightly worse
 exp20	0.461	0.6748	-	REVERT	dropout=0.3 (was 0.15) - worse
+exp21	0.4486	0.6811	-	REVERT	dropout=0.05 (was 0.15) - worse

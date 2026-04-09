@@ -42,3 +42,4 @@ exp39	0.3318	0.6798	-	REVERT	num_videos=4 (was 6) - worse
 exp40	0.4628	0.6900	-	REVERT	attention_lr=0.0005 (was 0.0001) - slightly worse
 exp41	0.462	0.6908	-	REVERT	head_dropout=0.1 (was 0.2) - marginally worse
 exp42	0.4565	0.6709	-	REVERT	video_encoder_lr=4e-6 (was 8e-6) - worse
+exp43	0.4627	0.6901	-	REVERT	head_weight_decay=0 (was 1e-5) - slightly worse

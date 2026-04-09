@@ -51,3 +51,4 @@ exp48	0.3974	0.6807	-	REVERT	batch_size=16 (was 12) - worse
 exp49	-	-	-	CRASH	video_encoder_weight_decay=1e-5 - timeout (too slow)
 exp50	0.4507	0.6803	-	REVERT	attention_across_lr=0.002 (was 0.0012) - worse
 exp51	0.4631	0.6901	-	REVERT	attention_weight_decay=1e-4 (was 5e-5) - slightly worse
+exp52	0.4636	0.6901	-	REVERT	num_attention_heads=6 (was 4) - same/marginal

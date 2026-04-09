@@ -85,7 +85,7 @@ head_task:
 head_lr:
   Outcome: 0.004
 head_weight_decay:
-  Outcome: 1.0e-05
+  Outcome: 0.0
 
 labels_map:
   Outcome:

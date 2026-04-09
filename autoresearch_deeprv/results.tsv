@@ -24,3 +24,4 @@ exp21	0.4486	0.6811	-	REVERT	dropout=0.05 (was 0.15) - worse
 exp22	0.4269	0.6418	-	REVERT	rand_augment=true (was false) - worse
 exp23	0.4537	0.6892	-	KEEP	attention_within_lr=0.004 (was 0.002) - NEW BEST marginal
 exp24	0.4328	0.6427	-	REVERT	attention_across_lr=0.003 (was 0.0012) - worse
+exp25	0.4537	0.6890	-	REVERT	head_dropout=0.4 (was 0.2) - same/marginal worse

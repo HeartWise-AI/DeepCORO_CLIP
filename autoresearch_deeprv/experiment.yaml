@@ -31,7 +31,7 @@ batch_size: 12
 datapoint_loc_label: FileName
 target_label:
 - Outcome
-rand_augment: true
+rand_augment: false
 resize: 224
 frames: 16
 stride: 1

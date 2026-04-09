@@ -19,3 +19,4 @@ exp16	0.6375	0.6814	-	REVERT	head_weights Outcome=1.5 (was 1.0) - marginally wor
 exp17	0.4336	0.6839	-	KEEP	head_lr=0.001 (was 0.0005) - NEW BEST
 exp18	0.4535	0.6889	-	KEEP	head_lr=0.002 (was 0.001) - NEW BEST
 exp19	0.4373	0.6862	-	REVERT	head_lr=0.005 (was 0.002) - slightly worse
+exp20	0.461	0.6748	-	REVERT	dropout=0.3 (was 0.15) - worse

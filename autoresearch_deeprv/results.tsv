@@ -26,3 +26,4 @@ exp23	0.4537	0.6892	-	KEEP	attention_within_lr=0.004 (was 0.002) - NEW BEST marg
 exp24	0.4328	0.6427	-	REVERT	attention_across_lr=0.003 (was 0.0012) - worse
 exp25	0.4537	0.6890	-	REVERT	head_dropout=0.4 (was 0.2) - same/marginal worse
 exp26	0.452	0.6773	-	REVERT	video_encoder_lr=2e-5 (was 8e-6) - worse
+exp27	0.3777	0.6355	-	REVERT	attention_hidden=256 (was 128) - worse

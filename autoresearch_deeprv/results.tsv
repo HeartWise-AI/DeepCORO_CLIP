@@ -53,3 +53,4 @@ exp50	0.4507	0.6803	-	REVERT	attention_across_lr=0.002 (was 0.0012) - worse
 exp51	0.4631	0.6901	-	REVERT	attention_weight_decay=1e-4 (was 5e-5) - slightly worse
 exp52	0.4636	0.6901	-	REVERT	num_attention_heads=6 (was 4) - same/marginal
 exp53	0.457	0.6786	-	REVERT	batch_size=10 (was 12) - worse
+exp54	0.4655	0.6902	-	REVERT	head_lr=0.0035 (was 0.004) - marginally worse

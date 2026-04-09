@@ -55,7 +55,7 @@ pooling_mode: attention+cls_token
 attention_hidden: 128
 dropout_attention: 0.2
 attention_lr: 0.0001
-attention_weight_decay: 1.0e-04
+attention_weight_decay: 5.0e-05
 use_cls_token: true
 num_attention_heads: 4
 separate_video_attention: true

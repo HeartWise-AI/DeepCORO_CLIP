@@ -181,9 +181,12 @@ class OptimizedMetricsComputer:
             if i % self.clear_cache_frequency == 0:
                 torch.cuda.empty_cache()
         
-        # Compute final metrics
+        # Compute final metrics.
+        # Recall is reported on a 0-1 scale to match
+        # utils.retrieval_metrics.compute_recall_at_k. Any percent
+        # formatting is left to plotting/logging code.
         metrics = {
-            f"Recall@{k}": (recalls[k] / n_videos) * 100 for k in k_values
+            f"Recall@{k}": (recalls[k] / n_videos) for k in k_values
         }
         metrics["MRR_V2T"] = mrr_sum / n_videos
         metrics["alignment_score"] = alignment_sum / n_videos

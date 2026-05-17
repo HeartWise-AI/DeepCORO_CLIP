@@ -1,5 +1,5 @@
-from typing import List, Optional
-from dataclasses import dataclass
+from typing import List, Optional, Dict
+from dataclasses import dataclass, field
 import os # Keep os import if used elsewhere, or remove if only for set_gpu_info_in_place
 
 from utils.registry import ConfigRegistry
@@ -150,6 +150,23 @@ class ClipConfig(HeartWiseConfig):
     siglip_use_class_aware_sampler: bool = False
     siglip_abnormal_ratio: float = 0.5
     siglip_sampler_seed: int = 42
+
+    # SigLIP loss configuration (wired through to the loss factory)
+    siglip_positive_loss_weight: float = 1.0
+    siglip_negative_loss_weight: float = 1.0
+    siglip_enable_severity_weighting: bool = True
+    siglip_auto_positive_loss_weight: bool = False
+    siglip_bias_init: float = -10.0
+    siglip_learnable_bias: bool = True
+    siglip_entropy_regularization: bool = False
+    siglip_entropy_weight: float = 0.1
+    siglip_min_entropy_threshold: float = 2.0
+    siglip_gather_in_ddp: bool = False
+    siglip_max_positive_per_video: int = 15
+    siglip_max_segments_per_video: int = 15
+    siglip_positive_severity_weights: Optional[Dict] = field(default=None)
+    siglip_normal_as_negative: bool = False
+
     early_stop_patience: int = 0
 
     def __post_init__(self):

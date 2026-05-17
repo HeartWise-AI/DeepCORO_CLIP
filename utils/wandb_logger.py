@@ -631,10 +631,16 @@ def log_best_worst_retrievals(
     wandb_wrapper: WandbWrapper,
     dataset_obj: VideoClipDataset,
     step: Optional[int] = None,
-    ground_truth_texts: Optional[List[List[str]]] = None
+    ground_truth_texts: Optional[List[List[str]]] = None,
+    positive_mask: Optional[torch.Tensor] = None,
 ) -> None:
     """Log best and worst retrievals to wandb.
-    
+
+    "Best" and "worst" are determined by retrieval *correctness* (the rank of
+    the ground-truth positive in the similarity ranking), NOT by raw max
+    similarity. A confidently-wrong top-1 therefore surfaces as a "bad"
+    (false-positive) example rather than being mislabeled "good".
+
     Args:
         wandb_logger: Wandb logger instance to use for logging
         similarity_matrix: Tensor of shape [num_videos x num_unique_texts] containing similarity scores
@@ -644,24 +650,71 @@ def log_best_worst_retrievals(
         epoch: Current epoch number
         dataset_obj: The VideoClipDataset instance for multi-video path resolution.
         step: Optional wandb step to use (if None, uses epoch)
+        positive_mask: Optional boolean tensor [num_videos x num_unique_texts]
+            marking every valid positive per video (multi-positive). When
+            provided, the best positive rank across all positives is used.
     """
     if not wandb_wrapper.is_initialized(): # Check if wandb is initialized
         return
-        
-    # Find best and worst retrievals based on maximum similarity scores for each video
+
+    num_videos = similarity_matrix.shape[0]
+    if num_videos == 0:
+        print("Warning: No videos to log for best/worst retrievals.")
+        return
+
+    # Rank-sort similarities once: position of each text in descending order.
+    # ranks[v, t] = 0 means text t is the top-1 prediction for video v.
+    order = torch.argsort(similarity_matrix, dim=1, descending=True)
+    ranks = torch.empty_like(order)
+    ranks.scatter_(
+        1,
+        order,
+        torch.arange(order.shape[1], device=order.device).expand_as(order),
+    )
+
+    # Best (lowest) rank achieved by any ground-truth positive for each video.
+    # Lower = better retrieval (0 == correct top-1). Videos with no resolvable
+    # ground truth get a worst-possible score so they sort to "bad".
+    worst_possible = float(similarity_matrix.shape[1])
+    gt_positive_rank = torch.full(
+        (num_videos,), worst_possible, dtype=torch.float32
+    )
+
+    if positive_mask is not None and positive_mask.shape == similarity_matrix.shape:
+        mask_bool = positive_mask.bool().cpu()
+        ranks_f = ranks.float().cpu()
+        big = torch.full_like(ranks_f, worst_possible)
+        masked_ranks = torch.where(mask_bool, ranks_f, big)
+        has_pos = mask_bool.any(dim=1)
+        best_pos_rank = masked_ranks.min(dim=1).values
+        gt_positive_rank = torch.where(
+            has_pos, best_pos_rank, gt_positive_rank
+        )
+    elif ground_truth_indices is not None:
+        gt_idx = ground_truth_indices.cpu().long()
+        ranks_cpu = ranks.cpu().long()
+        for v in range(num_videos):
+            ti = int(gt_idx[v].item())
+            if 0 <= ti < ranks_cpu.shape[1]:
+                gt_positive_rank[v] = float(ranks_cpu[v, ti].item())
+
+    # Similarity score (for caption display only).
     max_scores_per_video, _ = similarity_matrix.max(dim=1)
-    
+
     num_examples_to_log = 5  # Log top 5 best and top 5 worst
-    
+
     # Ensure k is not greater than the number of videos
-    k_actual = min(num_examples_to_log, max_scores_per_video.numel())
-    
+    k_actual = min(num_examples_to_log, num_videos)
+
     if k_actual == 0:
         print("Warning: No videos to log for best/worst retrievals.")
         return
 
-    best_scores, best_indices = torch.topk(max_scores_per_video, k=k_actual)
-    worst_scores, worst_indices = torch.topk(max_scores_per_video, k=k_actual, largest=False)
+    # Best = smallest positive rank; worst = largest positive rank.
+    _, best_indices = torch.topk(gt_positive_rank, k=k_actual, largest=False)
+    _, worst_indices = torch.topk(gt_positive_rank, k=k_actual, largest=True)
+    best_scores = max_scores_per_video[best_indices]
+    worst_scores = max_scores_per_video[worst_indices]
     
     combined_log: Dict[str, Any] = {}
     temp_files_to_cleanup: List[str] = []
@@ -914,14 +967,48 @@ def save_retrieval_results(
     output_dir: str,
     dataset_obj: VideoClipDataset,
     ground_truth_index_sets: Optional[List[List[int]]] = None,
+    ground_truth_indices_override: Optional[object] = None,
+    top_k_predictions: int = 5,
 ) -> None:
     """
-    Save retrieval results to a CSV, showing top-5 predicted indices and their similarities
+    Save retrieval results to a CSV, showing top-K predicted indices and their similarities
     for each sample. If report_to_global_index is None, we default to using row index i as the
     ground-truth index.
     Handles different CSV structures for single vs. multi-video modes.
+
+    Args:
+        ground_truth_index_sets: Optional list (per sample) of ground-truth index
+            lists for multi-positive evaluation.
+        ground_truth_indices_override: Optional alternative source of ground-truth
+            indices accepted for backward compatibility with callers that pass
+            single-positive indices (a tensor / list / list-of-lists). Used only
+            when ``ground_truth_index_sets`` is not provided.
+        top_k_predictions: Number of top predictions to export per sample
+            (defaults to 5; the CSV always reserves 5 prediction columns).
     """
     val_csv_path = os.path.join(output_dir, f"val_epoch{epoch}.csv")
+
+    # Backward compatibility: some runners pass ``ground_truth_indices_override``
+    # (a tensor or list of single ground-truth indices) instead of the newer
+    # ``ground_truth_index_sets``. Normalize the override into index sets so the
+    # rest of the function has a single code path.
+    if ground_truth_index_sets is None and ground_truth_indices_override is not None:
+        override = ground_truth_indices_override
+        if hasattr(override, "tolist"):
+            override = override.tolist()
+        normalized_sets: List[List[int]] = []
+        for entry in override:
+            if isinstance(entry, (list, tuple, set)):
+                normalized_sets.append([int(v) for v in entry])
+            else:
+                normalized_sets.append([int(entry)])
+        ground_truth_index_sets = normalized_sets
+
+    # Number of prediction columns to emit (CSV header reserves 5 ranks).
+    try:
+        export_k = max(1, int(top_k_predictions))
+    except (TypeError, ValueError):
+        export_k = 5
     
     multi_video_mode = dataset_obj.multi_video_mode
     actual_groupby_col_name = dataset_obj.groupby_column if dataset_obj.groupby_column else "study_id"
@@ -949,7 +1036,7 @@ def save_retrieval_results(
         writer.writerow(header)
 
         for i, identifier in enumerate(all_identifiers):
-            k = min(5, similarity_matrix.shape[1])
+            k = min(max(export_k, 5), similarity_matrix.shape[1])
             top_k_sim_scores, top_k_text_indices = torch.topk(
                 similarity_matrix[i], k=k
             )
@@ -1018,6 +1105,9 @@ def save_retrieval_results(
 
             while len(predicted_cells) < len(predicted_columns):
                 predicted_cells.extend(["", ""])
+            # Keep the row aligned with the fixed prediction columns even if
+            # more than 5 predictions were requested via top_k_predictions.
+            predicted_cells = predicted_cells[: len(predicted_columns)]
 
             row = (
                 current_row_prefix_data

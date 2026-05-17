@@ -100,7 +100,9 @@ def compute_siglip_semantic_metrics(
 
     lookup = siglip.text_lookup
     tree_scores: List[float] = []
+    tree_recall_scores: List[float] = []
     segment_scores: List[float] = []
+    segment_recall_scores: List[float] = []
     severity_levels = tuple(level.lower() for level in severity_levels)
     severity_counts_5 = {s: {"match": 0, "total": 0} for s in severity_levels}
     severity_counts_15 = {s: {"match": 0, "total": 0} for s in severity_levels}
@@ -145,20 +147,26 @@ def compute_siglip_semantic_metrics(
             text_id = all_text_ids[pred_idx]
             pred_attrs.append(_extract_pred_attributes(text_id, lookup, dataset))
 
-        # Tree recall @ top_tree_k
+        # Tree alignment @ top_tree_k.
+        # precision = #correct preds / #preds ; recall = #gt hit / #gt
         tree_k_actual = min(tree_k, len(pred_attrs))
         if gt_trees and tree_k_actual > 0:
-            matches = sum(
-                1
+            top_tree_preds = [
+                attr.get("tree")
                 for attr in pred_attrs[:tree_k_actual]
-                if attr and attr.get("tree") in gt_trees
-            )
+                if attr and attr.get("tree")
+            ]
+            matches = sum(1 for t in top_tree_preds if t in gt_trees)
             tree_scores.append(matches / tree_k_actual)
+            pred_tree_set = set(top_tree_preds)
+            hit_trees = sum(1 for t in gt_trees if t in pred_tree_set)
+            tree_recall_scores.append(hit_trees / len(gt_trees))
 
-        # Segment + severity alignment @ top_segment_k
+        # Segment + severity alignment @ top_segment_k.
         segment_k_actual = min(segment_k, len(pred_attrs))
         if segment_to_severity and segment_k_actual > 0:
             per_segment: List[float] = []
+            per_segment_recall: List[float] = []
             for segment, severity_set in segment_to_severity.items():
                 if not severity_set:
                     continue
@@ -170,8 +178,21 @@ def compute_siglip_semantic_metrics(
                     and attr.get("severity") in severity_set
                 )
                 per_segment.append(matches / segment_k_actual)
+                # Recall: fraction of gt (segment, severity) pairs recovered
+                # in the top-k for this segment.
+                pred_sev_for_segment = {
+                    attr.get("severity")
+                    for attr in pred_attrs[:segment_k_actual]
+                    if attr and attr.get("segment") == segment
+                }
+                hit_sev = sum(
+                    1 for sev in severity_set if sev in pred_sev_for_segment
+                )
+                per_segment_recall.append(hit_sev / len(severity_set))
             if per_segment:
                 segment_scores.append(mean(per_segment))
+            if per_segment_recall:
+                segment_recall_scores.append(mean(per_segment_recall))
 
         # Severity-specific recalls (top-5 and top-15) requiring severity + tree match
         for severity in severity_levels:
@@ -203,20 +224,38 @@ def compute_siglip_semantic_metrics(
 
     metrics: Dict[str, float] = {}
     if tree_scores:
-        metrics["semantic/tree_recall@5"] = float(mean(tree_scores))
+        tree_precision = float(mean(tree_scores))
+        # Correctly-named precision (denominator = #predictions).
+        metrics["semantic/tree_precision@5"] = tree_precision
+        # Backward-compatible alias: historically this precision-like value was
+        # exposed (incorrectly) as "tree_recall@5"; kept so existing dashboards
+        # do not break.
+        metrics["semantic/tree_recall@5"] = tree_precision
+    if tree_recall_scores:
+        # True recall (denominator = #ground-truth trees).
+        metrics["semantic/tree_recall_true@5"] = float(mean(tree_recall_scores))
     if segment_scores:
-        metrics["semantic/segment_severity_alignment@15"] = float(mean(segment_scores))
+        seg_precision = float(mean(segment_scores))
+        metrics["semantic/segment_severity_precision@15"] = seg_precision
+        # Backward-compatible alias for the old "alignment" name.
+        metrics["semantic/segment_severity_alignment@15"] = seg_precision
+    if segment_recall_scores:
+        metrics["semantic/segment_severity_recall@15"] = float(
+            mean(segment_recall_scores)
+        )
 
     for severity in severity_levels:
         total5 = severity_counts_5[severity]["total"]
         if total5 > 0:
-            metrics[f"semantic/severity_tree_recall@5/{severity}"] = (
-                severity_counts_5[severity]["match"] / total5
-            )
+            sev5 = severity_counts_5[severity]["match"] / total5
+            # match/total here divides by #predictions -> precision-like.
+            metrics[f"semantic/severity_tree_precision@5/{severity}"] = sev5
+            # Backward-compatible alias (was named "..._recall@5").
+            metrics[f"semantic/severity_tree_recall@5/{severity}"] = sev5
         total15 = severity_counts_15[severity]["total"]
         if total15 > 0:
-            metrics[f"semantic/severity_tree_recall@15/{severity}"] = (
-                severity_counts_15[severity]["match"] / total15
-            )
+            sev15 = severity_counts_15[severity]["match"] / total15
+            metrics[f"semantic/severity_tree_precision@15/{severity}"] = sev15
+            metrics[f"semantic/severity_tree_recall@15/{severity}"] = sev15
 
     return metrics

@@ -189,7 +189,20 @@ class VideoContrastiveLearningRunnerSimple:
                     world_size=self.world_size,
                     device_ids=self.device
                 )
-                
+
+                # Empty-epoch guard: num_batches is recorded inside _run_epoch
+                # and returned via the metrics dict (do NOT reference a raw
+                # batch_count here -- it is scoped to _run_epoch).
+                train_num_batches = train_metrics.get("train/num_batches", 0.0)
+                val_num_batches = val_metrics.get("val/num_batches", 0.0)
+                if train_num_batches == 0 or val_num_batches == 0:
+                    raise RuntimeError(
+                        f"Empty epoch detected at epoch {epoch + 1}: "
+                        f"train/num_batches={train_num_batches}, "
+                        f"val/num_batches={val_num_batches}. "
+                        "No batches contributed to the epoch."
+                    )
+
                 # If it's an epoch-based scheduler (like StepLR, CosineAnnealingLR, etc.),
                 # call lr_scheduler.step() after each epoch
                 if self.lr_scheduler and (not self.scheduler_per_iteration):
@@ -643,6 +656,10 @@ class VideoContrastiveLearningRunnerSimple:
 
         epoch_metrics.update(retrieval_metrics)
 
+        # Record how many batches contributed to this epoch so callers can
+        # detect empty epochs without referencing the local batch_count.
+        epoch_metrics["num_batches"] = float(batch_count)
+
         # 4) reduce final epoch metrics across ranks
         gathered_metrics: dict[str, float] = {}
         for k, v in epoch_metrics.items():
@@ -650,14 +667,40 @@ class VideoContrastiveLearningRunnerSimple:
 
         return gathered_metrics
 
+    # Retrieval metrics are computed on rank 0 from already-gathered global
+    # features; non-zero ranks only insert zero placeholders. Averaging them
+    # via all_reduce would dilute rank-0's true value (halved with 2 GPUs,
+    # quartered with 4), so these must bypass DDP reduction entirely.
+    RETRIEVAL_PREFIXES = (
+        "Recall@",
+        "RecallAny@",
+        "MRR",
+        "MRR_V2T",
+        "MAP",
+        "MedianRank",
+        "NDCG@",
+    )
+
+    def _is_retrieval_metric(self, name: str) -> bool:
+        """Returns True if the metric name is a rank-0-only retrieval metric."""
+        return any(name.startswith(prefix) for prefix in self.RETRIEVAL_PREFIXES)
+
     def _maybe_reduce_metric(self, name: str, val: float) -> float:
         """
         Optionally reduces (averages) a metric value across all ranks in DDP.
 
-        :param name: Metric name (unused here, but can be helpful for debug).
+        Retrieval-prefixed metrics (Recall@K, MRR, MRR_V2T, MAP, MedianRank,
+        NDCG@K) are computed only on rank 0 from globally-gathered features, so
+        they are returned unreduced (rank 0's value). Only non-retrieval metrics
+        get all_reduce AVG, and only when world_size > 1.
+
+        :param name: Metric name; controls whether all_reduce is applied.
         :param val: Metric value on current rank.
-        :return: Mean metric value across all ranks, if DDP is initialized. Otherwise, returns val.
+        :return: Mean metric value across all ranks for non-retrieval metrics
+            (if DDP is initialized); otherwise the unreduced rank-local value.
         """
+        if self._is_retrieval_metric(name):
+            return val
         if self.config.world_size > 1:
             t = torch.tensor([val], dtype=torch.float, device=self.device)
             DistributedUtils.dist.all_reduce(t, op=DistributedUtils.dist.ReduceOp.AVG)
@@ -779,24 +822,45 @@ class VideoContrastiveLearningRunnerSimple:
         Moves raw batch data (videos, texts) to GPU and returns a dictionary suitable
         for the model step, along with a list of paths or IDs for each sample.
 
+        The dataset batch may also carry ``positive_mask`` / ``positive_weights``
+        for multi-positive SigLIP supervision. When present they are moved to the
+        device (as float) and threaded into the step so the loss does not fall
+        back to diagonal positives.
+
         :param batch: Dictionary containing 'videos', 'encoded_texts', and 'paths'.
         :return: (step_inputs, paths_or_sids)
         """
-        return {
+        step_inputs: dict = {
             "videos": batch["videos"].to(self.device).float(),
             "input_ids": batch["encoded_texts"]["input_ids"].to(self.device),
             "attention_mask": batch["encoded_texts"]["attention_mask"].to(self.device),
-        }, batch["paths"]
+        }
+
+        positive_mask = batch.get("positive_mask")
+        if positive_mask is not None:
+            step_inputs["pos_mask"] = positive_mask.to(self.device).float()
+        positive_weights = batch.get("positive_weights")
+        if positive_weights is not None:
+            step_inputs["pos_weights"] = positive_weights.to(self.device).float()
+
+        return step_inputs, batch["paths"]
 
     def _train_step(
         self,
         videos: torch.Tensor,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
+        pos_mask: Optional[torch.Tensor] = None,
+        pos_weights: Optional[torch.Tensor] = None,
     ) -> tuple[dict, dict]:
         """
         One training iteration: forward → backward → (optional) clip → optimizer step →
         metric computation.
+
+        :param pos_mask: Optional [B, M] multi-positive mask. When provided it is
+            forwarded to the loss so SigLIP uses true positives rather than the
+            diagonal fallback.
+        :param pos_weights: Optional [B, M] per-positive weights forwarded to the loss.
 
         Returns
         -------
@@ -816,10 +880,19 @@ class VideoContrastiveLearningRunnerSimple:
         with autocast_ctx:
             video_emb = self.video_encoder(videos)["video_embeds"]
             text_emb = self.text_encoder(input_ids, attention_mask)
+            if pos_mask is not None:
+                expected_shape = (video_emb.size(0), text_emb.size(0))
+                if tuple(pos_mask.shape) != expected_shape:
+                    raise ValueError(
+                        f"pos_mask shape {tuple(pos_mask.shape)} does not match "
+                        f"(video_emb, text_emb) = {expected_shape}"
+                    )
             loss = self.loss_fn.run(
                 video_features=video_emb,
                 text_features=text_emb,
                 log_temp=self.log_temp,
+                pos_mask=pos_mask,
+                pos_weights=pos_weights,
             )
 
         if not torch.isfinite(loss):
@@ -903,10 +976,12 @@ class VideoContrastiveLearningRunnerSimple:
         return batch_metrics, embeddings
 
     def _val_step(
-        self, 
-        videos: torch.Tensor, 
-        input_ids: torch.Tensor, 
-        attention_mask: torch.Tensor
+        self,
+        videos: torch.Tensor,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        pos_mask: Optional[torch.Tensor] = None,
+        pos_weights: Optional[torch.Tensor] = None,
     ) -> tuple[dict, dict]:
         """
         Performs a single validation step (forward pass + metric computation).
@@ -914,20 +989,60 @@ class VideoContrastiveLearningRunnerSimple:
         :param videos: Tensor of shape [B, num_clips, T, H, W, C].
         :param input_ids: Encoded text token IDs.
         :param attention_mask: Attention mask for text.
+        :param pos_mask: Optional [B, M] multi-positive mask threaded to the loss
+            and used for a mask-weighted alignment score.
+        :param pos_weights: Optional [B, M] per-positive weights.
         :return: (batch_metrics, embeddings) similar to _train_step, but without backprop.
         """
         with torch.no_grad():
             with torch.amp.autocast("cuda"):
                 video_features = self.video_encoder(videos)["video_embeds"]
                 text_features = self.text_encoder(input_ids, attention_mask)
+                if pos_mask is not None:
+                    expected_shape = (video_features.size(0), text_features.size(0))
+                    if tuple(pos_mask.shape) != expected_shape:
+                        raise ValueError(
+                            f"pos_mask shape {tuple(pos_mask.shape)} does not match "
+                            f"(video_features, text_features) = {expected_shape}"
+                        )
                 loss = self.loss_fn.run(
-                    video_features=video_features, 
-                    text_features=text_features, 
-                    log_temp=self.log_temp
+                    video_features=video_features,
+                    text_features=text_features,
+                    log_temp=self.log_temp,
+                    pos_mask=pos_mask,
+                    pos_weights=pos_weights,
                 )
 
             embedding_norms = compute_embedding_norms(video_features, text_features)
-            alignment_score = compute_alignment_score(video_features, text_features)
+            if pos_mask is not None:
+                # A3: diagonal alignment is invalid for multi-positive SigLIP
+                # (text count M != batch B). Use a mask-weighted alignment.
+                try:
+                    from utils.retrieval_metrics import masked_alignment_score
+
+                    alignment_score = masked_alignment_score(
+                        video_features, text_features, pos_mask, pos_weights
+                    )
+                except ImportError:
+                    # Inline mask-weighted fallback: per-video weighted-mean
+                    # cosine over its positive texts; nan if a video has none.
+                    v_norm = nn.functional.normalize(video_features.float(), dim=1)
+                    t_norm = nn.functional.normalize(text_features.float(), dim=1)
+                    sim = torch.matmul(v_norm, t_norm.t())
+                    weights = pos_mask.float()
+                    if pos_weights is not None:
+                        weights = weights * pos_weights.float()
+                    row_w = weights.sum(dim=1)
+                    valid = row_w > 0
+                    if valid.any():
+                        per_video = (sim * weights).sum(dim=1)[valid] / row_w[valid]
+                        alignment_score = per_video.mean()
+                    else:
+                        alignment_score = torch.tensor(
+                            float("nan"), device=video_features.device
+                        )
+            else:
+                alignment_score = compute_alignment_score(video_features, text_features)
 
         metrics = {"alignment_score": alignment_score, **embedding_norms}
 

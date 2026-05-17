@@ -35,6 +35,51 @@ class ContrastivePretrainingProject(BaseProject):
     ):
         super().__init__(config, wandb_wrapper)
         
+    def _build_loss(self) -> Loss:
+        """
+        Construct the loss function.
+
+        For SigLIP-family losses, wire the YAML-configurable knobs from
+        ``ClipConfig`` into the loss constructor. ``getattr`` with defaults
+        keeps this robust if the loss ``__init__`` signature differs.
+        """
+        loss_name: str = self.config.loss_name
+        loss_cls = LossRegistry.get(loss_name)
+
+        if "siglip" in str(loss_name).lower():
+            siglip_kwargs: dict[str, Any] = dict(
+                bias_init=getattr(self.config, "siglip_bias_init", -10.0),
+                learnable_bias=getattr(self.config, "siglip_learnable_bias", True),
+                positive_weight=getattr(self.config, "siglip_positive_loss_weight", 1.0),
+                negative_weight=getattr(self.config, "siglip_negative_loss_weight", 1.0),
+                use_severity_weights=getattr(
+                    self.config, "siglip_enable_severity_weighting", True
+                ),
+                auto_balance=getattr(
+                    self.config, "siglip_auto_positive_loss_weight", False
+                ),
+                entropy_regularization=getattr(
+                    self.config, "siglip_entropy_regularization", False
+                ),
+                entropy_weight=getattr(self.config, "siglip_entropy_weight", 0.1),
+                min_entropy_threshold=getattr(
+                    self.config, "siglip_min_entropy_threshold", 2.0
+                ),
+                gather_in_ddp=getattr(self.config, "siglip_gather_in_ddp", False),
+            )
+            try:
+                return Loss(loss_type=loss_cls(**siglip_kwargs))
+            except TypeError as exc:
+                # Fall back gracefully if the loss signature does not accept
+                # one or more of the wired kwargs.
+                print(
+                    f"[WARN] SigLIP loss '{loss_name}' rejected configured "
+                    f"kwargs ({exc}); falling back to default construction."
+                )
+                return Loss(loss_type=loss_cls())
+
+        return Loss(loss_type=loss_cls())
+
     def _setup_training_objects(
         self,
     )->dict:
@@ -201,9 +246,7 @@ class ContrastivePretrainingProject(BaseProject):
         scaler: GradScaler = GradScaler('cuda') if self.config.use_amp else None
 
         # Create loss function
-        loss_fn: Loss = Loss(
-            loss_type=LossRegistry.get(self.config.loss_name)()
-        )
+        loss_fn: Loss = self._build_loss()
 
         if self.config.is_ref_device:
             if self.wandb_wrapper.is_initialized():
@@ -284,7 +327,21 @@ class ContrastivePretrainingProject(BaseProject):
         
         checkpoint: dict[str, Any] = self._load_checkpoint(self.config.checkpoint)
         video_encoder.module.load_state_dict(checkpoint["video_encoder"], weight_only=True)
-        log_temp: float = checkpoint["train/temperature"]
+
+        # Recover log-temperature without corruption (see resume path). Prefer
+        # the raw "log_temp"; fall back to log(temperature) for old checkpoints.
+        if "log_temp" in checkpoint and checkpoint["log_temp"] is not None:
+            log_temp = torch.as_tensor(
+                checkpoint["log_temp"], dtype=torch.float32
+            )
+        else:
+            temp_value = checkpoint.get(
+                "temperature",
+                checkpoint.get("train/temperature", self.config.temperature),
+            )
+            log_temp = torch.log(
+                torch.as_tensor(temp_value, dtype=torch.float32)
+            )
 
         return {
             "val_loader": val_loader,
@@ -304,7 +361,31 @@ class ContrastivePretrainingProject(BaseProject):
         training_setup["optimizer"].load_state_dict(checkpoint["optimizer"])
         training_setup["lr_scheduler"].load_state_dict(checkpoint["scheduler"])
         training_setup["scaler"].load_state_dict(checkpoint["scaler"])
-        training_setup["log_temp"].data.copy_(checkpoint["train/temperature"])
+
+        # Restore log-temperature WITHOUT corruption. The checkpoint logs
+        # ``train/temperature`` as exp(log_temp); copying that onto log_temp
+        # would double-exponentiate (T -> exp(T)). Prefer the raw "log_temp"
+        # tensor; fall back to log(temperature) for old checkpoints.
+        target_log_temp = training_setup["log_temp"]
+        if "log_temp" in checkpoint and checkpoint["log_temp"] is not None:
+            log_temp_value = torch.as_tensor(
+                checkpoint["log_temp"],
+                dtype=target_log_temp.dtype,
+                device=target_log_temp.device,
+            )
+        else:
+            temp_value = checkpoint.get(
+                "temperature",
+                checkpoint.get("train/temperature", self.config.temperature),
+            )
+            log_temp_value = torch.log(
+                torch.as_tensor(
+                    temp_value,
+                    dtype=target_log_temp.dtype,
+                    device=target_log_temp.device,
+                )
+            )
+        target_log_temp.data.copy_(log_temp_value.reshape(target_log_temp.shape))
         return training_setup
         
     def run(self):

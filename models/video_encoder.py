@@ -233,15 +233,21 @@ class VideoEncoder(nn.Module):
             """Return the token sequence [B, L, C] without pooling."""
             # (B, C, T, H, W) ➀ ensure temporal dim present
             x = _unsqueeze(x, 5, 2)[0]
-            # ➁ Patchify then flatten spatial+temporal dims
+            # ➁ Patchify then capture actual T'/H'/W' before flatten so we can
+            #    support input resolutions other than 224 (the TorchVision
+            #    default that hard-codes spatial_size to 56x56).
             x = self_mvit.conv_proj(x)  # [B, C', T', H', W']
+            T_, H_, W_ = x.shape[2], x.shape[3], x.shape[4]
             x = x.flatten(2).transpose(1, 2)  # [B, L, C'] where L = T'·H'·W'
 
-            # ➂ Add positional encoding
+            # ➂ Add positional encoding (resolution-independent: only adds
+            #    class token because MViTv2-S leaves absolute positional
+            #    embeddings None and relies on relative pos in attention).
             x = self_mvit.pos_encoding(x)
 
-            # ➃ Pass through transformer blocks
-            thw = (self_mvit.pos_encoding.temporal_size,) + self_mvit.pos_encoding.spatial_size
+            # ➃ Pass through transformer blocks using the *actual* token grid
+            #    derived from conv_proj, not the cached 56x56.
+            thw = (T_, H_, W_)
             for blk in self_mvit.blocks:
                 x, thw = blk(x, thw)
 

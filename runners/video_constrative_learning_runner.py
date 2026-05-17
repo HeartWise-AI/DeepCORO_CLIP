@@ -376,10 +376,23 @@ class VideoContrastiveLearningRunner:
                     world_size=self.world_size,
                     device_ids=self.device
                 )
-                
+
+                # Empty-epoch guard: num_batches is recorded inside _run_epoch
+                # and returned via the metrics dict (do NOT reference a raw
+                # batch_count here -- it is scoped to _run_epoch).
+                train_num_batches = train_metrics.get("train/num_batches", 0.0)
+                val_num_batches = val_metrics.get("val/num_batches", 0.0)
+                if train_num_batches == 0 or val_num_batches == 0:
+                    raise RuntimeError(
+                        f"Empty epoch detected at epoch {epoch + 1}: "
+                        f"train/num_batches={train_num_batches}, "
+                        f"val/num_batches={val_num_batches}. "
+                        "No batches contributed to the epoch."
+                    )
+
                 # If it's an epoch-based scheduler (like StepLR, CosineAnnealingLR, etc.),
                 # call lr_scheduler.step() after each epoch
-                if self.lr_scheduler and (not self.scheduler_per_iteration) and batch_count > 0:
+                if self.lr_scheduler and (not self.scheduler_per_iteration) and train_num_batches > 0:
                     self.lr_scheduler.step()
 
                 # Update best model
@@ -995,8 +1008,48 @@ class VideoContrastiveLearningRunner:
             retrieval_metrics.update(recall_metrics)
             retrieval_metrics.update(mrr_score_dict) # Update with dict
             retrieval_metrics.update(ndcg_scores_dict) # Update with dict
-            retrieval_metrics["MAP"] = map_score 
+            retrieval_metrics["MAP"] = map_score
             retrieval_metrics["MedianRank_V2T"] = median_rank_score
+
+            # Additive multi-positive recall (RecallAny@K): a hit if ANY true
+            # positive text for the video appears in the top-K. This runs only
+            # on rank 0 where the global NxM similarity matrix and the
+            # per-video ground-truth index sets are already assembled, so it
+            # adds no extra DDP coordination. It is logged ALONGSIDE the
+            # existing Recall@K (which is left untouched).
+            try:
+                from utils.retrieval_metrics import (
+                    compute_multi_positive_recall_at_k,
+                )
+
+                num_videos = similarity_matrix.size(0)
+                num_texts = similarity_matrix.size(1)
+                multi_pos_mask = torch.zeros(
+                    (num_videos, num_texts),
+                    dtype=torch.float,
+                    device=similarity_matrix.device,
+                )
+                for row_idx, idx_set in enumerate(ground_truth_index_sets):
+                    for col_idx in idx_set:
+                        if 0 <= col_idx < num_texts:
+                            multi_pos_mask[row_idx, col_idx] = 1.0
+                recall_any_metrics = compute_multi_positive_recall_at_k(
+                    similarity_matrix,
+                    multi_pos_mask,
+                    self.config.recall_k,
+                )
+                for k_name, k_val in recall_any_metrics.items():
+                    suffix = k_name.split("@")[-1] if "@" in k_name else k_name
+                    retrieval_metrics[f"RecallAny@{suffix}"] = float(k_val)
+            except ImportError:
+                if self.config.is_ref_device:
+                    print(
+                        "[DEBUG] compute_multi_positive_recall_at_k unavailable; "
+                        "skipping RecallAny@K (existing Recall@K path unaffected)."
+                    )
+            except Exception as exc:  # noqa: BLE001 - never fail the run on an additive metric
+                if self.config.is_ref_device:
+                    print(f"[WARN] RecallAny@K computation failed: {exc}")
             
             # Save unique texts and their indices
             df_texts: pd.DataFrame = pd.DataFrame({
@@ -1046,6 +1099,10 @@ class VideoContrastiveLearningRunner:
 
         epoch_metrics.update(retrieval_metrics)
 
+        # Record how many batches contributed to this epoch so callers can
+        # detect empty epochs without referencing the local batch_count.
+        epoch_metrics["num_batches"] = float(batch_count)
+
         # 4) reduce final epoch metrics across ranks
         gathered_metrics: dict[str, float] = {}
         for k, v in epoch_metrics.items():
@@ -1053,14 +1110,40 @@ class VideoContrastiveLearningRunner:
 
         return gathered_metrics
 
+    # Retrieval metrics are computed on rank 0 from already-gathered global
+    # features; non-zero ranks only insert zero placeholders. Averaging them
+    # via all_reduce would dilute rank-0's true value (halved with 2 GPUs,
+    # quartered with 4), so these must bypass DDP reduction entirely.
+    RETRIEVAL_PREFIXES = (
+        "Recall@",
+        "RecallAny@",
+        "MRR",
+        "MRR_V2T",
+        "MAP",
+        "MedianRank",
+        "NDCG@",
+    )
+
+    def _is_retrieval_metric(self, name: str) -> bool:
+        """Returns True if the metric name is a rank-0-only retrieval metric."""
+        return any(name.startswith(prefix) for prefix in self.RETRIEVAL_PREFIXES)
+
     def _maybe_reduce_metric(self, name: str, val: float) -> float:
         """
         Optionally reduces (averages) a metric value across all ranks in DDP.
 
-        :param name: Metric name (unused here, but can be helpful for debug).
+        Retrieval-prefixed metrics (Recall@K, MRR, MRR_V2T, MAP, MedianRank,
+        NDCG@K) are computed only on rank 0 from globally-gathered features, so
+        they are returned unreduced (rank 0's value). Only non-retrieval metrics
+        get all_reduce AVG, and only when world_size > 1.
+
+        :param name: Metric name; controls whether all_reduce is applied.
         :param val: Metric value on current rank.
-        :return: Mean metric value across all ranks, if DDP is initialized. Otherwise, returns val.
+        :return: Mean metric value across all ranks for non-retrieval metrics
+            (if DDP is initialized); otherwise the unreduced rank-local value.
         """
+        if self._is_retrieval_metric(name):
+            return val
         if self.config.world_size > 1:
             t = torch.tensor([val], dtype=torch.float, device=self.device)
             DistributedUtils.dist.all_reduce(t, op=DistributedUtils.dist.ReduceOp.AVG)
@@ -1096,6 +1179,16 @@ class VideoContrastiveLearningRunner:
         checkpoint = {
             **model_dict,
             **metrics,
+            # Persist the RAW log-temperature (plus its exp for readability) so
+            # resume restores the exact effective temperature. Restoring the
+            # logged ``train/temperature`` (== exp(log_temp)) into ``log_temp``
+            # would corrupt the effective temperature T -> exp(T).
+            "log_temp": self.log_temp.detach().cpu()
+            if self.log_temp is not None
+            else None,
+            "temperature": self.log_temp.detach().exp().cpu()
+            if self.log_temp is not None
+            else None,
             "best_val_loss": self.best_val_loss,
             "best_epoch": self.best_epoch,
             "highest_alignment_score": self.highest_alignment_score,
@@ -1197,10 +1290,10 @@ class VideoContrastiveLearningRunner:
 
         positive_mask = batch.get("positive_mask")
         if positive_mask is not None:
-            step_inputs["positive_mask"] = positive_mask.to(self.device)
+            step_inputs["positive_mask"] = positive_mask.to(self.device).float()
         positive_weights = batch.get("positive_weights")
         if positive_weights is not None:
-            step_inputs["positive_weights"] = positive_weights.to(self.device)
+            step_inputs["positive_weights"] = positive_weights.to(self.device).float()
 
         if "text_ids" in batch:
             step_inputs["text_ids"] = batch["text_ids"]
@@ -1254,6 +1347,12 @@ class VideoContrastiveLearningRunner:
         alignment_prob_tensor: Optional[torch.Tensor] = None
         alignment_cosine_tensor: Optional[torch.Tensor] = None
         if positive_mask is not None and text_emb is not None:
+            expected_shape = (video_emb.size(0), text_emb.size(0))
+            if tuple(positive_mask.shape) != expected_shape:
+                raise ValueError(
+                    f"positive_mask shape {tuple(positive_mask.shape)} does not "
+                    f"match (video_emb, text_emb) = {expected_shape}"
+                )
             targets = positive_mask
             video_norm = F.normalize(video_emb, dim=1)
             text_norm = F.normalize(text_emb, dim=1)
@@ -1583,6 +1682,12 @@ class VideoContrastiveLearningRunner:
 
             logits_matrix = None
             if positive_mask is not None and text_features is not None:
+                expected_shape = (video_features.size(0), text_features.size(0))
+                if tuple(positive_mask.shape) != expected_shape:
+                    raise ValueError(
+                        f"positive_mask shape {tuple(positive_mask.shape)} does not "
+                        f"match (video_features, text_features) = {expected_shape}"
+                    )
                 targets = positive_mask
                 video_norm = F.normalize(video_features, dim=1)
                 text_norm = F.normalize(text_features, dim=1)

@@ -416,6 +416,7 @@ class LinearProbingRunner:
 
         max_grad_norm = float(getattr(self.config, "max_grad_norm", 0.0) or 0.0)
         if self.scaler:
+            scale_before_step = self.scaler.get_scale()
             if max_grad_norm > 0:
                 self.scaler.unscale_(self.optimizer)
                 params = self._optimizer_parameters_with_grad()
@@ -423,7 +424,7 @@ class LinearProbingRunner:
                     torch.nn.utils.clip_grad_norm_(params, max_grad_norm)
             self.scaler.step(self.optimizer)
             self.scaler.update()
-            return True
+            return self.scaler.get_scale() >= scale_before_step
 
         if max_grad_norm > 0:
             params = self._optimizer_parameters_with_grad()

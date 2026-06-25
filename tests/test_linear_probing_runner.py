@@ -31,6 +31,23 @@ class _NonFiniteLoss:
         return {"main": outputs["test_head"].sum() * float("nan")}
 
 
+class _SkippingScaler:
+    def __init__(self):
+        self._scale = 2.0
+
+    def scale(self, loss):
+        return loss
+
+    def step(self, optimizer):
+        pass
+
+    def update(self):
+        self._scale = 1.0
+
+    def get_scale(self):
+        return self._scale
+
+
 class TestLinearProbingRunner(unittest.TestCase):
     """Test cases for LinearProbingRunner class."""
     
@@ -229,6 +246,37 @@ class TestLinearProbingRunner(unittest.TestCase):
             scaler=None,
             lr_scheduler=scheduler,
             loss_fn=_NonFiniteLoss(),
+            output_dir=self.output_dir,
+        )
+
+        runner._train_step(
+            batch_video=torch.tensor([[1.0], [2.0]]),
+            batch_targets={"test_head": torch.zeros(2)},
+        )
+
+        self.assertEqual(model.linear.weight.item(), 1.0)
+        scheduler.step.assert_not_called()
+        self.assertEqual(runner.step, 1)
+
+    @patch("runners.linear_probing_runner.DistributedUtils.sync_process_group")
+    def test_train_step_does_not_advance_scheduler_when_scaler_skips_step(self, _mock_sync):
+        """Per-iteration schedulers should only advance after a real optimizer step."""
+        self.config.device = torch.device("cpu")
+        model = _TinyLinearProbing()
+        model.linear.weight.data.fill_(1.0)
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+        optimizer.param_groups[0]["name"] = "main"
+        scheduler = Mock()
+        runner = LinearProbingRunner(
+            config=self.config,
+            wandb_wrapper=self.wandb_wrapper,
+            train_loader=self.train_loader,
+            val_loader=self.val_loader,
+            linear_probing=model,
+            optimizer=optimizer,
+            scaler=_SkippingScaler(),
+            lr_scheduler=scheduler,
+            loss_fn=_MSELoss(),
             output_dir=self.output_dir,
         )
 

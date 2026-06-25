@@ -348,7 +348,14 @@ class VideoDataset(torch.utils.data.Dataset):
                         first_video_shape_info = video_np.shape
                         first_video_dtype_info = video_np.dtype
                 except Exception as e:
-                    raise RuntimeError(f"Failed to load video {video_fname}: {str(e)}") from e
+                    # Skip this video; padding logic below will compensate with
+                    # zero-videos so one bad/slow video doesn't kill the run
+                    # (NFS-contention timeouts are common in shared infra).
+                    print(
+                        f"[WARN] Failed to load video {video_fname}: {str(e)} - skipping; will pad",
+                        flush=True,
+                    )
+                    continue
 
             # Pad with zero-videos if fewer than self.num_videos were loaded/selected
             num_actually_loaded = len(loaded_video_numpy_arrays)

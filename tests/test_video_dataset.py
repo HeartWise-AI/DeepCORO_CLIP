@@ -128,6 +128,43 @@ class TestVideoDataset(unittest.TestCase):
         self.assertIsInstance(outcomes, dict)
         self.assertIn("target_label", outcomes)
         self.assertIsInstance(path, str)
+
+    def test_multi_video_load_failure_pads_failed_clip(self):
+        """A failed clip in a multi-video sample should be padded, not fatal."""
+        loaded_video = np.ones((32, 224, 224, 3), dtype=np.float32)
+        self.mock_load_video.side_effect = [
+            RuntimeError("temporary read failure"),
+            loaded_video,
+        ]
+        dataset = VideoDataset(
+            data_filename=self.temp_csv_path,
+            split="train",
+            target_label=["target_label"],
+            datapoint_loc_label="target_video_path",
+            multi_video=True,
+            groupby_column="Split",
+            num_videos=2,
+            shuffle_videos=False,
+            mean=self.mean,
+            std=self.std,
+        )
+
+        videos, outcomes, paths = dataset[0]
+
+        self.assertEqual(self.mock_load_video.call_count, 2)
+        self.assertEqual(videos.shape, (2, 32, 224, 224, 3))
+        self.assertEqual(paths, [self.video_paths[1], "PAD"])
+        self.assertGreater(videos[0].sum(), 0)
+        self.assertEqual(videos[1].sum(), 0)
+        self.assertIn("target_label", outcomes)
+
+        collated = custom_collate_fn([(videos, outcomes, paths)])
+        self.assertTrue(
+            torch.equal(
+                collated["video_mask"],
+                torch.tensor([[True, False]], dtype=torch.bool),
+            )
+        )
         
     def test_validate_videos(self):
         """Test video validation functionality."""

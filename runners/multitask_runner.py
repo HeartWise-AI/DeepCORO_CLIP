@@ -40,13 +40,13 @@ from utils.wandb_logger import (
 )
 import wandb
 from utils.loss.typing import Loss
+from utils.retrieval_inference import run_retrieval_metadata_inference
 from utils.wandb_wrapper import WandbWrapper
 from models.video_encoder import VideoEncoder
 from models.text_encoder import TextEncoder
 from models.captioning_decoder import CaptioningDecoder
 from models.masked_video_modeling import MaskedVideoModeling
 from dataloaders.video_clip_dataset import VideoClipDataset
-import itertools
 from torch.nn.utils import clip_grad_norm_
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -1640,191 +1640,20 @@ class MultitaskRunner:
     
     def inference(self):
         """Run retrieval-style inference with the video encoder."""
-        if self.val_loader is None:
-            raise ValueError("Multitask inference requires val_loader")
-        if self.video_encoder is None:
-            raise ValueError("Multitask inference requires video_encoder")
-
-        device = self._resolve_inference_device()
-        text_embeddings = self._load_inference_text_embeddings(device)
-        metadata = pd.read_parquet(self.config.metadata_path)
-        if metadata.empty:
-            raise ValueError(f"metadata_path has no rows: {self.config.metadata_path}")
-
-        candidate_count = min(text_embeddings.shape[0], len(metadata))
-        if candidate_count == 0:
-            raise ValueError("No text embeddings or metadata rows available for inference")
-        text_embeddings = text_embeddings[:candidate_count]
-        topk = min(int(getattr(self.config, "topk", 1)), candidate_count)
-        if topk <= 0:
-            raise ValueError(f"topk must be positive, got {topk}")
-
-        dataset = self.val_loader.dataset
-        groupby_col_name = getattr(self.config, "groupby_column", None) or "study_id"
-        inference_rows: list[dict[str, Any]] = []
-
-        self.video_encoder.eval()
-        amp_enabled = device.type == "cuda"
-        for batch in tqdm(
-            self.val_loader,
-            desc=f"[GPU {self.device}] Running inference",
-            disable=not getattr(self.config, "is_ref_device", False),
-        ):
-            videos = batch.get("videos")
-            if videos is None:
-                continue
-
-            with torch.no_grad():
-                with torch.amp.autocast(device_type=device.type, enabled=amp_enabled):
-                    video_outputs = self.video_encoder(videos.to(device).float())
-                video_embeddings = self._extract_video_embeddings(video_outputs).float()
-
-            similarity_matrix = torch.matmul(video_embeddings, text_embeddings.t())
-            _, topk_indices = torch.topk(similarity_matrix, k=topk, dim=1)
-
-            identifiers = batch.get("paths", batch.get("sids", []))
-            if isinstance(identifiers, (str, bytes)):
-                identifiers = [identifiers]
-            inference_rows.extend(
-                self._build_inference_rows(
-                    topk_indices=topk_indices.cpu(),
-                    identifiers=list(identifiers),
-                    metadata=metadata.iloc[:candidate_count],
-                    dataset=dataset,
-                    groupby_col_name=groupby_col_name,
-                )
-            )
-
-        inference_rows = self._gather_inference_rows(inference_rows)
-        if getattr(self.config, "is_ref_device", False):
-            self._save_inference_rows(inference_rows, dataset, groupby_col_name)
+        inference_rows = run_retrieval_metadata_inference(
+            video_encoder=self.video_encoder,
+            val_loader=self.val_loader,
+            config=self.config,
+            device_id=self.device,
+            world_size=self.world_size,
+            output_dir=self.output_dir,
+        )
 
         DistributedUtils.sync_process_group(
             world_size=self.world_size,
             device_ids=self.device,
         )
         return inference_rows
-
-    def _resolve_inference_device(self) -> torch.device:
-        if isinstance(self.device, torch.device):
-            return self.device
-        if isinstance(self.device, str):
-            return torch.device(self.device)
-        if torch.cuda.is_available():
-            return torch.device(f"cuda:{self.device}")
-        return torch.device("cpu")
-
-    def _load_inference_text_embeddings(self, device: torch.device) -> torch.Tensor:
-        if not getattr(self.config, "text_embeddings_path", None):
-            raise ValueError("config.text_embeddings_path is required for multitask inference")
-        if not getattr(self.config, "metadata_path", None):
-            raise ValueError("config.metadata_path is required for multitask inference")
-
-        loaded = torch.load(self.config.text_embeddings_path, map_location=device)
-        if isinstance(loaded, dict):
-            for key in ("text_embeddings", "embeddings", "features"):
-                if key in loaded:
-                    loaded = loaded[key]
-                    break
-        if not isinstance(loaded, torch.Tensor):
-            raise TypeError(
-                "text_embeddings_path must contain a tensor or a dict with "
-                "'text_embeddings', 'embeddings', or 'features'"
-            )
-        if loaded.ndim != 2:
-            raise ValueError(f"text embeddings must be 2D [M, D], got {tuple(loaded.shape)}")
-        return loaded.to(device=device, dtype=torch.float32)
-
-    @staticmethod
-    def _extract_video_embeddings(video_outputs: Any) -> torch.Tensor:
-        if isinstance(video_outputs, dict):
-            for key in ("video_embeds", "study_features", "video_features", "embeddings"):
-                value = video_outputs.get(key)
-                if isinstance(value, torch.Tensor):
-                    video_outputs = value
-                    break
-            else:
-                raise KeyError(
-                    "video encoder output dict must contain one of: "
-                    "video_embeds, study_features, video_features, embeddings"
-                )
-        elif isinstance(video_outputs, (tuple, list)):
-            video_outputs = video_outputs[0]
-
-        if not isinstance(video_outputs, torch.Tensor):
-            raise TypeError(f"video encoder returned unsupported type {type(video_outputs)}")
-        if video_outputs.ndim == 3:
-            video_outputs = video_outputs.mean(dim=1)
-        if video_outputs.ndim != 2:
-            raise ValueError(f"video embeddings must be 2D [B, D], got {tuple(video_outputs.shape)}")
-        return video_outputs
-
-    def _build_inference_rows(
-        self,
-        topk_indices: torch.Tensor,
-        identifiers: list[Any],
-        metadata: pd.DataFrame,
-        dataset: Any,
-        groupby_col_name: str,
-    ) -> list[dict[str, Any]]:
-        rows = []
-        for row_idx, top_k_meta_indices in enumerate(topk_indices.numpy()):
-            identifier = identifiers[row_idx] if row_idx < len(identifiers) else row_idx
-            topk_metadata = metadata.iloc[top_k_meta_indices]
-
-            row = {}
-            if getattr(dataset, "multi_video_mode", False):
-                actual_video_filenames = dataset.get_video_paths(identifier)
-                row[groupby_col_name] = identifier
-                row["video_filenames"] = ";".join(actual_video_filenames)
-            else:
-                row["video_name"] = identifier
-
-            for column in metadata.columns:
-                values = topk_metadata[column]
-                if pd.api.types.is_numeric_dtype(values):
-                    row[column] = values.mean()
-                elif pd.api.types.is_string_dtype(values) or pd.api.types.is_object_dtype(values):
-                    modes = values.dropna().mode()
-                    row[column] = None if modes.empty else modes.iloc[0]
-                else:
-                    non_null = values.dropna()
-                    row[column] = None if non_null.empty else non_null.iloc[0]
-            rows.append(row)
-        return rows
-
-    def _gather_inference_rows(self, local_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        if self.world_size <= 1 or not dist.is_available() or not dist.is_initialized():
-            return local_rows
-
-        gathered_rows: list[list[dict[str, Any]]] = [[] for _ in range(self.world_size)]
-        dist.all_gather_object(gathered_rows, local_rows)
-        return list(itertools.chain.from_iterable(gathered_rows))
-
-    def _save_inference_rows(
-        self,
-        rows: list[dict[str, Any]],
-        dataset: Any,
-        groupby_col_name: str,
-    ) -> None:
-        output_dir = self.output_dir or getattr(self.config, "inference_results_path", None)
-        if output_dir is None:
-            raise ValueError("output_dir or config.inference_results_path is required for inference")
-
-        averaged_metadata_df = pd.DataFrame(rows)
-        if not averaged_metadata_df.empty:
-            if getattr(dataset, "multi_video_mode", False):
-                cols_prefix = [groupby_col_name, "video_filenames"]
-            else:
-                cols_prefix = ["video_name"]
-            remaining_cols = [col for col in averaged_metadata_df.columns if col not in cols_prefix]
-            averaged_metadata_df = averaged_metadata_df[cols_prefix + remaining_cols]
-
-        os.makedirs(output_dir, exist_ok=True)
-        output_path = os.path.join(output_dir, "averaged_metadata.csv")
-        averaged_metadata_df.to_csv(output_path, index=False)
-        print(f"Saved averaged metadata to: {output_path}")
-        print("Inference completed")
     
     
     def _save_predictions(

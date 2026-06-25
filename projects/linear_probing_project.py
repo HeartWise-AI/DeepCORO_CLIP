@@ -276,13 +276,6 @@ class LinearProbingProject(BaseProject):
         )
         mil_model = mil_model.to(self.config.device).float()
 
-        # Distribute MIL model
-        mil_model = DistributedUtils.DDP(
-            mil_model,
-            device_ids=[self.config.device],
-            find_unused_parameters=True
-        )
-
         # Wrap both models
         linear_probing = VideoMILWrapper(video_encoder, mil_model, self.config.num_videos)
                 
@@ -302,7 +295,7 @@ class LinearProbingProject(BaseProject):
         # Add head parameters
         for head_name in self.config.head_structure:
             param_groups.append({
-                'params': mil_model.module.heads[head_name].parameters(),
+                'params': mil_model.heads[head_name].parameters(),
                 'lr': self.config.head_lr[head_name],
                 'name': head_name,
                 'weight_decay': self.config.head_weight_decay[head_name]
@@ -312,9 +305,9 @@ class LinearProbingProject(BaseProject):
         if "attention" in self.config.pooling_mode and self.config.train_pooling_params:
             # Combine all attention-specific parameters (V, U, w) into one group
             attention_params = itertools.chain(
-                mil_model.module.attention_V.parameters(),
-                mil_model.module.attention_U.parameters(),
-                mil_model.module.attention_w.parameters(),
+                mil_model.attention_V.parameters(),
+                mil_model.attention_U.parameters(),
+                mil_model.attention_w.parameters(),
             )
             param_groups.append({
                 'params': attention_params,
@@ -325,20 +318,20 @@ class LinearProbingProject(BaseProject):
 
         # Add CLS token parameters if applicable
         if "cls_token" in self.config.pooling_mode and self.config.train_pooling_params:
-            cls_params = [mil_model.module.cls_token]
-            if hasattr(mil_model.module, 'cls_attention_within'):
+            cls_params = [mil_model.cls_token]
+            if hasattr(mil_model, 'cls_attention_within'):
                 cls_params_iter = itertools.chain(
                     cls_params,
-                    mil_model.module.cls_attention_within.parameters(),
-                    mil_model.module.cls_attention_across.parameters(),
-                    mil_model.module.cls_norm_within.parameters(),
-                    mil_model.module.cls_norm_across.parameters(),
+                    mil_model.cls_attention_within.parameters(),
+                    mil_model.cls_attention_across.parameters(),
+                    mil_model.cls_norm_within.parameters(),
+                    mil_model.cls_norm_across.parameters(),
                 )
             else:
                 cls_params_iter = itertools.chain(
                     cls_params,
-                    mil_model.module.cls_attention.parameters(),
-                    mil_model.module.cls_norm.parameters(),
+                    mil_model.cls_attention.parameters(),
+                    mil_model.cls_norm.parameters(),
                 )
             param_groups.append({
                 'params': cls_params_iter,
@@ -351,11 +344,11 @@ class LinearProbingProject(BaseProject):
             print("NOTE: train_pooling_params=False — attention/cls_token params are FROZEN (old behaviour)")
 
         # Add view embedding parameters if applicable
-        if num_view_classes > 0 and hasattr(mil_model.module, 'view_embedding'):
+        if num_view_classes > 0 and hasattr(mil_model, 'view_embedding'):
             ve_lr = self.config.view_embedding_lr if self.config.view_embedding_lr is not None else self.config.attention_lr
             ve_wd = self.config.view_embedding_weight_decay if self.config.view_embedding_weight_decay is not None else self.config.attention_weight_decay
             param_groups.append({
-                'params': mil_model.module.view_embedding.parameters(),
+                'params': mil_model.view_embedding.parameters(),
                 'lr': ve_lr,
                 'name': 'view_embedding',
                 'weight_decay': ve_wd,
@@ -390,6 +383,14 @@ class LinearProbingProject(BaseProject):
                 loss_structure=self.config.loss_structure,
                 head_weights=self.config.head_weights,
             )
+        )
+
+        # Distribute the full model, not just the MIL head. When the video
+        # encoder is partially trainable, its gradients must be synchronized too.
+        linear_probing = DistributedUtils.DDP(
+            linear_probing,
+            device_ids=[self.config.device],
+            find_unused_parameters=True
         )
 
         return {

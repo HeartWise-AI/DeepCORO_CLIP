@@ -398,6 +398,39 @@ class LinearProbingRunner:
             outputs=outputs,
             processed_batch=processed_batch
         )
+
+    def _optimizer_parameters_with_grad(self) -> list[torch.nn.Parameter]:
+        if self.optimizer is None:
+            return []
+
+        return [
+            p
+            for group in self.optimizer.param_groups
+            for p in group["params"]
+            if p.grad is not None
+        ]
+
+    def _step_optimizer(self) -> bool:
+        if self.optimizer is None:
+            return False
+
+        max_grad_norm = float(getattr(self.config, "max_grad_norm", 0.0) or 0.0)
+        if self.scaler:
+            if max_grad_norm > 0:
+                self.scaler.unscale_(self.optimizer)
+                params = self._optimizer_parameters_with_grad()
+                if params:
+                    torch.nn.utils.clip_grad_norm_(params, max_grad_norm)
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            return True
+
+        if max_grad_norm > 0:
+            params = self._optimizer_parameters_with_grad()
+            if params:
+                torch.nn.utils.clip_grad_norm_(params, max_grad_norm)
+        self.optimizer.step()
+        return True
     
     def _train_step(
         self,
@@ -440,28 +473,38 @@ class LinearProbingRunner:
 
         # Scale loss by gradient accumulation steps
         scaled_loss = losses['main'] / self.config.gradient_accumulation_steps
-        
-        # Backward pass with gradient scaling
-        if self.scaler:
-            self.scaler.scale(scaled_loss).backward()
+
+        # Non-finite-loss guard: a single corrupt batch (e.g. AMP fp16 overflow)
+        # must not poison the weights with NaN/Inf. If the loss is non-finite,
+        # drop any pending grads and skip backward/step for this batch.
+        if not bool(torch.isfinite(scaled_loss).all().item()):
+            print(
+                f"[WARN] rank={self.device} non-finite loss "
+                f"({scaled_loss.detach().float().item()}) at step {self.step}; "
+                "skipping backward/optimizer step for this batch"
+            )
+            if self.optimizer is not None:
+                self.optimizer.zero_grad(set_to_none=True)
         else:
-            scaled_loss.backward()
-        
-        # Sync gradients across processes before optimizer step
-        DistributedUtils.sync_process_group(
-            world_size=self.config.world_size,
-            device_ids=self.config.device
-        )
-        
-        # Only step optimizer and update scaler if this is the last step in accumulation
-        if (self.step + 1) % self.config.gradient_accumulation_steps == 0:
-            if self.scaler and self.optimizer is not None:
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-            
-            # Step the learning rate scheduler after optimizer step
-            if self.lr_scheduler and self.scheduler_per_iteration:
-                self.lr_scheduler.step()
+            # Backward pass with gradient scaling
+            if self.scaler:
+                self.scaler.scale(scaled_loss).backward()
+            else:
+                scaled_loss.backward()
+
+            # Sync gradients across processes before optimizer step
+            DistributedUtils.sync_process_group(
+                world_size=self.config.world_size,
+                device_ids=self.config.device
+            )
+
+            # Only step optimizer and update scaler if this is the last step in accumulation
+            if (self.step + 1) % self.config.gradient_accumulation_steps == 0:
+                did_optimizer_step = self._step_optimizer()
+
+                # Step the learning rate scheduler after optimizer step
+                if did_optimizer_step and self.lr_scheduler and self.scheduler_per_iteration:
+                    self.lr_scheduler.step()
 
         # Increment step counter
         self.step += 1

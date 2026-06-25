@@ -75,6 +75,32 @@ def test_multitask_inference_writes_averaged_metadata(tmp_path):
     assert output.to_dict("records") == rows
 
 
+def test_multitask_amp_autocast_kwargs_resolve_device(tmp_path):
+    config = SimpleNamespace(
+        recall_k=[],
+        ndcg_k=[],
+        device="cpu",
+        world_size=1,
+    )
+    runner = MultitaskRunner(
+        config=config,
+        video_encoder=_FakeVideoEncoder(),
+        scaler=object(),
+        output_dir=str(tmp_path),
+    )
+
+    assert runner._amp_autocast_kwargs() == {"device_type": "cpu", "enabled": False}
+
+    with patch(
+        "runners.multitask_runner.resolve_inference_device",
+        return_value=torch.device("cuda:0"),
+    ):
+        assert runner._amp_autocast_kwargs() == {
+            "device_type": "cuda",
+            "enabled": True,
+        }
+
+
 def test_multitask_inference_setup_loads_video_state_without_weight_only(tmp_path):
     class _FakeInferenceEncoder(torch.nn.Module):
         def __init__(self):

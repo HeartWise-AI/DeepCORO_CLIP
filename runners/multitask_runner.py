@@ -40,7 +40,7 @@ from utils.wandb_logger import (
 )
 import wandb
 from utils.loss.typing import Loss
-from utils.retrieval_inference import run_retrieval_metadata_inference
+from utils.retrieval_inference import resolve_inference_device, run_retrieval_metadata_inference
 from utils.wandb_wrapper import WandbWrapper
 from models.video_encoder import VideoEncoder
 from models.text_encoder import TextEncoder
@@ -180,6 +180,11 @@ class MultitaskRunner:
                 total_steps=getattr(config, 'loss_total_steps', 10000),
                 schedule_type=getattr(config, 'loss_schedule_type', 'linear'),
             )
+
+    def _amp_autocast_kwargs(self) -> dict[str, Any]:
+        amp_device_type = resolve_inference_device(self.device).type
+        amp_enabled = self.scaler is not None and amp_device_type == "cuda"
+        return {"device_type": amp_device_type, "enabled": amp_enabled}
     
     def __del__(self):
         """Cleanup when runner is destroyed (important for sweep runs)."""
@@ -755,9 +760,8 @@ class MultitaskRunner:
         """
         self.optimizer.zero_grad()
         
-        # Use autocast for mixed precision if scaler is enabled
-        amp_enabled = self.scaler is not None
-        with torch.amp.autocast('cuda', enabled=amp_enabled):
+        # Use autocast for mixed precision only when running scaler-backed CUDA.
+        with torch.amp.autocast(**self._amp_autocast_kwargs()):
             # Get video features (token-level for captioning and masked modeling) - compute once
             # Handle DistributedDataParallel wrapper
             video_encoder = self.video_encoder.module if hasattr(self.video_encoder, 'module') else self.video_encoder
@@ -1099,9 +1103,9 @@ class MultitaskRunner:
             Tuple of (metrics, outputs)
         """
         with torch.no_grad():
-            # Use autocast for mixed precision if scaler is enabled
-            amp_enabled = self.scaler is not None
-            with torch.amp.autocast('cuda', enabled=amp_enabled):
+            # Use autocast for mixed precision only when running scaler-backed CUDA.
+            autocast_kwargs = self._amp_autocast_kwargs()
+            with torch.amp.autocast(**autocast_kwargs):
                 # Get video features - compute once and reuse
                 video_encoder = self.video_encoder.module if hasattr(self.video_encoder, 'module') else self.video_encoder
                 video_outputs = video_encoder.get_tokens(videos, mode="patch", return_dict=True)
@@ -1167,7 +1171,7 @@ class MultitaskRunner:
                     target_texts.append(target_text)
             
             # Use autocast context for remaining operations
-            with torch.amp.autocast('cuda', enabled=amp_enabled):
+            with torch.amp.autocast(**autocast_kwargs):
                 # Masked video modeling forward pass
                 mvm_outputs = self.masked_video_modeling(video_tokens)
                 masked_pred = mvm_outputs["pred"]

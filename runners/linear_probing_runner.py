@@ -453,10 +453,16 @@ class LinearProbingRunner:
             if self.optimizer is not None:
                 self.optimizer.zero_grad()
 
-        # Forward pass with autocast for mixed precision
-        with torch.amp.autocast('cuda', enabled=self.config.use_amp, dtype=torch.float16):
+        # Forward pass with autocast for mixed precision only on CUDA.
+        amp_device_type = batch_video.device.type
+        amp_enabled = bool(self.config.use_amp and amp_device_type == "cuda")
+        with torch.amp.autocast(
+            device_type=amp_device_type,
+            enabled=amp_enabled,
+            dtype=torch.float16,
+        ):
             try:
-                if self.config.use_amp:
+                if amp_enabled:
                     batch_video = batch_video.to(dtype=torch.float16)
 
                 outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
@@ -469,7 +475,7 @@ class LinearProbingRunner:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")
 
         try:
-            if self.config.use_amp:
+            if amp_enabled:
                 for head_name, target in batch_targets.items():
                     if self.config.head_task[head_name] == MetricTask.REGRESSION:
                         batch_targets[head_name] = target.to(dtype=torch.float16)

@@ -144,7 +144,7 @@ class CLIPLoss(nn.Module):
         Returns:
             Scalar loss
         """
-        with autocast("cuda", enabled=False):
+        with autocast(video_features.device.type, enabled=False):
             # Gather from all GPUs if DDP
             video_features = gather_with_gradient(video_features)
             text_features = gather_with_gradient(text_features)
@@ -277,7 +277,7 @@ class SigLIPLoss(nn.Module):
         Returns:
             Scalar loss
         """
-        with autocast("cuda", enabled=False):
+        with autocast(video_features.device.type, enabled=False):
             # Gather from all GPUs if DDP (item B3).
             # The default (gather_in_ddp=False) keeps SigLIP local per-rank
             # with a local pos_mask. The gathered path is not yet correct

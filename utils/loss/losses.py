@@ -41,7 +41,7 @@ class ContrastiveLoss(nn.Module):
         # overflow/underflow issues when AMP is enabled. This has negligible
         # memory overhead because the tensors involved are only of size [B, D]
         # and [B, B].
-        with autocast('cuda', enabled=False):
+        with autocast(video_features.device.type, enabled=False):
             # Normalize embeddings in fp32 for numerical stability.
             video_features_fp32 = F.normalize(video_features.float(), dim=1)
             text_features_fp32 = F.normalize(text_features.float(), dim=1)
@@ -129,7 +129,7 @@ class ContrastiveLossDDP(nn.Module):
         Returns:
             torch.Tensor: Scalar loss value
         """        
-        with autocast('cuda', enabled=False):
+        with autocast(video_features.device.type, enabled=False):
             # 1) Gather features from all GPUs.
             video_features_all = gather_all(video_features)
             text_features_all  = gather_all(text_features)
@@ -238,7 +238,7 @@ class SiglipLossDDP(nn.Module):
         Returns:
             torch.Tensor: Scalar loss value
         """        
-        with autocast('cuda', enabled=False):
+        with autocast(video_features.device.type, enabled=False):
             # 1) Gather features from all GPUs using fp16 to cut communication volume.
             video_features_half = gather_all(video_features.half())
             text_features_half  = gather_all(text_features.half())

@@ -565,7 +565,7 @@ class VideoEncoder(nn.Module):
         # incurs only a modest memory overhead yet eliminates NaN/Inf issues
         # observed when training with AMP.
         # ------------------------------------------------------------------
-        with autocast("cuda", enabled=False):
+        with autocast(x.device.type, enabled=False):
             if self.backbone == "mvit" and hasattr(self.model, "forward_features"):
                 # TorchVision's Multi-Scale ViT exposes forward_features that
                 # returns the token sequence **before** classification pooling.
@@ -638,7 +638,7 @@ class VideoEncoder(nn.Module):
         mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         orig_dtype = per_video.dtype
-        with autocast('cuda', enabled=False):
+        with autocast(per_video.device.type, enabled=False):
             aggregated = self.aggregator(per_video.float(), mask=mask)
         return aggregated.to(orig_dtype)
 

@@ -77,7 +77,7 @@ class SigLIP2BCELoss(nn.Module):
         Returns:
             Scalar loss value
         """
-        with autocast("cuda", enabled=False):
+        with autocast(video_features.device.type, enabled=False):
             # Normalize embeddings
             video_features = F.normalize(video_features.float(), dim=-1)
             text_features = F.normalize(text_features.float(), dim=-1)
@@ -156,7 +156,7 @@ class SigLIP2BCELossDDP(nn.Module):
         Returns:
             Scalar loss value
         """
-        with autocast("cuda", enabled=False):
+        with autocast(video_features.device.type, enabled=False):
             # Gather features from all GPUs
             video_features_all = _gather_all_with_gradient(video_features)
             text_features_all = _gather_all_with_gradient(text_features)
@@ -287,7 +287,7 @@ class SigLIP2MultiPositiveBCELoss(nn.Module):
         Returns:
             Scalar loss value
         """
-        with autocast("cuda", enabled=False):
+        with autocast(video_features.device.type, enabled=False):
             # Normalize embeddings
             video_features = F.normalize(video_features.float(), dim=-1)
             text_features = F.normalize(text_features.float(), dim=-1)

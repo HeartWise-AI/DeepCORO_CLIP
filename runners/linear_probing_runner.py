@@ -352,8 +352,10 @@ class LinearProbingRunner:
         
         Args:
             batch: Dictionary containing:
-                videos: Tensor of shape [B * num_videos, C, F, H, W] for multi-video
-                       or [B, C, F, H, W] for single-video
+                videos: Tensor of shape [B, num_videos, F, H, W, C] for shaped
+                       multi-video batches, [B * num_videos, F, H, W, C] for
+                       flat multi-video batches, or [B, F, H, W, C] for
+                       single-video batches
                 targets: Dict of tensors [B, ...]
                 video_indices: Optional tensor [B * num_videos] mapping videos to batch indices
                 video_mask: Optional tensor [B, num_videos] marking real videos
@@ -379,9 +381,14 @@ class LinearProbingRunner:
         if video_mask is not None:
             video_mask = video_mask.to(self.config.device, dtype=torch.bool)
 
+        video_indices = batch.get('video_indices', None)
+        if video_indices is not None:
+            video_indices = video_indices.to(self.config.device, dtype=torch.long)
+
         return {
             "batch_video": batch_video,
             "batch_targets": batch_targets,
+            "video_indices": video_indices,
             "video_mask": video_mask,
             "view_ids": view_ids,
         }
@@ -437,6 +444,7 @@ class LinearProbingRunner:
         self,
         batch_video: torch.Tensor,
         batch_targets: Dict[str, torch.Tensor],
+        video_indices: torch.Tensor = None,
         video_mask: torch.Tensor = None,
         view_ids: torch.Tensor = None,
     ) -> StepFnResults:
@@ -452,7 +460,10 @@ class LinearProbingRunner:
                     batch_video = batch_video.to(dtype=torch.float16)
 
                 outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
-                    batch_video, video_mask=video_mask, view_ids=view_ids
+                    batch_video,
+                    video_indices=video_indices,
+                    video_mask=video_mask,
+                    view_ids=view_ids,
                 )
             except Exception as e:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")
@@ -530,6 +541,7 @@ class LinearProbingRunner:
         self,
         batch_video: torch.Tensor,
         batch_targets: Dict[str, torch.Tensor],
+        video_indices: torch.Tensor = None,
         video_mask: torch.Tensor = None,
         view_ids: torch.Tensor = None,
     ) -> StepFnResults:
@@ -541,7 +553,10 @@ class LinearProbingRunner:
                     batch_video = batch_video.to(dtype=torch.float16)
 
                 outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
-                    batch_video, video_mask=video_mask, view_ids=view_ids
+                    batch_video,
+                    video_indices=video_indices,
+                    video_mask=video_mask,
+                    view_ids=view_ids,
                 )
             except Exception as e:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")
@@ -588,6 +603,7 @@ class LinearProbingRunner:
         self,
         batch_video: torch.Tensor,
         batch_targets: Dict[str, torch.Tensor],  # Unused - parsed to match signature
+        video_indices: torch.Tensor = None,
         video_mask: torch.Tensor = None,
         view_ids: torch.Tensor = None,
     ) -> StepFnResults:
@@ -599,7 +615,10 @@ class LinearProbingRunner:
                     batch_video = batch_video.to(dtype=torch.float16)
 
                 outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
-                    batch_video, video_mask=video_mask, view_ids=view_ids
+                    batch_video,
+                    video_indices=video_indices,
+                    video_mask=video_mask,
+                    view_ids=view_ids,
                 )
             except Exception as e:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")

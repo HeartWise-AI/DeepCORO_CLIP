@@ -16,7 +16,7 @@ class _TinyLinearProbing(torch.nn.Module):
         super().__init__()
         self.linear = torch.nn.Linear(1, 1, bias=False)
 
-    def forward(self, batch_video, video_mask=None, view_ids=None):
+    def forward(self, batch_video, video_indices=None, video_mask=None, view_ids=None):
         return {"test_head": self.linear(batch_video.reshape(-1, 1).float())}
 
 
@@ -184,11 +184,20 @@ class TestLinearProbingRunner(unittest.TestCase):
         batch = {
             "videos": torch.zeros((2, 3, 1, 2, 2, 1)),
             "targets": {"test_head": torch.tensor([0, 1])},
+            "video_indices": torch.tensor([0, 0, 0, 1, 1, 1], dtype=torch.int32),
             "video_mask": torch.tensor([[1, 0, 1], [0, 1, 0]], dtype=torch.int64),
         }
 
         processed = runner._preprocess_inputs(batch)
 
+        self.assertEqual(processed["video_indices"].dtype, torch.long)
+        self.assertEqual(processed["video_indices"].device.type, "cpu")
+        self.assertTrue(
+            torch.equal(
+                processed["video_indices"],
+                torch.tensor([0, 0, 0, 1, 1, 1], dtype=torch.long),
+            )
+        )
         self.assertEqual(processed["video_mask"].dtype, torch.bool)
         self.assertEqual(processed["video_mask"].device.type, "cpu")
         self.assertTrue(

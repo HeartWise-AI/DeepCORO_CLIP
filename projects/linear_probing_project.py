@@ -73,6 +73,13 @@ class VideoMILWrapper(torch.nn.Module):
         # 1) Run the backbone / encoder
         # ------------------------------------------------------------------
         embeddings: torch.Tensor = self.video_encoder(x)
+        index_mask: Optional[torch.Tensor] = None
+        if video_indices is not None and x.dim() == 5:
+            embeddings, index_mask = self._regroup_flat_embeddings(
+                embeddings=embeddings,
+                video_indices=video_indices,
+                video_mask=video_mask,
+            )
 
         # ------------------------------------------------------------------
         # 2) Reshape so that the MIL module always sees *either*:
@@ -109,6 +116,13 @@ class VideoMILWrapper(torch.nn.Module):
         if video_mask is not None:
             attention_mask = self._coerce_video_mask(
                 video_mask=video_mask,
+                batch_size=B,
+                num_instances=N,
+                device=embeddings.device,
+            )
+        elif index_mask is not None:
+            attention_mask = self._coerce_video_mask(
+                video_mask=index_mask,
                 batch_size=B,
                 num_instances=N,
                 device=embeddings.device,
@@ -154,6 +168,77 @@ class VideoMILWrapper(torch.nn.Module):
             f"video_mask shape {tuple(attention_mask.shape)} does not match "
             f"MIL instance shape {expected_shape}"
         )
+
+    def _regroup_flat_embeddings(
+        self,
+        embeddings: torch.Tensor,
+        video_indices: torch.Tensor,
+        video_mask: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Group flat per-video encoder outputs into [B, N, ...] MIL layout."""
+        if video_indices.ndim != 1:
+            raise ValueError(
+                f"video_indices must be a 1D tensor, got shape {tuple(video_indices.shape)}"
+            )
+        if embeddings.shape[0] != video_indices.numel():
+            raise ValueError(
+                f"video_indices length {video_indices.numel()} does not match "
+                f"flat embedding batch size {embeddings.shape[0]}"
+            )
+        if video_indices.numel() == 0:
+            raise ValueError("video_indices cannot be empty for flat multi-video inputs")
+
+        video_indices = video_indices.to(device=embeddings.device, dtype=torch.long)
+        if video_mask is not None:
+            if video_mask.ndim != 2:
+                raise ValueError(
+                    f"video_mask must be 2D when grouping flat embeddings, got {tuple(video_mask.shape)}"
+                )
+            batch_size, num_instances = video_mask.shape
+        else:
+            batch_size = int(video_indices.max().item()) + 1
+            num_instances = self.num_videos
+
+        slot_indices = self._slot_indices_for_flat_videos(
+            video_indices=video_indices,
+            batch_size=batch_size,
+            num_instances=num_instances,
+        )
+
+        grouped = embeddings.new_zeros((batch_size, num_instances, *embeddings.shape[1:]))
+        grouped[video_indices, slot_indices] = embeddings
+
+        index_mask = torch.zeros(
+            (batch_size, num_instances),
+            dtype=torch.bool,
+            device=embeddings.device,
+        )
+        index_mask[video_indices, slot_indices] = True
+        return grouped, index_mask
+
+    @staticmethod
+    def _slot_indices_for_flat_videos(
+        video_indices: torch.Tensor,
+        batch_size: int,
+        num_instances: int,
+    ) -> torch.Tensor:
+        """Assign each flat video to its per-study slot by encounter order."""
+        counts = torch.zeros(batch_size, dtype=torch.long, device=video_indices.device)
+        slot_indices = torch.empty_like(video_indices)
+        for flat_idx, batch_idx in enumerate(video_indices.tolist()):
+            if batch_idx < 0 or batch_idx >= batch_size:
+                raise ValueError(
+                    f"video_indices contains batch index {batch_idx}, "
+                    f"outside expected range [0, {batch_size})"
+                )
+            slot_idx = int(counts[batch_idx].item())
+            if slot_idx >= num_instances:
+                raise ValueError(
+                    f"Sample {batch_idx} has more than {num_instances} videos in flat batch"
+                )
+            slot_indices[flat_idx] = slot_idx
+            counts[batch_idx] += 1
+        return slot_indices
 
 @ProjectRegistry.register("DeepCORO_video_linear_probing")
 @ProjectRegistry.register("DeepCORO_video_linear_probing_cardio_syntax")

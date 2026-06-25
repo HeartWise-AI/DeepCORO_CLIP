@@ -157,7 +157,6 @@ class ContrastiveLossDDP(nn.Module):
 
         return loss
 
-@LossRegistry.register(LossType.SIGLIP)
 class SiglipLoss(nn.Module):
     """
     SIGLIP (Simple Gated Language-Image Pre-training) loss implementation.

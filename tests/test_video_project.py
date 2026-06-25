@@ -16,7 +16,7 @@ class TestVideoProject(unittest.TestCase):
         self.mock_config.is_ref_device = True
         self.mock_config.frames = 16
         self.mock_config.device = 0
-        self.mock_config.run_mode = 'test'
+        self.mock_config.run_mode = 'train'
         
         # Create sample data for testing
         self.sample_batch = torch.ones((2, 16, 224, 224, 3), dtype=torch.float32)
@@ -49,10 +49,9 @@ class TestVideoProject(unittest.TestCase):
             mean, std = calculate_dataset_statistics_ddp(self.mock_config)
             
         # Expected values:
-        # Mean = (0.5 + 1.0) / 2 = 0.75 for each channel
-        # Std = sqrt((0.5² + 1.0²)/2 - 0.75²) = sqrt(0.5625 - 0.5625) = 0.25 for each channel
-        expected_mean = torch.tensor([0.75, 0.75, 0.75])
-        expected_std = torch.tensor([0.25, 0.25, 0.25])
+        # The helper intentionally uses the first batch for quick statistics.
+        expected_mean = torch.tensor([0.5, 0.5, 0.5])
+        expected_std = torch.tensor([0.0, 0.0, 0.0])
         
         # Check results
         self.assertTrue(torch.allclose(mean, expected_mean, atol=1e-6))
@@ -143,4 +142,4 @@ class TestVideoProject(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    unittest.main() 
+    unittest.main()

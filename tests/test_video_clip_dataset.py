@@ -72,6 +72,15 @@ class TestVideoClipDataset(unittest.TestCase):
             }
         )
         siglip_texts.to_csv(self.siglip_texts_path, index=False)
+        self.siglip_edges_path = os.path.join(self.temp_dir.name, "siglip_edges.csv")
+        siglip_edges = pd.DataFrame(
+            {
+                "video_id": self.video_ids,
+                "text_id": ["TXT_A", "TXT_B", "TXT_C", "TXT_A", "TXT_B"],
+                "weight": [1.0] * 5,
+            }
+        )
+        siglip_edges.to_csv(self.siglip_edges_path, index=False)
         
         # Default mean and std values for tests
         self.mean = [0.485, 0.456, 0.406]
@@ -237,7 +246,7 @@ class TestVideoClipDataset(unittest.TestCase):
         )
         
         # Test successful item retrieval
-        video, encoded, path, tree_label = dataset[0]
+        video, encoded, path, report = dataset[0]
         
         # Check the types and shapes
         self.assertIsInstance(video, np.ndarray)
@@ -246,7 +255,7 @@ class TestVideoClipDataset(unittest.TestCase):
         self.assertIn("input_ids", encoded)
         self.assertIn("attention_mask", encoded)
         self.assertIsInstance(path, str)
-        self.assertIsInstance(tree_label, int)
+        self.assertEqual(report, "This is report 1.")
         
         # Test with MVit backbone (should force 16 frames)
         # Create a new dataset with mvit backbone
@@ -320,7 +329,8 @@ class TestVideoClipDataset(unittest.TestCase):
             mean=self.mean,
             std=self.std,
             siglip_texts_path=self.siglip_texts_path,
-            siglip_max_positive_per_video=2,
+            siglip_edges_path=self.siglip_edges_path,
+            siglip_pos_samples_per_video=2,
         )
 
         reports = dataset.get_reports([dataset.fnames[0]])
@@ -365,7 +375,7 @@ class TestVideoClipDataset(unittest.TestCase):
         self.assertEqual(collated["encoded_texts"]["input_ids"].shape, torch.Size([2, 512]))
 
         self.assertEqual(len(collated["paths"]), 2)
-        self.assertTrue(torch.equal(collated["main_structure"], torch.tensor([0, 1])))
+        self.assertEqual(collated["reports"], [0, 1])
 
         # Test with None encoded_texts
         batch_with_none = [
@@ -385,7 +395,7 @@ class TestVideoClipDataset(unittest.TestCase):
 
         collated = custom_collate_fn(batch_with_none)
         self.assertIsNone(collated["encoded_texts"])
-        self.assertIsNone(collated["main_structure"])
+        self.assertEqual(collated["reports"], [-1, -1])
 
 
 if __name__ == '__main__':

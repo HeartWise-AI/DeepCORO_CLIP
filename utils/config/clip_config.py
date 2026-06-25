@@ -43,11 +43,6 @@ class ClipConfig(HeartWiseConfig):
     num_heads: int
     aggregator_depth: int
     
-    # Video pooling configuration
-    video_pooling_mode: str  # 'mean', 'attention', or 'cls_token'
-    attention_pool_heads: int
-    attention_pool_dropout: float
-    
     # Optimization parameters
     optimizer: str
     scheduler_name: str
@@ -90,6 +85,11 @@ class ClipConfig(HeartWiseConfig):
     # Training parameter defaults
     persistent_workers: bool = False  # Keep DataLoader workers alive
     prefetch_factor: int = 2  # Number of batches to prefetch
+
+    # Video pooling configuration
+    video_pooling_mode: str = "mean"  # "mean", "attention", or "cls_token"
+    attention_pool_heads: int = 8
+    attention_pool_dropout: float = 0.1
     
     # Optional parameters
     view_count: Optional[int] = None

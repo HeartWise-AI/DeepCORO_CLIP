@@ -34,6 +34,7 @@ from utils.wandb_logger import (
 from utils.loss.typing import Loss
 from utils.loss.weighted_siglip import WeightedSigLIPLoss
 from utils.wandb_wrapper import WandbWrapper
+from utils.retrieval_inference import run_retrieval_metadata_inference
 from models.video_encoder import VideoEncoder
 from models.text_encoder import TextEncoder
 from dataloaders.video_clip_dataset import VideoClipDataset
@@ -1312,6 +1313,7 @@ class VideoContrastiveLearningRunner:
         text_ids: Optional[List[str]] = None,
         text_metadata: Optional[List[Dict[str, Any]]] = None,
         debug_sample_info: Optional[List[Dict[str, Any]]] = None,
+        **_: Any,
     ) -> tuple[dict, dict]:
         if self.step % self.config.gradient_accumulation_steps == 0:
             self.optimizer.zero_grad(set_to_none=True)
@@ -1645,6 +1647,7 @@ class VideoContrastiveLearningRunner:
         text_ids: Optional[List[str]] = None,
         text_metadata: Optional[List[Dict[str, Any]]] = None,
         debug_sample_info: Optional[List[Dict[str, Any]]] = None,
+        **_: Any,
     ) -> tuple[dict, dict]:
         """
         Performs a single validation step (forward pass + metric computation).
@@ -1831,98 +1834,12 @@ class VideoContrastiveLearningRunner:
         return self._run_epoch(mode=RunMode.VALIDATE, epoch=0)
 
     def inference(self):
-        """
-        Method for a dedicated inference.
-        """
-        # Load text embeddings tensor
-        text_embeddings: torch.Tensor = torch.load(self.config.text_embeddings_path, weights_only=False, map_location=torch.device(self.device))
-        # Load metadata
-        metadata: pd.DataFrame = pd.read_parquet(self.config.metadata_path)
-        
-        # Create a list to store all averaged metadata
-        all_averaged_metadata = []
-        
-        # Get the dataset object to access get_video_paths and groupby_column
-        # Assuming val_loader has a dataset attribute which is an instance of VideoClipDataset
-        dataset = self.val_loader.dataset
-        groupby_col_name = self.config.groupby_column if hasattr(self.config, 'groupby_column') and self.config.groupby_column else "study_id"
-
-        for batch in tqdm(
-            self.val_loader, 
-            desc=f"[GPU {self.device}] Running inference", 
-            disable=not self.config.is_ref_device
-        ):
-            with torch.no_grad():
-                with torch.amp.autocast("cuda"):
-                    video_embeddings = self.video_encoder(batch["videos"]).float()
-                    
-            similarity_matrix = torch.matmul(video_embeddings, text_embeddings.t())
-            _, topk_indices = torch.topk(similarity_matrix, k=self.config.topk, dim=1)
-            
-            # Compute the average of the topk metadata rows for each video embedding
-            topk_indices_np = topk_indices.cpu().numpy()  # shape: [N, topk]
-
-            # Get SIDs from batch (in multi-video mode, 'paths' contains SIDs)
-            # In single-video mode, 'paths' would contain actual file paths.
-            # The logic here assumes 'paths' from the batch correctly gives the identifier needed.
-            identifiers_from_batch = batch["paths"]
-            
-            for idx, top_k_meta_indices in enumerate(topk_indices_np):
-                current_identifier = identifiers_from_batch[idx]
-                
-                # Get the top-k metadata rows
-                topk_metadata = metadata.iloc[top_k_meta_indices]
-                
-                averaged_row = {}
-                
-                # If in multi-video mode, add groupby column and all its video filenames
-                print(f"Dataset multi_video_mode status: {getattr(dataset, 'multi_video_mode', False)}")
-                if getattr(dataset, 'multi_video_mode', False):
-                    actual_video_filenames = dataset.get_video_paths(current_identifier) # current_identifier is SID
-                    video_filenames_str = ";".join(actual_video_filenames)
-                    averaged_row[groupby_col_name] = current_identifier
-                    averaged_row['video_filenames'] = video_filenames_str
-                else: # Single video mode
-                    averaged_row['video_name'] = current_identifier # current_identifier is filename
-
-                for column in metadata.columns:
-                    if pd.api.types.is_numeric_dtype(metadata[column]):
-                        # For numeric columns, compute mean
-                        averaged_row[column] = topk_metadata[column].mean()
-                    elif pd.api.types.is_string_dtype(metadata[column]):
-                        # For string columns, get most frequent value
-                        # Ensure there's at least one mode, otherwise, handle appropriately
-                        modes = topk_metadata[column].mode()
-                        averaged_row[column] = None if modes.empty else modes.iloc[0]
-                    else:
-                        # If not numeric or string, try to get the first value or handle as error
-                        # This part might need adjustment based on expected non-numeric/non-string data
-                        try:
-                            averaged_row[column] = topk_metadata[column].iloc[0] 
-                        except IndexError:
-                             averaged_row[column] = None # Or some other placeholder
-                        # For strictness: raise ValueError(f"Unsupported data type for averaging/aggregation: {metadata[column].dtype} in column {column}")
-                
-                all_averaged_metadata.append(averaged_row)
-        
-        # Convert list of averaged metadata to DataFrame
-        averaged_metadata_df = pd.DataFrame(all_averaged_metadata)
-        
-        # Reorder columns to have identifier and filenames first
-        if getattr(dataset, 'multi_video_mode', False):
-            cols_prefix = [groupby_col_name, 'video_filenames']
-        else:
-            cols_prefix = ['video_name']
-        
-        remaining_cols = [col for col in averaged_metadata_df.columns if col not in cols_prefix]
-        ordered_cols = cols_prefix + remaining_cols
-        averaged_metadata_df = averaged_metadata_df[ordered_cols]
-        
-        # Create output directory if it doesn't exist
-        os.makedirs(self.output_dir, exist_ok=True)
-        
-        # Save to CSV
-        output_path = os.path.join(self.output_dir, "averaged_metadata.csv")
-        averaged_metadata_df.to_csv(output_path, index=False)
-        print(f"Saved averaged metadata to: {output_path}")        
-        print("Inference completed")
+        """Run retrieval-style metadata inference with the video encoder."""
+        return run_retrieval_metadata_inference(
+            video_encoder=self.video_encoder,
+            val_loader=self.val_loader,
+            config=self.config,
+            device_id=self.device,
+            world_size=self.world_size,
+            output_dir=self.output_dir,
+        )

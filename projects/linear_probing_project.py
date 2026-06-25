@@ -587,9 +587,14 @@ class LinearProbingProject(BaseProject):
             # Fix mil_model keys: remove extra "module." and add top-level "module."
             elif key.startswith("mil_model.module."):
                 # Remove the middle "module." and add top-level "module."
-                inner_key = key.replace("mil_model.module.", "mil_model.")
+                inner_key = key.replace("mil_model.module.", "mil_model.", 1)
                 new_key = f"module.{inner_key}"
                 fixed_state_dict[new_key] = value
+
+            # Current checkpoints save the unwrapped VideoMILWrapper state_dict,
+            # but validation/resume loads into DDP(VideoMILWrapper).
+            elif key.startswith("mil_model."):
+                fixed_state_dict[f"module.{key}"] = value
 
             # Handle any other keys normally
             else:

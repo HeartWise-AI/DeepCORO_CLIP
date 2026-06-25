@@ -222,6 +222,38 @@ class TestLinearProbingProject(unittest.TestCase):
             ["video_encoder", "test_head"],
         )
 
+    def test_load_and_fix_checkpoint_accepts_old_and_new_mil_key_layouts(self):
+        checkpoint = {
+            "linear_probing": {
+                "video_encoder.weight": torch.tensor([1.0]),
+                "mil_model.heads.test_head.weight": torch.tensor([2.0]),
+                "mil_model.module.heads.legacy_head.weight": torch.tensor([3.0]),
+                "module.mil_model.heads.already_wrapped.weight": torch.tensor([4.0]),
+            },
+            "epoch": 7,
+        }
+
+        project = LinearProbingProject(self._config(), Mock())
+        with patch.object(project, "_load_checkpoint", return_value=checkpoint):
+            fixed = project._load_and_fix_checkpoint("/tmp/checkpoint.pt")
+
+        self.assertEqual(fixed["epoch"], 7)
+        self.assertEqual(
+            set(fixed["linear_probing"]),
+            {
+                "module.video_encoder.weight",
+                "module.mil_model.heads.test_head.weight",
+                "module.mil_model.heads.legacy_head.weight",
+                "module.mil_model.heads.already_wrapped.weight",
+            },
+        )
+        self.assertTrue(
+            torch.equal(
+                fixed["linear_probing"]["module.mil_model.heads.test_head.weight"],
+                torch.tensor([2.0]),
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -121,6 +121,13 @@ class VideoMILWrapper(torch.nn.Module):
                 num_instances=N,
                 device=embeddings.device,
             )
+            if index_mask is not None:
+                attention_mask = attention_mask & self._coerce_video_mask(
+                    video_mask=index_mask,
+                    batch_size=B,
+                    num_instances=N,
+                    device=embeddings.device,
+                )
         elif index_mask is not None:
             attention_mask = self._coerce_video_mask(
                 video_mask=index_mask,

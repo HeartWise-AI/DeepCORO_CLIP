@@ -163,6 +163,30 @@ class TestVideoMILWrapper(unittest.TestCase):
             )
         )
 
+    def test_intersects_flat_index_mask_with_explicit_video_mask(self):
+        mil_model = _RecordingMIL()
+        wrapper = VideoMILWrapper(_FlatVideoEncoder(), mil_model, num_videos=2)
+        videos = torch.zeros((2, 1, 2, 2, 1), dtype=torch.float32)
+        video_indices = torch.tensor([0, 1], dtype=torch.long)
+        video_mask = torch.tensor(
+            [
+                [False, True],
+                [True, True],
+            ],
+            dtype=torch.bool,
+        )
+
+        wrapper(videos, video_indices=video_indices, video_mask=video_mask)
+
+        expected_mask = torch.tensor(
+            [
+                [False, False],
+                [True, False],
+            ],
+            dtype=torch.bool,
+        )
+        self.assertTrue(torch.equal(mil_model.last_mask, expected_mask))
+
     def test_groups_flat_view_ids_with_video_indices(self):
         mil_model = _RecordingMIL()
         wrapper = VideoMILWrapper(_FlatVideoEncoder(), mil_model, num_videos=2)

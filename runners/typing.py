@@ -18,19 +18,19 @@ class Runner:
         start_epoch: int, 
         end_epoch: int
     ):
-        self.runner_type.train(
+        return self.runner_type.train(
             start_epoch=start_epoch, 
             end_epoch=end_epoch
         )
     
     def inference(self):
-        self.runner_type.inference()
+        return self.runner_type.inference()
         
     def validate(self):
-        self.runner_type.validate()
+        return self.runner_type.validate()
         
     def test(self):
-        self.runner_type.test()
+        return self.runner_type.test()
         
     def _run_epoch(
         self, 

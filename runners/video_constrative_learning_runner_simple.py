@@ -768,7 +768,7 @@ class VideoContrastiveLearningRunnerSimple:
             return None, 0, float("inf"), -1
 
         print(f"[Preview] Loading minimal info from checkpoint: {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
 
         wandb_run = checkpoint.get("wandb_run", None)
         start_epoch = checkpoint.get("epoch", -1) + 1
@@ -801,7 +801,7 @@ class VideoContrastiveLearningRunnerSimple:
             return
 
         print(f"[Full Load] Loading checkpoint from: {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location=device)
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
         video_encoder = training_setup["video_encoder"]
         text_encoder = training_setup["text_encoder"]

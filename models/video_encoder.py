@@ -409,7 +409,7 @@ class VideoEncoder(nn.Module):
 
         print(f"[VideoEncoder] ✅ Encoder checkpoint file found!")
         print(f"[VideoEncoder] Loading encoder checkpoint weights...")
-        checkpoint = torch.load(self.encoder_path, map_location="cpu")
+        checkpoint = torch.load(self.encoder_path, map_location="cpu", weights_only=False)
 
         # Handle different checkpoint formats
         if "model_state_dict" in checkpoint:

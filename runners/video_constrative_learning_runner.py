@@ -1254,7 +1254,7 @@ class VideoContrastiveLearningRunner:
             return
 
         print(f"[Full Load] Loading checkpoint from: {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location=device)
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
         video_encoder = training_setup["video_encoder"]
         text_encoder = training_setup["text_encoder"]

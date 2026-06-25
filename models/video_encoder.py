@@ -65,6 +65,7 @@ class VideoEncoder(nn.Module):
 
         # Add embedding_dim property
         self._embedding_dim: int = output_dim
+        self._finite_tensor_cache: Dict[str, torch.Tensor] = {}
         
         # Store RoPE configuration
         self.use_rope = use_rope
@@ -501,6 +502,24 @@ class VideoEncoder(nn.Module):
         """Get the embedding dimension."""
         return self._embedding_dim
 
+    def _sanitize_tensor(self, tensor: torch.Tensor, context: str = "tensor") -> torch.Tensor:
+        """Replace non-finite values using the last finite tensor for the same context."""
+        finite_mask = torch.isfinite(tensor)
+        if finite_mask.all():
+            self._finite_tensor_cache[context] = tensor.detach().clone()
+            return tensor
+
+        cached = self._finite_tensor_cache.get(context)
+        if cached is not None and cached.shape == tensor.shape:
+            replacement = cached.to(device=tensor.device, dtype=tensor.dtype)
+        else:
+            replacement = torch.zeros_like(tensor)
+
+        repaired = torch.where(finite_mask, tensor, replacement)
+        if torch.isfinite(repaired).all():
+            self._finite_tensor_cache[context] = repaired.detach().clone()
+        return repaired
+
     def get_tokens(self, x: torch.Tensor, mode: str = "patch", return_dict: bool = False) -> torch.Tensor | Dict[str, torch.Tensor]:
         """Return patch tokens while keeping study-level aggregation available."""
         prev_apply = self._apply_aggregator
@@ -580,16 +599,21 @@ class VideoEncoder(nn.Module):
         x = x.view(B * N, C, T, H, W)
 
         token_feats = self._extract_backbone_features(x)
+        token_feats = self._sanitize_tensor(token_feats, context="backbone_features")
         token_feats = self.proj(token_feats)
+        token_feats = self._sanitize_tensor(token_feats, context="projected_tokens")
         _, L, D_out = token_feats.shape
         token_feats = token_feats.view(B, N, L, D_out)
 
         per_video = self._pool_video_tokens(token_feats)
+        per_video = self._sanitize_tensor(per_video, context="per_video_tokens")
         patch_tokens = token_feats.reshape(B, N * L, D_out)
+        patch_tokens = self._sanitize_tensor(patch_tokens, context="patch_tokens")
 
         study_features = None
         if compute_aggregated and self.aggregator is not None:
             study_features = self._aggregate_video_features(per_video)
+            study_features = self._sanitize_tensor(study_features, context="study_features")
 
         return {
             "token_grid": token_feats,

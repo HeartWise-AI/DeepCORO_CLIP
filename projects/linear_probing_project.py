@@ -103,10 +103,21 @@ class VideoMILWrapper(torch.nn.Module):
         else:
             B, N, _ = embeddings.shape  # type: ignore[misc]
 
-        # Build a simple boolean mask that marks every video as valid.  In the
-        # future we could incorporate ``video_indices`` to create selective
-        # masks, e.g. when some videos are padded.
-        attention_mask = torch.ones((B, N), dtype=torch.bool, device=embeddings.device)
+        # Build a video-level mask that EXCLUDES padded slots.  When a study has
+        # fewer than ``num_videos`` real clips the dataloader appends exact-zero
+        # videos as padding; marking those invalid keeps the MIL attention/pooling
+        # from being diluted by blanks.  This makes the model robust to exams with
+        # few / short / sparse views (previously every slot, padding included, was
+        # marked valid — see git blame on this line).
+        if x.dim() == 6:  # multi-video input [B, N, F, H, W, C]
+            with torch.no_grad():
+                # PAD clips are all-zero; any real (normalised) clip has non-zero values.
+                valid = x.reshape(x.shape[0], x.shape[1], -1).abs().amax(dim=-1) > 0  # [B, N]
+            attention_mask = valid.to(device=embeddings.device)
+            # Safety: never leave a sample fully masked (degenerate all-zero edge case).
+            attention_mask[~attention_mask.any(dim=1)] = True
+        else:
+            attention_mask = torch.ones((B, N), dtype=torch.bool, device=embeddings.device)
 
         # ------------------------------------------------------------------
         # 4) Forward through the MIL head(s)
@@ -491,7 +502,20 @@ class LinearProbingProject(BaseProject):
 
         # Train the model
         if self.config.run_mode == RunMode.TRAIN:
-            runner.train(start_epoch=0, end_epoch=self.config.epochs)
+            start_epoch = 0
+            resume_path = getattr(self.config, "resume_checkpoint_path", None)
+            if resume_path:
+                ck = self._load_and_fix_checkpoint(resume_path)
+                runner.linear_probing.load_state_dict(ck["linear_probing"])
+                if ck.get("optimizer") is not None and runner.optimizer is not None:
+                    runner.optimizer.load_state_dict(ck["optimizer"])
+                if ck.get("scheduler") is not None and getattr(runner, "lr_scheduler", None) is not None:
+                    runner.lr_scheduler.load_state_dict(ck["scheduler"])
+                if ck.get("scaler") is not None and getattr(runner, "scaler", None) is not None:
+                    runner.scaler.load_state_dict(ck["scaler"])
+                start_epoch = int(ck.get("epoch", -1)) + 1
+                print(f"[RESUME] loaded {resume_path}; resuming at epoch {start_epoch}", flush=True)
+            runner.train(start_epoch=start_epoch, end_epoch=self.config.epochs)
         elif self.config.run_mode == RunMode.TEST:
             runner.test()
         elif self.config.run_mode == RunMode.VALIDATE:
@@ -528,17 +552,43 @@ class LinearProbingProject(BaseProject):
             if key.startswith("video_encoder."):
                 new_key = f"module.{key}"
                 fixed_state_dict[new_key] = value
-            
+
             # Fix mil_model keys: remove extra "module." and add top-level "module."
             elif key.startswith("mil_model.module."):
                 # Remove the middle "module." and add top-level "module."
                 inner_key = key.replace("mil_model.module.", "mil_model.")
                 new_key = f"module.{inner_key}"
                 fixed_state_dict[new_key] = value
-            
+
             # Handle any other keys normally
             else:
                 fixed_state_dict[key] = value
+
+        # Fix old cls_attention -> new cls_attention_within/across split
+        keys_to_add = {}
+        keys_to_remove = []
+        for key in list(fixed_state_dict.keys()):
+            # Map old single cls_attention to both within and across
+            if ".cls_attention." in key and ".cls_attention_within." not in key and ".cls_attention_across." not in key:
+                within_key = key.replace(".cls_attention.", ".cls_attention_within.")
+                across_key = key.replace(".cls_attention.", ".cls_attention_across.")
+                keys_to_add[within_key] = fixed_state_dict[key]
+                keys_to_add[across_key] = fixed_state_dict[key].clone()
+                keys_to_remove.append(key)
+            # Map old single cls_norm to both within and across
+            elif ".cls_norm." in key and ".cls_norm_within." not in key and ".cls_norm_across." not in key:
+                within_key = key.replace(".cls_norm.", ".cls_norm_within.")
+                across_key = key.replace(".cls_norm.", ".cls_norm_across.")
+                keys_to_add[within_key] = fixed_state_dict[key]
+                keys_to_add[across_key] = fixed_state_dict[key].clone()
+                keys_to_remove.append(key)
+            # Drop old pre_agg_norm (removed from new architecture)
+            elif ".pre_agg_norm." in key:
+                keys_to_remove.append(key)
+
+        for k in keys_to_remove:
+            del fixed_state_dict[k]
+        fixed_state_dict.update(keys_to_add)
         
         checkpoint["linear_probing"] = fixed_state_dict
         return checkpoint

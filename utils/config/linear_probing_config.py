@@ -113,3 +113,6 @@ class LinearProbingConfig(HeartWiseConfig):
     # Pre-computed dataset statistics (optional - if None, will be calculated)
     dataset_mean: List[float] = None  # Pre-computed mean for normalization
     dataset_std: List[float] = None  # Pre-computed std for normalization
+
+    # Optional full-checkpoint resume for TRAIN mode (model+optimizer+scheduler+scaler+epoch)
+    resume_checkpoint_path: Optional[str] = None

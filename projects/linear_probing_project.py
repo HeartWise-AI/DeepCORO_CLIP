@@ -75,10 +75,11 @@ class VideoMILWrapper(torch.nn.Module):
         embeddings: torch.Tensor = self.video_encoder(x)
         index_mask: Optional[torch.Tensor] = None
         if video_indices is not None and x.dim() == 5:
-            embeddings, index_mask = self._regroup_flat_embeddings(
+            embeddings, index_mask, view_ids = self._regroup_flat_embeddings(
                 embeddings=embeddings,
                 video_indices=video_indices,
                 video_mask=video_mask,
+                view_ids=view_ids,
             )
 
         # ------------------------------------------------------------------
@@ -139,6 +140,13 @@ class VideoMILWrapper(torch.nn.Module):
         else:
             attention_mask = torch.ones((B, N), dtype=torch.bool, device=embeddings.device)
 
+        view_ids = self._coerce_view_ids(
+            view_ids=view_ids,
+            batch_size=B,
+            num_instances=N,
+            device=embeddings.device,
+        )
+
         # ------------------------------------------------------------------
         # 4) Forward through the MIL head(s)
         # ------------------------------------------------------------------
@@ -174,7 +182,8 @@ class VideoMILWrapper(torch.nn.Module):
         embeddings: torch.Tensor,
         video_indices: torch.Tensor,
         video_mask: Optional[torch.Tensor] = None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+        view_ids: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
         """Group flat per-video encoder outputs into [B, N, ...] MIL layout."""
         if video_indices.ndim != 1:
             raise ValueError(
@@ -214,7 +223,76 @@ class VideoMILWrapper(torch.nn.Module):
             device=embeddings.device,
         )
         index_mask[video_indices, slot_indices] = True
-        return grouped, index_mask
+
+        grouped_view_ids = self._regroup_flat_view_ids(
+            view_ids=view_ids,
+            video_indices=video_indices,
+            slot_indices=slot_indices,
+            batch_size=batch_size,
+            num_instances=num_instances,
+            device=embeddings.device,
+        )
+        return grouped, index_mask, grouped_view_ids
+
+    def _regroup_flat_view_ids(
+        self,
+        view_ids: Optional[torch.Tensor],
+        video_indices: torch.Tensor,
+        slot_indices: torch.Tensor,
+        batch_size: int,
+        num_instances: int,
+        device: torch.device,
+    ) -> Optional[torch.Tensor]:
+        """Group flat per-video view IDs into [B, N], preserving shaped inputs."""
+        if view_ids is None:
+            return None
+
+        view_ids = view_ids.to(device=device, dtype=torch.long)
+        if view_ids.ndim == 2:
+            return view_ids
+        if view_ids.ndim != 1:
+            raise ValueError(f"view_ids must be 1D or 2D, got shape {tuple(view_ids.shape)}")
+        if view_ids.numel() != video_indices.numel():
+            raise ValueError(
+                f"view_ids length {view_ids.numel()} does not match "
+                f"flat video count {video_indices.numel()}"
+            )
+
+        pad_id = int(getattr(self.mil_model, "view_pad_id", 0))
+        grouped_view_ids = torch.full(
+            (batch_size, num_instances),
+            pad_id,
+            dtype=torch.long,
+            device=device,
+        )
+        grouped_view_ids[video_indices, slot_indices] = view_ids
+        return grouped_view_ids
+
+    @staticmethod
+    def _coerce_view_ids(
+        view_ids: Optional[torch.Tensor],
+        batch_size: int,
+        num_instances: int,
+        device: torch.device,
+    ) -> Optional[torch.Tensor]:
+        """Align optional per-video view IDs with the MIL instance layout."""
+        if view_ids is None:
+            return None
+
+        view_ids = view_ids.to(device=device, dtype=torch.long)
+        expected_shape = (batch_size, num_instances)
+        if tuple(view_ids.shape) == expected_shape:
+            return view_ids
+
+        if view_ids.ndim == 2 and view_ids.shape[0] == batch_size and num_instances == 1:
+            # The encoder has already collapsed multiple videos into one
+            # embedding, so per-video view IDs no longer have a valid axis.
+            return None
+
+        raise ValueError(
+            f"view_ids shape {tuple(view_ids.shape)} does not match "
+            f"MIL instance shape {expected_shape}"
+        )
 
     @staticmethod
     def _slot_indices_for_flat_videos(

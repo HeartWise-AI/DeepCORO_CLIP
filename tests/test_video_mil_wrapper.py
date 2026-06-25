@@ -32,6 +32,7 @@ class _RecordingMIL(torch.nn.Module):
         super().__init__()
         self.last_mask = None
         self.last_embeddings = None
+        self.last_view_ids = None
 
     def forward(
         self,
@@ -41,6 +42,7 @@ class _RecordingMIL(torch.nn.Module):
     ) -> dict[str, torch.Tensor]:
         self.last_mask = None if mask is None else mask.detach().cpu()
         self.last_embeddings = embeddings.detach().cpu()
+        self.last_view_ids = None if view_ids is None else view_ids.detach().cpu()
         return {"test_head": embeddings.new_zeros((embeddings.shape[0], 1))}
 
 
@@ -95,6 +97,31 @@ class TestVideoMILWrapper(unittest.TestCase):
 
         expected_mask = torch.tensor([[True], [False]], dtype=torch.bool)
         self.assertTrue(torch.equal(mil_model.last_mask, expected_mask))
+        self.assertIsNone(mil_model.last_view_ids)
+
+    def test_drops_per_video_view_ids_for_aggregated_embeddings(self):
+        mil_model = _RecordingMIL()
+        wrapper = VideoMILWrapper(_AggregatingVideoEncoder(), mil_model, num_videos=3)
+        videos = torch.zeros((2, 3, 1, 2, 2, 1), dtype=torch.float32)
+        explicit_mask = torch.tensor(
+            [
+                [False, True, False],
+                [False, False, False],
+            ],
+            dtype=torch.bool,
+        )
+        view_ids = torch.tensor([[0, 1, 2], [2, 1, 0]], dtype=torch.long)
+
+        wrapper(videos, video_mask=explicit_mask, view_ids=view_ids)
+
+        self.assertEqual(mil_model.last_embeddings.shape, torch.Size([2, 1, 4]))
+        self.assertTrue(
+            torch.equal(
+                mil_model.last_mask,
+                torch.tensor([[True], [False]], dtype=torch.bool),
+            )
+        )
+        self.assertIsNone(mil_model.last_view_ids)
 
     def test_groups_flat_embeddings_with_video_indices(self):
         mil_model = _RecordingMIL()
@@ -135,6 +162,24 @@ class TestVideoMILWrapper(unittest.TestCase):
                 ),
             )
         )
+
+    def test_groups_flat_view_ids_with_video_indices(self):
+        mil_model = _RecordingMIL()
+        wrapper = VideoMILWrapper(_FlatVideoEncoder(), mil_model, num_videos=2)
+        videos = torch.zeros((3, 1, 2, 2, 1), dtype=torch.float32)
+        video_indices = torch.tensor([0, 0, 1], dtype=torch.long)
+        view_ids = torch.tensor([3, 4, 5], dtype=torch.long)
+
+        wrapper(videos, video_indices=video_indices, view_ids=view_ids)
+
+        expected_view_ids = torch.tensor(
+            [
+                [3, 4],
+                [5, 0],
+            ],
+            dtype=torch.long,
+        )
+        self.assertTrue(torch.equal(mil_model.last_view_ids, expected_view_ids))
 
 
 if __name__ == "__main__":

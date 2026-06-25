@@ -356,6 +356,7 @@ class LinearProbingRunner:
                        or [B, C, F, H, W] for single-video
                 targets: Dict of tensors [B, ...]
                 video_indices: Optional tensor [B * num_videos] mapping videos to batch indices
+                video_mask: Optional tensor [B, num_videos] marking real videos
                 video_fname: List of file paths
                 
         Returns:
@@ -374,9 +375,14 @@ class LinearProbingRunner:
         if view_ids is not None:
             view_ids = view_ids.to(self.config.device)
 
+        video_mask = batch.get('video_mask', None)
+        if video_mask is not None:
+            video_mask = video_mask.to(self.config.device, dtype=torch.bool)
+
         return {
             "batch_video": batch_video,
             "batch_targets": batch_targets,
+            "video_mask": video_mask,
             "view_ids": view_ids,
         }
     
@@ -397,6 +403,7 @@ class LinearProbingRunner:
         self,
         batch_video: torch.Tensor,
         batch_targets: Dict[str, torch.Tensor],
+        video_mask: torch.Tensor = None,
         view_ids: torch.Tensor = None,
     ) -> StepFnResults:
         # Clear gradients only if this is the first step in accumulation
@@ -411,7 +418,7 @@ class LinearProbingRunner:
                     batch_video = batch_video.to(dtype=torch.float16)
 
                 outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
-                    batch_video, view_ids=view_ids
+                    batch_video, video_mask=video_mask, view_ids=view_ids
                 )
             except Exception as e:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")
@@ -479,6 +486,7 @@ class LinearProbingRunner:
         self,
         batch_video: torch.Tensor,
         batch_targets: Dict[str, torch.Tensor],
+        video_mask: torch.Tensor = None,
         view_ids: torch.Tensor = None,
     ) -> StepFnResults:
         # Forward pass with autocast for mixed precision
@@ -489,7 +497,7 @@ class LinearProbingRunner:
                     batch_video = batch_video.to(dtype=torch.float16)
 
                 outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
-                    batch_video, view_ids=view_ids
+                    batch_video, video_mask=video_mask, view_ids=view_ids
                 )
             except Exception as e:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")
@@ -536,6 +544,7 @@ class LinearProbingRunner:
         self,
         batch_video: torch.Tensor,
         batch_targets: Dict[str, torch.Tensor],  # Unused - parsed to match signature
+        video_mask: torch.Tensor = None,
         view_ids: torch.Tensor = None,
     ) -> StepFnResults:
         # Forward pass with autocast for mixed precision
@@ -546,7 +555,7 @@ class LinearProbingRunner:
                     batch_video = batch_video.to(dtype=torch.float16)
 
                 outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
-                    batch_video, view_ids=view_ids
+                    batch_video, video_mask=video_mask, view_ids=view_ids
                 )
             except Exception as e:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")

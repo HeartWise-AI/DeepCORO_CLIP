@@ -193,6 +193,7 @@ class TestVideoDataset(unittest.TestCase):
         self.assertIn("videos", collated)
         self.assertIn("targets", collated)
         self.assertIn("video_fname", collated)
+        self.assertIn("video_mask", collated)
         
         # Check shapes and types
         self.assertEqual(collated["videos"].shape, torch.Size([2, 32, 224, 224, 3]))
@@ -201,6 +202,34 @@ class TestVideoDataset(unittest.TestCase):
         self.assertIn("target_label", collated["targets"])
         self.assertEqual(collated["targets"]["target_label"].shape, torch.Size([2]))
         self.assertEqual(len(collated["video_fname"]), 2)
+        self.assertTrue(torch.equal(collated["video_mask"], torch.ones((2, 1), dtype=torch.bool)))
+
+    def test_custom_collate_fn_emits_multi_video_mask(self):
+        """Multi-video collate should mark PAD slots invalid explicitly."""
+        batch = [
+            (
+                np.ones((3, 2, 4, 4, 1), dtype=np.float32),
+                {"target_label": 0.5},
+                ["video1.mp4", "PAD", "video3.mp4"],
+            ),
+            (
+                np.ones((3, 2, 4, 4, 1), dtype=np.float32),
+                {"target_label": 0.7},
+                ["PAD", "video5.mp4", "PAD"],
+            ),
+        ]
+
+        collated = custom_collate_fn(batch)
+
+        expected_mask = torch.tensor(
+            [
+                [True, False, True],
+                [False, True, False],
+            ],
+            dtype=torch.bool,
+        )
+        self.assertEqual(collated["videos"].shape, torch.Size([2, 3, 2, 4, 4, 1]))
+        self.assertTrue(torch.equal(collated["video_mask"], expected_mask))
 
     def test_inference_mode_consistency(self):
         """Test that inference mode works consistently for both single and multi-video modes."""
@@ -254,4 +283,4 @@ class TestVideoDataset(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    unittest.main() 
+    unittest.main()

@@ -437,7 +437,9 @@ def custom_collate_fn(
         view_classes_list = None
 
     # Multi-video: videos[0] is np.ndarray [num_videos, F, H, W, C]
+    is_multi_video_batch = False
     if isinstance(videos[0], np.ndarray) and videos[0].ndim == 5:
+        is_multi_video_batch = True
         videos_tensor = torch.stack([torch.from_numpy(v) for v in videos])  # [B, num_videos, F, H, W, C]
         B = videos_tensor.shape[0]
         N = videos_tensor.shape[1] # num_videos
@@ -450,6 +452,13 @@ def custom_collate_fn(
         raise ValueError(f"Unexpected video format or shape: type {type(videos[0])}, ndim {videos[0].ndim if isinstance(videos[0], np.ndarray) else 'N/A'}")
 
     video_indices = torch.arange(B).repeat_interleave(N) if N > 1 else None
+    if is_multi_video_batch:
+        video_mask = torch.tensor(
+            [[video_path != "PAD" for video_path in sample_paths] for sample_paths in paths],
+            dtype=torch.bool,
+        )
+    else:
+        video_mask = torch.ones((B, N), dtype=torch.bool)
 
     # Convert targets to tensor
     temp_targets_dict: dict = defaultdict(list)
@@ -501,6 +510,7 @@ def custom_collate_fn(
         "videos": videos_tensor,
         "targets": final_targets_dict,
         "video_indices": video_indices,
+        "video_mask": video_mask,
         "video_fname": paths,
     }
     if view_ids_tensor is not None:

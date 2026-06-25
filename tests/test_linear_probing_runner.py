@@ -126,6 +126,38 @@ class TestLinearProbingRunner(unittest.TestCase):
         # This should return False for empty scheduler name
         self.assertFalse(runner._scheduler_is_per_iteration())
 
+    def test_preprocess_inputs_preserves_video_mask(self):
+        """Video masks should be moved to device and kept boolean."""
+        self.config.device = torch.device("cpu")
+        runner = LinearProbingRunner(
+            config=self.config,
+            wandb_wrapper=self.wandb_wrapper,
+            train_loader=self.train_loader,
+            val_loader=self.val_loader,
+            linear_probing=self.linear_probing,
+            optimizer=self.optimizer,
+            scaler=self.scaler,
+            lr_scheduler=self.lr_scheduler,
+            loss_fn=self.loss_fn,
+            output_dir=self.output_dir,
+        )
+        batch = {
+            "videos": torch.zeros((2, 3, 1, 2, 2, 1)),
+            "targets": {"test_head": torch.tensor([0, 1])},
+            "video_mask": torch.tensor([[1, 0, 1], [0, 1, 0]], dtype=torch.int64),
+        }
+
+        processed = runner._preprocess_inputs(batch)
+
+        self.assertEqual(processed["video_mask"].dtype, torch.bool)
+        self.assertEqual(processed["video_mask"].device.type, "cpu")
+        self.assertTrue(
+            torch.equal(
+                processed["video_mask"],
+                torch.tensor([[True, False, True], [False, True, False]]),
+            )
+        )
+
 
 if __name__ == '__main__':
-    unittest.main() 
+    unittest.main()

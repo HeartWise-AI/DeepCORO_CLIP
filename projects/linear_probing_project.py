@@ -50,6 +50,7 @@ class VideoMILWrapper(torch.nn.Module):
         self,
         x: torch.Tensor,
         video_indices: Optional[torch.Tensor] = None,
+        video_mask: Optional[torch.Tensor] = None,
         view_ids: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """Wrapper forward pass.
@@ -62,6 +63,8 @@ class VideoMILWrapper(torch.nn.Module):
         ----
         x:  Input videos tensor.
         video_indices:  Optional mapping from videos to batch items.
+        video_mask: Optional ``[B, N]`` boolean tensor where ``True`` marks
+            a real video and ``False`` marks a padded/skipped slot.
         view_ids:  Optional ``[B, N]`` long tensor of per-video view class IDs
             (EchoJEPA-style angle embeddings).  Forwarded to the MIL model.
         """
@@ -103,19 +106,22 @@ class VideoMILWrapper(torch.nn.Module):
         else:
             B, N, _ = embeddings.shape  # type: ignore[misc]
 
-        # Build a video-level mask that EXCLUDES padded slots.  When a study has
-        # fewer than ``num_videos`` real clips the dataloader appends exact-zero
-        # videos as padding; marking those invalid keeps the MIL attention/pooling
-        # from being diluted by blanks.  This makes the model robust to exams with
-        # few / short / sparse views (previously every slot, padding included, was
-        # marked valid — see git blame on this line).
-        if x.dim() == 6:  # multi-video input [B, N, F, H, W, C]
+        if video_mask is not None:
+            attention_mask = self._coerce_video_mask(
+                video_mask=video_mask,
+                batch_size=B,
+                num_instances=N,
+                device=embeddings.device,
+            )
+        elif x.dim() == 6:  # multi-video input [B, N, F, H, W, C]
             with torch.no_grad():
-                # PAD clips are all-zero; any real (normalised) clip has non-zero values.
-                valid = x.reshape(x.shape[0], x.shape[1], -1).abs().amax(dim=-1) > 0  # [B, N]
-            attention_mask = valid.to(device=embeddings.device)
-            # Safety: never leave a sample fully masked (degenerate all-zero edge case).
-            attention_mask[~attention_mask.any(dim=1)] = True
+                inferred_mask = x.reshape(x.shape[0], x.shape[1], -1).abs().amax(dim=-1) > 0
+            attention_mask = self._coerce_video_mask(
+                video_mask=inferred_mask,
+                batch_size=B,
+                num_instances=N,
+                device=embeddings.device,
+            )
         else:
             attention_mask = torch.ones((B, N), dtype=torch.bool, device=embeddings.device)
 
@@ -123,6 +129,31 @@ class VideoMILWrapper(torch.nn.Module):
         # 4) Forward through the MIL head(s)
         # ------------------------------------------------------------------
         return self.mil_model(embeddings, mask=attention_mask, view_ids=view_ids)
+
+    @staticmethod
+    def _coerce_video_mask(
+        video_mask: torch.Tensor,
+        batch_size: int,
+        num_instances: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """Align a dataloader video mask with the tensor shape seen by MIL."""
+        attention_mask = video_mask.to(device=device, dtype=torch.bool)
+        expected_shape = (batch_size, num_instances)
+        if tuple(attention_mask.shape) == expected_shape:
+            return attention_mask
+
+        if (
+            attention_mask.ndim == 2
+            and attention_mask.shape[0] == batch_size
+            and num_instances == 1
+        ):
+            return attention_mask.any(dim=1, keepdim=True)
+
+        raise ValueError(
+            f"video_mask shape {tuple(attention_mask.shape)} does not match "
+            f"MIL instance shape {expected_shape}"
+        )
 
 @ProjectRegistry.register("DeepCORO_video_linear_probing")
 @ProjectRegistry.register("DeepCORO_video_linear_probing_cardio_syntax")

@@ -1062,11 +1062,8 @@ class VideoContrastiveLearningRunnerSimple:
         )
 
     def validate(self):
-        """
-        Optional method for a dedicated validation-only routine.
-        Currently unimplemented.
-        """
-        raise NotImplementedError("Validation is not implemented for this runner")
+        """Run a dedicated validation epoch."""
+        return self._run_epoch(mode=RunMode.VALIDATE, epoch=0)
 
     def inference(self):
         """

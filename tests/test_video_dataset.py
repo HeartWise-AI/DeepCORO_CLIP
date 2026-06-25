@@ -241,6 +241,40 @@ class TestVideoDataset(unittest.TestCase):
         self.assertEqual(len(collated["video_fname"]), 2)
         self.assertTrue(torch.equal(collated["video_mask"], torch.ones((2, 1), dtype=torch.bool)))
 
+    def test_single_video_view_column_emits_view_ids(self):
+        data = pd.read_csv(self.temp_csv_path, sep="α", engine="python")
+        data["view_class"] = ["AP", "RAO Straight", "Other"]
+        data.to_csv(self.temp_csv_path, sep="α", index=False)
+
+        dataset = VideoDataset(
+            data_filename=self.temp_csv_path,
+            split="train",
+            target_label=["target_label"],
+            datapoint_loc_label="target_video_path",
+            view_column="view_class",
+            mean=self.mean,
+            std=self.std,
+        )
+
+        sample_0 = dataset[0]
+        sample_1 = dataset[1]
+        self.assertEqual(len(sample_0), 4)
+        self.assertEqual(sample_0[3], ["AP"])
+
+        collated = custom_collate_fn(
+            [sample_0, sample_1],
+            view_labels_map={"AP": 0, "RAO Straight": 1},
+            num_view_classes=2,
+        )
+
+        self.assertEqual(collated["videos"].shape, torch.Size([2, 32, 224, 224, 3]))
+        self.assertTrue(
+            torch.equal(
+                collated["view_ids"],
+                torch.tensor([[0], [1]], dtype=torch.long),
+            )
+        )
+
     def test_custom_collate_fn_emits_multi_video_mask(self):
         """Multi-video collate should mark PAD slots invalid explicitly."""
         batch = [

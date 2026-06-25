@@ -122,7 +122,7 @@ class VideoDataset(torch.utils.data.Dataset):
             For multi-video: filenames is a list of lists of filenames per group
             For single-video: filenames is a list of filenames
             For inference mode: outcomes is a list of None values (consistent between modes)
-            view_classes: parallel list of per-video view class strings (multi-video only), or None
+            view_classes: parallel list of per-video view class strings, or None
         """
         # Read the "α" separated file using pandas
         file_path = os.path.join(self.filename)
@@ -211,6 +211,7 @@ class VideoDataset(torch.utils.data.Dataset):
             # Original single-video logic
             fnames = []
             outcomes = []
+            view_classes = [] if has_view_column else None
 
             for _, row in split_dataset.iterrows():
                 file_name = row[filename_col]
@@ -218,6 +219,10 @@ class VideoDataset(torch.utils.data.Dataset):
                 if not os.path.exists(file_name):
                     print(f"Skipping video {file_name} because file does not exist.")
                     continue
+                view_class = None
+                if has_view_column:
+                    view_val = row[self.view_column]
+                    view_class = str(view_val) if not pd.isna(view_val) else "Other"
 
                 if target_indices is not None:
                     row_outcomes = {}
@@ -234,17 +239,21 @@ class VideoDataset(torch.utils.data.Dataset):
 
                     outcomes.append(row_outcomes)
                     fnames.append(file_name)
+                    if has_view_column:
+                        view_classes.append(view_class)
 
                 else:
-                    # Inference mode or no taget labels
+                    # Inference mode or no target labels
                     fnames.append(file_name)
+                    if has_view_column:
+                        view_classes.append(view_class)
 
             if not target_indices:
                 # For inference mode, return a list of None values to maintain consistency
                 # with multi-video mode and avoid TypeError in __getitem__
-                return fnames, [None] * len(fnames), None, None
+                return fnames, [None] * len(fnames), None, view_classes
 
-            return fnames, outcomes, target_indices, None
+            return fnames, outcomes, target_indices, view_classes
 
     def _validate_all_videos(self):
         print("Validating all videos in dataset...")
@@ -426,6 +435,13 @@ class VideoDataset(torch.utils.data.Dataset):
             except Exception as e:
                 raise RuntimeError(f"Failed to load video {video_fname}: {str(e)}") from e
 
+            if self.view_classes is not None:
+                return (
+                    video,
+                    self.outcomes[actual_idx],
+                    video_fname,
+                    [self.view_classes[actual_idx]],
+                )
             return video, self.outcomes[actual_idx], video_fname
     
 def custom_collate_fn(

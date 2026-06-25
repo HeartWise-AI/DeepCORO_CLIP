@@ -286,44 +286,67 @@ class MultiInstanceLinearProbing(nn.Module):
         Returns:
             Tensor of shape [B, D] or [B, 2*D] for hybrid pooling containing aggregated features
         """
-        if mask is None:
-            # If no mask provided, treat all instances as valid
-            mask = torch.ones(x.shape[0], x.shape[1], dtype=torch.bool, device=x.device)
-        
-        # Ensure mask has correct shape and type
-        if mask.shape != x.shape[:2]:
-            raise ValueError(
-                f"Mask shape {mask.shape} does not match input shape {x.shape[:2]}"
-            )
-        if mask.dtype != torch.bool:
-            mask = mask.bool()
+        mask = self._prepare_instance_mask(x, mask)
             
         # Handle empty sequences (no valid instances)
         if not mask.any():
-            output_dim = 2 * x.shape[2] if "+" in self.pooling_mode else x.shape[2]
-            return torch.zeros(
-                x.shape[0], output_dim, 
-                dtype=x.dtype, 
-                device=x.device
-            )
+            return x.new_zeros((x.shape[0], self._pooled_output_dim(x)))
             
         # Handle hybrid pooling modes
         if "+" in self.pooling_mode:
-            return self._hybrid_pooling(x, mask)
+            pooled = self._hybrid_pooling(x, mask)
             
-        if self.pooling_mode == "cls_token":
-            return self._cls_token_pooling(x, mask)
+        elif self.pooling_mode == "cls_token":
+            pooled = self._cls_token_pooling(x, mask)
             
         elif self.pooling_mode == "mean":
-            return self._mean_pooling(x, mask)
+            pooled = self._mean_pooling(x, mask)
             
         elif self.pooling_mode == "max":
-            return self._max_pooling(x, mask)
+            pooled = self._max_pooling(x, mask)
             
         elif self.pooling_mode == "attention":
-            return self._attention_pooling(x, mask)
+            pooled = self._attention_pooling(x, mask)
             
-        raise RuntimeError("Invalid pooling_mode – this should never happen")
+        else:
+            raise RuntimeError("Invalid pooling_mode - this should never happen")
+
+        return self._zero_empty_samples(pooled, mask)
+
+    def _prepare_instance_mask(
+        self, x: torch.Tensor, mask: Optional[torch.Tensor]
+    ) -> torch.Tensor:
+        """Return a boolean [B, N] mask where True means a valid instance."""
+        expected_shape = x.shape[:2]
+        if mask is None:
+            return torch.ones(expected_shape, dtype=torch.bool, device=x.device)
+
+        if mask.shape != expected_shape:
+            raise ValueError(
+                f"Mask shape {mask.shape} does not match input shape {expected_shape}"
+            )
+        return mask.to(device=x.device, dtype=torch.bool)
+
+    def _pooled_output_dim(self, x: torch.Tensor) -> int:
+        """Feature dimension produced by the configured pooling path."""
+        feature_dim = x.shape[-1]
+        return 2 * feature_dim if "+" in self.pooling_mode else feature_dim
+
+    @staticmethod
+    def _zero_empty_samples(
+        pooled: torch.Tensor, mask: torch.Tensor
+    ) -> torch.Tensor:
+        """Force rows with no valid instances to zero after pooling."""
+        empty_samples = ~mask.any(dim=1)
+        if empty_samples.any():
+            pooled = pooled.clone()
+            pooled[empty_samples] = 0
+        return pooled
+
+    @staticmethod
+    def _mask_fill_value(tensor: torch.Tensor) -> float:
+        """Finite low value for masked logits that works across float dtypes."""
+        return torch.finfo(tensor.dtype).min
 
     def _hybrid_pooling(
         self, x: torch.Tensor, mask: torch.Tensor
@@ -393,22 +416,9 @@ class MultiInstanceLinearProbing(nn.Module):
         cls_tokens_sample = self.cls_token.expand(B, -1, -1)
         x_with_cls_sample = torch.cat([cls_tokens_sample, video_representations], dim=1)
         
-        # Handle edge case: all videos masked
-        if mask is not None:
-            cls_mask = torch.ones(B, 1, dtype=torch.bool, device=x.device)
-            extended_mask = torch.cat([cls_mask, mask], dim=1)
-            
-            # Check for samples with all videos masked
-            if (~extended_mask[:, 1:]).all(dim=1).any():
-                # Fallback: return zeros for samples with no valid videos
-                all_masked_samples = (~extended_mask[:, 1:]).all(dim=1)
-                fallback_output = torch.zeros(B, D, dtype=x.dtype, device=x.device)
-                if all_masked_samples.all():
-                    return fallback_output
-                    
-            key_padding_mask = ~extended_mask
-        else:
-            key_padding_mask = None
+        cls_mask = torch.ones(B, 1, dtype=torch.bool, device=x.device)
+        extended_mask = torch.cat([cls_mask, mask], dim=1)
+        key_padding_mask = ~extended_mask
         
         # Apply across-video attention
         attention_layer = (self.cls_attention_across if self.separate_video_attention 
@@ -430,7 +440,8 @@ class MultiInstanceLinearProbing(nn.Module):
             sample_attn_out = norm_layer(sample_attn_out)
             
         cls_output = sample_attn_out[:, 0, :]
-        return self.cls_dropout(cls_output)
+        cls_output = self.cls_dropout(cls_output)
+        return self._zero_empty_samples(cls_output, mask)
 
     def _standard_cls_token_pooling(
         self, x: torch.Tensor, mask: torch.Tensor
@@ -445,12 +456,6 @@ class MultiInstanceLinearProbing(nn.Module):
         cls_mask = torch.ones(B, 1, dtype=torch.bool, device=x.device)
         extended_mask = torch.cat([cls_mask, mask], dim=1)
         
-        if (~extended_mask[:, 1:]).all(dim=1).any():
-            # Fallback for samples with all instances masked
-            all_masked_samples = (~extended_mask[:, 1:]).all(dim=1)
-            if all_masked_samples.all():
-                return torch.zeros(B, D, dtype=x.dtype, device=x.device)
-                
         key_padding_mask = ~extended_mask
         
         # Choose the appropriate attention layer based on configuration
@@ -475,20 +480,20 @@ class MultiInstanceLinearProbing(nn.Module):
             attn_out = norm_layer(attn_out)
             
         cls_output = attn_out[:, 0, :]
-        return self.cls_dropout(cls_output)
+        cls_output = self.cls_dropout(cls_output)
+        return self._zero_empty_samples(cls_output, mask)
 
     def _mean_pooling(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """Masked mean pooling."""
         mask_f = mask.unsqueeze(-1).float()
         sum_x = (x * mask_f).sum(dim=1)
         count = mask_f.sum(dim=1).clamp(min=1.0)
-        return sum_x / count
+        return self._zero_empty_samples(sum_x / count, mask)
         
     def _max_pooling(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """Masked max pooling."""
-        x_masked = x.clone()
-        x_masked[~mask] = float('-inf')
-        return x_masked.max(dim=1)[0]
+        x_masked = x.masked_fill(~mask.unsqueeze(-1), self._mask_fill_value(x))
+        return self._zero_empty_samples(x_masked.max(dim=1)[0], mask)
         
     def _attention_pooling(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """Gated attention pooling.""" 
@@ -498,13 +503,14 @@ class MultiInstanceLinearProbing(nn.Module):
         # Standard 3D attention pooling
         A_V = torch.tanh(self.attention_V(x))
         A_U = torch.sigmoid(self.attention_U(x))
-        A = self.attention_w(A_V * A_U)
-        
-        A = A.masked_fill(~mask.unsqueeze(-1), float('-inf'))
-        A = F.softmax(A, dim=1)
-        A = self.attn_dropout(A)
-        
-        return (A * x).sum(dim=1)
+        scores = self.attention_w(A_V * A_U).squeeze(-1)
+
+        scores = scores.masked_fill(~mask, self._mask_fill_value(scores))
+        weights = F.softmax(scores, dim=1).unsqueeze(-1)
+        weights = weights.masked_fill(~mask.unsqueeze(-1), 0.0)
+        weights = self.attn_dropout(weights)
+
+        return self._zero_empty_samples((weights * x).sum(dim=1), mask)
 
     def _hierarchical_attention_pooling(
         self, x: torch.Tensor, mask: torch.Tensor
@@ -525,15 +531,14 @@ class MultiInstanceLinearProbing(nn.Module):
         # Video-level attention across videos
         A_V = torch.tanh(self.attention_V(video_emb))
         A_U = torch.sigmoid(self.attention_U(video_emb))
-        A = self.attention_w(A_V * A_U)
-        
-        if mask is not None:
-            A = A.masked_fill(~mask.unsqueeze(-1), float("-inf"))
-            
-        A = F.softmax(A, dim=1)
-        A = self.attn_dropout(A)
-        
-        return (A * video_emb).sum(dim=1)
+        scores = self.attention_w(A_V * A_U).squeeze(-1)
+
+        scores = scores.masked_fill(~mask, self._mask_fill_value(scores))
+        weights = F.softmax(scores, dim=1).unsqueeze(-1)
+        weights = weights.masked_fill(~mask.unsqueeze(-1), 0.0)
+        weights = self.attn_dropout(weights)
+
+        return self._zero_empty_samples((weights * video_emb).sum(dim=1), mask)
 
     def _reset_parameters(self):
         """Initialize all parameters (Xavier for Linear layers)."""

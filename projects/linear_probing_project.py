@@ -165,9 +165,26 @@ class LinearProbingProject(BaseProject):
     ):
         super().__init__(config, wandb_wrapper)
 
+    def _disable_encoder_aggregation_for_mil(self) -> None:
+        """Linear probing must preserve per-instance encoder outputs for MIL."""
+        if not getattr(self.config, "aggregate_videos_tokens", False):
+            return
+
+        if self.config.is_ref_device:
+            print(
+                "[WARNING] aggregate_videos_tokens=True detected but "
+                "should be False for linear-probing. This is only used for CLIP. "
+                "Overriding to False so that the VideoEncoder preserves "
+                "per-instance tokens. This override is logged to wandb."
+            )
+        self.config.aggregate_videos_tokens = False
+        if self.wandb_wrapper.is_initialized():
+            self.wandb_wrapper.log({"config/aggregate_videos_tokens_override": True})
+
     def _setup_training_objects(
         self
     )->dict[str, Any]:
+        self._disable_encoder_aggregation_for_mil()
                 
         # Calculate dataset statistics
         mean, std = calculate_dataset_statistics_ddp(self.config)        
@@ -375,26 +392,6 @@ class LinearProbingProject(BaseProject):
             )
         )
 
-        # --------------------------------------------------------------
-        # Linear-probing *must* receive per-video (or per-patch) tokens so
-        # that the downstream MIL module can do its own aggregation.  If the
-        # YAML accidentally sets ``aggregate_videos_tokens=True`` we disable
-        # it and emit a warning instead of failing later with shape errors.
-        # --------------------------------------------------------------
-        if getattr(self.config, "aggregate_videos_tokens", False):
-            if self.config.is_ref_device:
-                print(
-                    "[WARNING] aggregate_videos_tokens=True detected but "
-                    "should be False for linear-probing. This is only used for CLIP. Overriding to "
-                    "False so that the VideoEncoder preserves per-instance "
-                    "tokens. This override is logged to wandb."
-                )
-            # Mutate in-place so every subsequent consumer (e.g. VideoEncoder)
-            # sees the corrected value.
-            self.config.aggregate_videos_tokens = False
-            if self.wandb_wrapper.is_initialized():
-                self.wandb_wrapper.log({"config/aggregate_videos_tokens_override": True})
-
         return {
             "train_loader": train_loader,
             "val_loader": val_loader,
@@ -408,6 +405,8 @@ class LinearProbingProject(BaseProject):
             
     def _setup_validation_objects(self) -> dict[str, Any]:
         """Setup objects for model validation/evaluation."""
+        self._disable_encoder_aggregation_for_mil()
+
         # Calculate dataset statistics
         mean, std = calculate_dataset_statistics_ddp(self.config)
 

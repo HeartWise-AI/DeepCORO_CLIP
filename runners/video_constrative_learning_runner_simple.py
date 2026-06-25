@@ -31,7 +31,7 @@ from utils.wandb_logger import (
     save_retrieval_results,
 )
 from utils.loss.typing import Loss
-from utils.retrieval_inference import run_retrieval_metadata_inference
+from utils.retrieval_inference import resolve_inference_device, run_retrieval_metadata_inference
 from utils.wandb_wrapper import WandbWrapper
 from models.video_encoder import VideoEncoder
 from models.text_encoder import TextEncoder
@@ -873,9 +873,10 @@ class VideoContrastiveLearningRunnerSimple:
         """
         self.optimizer.zero_grad(set_to_none=True)
 
-        amp_enabled: bool = self.scaler is not None
+        amp_device_type = resolve_inference_device(self.device).type
+        amp_enabled: bool = self.scaler is not None and amp_device_type == "cuda"
         autocast_ctx: torch.amp.autocast = torch.amp.autocast(
-            device_type="cuda",
+            device_type=amp_device_type,
             enabled=amp_enabled,
         )
 
@@ -997,8 +998,12 @@ class VideoContrastiveLearningRunnerSimple:
         :param pos_weights: Optional [B, M] per-positive weights.
         :return: (batch_metrics, embeddings) similar to _train_step, but without backprop.
         """
+        amp_device_type = resolve_inference_device(self.device).type
+        amp_enabled = amp_device_type == "cuda" and bool(
+            getattr(self.config, "use_amp", self.scaler is not None)
+        )
         with torch.no_grad():
-            with torch.amp.autocast("cuda"):
+            with torch.amp.autocast(device_type=amp_device_type, enabled=amp_enabled):
                 video_features = self.video_encoder(videos)["video_embeds"]
                 text_features = self.text_encoder(input_ids, attention_mask)
                 if pos_mask is not None:

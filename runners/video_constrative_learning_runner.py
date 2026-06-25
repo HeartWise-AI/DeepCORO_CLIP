@@ -34,7 +34,7 @@ from utils.wandb_logger import (
 from utils.loss.typing import Loss
 from utils.loss.weighted_siglip import WeightedSigLIPLoss
 from utils.wandb_wrapper import WandbWrapper
-from utils.retrieval_inference import run_retrieval_metadata_inference
+from utils.retrieval_inference import resolve_inference_device, run_retrieval_metadata_inference
 from models.video_encoder import VideoEncoder
 from models.text_encoder import TextEncoder
 from dataloaders.video_clip_dataset import VideoClipDataset
@@ -1318,8 +1318,12 @@ class VideoContrastiveLearningRunner:
         if self.step % self.config.gradient_accumulation_steps == 0:
             self.optimizer.zero_grad(set_to_none=True)
 
-        amp_enabled: bool = self.scaler is not None
-        autocast_ctx: torch.amp.autocast = torch.amp.autocast(device_type="cuda", enabled=amp_enabled)
+        amp_device_type = resolve_inference_device(self.device).type
+        amp_enabled: bool = self.scaler is not None and amp_device_type == "cuda"
+        autocast_ctx: torch.amp.autocast = torch.amp.autocast(
+            device_type=amp_device_type,
+            enabled=amp_enabled,
+        )
 
         with autocast_ctx:
             video_emb = self.video_encoder(videos)
@@ -1660,8 +1664,12 @@ class VideoContrastiveLearningRunner:
         alignment_logprob_tensor: Optional[torch.Tensor] = None
         alignment_prob_tensor: Optional[torch.Tensor] = None
         alignment_cosine_tensor: Optional[torch.Tensor] = None
+        amp_device_type = resolve_inference_device(self.device).type
+        amp_enabled = amp_device_type == "cuda" and bool(
+            getattr(self.config, "use_amp", self.scaler is not None)
+        )
         with torch.no_grad():
-            with torch.amp.autocast("cuda"):
+            with torch.amp.autocast(device_type=amp_device_type, enabled=amp_enabled):
                 video_features = self.video_encoder(videos)
                 if input_ids is not None and attention_mask is not None:
                     text_features = self.text_encoder(input_ids, attention_mask)

@@ -171,8 +171,23 @@ class CLIPLoss(nn.Module):
 
                 return 0.5 * (loss_v2t + loss_t2v)
 
-            # Multi-positive InfoNCE (item B4)
-            targets = pos_mask.float().to(logits.device).clamp(0.0, 1.0)
+            # Multi-positive InfoNCE (item B4). In DDP the features were gathered to a
+            # global [N*world, ...] grid, so the LOCAL [B, T] pos_mask must be assembled
+            # into the matching GLOBAL block-diagonal mask (positives exist only within a
+            # rank's own batch, since each rank holds distinct video/text pairs).
+            local_mask = pos_mask.float().to(logits.device).clamp(0.0, 1.0)
+            if dist.is_initialized() and dist.get_world_size() > 1:
+                gathered = [torch.zeros_like(local_mask) for _ in range(dist.get_world_size())]
+                dist.all_gather(gathered, local_mask)
+                rows = sum(g.shape[0] for g in gathered)
+                cols = sum(g.shape[1] for g in gathered)
+                targets = torch.zeros(rows, cols, device=logits.device, dtype=local_mask.dtype)
+                r0 = c0 = 0
+                for g in gathered:
+                    targets[r0:r0 + g.shape[0], c0:c0 + g.shape[1]] = g
+                    r0 += g.shape[0]; c0 += g.shape[1]
+            else:
+                targets = local_mask
             if targets.shape != logits.shape:
                 raise ValueError(
                     f"CLIPLoss pos_mask shape {tuple(targets.shape)} does not match "

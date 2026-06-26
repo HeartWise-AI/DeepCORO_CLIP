@@ -45,7 +45,7 @@ def load_text_embeddings(path: str, device: torch.device) -> torch.Tensor:
     return loaded.to(device=device, dtype=torch.float32)
 
 
-def extract_video_embeddings(video_outputs: Any) -> torch.Tensor:
+def extract_video_embeddings(video_outputs: Any, video_mask: Any = None) -> torch.Tensor:
     if isinstance(video_outputs, dict):
         for key in ("video_embeds", "study_features", "video_features", "embeddings"):
             value = video_outputs.get(key)
@@ -63,7 +63,17 @@ def extract_video_embeddings(video_outputs: Any) -> torch.Tensor:
     if not isinstance(video_outputs, torch.Tensor):
         raise TypeError(f"video encoder returned unsupported type {type(video_outputs)}")
     if video_outputs.ndim == 3:
-        video_outputs = video_outputs.mean(dim=1)
+        # [B, N, D] -> [B, D]. Average ONLY valid clips: padded (zero) clips would
+        # otherwise pull sparse-view embeddings toward zero and corrupt retrieval.
+        if video_mask is not None:
+            m = video_mask.to(device=video_outputs.device, dtype=video_outputs.dtype)
+            if m.shape == video_outputs.shape[:2]:
+                m = m.unsqueeze(-1)
+                video_outputs = (video_outputs * m).sum(dim=1) / m.sum(dim=1).clamp(min=1.0)
+            else:
+                video_outputs = video_outputs.mean(dim=1)
+        else:
+            video_outputs = video_outputs.mean(dim=1)
     if video_outputs.ndim != 2:
         raise ValueError(f"video embeddings must be 2D [B, D], got {tuple(video_outputs.shape)}")
     return video_outputs
@@ -199,9 +209,15 @@ def run_retrieval_metadata_inference(
             continue
 
         with torch.no_grad():
+            vids = videos.to(device).float()
+            # Padded clips are exact-zero; build a per-clip validity mask for masked
+            # averaging of multi-video [B, N, ...] inputs.
+            video_mask = None
+            if vids.dim() >= 3 and vids.shape[1] > 1:
+                video_mask = vids.reshape(vids.shape[0], vids.shape[1], -1).abs().amax(dim=-1) > 0
             with torch.amp.autocast(device_type=device.type, enabled=amp_enabled):
-                video_outputs = video_encoder(videos.to(device).float())
-            video_embeddings = extract_video_embeddings(video_outputs).to(device=device, dtype=torch.float32)
+                video_outputs = video_encoder(vids)
+            video_embeddings = extract_video_embeddings(video_outputs, video_mask).to(device=device, dtype=torch.float32)
 
         similarity_matrix = torch.matmul(video_embeddings, text_embeddings.t())
         _, topk_indices = torch.topk(similarity_matrix, k=topk, dim=1)

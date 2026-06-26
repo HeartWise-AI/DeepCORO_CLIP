@@ -506,7 +506,11 @@ class VideoEncoder(nn.Module):
         """Replace non-finite values using the last finite tensor for the same context."""
         finite_mask = torch.isfinite(tensor)
         if finite_mask.all():
-            self._finite_tensor_cache[context] = tensor.detach().clone()
+            # Cache on CPU, not GPU: cloning every full activation (MViT patch tokens,
+            # multi-video batches) on-device retains large tensors outside autograd and
+            # adds persistent GPU memory pressure / OOM risk. The non-finite replacement
+            # path below already moves the cache back to the tensor's device.
+            self._finite_tensor_cache[context] = tensor.detach().to("cpu", copy=True)
             return tensor
 
         cached = self._finite_tensor_cache.get(context)

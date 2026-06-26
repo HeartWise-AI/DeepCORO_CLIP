@@ -192,8 +192,11 @@ class ContrastivePretrainingProject(BaseProject):
 
         insert_idx = 1
 
+        # NB: with mean pooling VideoEncoder sets `attention_pool = None`, so getattr's
+        # default never fires; coerce None -> Identity to avoid `.parameters()` on None.
+        attention_pool_module = getattr(video_encoder.module, 'attention_pool', None) or nn.Identity()
         attention_pool_params = [
-            p for p in getattr(video_encoder.module, 'attention_pool', nn.Identity()).parameters()
+            p for p in attention_pool_module.parameters()
             if p.requires_grad
         ]
         if attention_pool_params:

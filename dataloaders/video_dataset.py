@@ -177,21 +177,18 @@ class VideoDataset(torch.utils.data.Dataset):
                         print(f"Skipping group {row_id} in {group_id} because video {file_path} does not exist.")
                         continue
 
-                    # If target labels are provided, extract values (NaN allowed for masking)
+                    # If target labels are provided, MERGE per-label values across the
+                    # study's video rows: sparse labels (e.g. one IFR/FFR vessel on one
+                    # row, another on a later row) must all be kept, so fill each label
+                    # with the first non-NaN value seen instead of freezing after the
+                    # first partially-labeled row.
                     if target_indices is not None:
-                        if group_outcome is None:  # Only get outcome once per group
-                            row_outcomes = {}
-                            all_nan = True
-                            for label in target_labels:
-                                value = row[label]
-                                if pd.isna(value):
-                                    row_outcomes[label] = float('nan')
-                                else:
-                                    row_outcomes[label] = value
-                                    all_nan = False
-                            if all_nan:
-                                continue
-                            group_outcome = row_outcomes
+                        if group_outcome is None:
+                            group_outcome = {label: float('nan') for label in target_labels}
+                        for label in target_labels:
+                            value = row[label]
+                            if not pd.isna(value) and pd.isna(group_outcome[label]):
+                                group_outcome[label] = value
                     skip_group = False
                     group_videos.append(file_path)
                     if has_view_column:
@@ -368,6 +365,15 @@ class VideoDataset(torch.utils.data.Dataset):
 
             # Pad with zero-videos if fewer than self.num_videos were loaded/selected
             num_actually_loaded = len(loaded_video_numpy_arrays)
+            if num_actually_loaded == 0:
+                # Every selected video failed to load. Do NOT fabricate an all-PAD
+                # sample: the collate mask would mark every slot invalid and the MIL
+                # head would train/evaluate on bias-only zeros for a real label.
+                # Surface it loudly instead of silently corrupting this group.
+                raise RuntimeError(
+                    "All selected videos failed to load for a multi-video sample; "
+                    "refusing to return a fully-padded exam (would train/eval on zeros)."
+                )
             num_to_pad = self.num_videos - num_actually_loaded
 
             if num_to_pad > 0:

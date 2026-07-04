@@ -96,30 +96,57 @@ sampling:
   label_column: "status"
 ```
 
-## Input Data Format
+## No-PHI Input Schema
 
-The script expects input data with the following key columns:
+The released pipeline operates on de-identified, structured per-study tables.
+The repository does **not** ship any clinical reports, raw DICOMs, PHI fields,
+or model checkpoints. The schema below is what `generate_dataset.py` expects and
+is exactly what a downstream user needs to reproduce the dataset construction
+step. None of the listed fields contain protected health information once
+DICOMs have been de-identified per the institutional pipeline; identifying
+fields such as `PatientName`, `PatientBirthDate`, accession numbers, or MRNs
+are not consumed by any code path in this directory.
 
-### Required Columns
-- `main_structure_class` - Main coronary structure class (0-11, will be mapped to names)
-- `contrast_agent_class` - Contrast agent classification (0/1)
-- `FileName` - Path to associated video/image file
-- `StudyInstanceUID` - Unique identifier for each study
-- `SeriesTime` - Time of series acquisition (for temporal ordering)
+### Required identifier columns (de-identified)
+| Column | Type | Description |
+| --- | --- | --- |
+| `StudyInstanceUID` | string | De-identified pseudonymous study identifier. |
+| `SeriesInstanceUID` | string | De-identified pseudonymous series identifier. |
+| `FileName` | string | Path to the de-identified video/image file (`*.avi` or `*.mp4`). |
+| `SeriesTime` | numeric | Acquisition time, used only for intra-study temporal ordering. |
 
-### Optional Columns for Status Assignment
-- `stent_presence_class` - Stent presence classification (0/1) for PCI status assignment
-- `dominance_class` - Coronary dominance class (0/1, will be mapped to names)
+### Required acquisition/classification columns
+| Column | Type | Description |
+| --- | --- | --- |
+| `main_structure_class` | int 0-11 | Acquisition target (Left/Right Coronary, Graft, Catheter, etc.). Mapped via `MAIN_STRUCTURE_MAP`. |
+| `contrast_agent_class` | int {0, 1} | Whether contrast injection was detected (1) or not (0). |
+| `stent_presence_class` | int {0, 1} | Whether a stent is visible in the clip (1) or not (0). Drives the `diagnostic` / `PCI` / `POST_PCI` status assignment. |
+| `dominance_class` | int {0, 1} | Coronary dominance (right=0, left=1). Mapped via `DOMINANCE_MAP`. |
 
-### Optional Columns (for report generation)
-- Stenosis columns: `leftmain_stenosis`, `prox_lad_stenosis`, etc.
-- Calcification columns: `leftmain_calcif`, `prox_lad_calcif`, etc.
-- IFR columns: `leftmain_IFRHYPEREMIE`, `prox_lad_IFRHYPEREMIE`, etc.
-- CTO columns: `leftmain_cto`, `prox_lad_cto`, etc. (1 = CTO present, 0 = no CTO)
-- Collateral columns: `leftmain_collateral`, `prox_lad_collateral`, etc. (vessel name or code)
-- Bifurcation columns: `leftmain_bifurcation`, `prox_lad_bifurcation`, etc. (Medina classification)
-- `dominance_name` - Coronary dominance information
-- `Conclusion` - Clinical conclusion text
+### Structured per-vessel label columns
+For each named vessel segment (`left_main`, `prox_lad`, `mid_lad`, `dist_lad`,
+`D1`, `D2`, `prox_lcx`, `mid_lcx`, `dist_lcx`, `om1`, `om2`, `prox_rca`,
+`mid_rca`, `dist_rca`, `pda`, `posterolateral`, `bx`, `lvp`, `lima_or_svg`),
+the following per-vessel numeric or short-string fields are read by the report
+generator. Each field is optional; missing values are skipped.
+
+| Suffix | Description | Units / domain |
+| --- | --- | --- |
+| `*_stenosis` | Lumen narrowing percentage | 0 - 100 |
+| `*_calcif` | Calcification severity | 0 = none, 1 = mild, 2 = moderate, 3 = severe |
+| `*_cto` | Chronic total occlusion flag | 0 / 1 |
+| `*_IFRHYPEREMIE` | Hyperemic instant wave-free ratio | 0.0 - 1.0 (or null) |
+| `*_collateral` | Recipient vessel of collateral flow | short vessel code or null |
+| `*_bifurcation` | Medina bifurcation classification | "1.1.0", "1.0.1", etc. |
+
+### Optional free-text columns
+| Column | Description |
+| --- | --- |
+| `Conclusion` | Optional procedural conclusion text (used by some downstream training pipelines, ignored by `generate_dataset.py`). |
+| `Indications` | Optional indication free text (also ignored by `generate_dataset.py`). |
+
+No additional clinical history, demographics, MRN, accession number, or
+operator-identifying field is consumed by the released script.
 
 ## Output Structure
 
@@ -273,4 +300,109 @@ This script integrates with the main DeepCORO_CLIP project:
 - Uses same data formats as training pipelines
 - Compatible with video processing utilities
 - Follows project coding standards
-- Uses project dependency management (pyproject.toml) 
+- Uses project dependency management (pyproject.toml)
+
+## Upstream LLM Extraction of Structured Labels from Reports
+
+The per-vessel structured columns above (`*_stenosis`, `*_calcif`, `*_cto`,
+`*_IFRHYPEREMIE`, `*_collateral`, `*_bifurcation`) were extracted at the
+originating institution from de-identified clinical procedure reports. The
+extraction step is upstream of this directory and is not required to reproduce
+training: any pipeline that populates the structured columns above is
+sufficient.
+
+The following template is a reproducible LLM extraction prompt. It is published
+to allow third parties to reconstruct an equivalent labeling pipeline on their
+own report corpus. It is **not** asserted to be byte-for-byte identical to the
+original internal prompt used to generate the released MHI training labels;
+that internal prompt was not retained as a version-controlled artifact at the
+time of label generation. The template is functionally complete and was
+specifically rewritten to operate on de-identified text only.
+
+### Reproducible prompt template
+
+```
+SYSTEM: You are a cardiology assistant that extracts structured findings from
+a de-identified coronary angiography report. Return only valid JSON matching
+the schema below. If a vessel is not mentioned, set its `stenosis_percent`,
+`calcification`, `cto`, `IFR_hyperemic`, `collateral_recipient`, and
+`bifurcation_medina` fields to null. Do not invent findings. Do not include
+any patient-identifying text in the output. Do not include free-text
+commentary outside the JSON object.
+
+USER: Extract findings for the following vessels: left_main, prox_lad,
+mid_lad, dist_lad, D1, D2, prox_lcx, mid_lcx, dist_lcx, om1, om2, prox_rca,
+mid_rca, dist_rca, pda, posterolateral, bx (ramus), lvp, lima_or_svg.
+
+Each vessel object follows this schema:
+{
+  "stenosis_percent":     integer in [0, 100] | null,
+  "calcification":        0 | 1 | 2 | 3 | null,
+  "cto":                  true | false | null,
+  "IFR_hyperemic":        number in [0.0, 1.0] | null,
+  "collateral_recipient": short vessel code | null,
+  "bifurcation_medina":   "X.Y.Z" string | null
+}
+
+Also extract:
+{
+  "coronary_dominance": "right" | "left" | "co-dominant" | null
+}
+
+The report text is delimited by <<< and >>>. Treat it as the sole source of
+truth; do not use any external clinical knowledge to fill in missing
+findings.
+
+REPORT:
+<<<
+{de-identified report text}
+>>>
+```
+
+Implementation notes:
+
+* The original extraction was performed with a constrained-decoding wrapper
+  that rejected outputs that failed schema validation and re-queried up to
+  three times. Any modern instruction-tuned model with structured output
+  support (JSON-mode or grammar-constrained decoding) can be substituted.
+* Reports were de-identified upstream of this prompt; the prompt assumes no
+  PHI is present and does not include any de-identification instructions.
+* Outputs were flattened by the dataset-build step into the per-vessel
+  columns documented above. A reference flattening helper is provided in
+  `notebook_usage_example.py`.
+
+## Validation Procedure
+
+The released documentation describes a forward-looking validation protocol
+rather than the historical internal validation summary, because the source
+record for the originally reported 99/100 spot-check was not retained in a
+form that could be released with the code.
+
+### Recommended validation protocol
+
+1. **Sampling.** Draw a stratified random sample of 100 de-identified reports
+   from the corpus to be labeled. Stratify by (a) vessel-territory positivity
+   for >=70% stenosis (RCA, LAD, LCx, branch / distal) and (b)
+   procedural complexity (single-vessel, multi-vessel). Within each stratum
+   sample proportionally to base rate, with a minimum of 5 reports per
+   stratum.
+2. **Reviewer setup.** Recruit at least one interventional or non-interventional
+   cardiologist or trained reviewer who did not author the prompt template.
+   Provide the reviewer with the de-identified report text and the
+   extraction output side by side.
+3. **Adjudication.** For each vessel x finding cell, the reviewer marks
+   `agree`, `disagree`, or `ambiguous`. For numeric fields,
+   `agree` is defined as within +/-10 percentage points (stenosis) or
+   +/-0.05 (IFR) of the report text; categorical and binary fields require
+   exact agreement.
+4. **Reported metrics.** Report (a) per-field exact agreement rate, (b)
+   per-field Cohen's kappa, (c) the dominant categories of disagreement,
+   and (d) the fraction of records for which the entire structured output
+   would have changed a downstream training label.
+5. **Release artifacts.** Publish the anonymized agreement table and a
+   short error analysis. Do not release the raw report text or the
+   per-record reviewer judgments.
+
+Until this protocol is executed against the new prompt template above, no
+historical 99/100 validation result is claimed in either the repository
+documentation or the manuscript.

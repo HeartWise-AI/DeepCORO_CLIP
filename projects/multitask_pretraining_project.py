@@ -363,7 +363,7 @@ class MultitaskPretrainingProject(BaseProject):
         )
         
         checkpoint: dict[str, Any] = self._load_checkpoint(self.config.checkpoint)
-        video_encoder.module.load_state_dict(checkpoint["video_encoder"], weight_only=True)
+        video_encoder.module.load_state_dict(checkpoint["video_encoder"])
         log_temp: float = checkpoint["train/log_temp"]
 
         return {

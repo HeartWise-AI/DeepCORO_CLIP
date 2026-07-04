@@ -499,6 +499,89 @@ class TestMultiInstanceLinearProbing(unittest.TestCase):
                     
                 self.assertEqual(outputs["test_head"].shape, (self.batch_size, 1))
 
+    def test_mixed_empty_rows_are_zero_and_finite(self):
+        """Mask-sensitive pooling should zero only samples with no valid videos."""
+        embedding_dim = 32
+        x = torch.randn(3, 4, embedding_dim)
+        mask = torch.tensor(
+            [
+                [True, False, True, False],
+                [False, False, False, False],
+                [True, True, True, True],
+            ],
+            dtype=torch.bool,
+        )
+        pooling_modes = ["mean", "max", "attention", "cls_token", "attention+cls_token"]
+
+        for mode in pooling_modes:
+            with self.subTest(pooling_mode=mode):
+                model = MultiInstanceLinearProbing(
+                    embedding_dim=embedding_dim,
+                    head_structure={"test_head": 1},
+                    pooling_mode=mode,
+                    num_attention_heads=4,
+                    separate_video_attention=False,
+                )
+
+                with torch.no_grad():
+                    pooled = model._pool_instances(x, mask)
+
+                expected_dim = 2 * embedding_dim if "+" in mode else embedding_dim
+                self.assertEqual(pooled.shape, (3, expected_dim))
+                self.assertTrue(torch.isfinite(pooled).all())
+                self.assertTrue(torch.allclose(pooled[1], torch.zeros_like(pooled[1])))
+
+    def test_hierarchical_empty_rows_are_zero_and_finite(self):
+        """4D hierarchical pooling should handle per-sample empty masks."""
+        embedding_dim = 32
+        x = torch.randn(3, 4, 5, embedding_dim)
+        mask = torch.tensor(
+            [
+                [True, False, True, False],
+                [False, False, False, False],
+                [True, True, True, True],
+            ],
+            dtype=torch.bool,
+        )
+
+        for mode in ["attention", "cls_token", "attention+cls_token"]:
+            with self.subTest(pooling_mode=mode):
+                model = MultiInstanceLinearProbing(
+                    embedding_dim=embedding_dim,
+                    head_structure={"test_head": 1},
+                    pooling_mode=mode,
+                    num_attention_heads=4,
+                    separate_video_attention=True,
+                )
+
+                with torch.no_grad():
+                    pooled = model._pool_instances(x, mask)
+
+                expected_dim = 2 * embedding_dim if "+" in mode else embedding_dim
+                self.assertEqual(pooled.shape, (3, expected_dim))
+                self.assertTrue(torch.isfinite(pooled).all())
+                self.assertTrue(torch.allclose(pooled[1], torch.zeros_like(pooled[1])))
+
+    def test_forward_4d_all_masked_uses_embedding_dim(self):
+        """All-masked 4D input should return a pooled embedding, not token-count width."""
+        embedding_dim = 32
+        model = MultiInstanceLinearProbing(
+            embedding_dim=embedding_dim,
+            head_structure={"test_head": 1},
+            pooling_mode="cls_token",
+            num_attention_heads=4,
+            separate_video_attention=True,
+        )
+        x = torch.randn(2, 3, 5, embedding_dim)
+        mask = torch.zeros(2, 3, dtype=torch.bool)
+
+        with torch.no_grad():
+            outputs = model(x, mask)
+
+        self.assertEqual(outputs["test_head"].shape, (2, 1))
+        self.assertTrue(torch.isfinite(outputs["test_head"]).all())
+        self.assertTrue(torch.allclose(outputs["test_head"], torch.zeros_like(outputs["test_head"])))
+
 
 if __name__ == '__main__':
-    unittest.main() 
+    unittest.main()

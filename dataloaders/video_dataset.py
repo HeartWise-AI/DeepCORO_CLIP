@@ -122,7 +122,7 @@ class VideoDataset(torch.utils.data.Dataset):
             For multi-video: filenames is a list of lists of filenames per group
             For single-video: filenames is a list of filenames
             For inference mode: outcomes is a list of None values (consistent between modes)
-            view_classes: parallel list of per-video view class strings (multi-video only), or None
+            view_classes: parallel list of per-video view class strings, or None
         """
         # Read the "α" separated file using pandas
         file_path = os.path.join(self.filename)
@@ -177,22 +177,18 @@ class VideoDataset(torch.utils.data.Dataset):
                         print(f"Skipping group {row_id} in {group_id} because video {file_path} does not exist.")
                         continue
 
-                    # If target labels are provided, ensure they are valid
+                    # If target labels are provided, MERGE per-label values across the
+                    # study's video rows: sparse labels (e.g. one IFR/FFR vessel on one
+                    # row, another on a later row) must all be kept, so fill each label
+                    # with the first non-NaN value seen instead of freezing after the
+                    # first partially-labeled row.
                     if target_indices is not None:
-                        if group_outcome is None:  # Only get outcome once per group
-                            row_outcomes = {}
-                            skip_row = False
-                            for label in target_labels:
-                                value = row[label]
-                                if pd.isna(value):
-                                    print(f"Skipping group {row_id} in {group_id} because target '{label}' is missing.")
-                                    skip_row = True
-                                    break
-                                else:
-                                    row_outcomes[label] = value
-                            if skip_row:
-                                continue
-                            group_outcome = row_outcomes
+                        if group_outcome is None:
+                            group_outcome = {label: float('nan') for label in target_labels}
+                        for label in target_labels:
+                            value = row[label]
+                            if not pd.isna(value) and pd.isna(group_outcome[label]):
+                                group_outcome[label] = value
                     skip_group = False
                     group_videos.append(file_path)
                     if has_view_column:
@@ -212,6 +208,7 @@ class VideoDataset(torch.utils.data.Dataset):
             # Original single-video logic
             fnames = []
             outcomes = []
+            view_classes = [] if has_view_column else None
 
             for _, row in split_dataset.iterrows():
                 file_name = row[filename_col]
@@ -219,34 +216,41 @@ class VideoDataset(torch.utils.data.Dataset):
                 if not os.path.exists(file_name):
                     print(f"Skipping video {file_name} because file does not exist.")
                     continue
+                view_class = None
+                if has_view_column:
+                    view_val = row[self.view_column]
+                    view_class = str(view_val) if not pd.isna(view_val) else "Other"
 
                 if target_indices is not None:
-                    skip_row = False
                     row_outcomes = {}
+                    all_nan = True
                     for label in target_labels:
                         value = row[label]
                         if pd.isna(value):
-                            print(f"Skipping video {file_name} because target '{label}' is missing.")
-                            skip_row = True
-                            break
+                            row_outcomes[label] = float('nan')
                         else:
                             row_outcomes[label] = value
-                    if skip_row:
+                            all_nan = False
+                    if all_nan:
                         continue
 
                     outcomes.append(row_outcomes)
                     fnames.append(file_name)
+                    if has_view_column:
+                        view_classes.append(view_class)
 
                 else:
-                    # Inference mode or no taget labels
+                    # Inference mode or no target labels
                     fnames.append(file_name)
+                    if has_view_column:
+                        view_classes.append(view_class)
 
             if not target_indices:
                 # For inference mode, return a list of None values to maintain consistency
                 # with multi-video mode and avoid TypeError in __getitem__
-                return fnames, [None] * len(fnames), None, None
+                return fnames, [None] * len(fnames), None, view_classes
 
-            return fnames, outcomes, target_indices, None
+            return fnames, outcomes, target_indices, view_classes
 
     def _validate_all_videos(self):
         print("Validating all videos in dataset...")
@@ -350,10 +354,26 @@ class VideoDataset(torch.utils.data.Dataset):
                         first_video_shape_info = video_np.shape
                         first_video_dtype_info = video_np.dtype
                 except Exception as e:
-                    raise RuntimeError(f"Failed to load video {video_fname}: {str(e)}") from e
+                    # Skip this video; padding logic below will compensate with
+                    # zero-videos so one bad/slow video doesn't kill the run
+                    # (NFS-contention timeouts are common in shared infra).
+                    print(
+                        f"[WARN] Failed to load video {video_fname}: {str(e)} - skipping; will pad",
+                        flush=True,
+                    )
+                    continue
 
             # Pad with zero-videos if fewer than self.num_videos were loaded/selected
             num_actually_loaded = len(loaded_video_numpy_arrays)
+            if num_actually_loaded == 0:
+                # Every selected video failed to load. Do NOT fabricate an all-PAD
+                # sample: the collate mask would mark every slot invalid and the MIL
+                # head would train/evaluate on bias-only zeros for a real label.
+                # Surface it loudly instead of silently corrupting this group.
+                raise RuntimeError(
+                    "All selected videos failed to load for a multi-video sample; "
+                    "refusing to return a fully-padded exam (would train/eval on zeros)."
+                )
             num_to_pad = self.num_videos - num_actually_loaded
 
             if num_to_pad > 0:
@@ -421,6 +441,13 @@ class VideoDataset(torch.utils.data.Dataset):
             except Exception as e:
                 raise RuntimeError(f"Failed to load video {video_fname}: {str(e)}") from e
 
+            if self.view_classes is not None:
+                return (
+                    video,
+                    self.outcomes[actual_idx],
+                    video_fname,
+                    [self.view_classes[actual_idx]],
+                )
             return video, self.outcomes[actual_idx], video_fname
     
 def custom_collate_fn(
@@ -439,7 +466,9 @@ def custom_collate_fn(
         view_classes_list = None
 
     # Multi-video: videos[0] is np.ndarray [num_videos, F, H, W, C]
+    is_multi_video_batch = False
     if isinstance(videos[0], np.ndarray) and videos[0].ndim == 5:
+        is_multi_video_batch = True
         videos_tensor = torch.stack([torch.from_numpy(v) for v in videos])  # [B, num_videos, F, H, W, C]
         B = videos_tensor.shape[0]
         N = videos_tensor.shape[1] # num_videos
@@ -452,6 +481,13 @@ def custom_collate_fn(
         raise ValueError(f"Unexpected video format or shape: type {type(videos[0])}, ndim {videos[0].ndim if isinstance(videos[0], np.ndarray) else 'N/A'}")
 
     video_indices = torch.arange(B).repeat_interleave(N) if N > 1 else None
+    if is_multi_video_batch:
+        video_mask = torch.tensor(
+            [[video_path != "PAD" for video_path in sample_paths] for sample_paths in paths],
+            dtype=torch.bool,
+        )
+    else:
+        video_mask = torch.ones((B, N), dtype=torch.bool)
 
     # Convert targets to tensor
     temp_targets_dict: dict = defaultdict(list)
@@ -465,15 +501,20 @@ def custom_collate_fn(
     for k, v in temp_targets_dict.items():
         if labels_map and k in labels_map:
             mapped_values = []
+            has_nan = False
             for value in v:
                 if isinstance(value, str):
                     if value in labels_map[k]:
                         mapped_values.append(labels_map[k][value])
                     else:
                         raise ValueError(f"Label '{value}' not found in labels_map for column '{k}'. Available labels: {list(labels_map[k].keys())}")
+                elif isinstance(value, float) and np.isnan(value):
+                    mapped_values.append(float('nan'))
+                    has_nan = True
                 else:
                     mapped_values.append(value)
-            final_targets_dict[k] = torch.tensor(mapped_values, dtype=torch.long)
+            # Use float32 when NaN values present (for masking), long otherwise
+            final_targets_dict[k] = torch.tensor(mapped_values, dtype=torch.float32 if has_nan else torch.long)
         else:
             final_targets_dict[k] = torch.tensor(v, dtype=torch.float32)
 
@@ -498,6 +539,7 @@ def custom_collate_fn(
         "videos": videos_tensor,
         "targets": final_targets_dict,
         "video_indices": video_indices,
+        "video_mask": video_mask,
         "video_fname": paths,
     }
     if view_ids_tensor is not None:

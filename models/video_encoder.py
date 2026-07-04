@@ -65,6 +65,7 @@ class VideoEncoder(nn.Module):
 
         # Add embedding_dim property
         self._embedding_dim: int = output_dim
+        self._finite_tensor_cache: Dict[str, torch.Tensor] = {}
         
         # Store RoPE configuration
         self.use_rope = use_rope
@@ -233,15 +234,21 @@ class VideoEncoder(nn.Module):
             """Return the token sequence [B, L, C] without pooling."""
             # (B, C, T, H, W) ➀ ensure temporal dim present
             x = _unsqueeze(x, 5, 2)[0]
-            # ➁ Patchify then flatten spatial+temporal dims
+            # ➁ Patchify then capture actual T'/H'/W' before flatten so we can
+            #    support input resolutions other than 224 (the TorchVision
+            #    default that hard-codes spatial_size to 56x56).
             x = self_mvit.conv_proj(x)  # [B, C', T', H', W']
+            T_, H_, W_ = x.shape[2], x.shape[3], x.shape[4]
             x = x.flatten(2).transpose(1, 2)  # [B, L, C'] where L = T'·H'·W'
 
-            # ➂ Add positional encoding
+            # ➂ Add positional encoding (resolution-independent: only adds
+            #    class token because MViTv2-S leaves absolute positional
+            #    embeddings None and relies on relative pos in attention).
             x = self_mvit.pos_encoding(x)
 
-            # ➃ Pass through transformer blocks
-            thw = (self_mvit.pos_encoding.temporal_size,) + self_mvit.pos_encoding.spatial_size
+            # ➃ Pass through transformer blocks using the *actual* token grid
+            #    derived from conv_proj, not the cached 56x56.
+            thw = (T_, H_, W_)
             for blk in self_mvit.blocks:
                 x, thw = blk(x, thw)
 
@@ -403,7 +410,7 @@ class VideoEncoder(nn.Module):
 
         print(f"[VideoEncoder] ✅ Encoder checkpoint file found!")
         print(f"[VideoEncoder] Loading encoder checkpoint weights...")
-        checkpoint = torch.load(self.encoder_path, map_location="cpu")
+        checkpoint = torch.load(self.encoder_path, map_location="cpu", weights_only=False)
 
         # Handle different checkpoint formats
         if "model_state_dict" in checkpoint:
@@ -495,6 +502,28 @@ class VideoEncoder(nn.Module):
         """Get the embedding dimension."""
         return self._embedding_dim
 
+    def _sanitize_tensor(self, tensor: torch.Tensor, context: str = "tensor") -> torch.Tensor:
+        """Replace non-finite values using the last finite tensor for the same context."""
+        finite_mask = torch.isfinite(tensor)
+        if finite_mask.all():
+            # Cache on CPU, not GPU: cloning every full activation (MViT patch tokens,
+            # multi-video batches) on-device retains large tensors outside autograd and
+            # adds persistent GPU memory pressure / OOM risk. The non-finite replacement
+            # path below already moves the cache back to the tensor's device.
+            self._finite_tensor_cache[context] = tensor.detach().to("cpu", copy=True)
+            return tensor
+
+        cached = self._finite_tensor_cache.get(context)
+        if cached is not None and cached.shape == tensor.shape:
+            replacement = cached.to(device=tensor.device, dtype=tensor.dtype)
+        else:
+            replacement = torch.zeros_like(tensor)
+
+        repaired = torch.where(finite_mask, tensor, replacement)
+        if torch.isfinite(repaired).all():
+            self._finite_tensor_cache[context] = repaired.detach().clone()
+        return repaired
+
     def get_tokens(self, x: torch.Tensor, mode: str = "patch", return_dict: bool = False) -> torch.Tensor | Dict[str, torch.Tensor]:
         """Return patch tokens while keeping study-level aggregation available."""
         prev_apply = self._apply_aggregator
@@ -540,7 +569,7 @@ class VideoEncoder(nn.Module):
         # incurs only a modest memory overhead yet eliminates NaN/Inf issues
         # observed when training with AMP.
         # ------------------------------------------------------------------
-        with autocast("cuda", enabled=False):
+        with autocast(x.device.type, enabled=False):
             if self.backbone == "mvit" and hasattr(self.model, "forward_features"):
                 # TorchVision's Multi-Scale ViT exposes forward_features that
                 # returns the token sequence **before** classification pooling.
@@ -574,16 +603,21 @@ class VideoEncoder(nn.Module):
         x = x.view(B * N, C, T, H, W)
 
         token_feats = self._extract_backbone_features(x)
+        token_feats = self._sanitize_tensor(token_feats, context="backbone_features")
         token_feats = self.proj(token_feats)
+        token_feats = self._sanitize_tensor(token_feats, context="projected_tokens")
         _, L, D_out = token_feats.shape
         token_feats = token_feats.view(B, N, L, D_out)
 
         per_video = self._pool_video_tokens(token_feats)
+        per_video = self._sanitize_tensor(per_video, context="per_video_tokens")
         patch_tokens = token_feats.reshape(B, N * L, D_out)
+        patch_tokens = self._sanitize_tensor(patch_tokens, context="patch_tokens")
 
         study_features = None
         if compute_aggregated and self.aggregator is not None:
             study_features = self._aggregate_video_features(per_video)
+            study_features = self._sanitize_tensor(study_features, context="study_features")
 
         return {
             "token_grid": token_feats,
@@ -608,7 +642,7 @@ class VideoEncoder(nn.Module):
         mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         orig_dtype = per_video.dtype
-        with autocast('cuda', enabled=False):
+        with autocast(per_video.device.type, enabled=False):
             aggregated = self.aggregator(per_video.float(), mask=mask)
         return aggregated.to(orig_dtype)
 

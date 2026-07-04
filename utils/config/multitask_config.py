@@ -39,11 +39,6 @@ class MultitaskConfig(HeartWiseConfig):
     num_heads: int
     aggregator_depth: int
     
-    # Video pooling configuration
-    video_pooling_mode: str  # 'mean' or 'attention'
-    attention_pool_heads: int
-    attention_pool_dropout: float
-    
     # Optimization parameters
     optimizer: str
     scheduler_name: str
@@ -116,6 +111,11 @@ class MultitaskConfig(HeartWiseConfig):
     single_clip_probability: float = 0.3
     consistency_loss_weight: float = 0.2
     shuffle_clip_order: bool = True
+
+    # Video pooling configuration
+    video_pooling_mode: str = "mean"  # "mean" or "attention"
+    attention_pool_heads: int = 8
+    attention_pool_dropout: float = 0.1
 
     # Loss configuration
     contrastive_loss_type: str = "siglip"

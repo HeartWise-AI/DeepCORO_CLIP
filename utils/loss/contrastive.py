@@ -127,17 +127,24 @@ class CLIPLoss(nn.Module):
         video_features: torch.Tensor,
         text_features: torch.Tensor,
         log_temp: torch.Tensor,
+        pos_mask: torch.Tensor | None = None,
+        pos_weights: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Args:
             video_features: [B, D] video embeddings
             text_features: [B, D] text embeddings
             log_temp: Learnable log temperature
+            pos_mask: [B, T] binary multi-positive mask. If None, assumes
+                     diagonal (1-to-1 matching) cross-entropy.
+            pos_weights: [B, T] optional per-pair weights (currently unused
+                     by CLIP; accepted for API compatibility with the
+                     ``Loss.run`` kwarg-forwarding path).
 
         Returns:
             Scalar loss
         """
-        with autocast("cuda", enabled=False):
+        with autocast(video_features.device.type, enabled=False):
             # Gather from all GPUs if DDP
             video_features = gather_with_gradient(video_features)
             text_features = gather_with_gradient(text_features)
@@ -153,15 +160,47 @@ class CLIPLoss(nn.Module):
             temp = torch.exp(log_temp.float()).clamp(min=1e-4)
             logits = similarity / temp
 
-            # Diagonal targets (1-to-1 matching)
-            batch_size = logits.size(0)
-            targets = torch.arange(batch_size, device=logits.device)
+            if pos_mask is None:
+                # Default: diagonal targets (1-to-1 matching)
+                batch_size = logits.size(0)
+                targets = torch.arange(batch_size, device=logits.device)
 
-            # Bidirectional cross-entropy
-            loss_v2t = F.cross_entropy(logits, targets, label_smoothing=self.label_smoothing)
-            loss_t2v = F.cross_entropy(logits.t(), targets, label_smoothing=self.label_smoothing)
+                # Bidirectional cross-entropy
+                loss_v2t = F.cross_entropy(logits, targets, label_smoothing=self.label_smoothing)
+                loss_t2v = F.cross_entropy(logits.t(), targets, label_smoothing=self.label_smoothing)
 
-        return 0.5 * (loss_v2t + loss_t2v)
+                return 0.5 * (loss_v2t + loss_t2v)
+
+            # Multi-positive InfoNCE (item B4). In DDP the features were gathered to a
+            # global [N*world, ...] grid, so the LOCAL [B, T] pos_mask must be assembled
+            # into the matching GLOBAL block-diagonal mask (positives exist only within a
+            # rank's own batch, since each rank holds distinct video/text pairs).
+            local_mask = pos_mask.float().to(logits.device).clamp(0.0, 1.0)
+            if dist.is_initialized() and dist.get_world_size() > 1:
+                gathered = [torch.zeros_like(local_mask) for _ in range(dist.get_world_size())]
+                dist.all_gather(gathered, local_mask)
+                rows = sum(g.shape[0] for g in gathered)
+                cols = sum(g.shape[1] for g in gathered)
+                targets = torch.zeros(rows, cols, device=logits.device, dtype=local_mask.dtype)
+                r0 = c0 = 0
+                for g in gathered:
+                    targets[r0:r0 + g.shape[0], c0:c0 + g.shape[1]] = g
+                    r0 += g.shape[0]; c0 += g.shape[1]
+            else:
+                targets = local_mask
+            if targets.shape != logits.shape:
+                raise ValueError(
+                    f"CLIPLoss pos_mask shape {tuple(targets.shape)} does not match "
+                    f"logits shape {tuple(logits.shape)} (expected [B_video, T_text])."
+                )
+            row_pos = targets.sum(dim=1).clamp_min(1.0)
+            col_pos = targets.sum(dim=0).clamp_min(1.0)
+            log_prob_v2t = logits.log_softmax(dim=1)
+            log_prob_t2v = logits.t().log_softmax(dim=1)
+            loss_v2t = -((targets * log_prob_v2t).sum(dim=1) / row_pos).mean()
+            loss_t2v = -((targets.t() * log_prob_t2v).sum(dim=1) / col_pos).mean()
+
+            return 0.5 * (loss_v2t + loss_t2v)
 
 
 # =============================================================================
@@ -199,6 +238,7 @@ class SigLIPLoss(nn.Module):
         entropy_regularization: bool = False,
         entropy_weight: float = 0.1,
         min_entropy_threshold: float = 2.0,
+        gather_in_ddp: bool = False,
     ):
         """
         Args:
@@ -211,8 +251,13 @@ class SigLIPLoss(nn.Module):
             entropy_regularization: Add entropy penalty to prevent collapse
             entropy_weight: Weight for entropy loss term
             min_entropy_threshold: Only penalize if entropy drops below this
+            gather_in_ddp: If True, gather features across DDP ranks. The
+                gathered path is NOT yet implemented (requires gathering
+                text_features and building a block-diagonal positive mask),
+                so this must stay False until that path is built and tested.
         """
         super().__init__()
+        self.gather_in_ddp = gather_in_ddp
         self.positive_weight = max(float(positive_weight), 1e-6)
         self.negative_weight = max(float(negative_weight), 1e-6)
         self.use_severity_weights = use_severity_weights
@@ -247,13 +292,19 @@ class SigLIPLoss(nn.Module):
         Returns:
             Scalar loss
         """
-        with autocast("cuda", enabled=False):
-            # Gather from all GPUs if DDP
-            video_features = gather_with_gradient(video_features)
-            if pos_mask is not None:
-                pos_mask = gather_with_gradient(pos_mask)
-            if pos_weights is not None:
-                pos_weights = gather_with_gradient(pos_weights)
+        with autocast(video_features.device.type, enabled=False):
+            # Gather from all GPUs if DDP (item B3).
+            # The default (gather_in_ddp=False) keeps SigLIP local per-rank
+            # with a local pos_mask. The gathered path is not yet correct
+            # because it would also need gathered text_features and a
+            # block-diagonal positive mask, so it is explicitly disabled.
+            if self.gather_in_ddp:
+                raise NotImplementedError(
+                    "SigLIP gather_in_ddp=True requires gathering text_features "
+                    "and building a block-diagonal positive mask. Keep "
+                    "siglip_gather_in_ddp=False until that path is implemented "
+                    "and tested."
+                )
 
             # Normalize
             video_features = F.normalize(video_features.float(), dim=-1)
@@ -277,7 +328,12 @@ class SigLIPLoss(nn.Module):
                 targets = torch.zeros(B, T, device=logits.device, dtype=logits.dtype)
                 targets[:min_dim, :min_dim] = torch.eye(min_dim, device=logits.device, dtype=logits.dtype)
             else:
-                targets = pos_mask.float().clamp(0.0, 1.0)
+                if tuple(pos_mask.shape) != (B, T):
+                    raise ValueError(
+                        f"SigLIP pos_mask shape {tuple(pos_mask.shape)} does not "
+                        f"match logits shape {(B, T)} (expected [B_video, T_text])."
+                    )
+                targets = pos_mask.float().to(logits.device).clamp(0.0, 1.0)
 
             # Build weight matrix
             weight_matrix = torch.full_like(logits, self.negative_weight)
@@ -289,11 +345,15 @@ class SigLIPLoss(nn.Module):
                 positive_contrib = torch.full_like(logits, self.positive_weight)
 
             if self.auto_balance:
-                # Auto-balance: weight positives by neg/pos ratio per row
+                # Auto-balance: scale positives by neg/pos ratio per row WITHOUT
+                # discarding the severity-weighted positive_contrib (item B5).
                 pos_counts = targets.sum(dim=1, keepdim=True).clamp(min=1.0)
                 neg_counts = T - pos_counts
                 ratio = (neg_counts / pos_counts).clamp(min=1.0)
-                positive_contrib = ratio.expand_as(logits)
+                positive_contrib = positive_contrib * ratio.expand_as(logits)
+
+            # Clamp the finalized positive contribution for numerical stability.
+            positive_contrib = positive_contrib.clamp(min=1e-6, max=100.0)
 
             weight_matrix = torch.where(targets > 0.5, positive_contrib, weight_matrix)
 

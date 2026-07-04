@@ -352,10 +352,13 @@ class LinearProbingRunner:
         
         Args:
             batch: Dictionary containing:
-                videos: Tensor of shape [B * num_videos, C, F, H, W] for multi-video
-                       or [B, C, F, H, W] for single-video
+                videos: Tensor of shape [B, num_videos, F, H, W, C] for shaped
+                       multi-video batches, [B * num_videos, F, H, W, C] for
+                       flat multi-video batches, or [B, F, H, W, C] for
+                       single-video batches
                 targets: Dict of tensors [B, ...]
                 video_indices: Optional tensor [B * num_videos] mapping videos to batch indices
+                video_mask: Optional tensor [B, num_videos] marking real videos
                 video_fname: List of file paths
                 
         Returns:
@@ -374,9 +377,19 @@ class LinearProbingRunner:
         if view_ids is not None:
             view_ids = view_ids.to(self.config.device)
 
+        video_mask = batch.get('video_mask', None)
+        if video_mask is not None:
+            video_mask = video_mask.to(self.config.device, dtype=torch.bool)
+
+        video_indices = batch.get('video_indices', None)
+        if video_indices is not None:
+            video_indices = video_indices.to(self.config.device, dtype=torch.long)
+
         return {
             "batch_video": batch_video,
             "batch_targets": batch_targets,
+            "video_indices": video_indices,
+            "video_mask": video_mask,
             "view_ids": view_ids,
         }
     
@@ -392,11 +405,47 @@ class LinearProbingRunner:
             outputs=outputs,
             processed_batch=processed_batch
         )
+
+    def _optimizer_parameters_with_grad(self) -> list[torch.nn.Parameter]:
+        if self.optimizer is None:
+            return []
+
+        return [
+            p
+            for group in self.optimizer.param_groups
+            for p in group["params"]
+            if p.grad is not None
+        ]
+
+    def _step_optimizer(self) -> bool:
+        if self.optimizer is None:
+            return False
+
+        max_grad_norm = float(getattr(self.config, "max_grad_norm", 0.0) or 0.0)
+        if self.scaler:
+            scale_before_step = self.scaler.get_scale()
+            if max_grad_norm > 0:
+                self.scaler.unscale_(self.optimizer)
+                params = self._optimizer_parameters_with_grad()
+                if params:
+                    torch.nn.utils.clip_grad_norm_(params, max_grad_norm)
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            return self.scaler.get_scale() >= scale_before_step
+
+        if max_grad_norm > 0:
+            params = self._optimizer_parameters_with_grad()
+            if params:
+                torch.nn.utils.clip_grad_norm_(params, max_grad_norm)
+        self.optimizer.step()
+        return True
     
     def _train_step(
         self,
         batch_video: torch.Tensor,
         batch_targets: Dict[str, torch.Tensor],
+        video_indices: torch.Tensor = None,
+        video_mask: torch.Tensor = None,
         view_ids: torch.Tensor = None,
     ) -> StepFnResults:
         # Clear gradients only if this is the first step in accumulation
@@ -404,20 +453,29 @@ class LinearProbingRunner:
             if self.optimizer is not None:
                 self.optimizer.zero_grad()
 
-        # Forward pass with autocast for mixed precision
-        with torch.amp.autocast('cuda', enabled=self.config.use_amp, dtype=torch.float16):
+        # Forward pass with autocast for mixed precision only on CUDA.
+        amp_device_type = batch_video.device.type
+        amp_enabled = bool(self.config.use_amp and amp_device_type == "cuda")
+        with torch.amp.autocast(
+            device_type=amp_device_type,
+            enabled=amp_enabled,
+            dtype=torch.float16,
+        ):
             try:
-                if self.config.use_amp:
+                if amp_enabled:
                     batch_video = batch_video.to(dtype=torch.float16)
 
                 outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
-                    batch_video, view_ids=view_ids
+                    batch_video,
+                    video_indices=video_indices,
+                    video_mask=video_mask,
+                    view_ids=view_ids,
                 )
             except Exception as e:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")
 
         try:
-            if self.config.use_amp:
+            if amp_enabled:
                 for head_name, target in batch_targets.items():
                     if self.config.head_task[head_name] == MetricTask.REGRESSION:
                         batch_targets[head_name] = target.to(dtype=torch.float16)
@@ -433,28 +491,38 @@ class LinearProbingRunner:
 
         # Scale loss by gradient accumulation steps
         scaled_loss = losses['main'] / self.config.gradient_accumulation_steps
-        
-        # Backward pass with gradient scaling
-        if self.scaler:
-            self.scaler.scale(scaled_loss).backward()
+
+        # Non-finite-loss guard: a single corrupt batch (e.g. AMP fp16 overflow)
+        # must not poison the weights with NaN/Inf. If the loss is non-finite,
+        # drop any pending grads and skip backward/step for this batch.
+        if not bool(torch.isfinite(scaled_loss).all().item()):
+            print(
+                f"[WARN] rank={self.device} non-finite loss "
+                f"({scaled_loss.detach().float().item()}) at step {self.step}; "
+                "skipping backward/optimizer step for this batch"
+            )
+            if self.optimizer is not None:
+                self.optimizer.zero_grad(set_to_none=True)
         else:
-            scaled_loss.backward()
-        
-        # Sync gradients across processes before optimizer step
-        DistributedUtils.sync_process_group(
-            world_size=self.config.world_size,
-            device_ids=self.config.device
-        )
-        
-        # Only step optimizer and update scaler if this is the last step in accumulation
-        if (self.step + 1) % self.config.gradient_accumulation_steps == 0:
-            if self.scaler and self.optimizer is not None:
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-            
-            # Step the learning rate scheduler after optimizer step
-            if self.lr_scheduler and self.scheduler_per_iteration:
-                self.lr_scheduler.step()
+            # Backward pass with gradient scaling
+            if self.scaler:
+                self.scaler.scale(scaled_loss).backward()
+            else:
+                scaled_loss.backward()
+
+            # Sync gradients across processes before optimizer step
+            DistributedUtils.sync_process_group(
+                world_size=self.config.world_size,
+                device_ids=self.config.device
+            )
+
+            # Only step optimizer and update scaler if this is the last step in accumulation
+            if (self.step + 1) % self.config.gradient_accumulation_steps == 0:
+                did_optimizer_step = self._step_optimizer()
+
+                # Step the learning rate scheduler after optimizer step
+                if did_optimizer_step and self.lr_scheduler and self.scheduler_per_iteration:
+                    self.lr_scheduler.step()
 
         # Increment step counter
         self.step += 1
@@ -479,6 +547,8 @@ class LinearProbingRunner:
         self,
         batch_video: torch.Tensor,
         batch_targets: Dict[str, torch.Tensor],
+        video_indices: torch.Tensor = None,
+        video_mask: torch.Tensor = None,
         view_ids: torch.Tensor = None,
     ) -> StepFnResults:
         # Forward pass with autocast for mixed precision
@@ -489,7 +559,10 @@ class LinearProbingRunner:
                     batch_video = batch_video.to(dtype=torch.float16)
 
                 outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
-                    batch_video, view_ids=view_ids
+                    batch_video,
+                    video_indices=video_indices,
+                    video_mask=video_mask,
+                    view_ids=view_ids,
                 )
             except Exception as e:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")
@@ -536,6 +609,8 @@ class LinearProbingRunner:
         self,
         batch_video: torch.Tensor,
         batch_targets: Dict[str, torch.Tensor],  # Unused - parsed to match signature
+        video_indices: torch.Tensor = None,
+        video_mask: torch.Tensor = None,
         view_ids: torch.Tensor = None,
     ) -> StepFnResults:
         # Forward pass with autocast for mixed precision
@@ -546,7 +621,10 @@ class LinearProbingRunner:
                     batch_video = batch_video.to(dtype=torch.float16)
 
                 outputs_dict: dict[str, torch.Tensor] = self.linear_probing(
-                    batch_video, view_ids=view_ids
+                    batch_video,
+                    video_indices=video_indices,
+                    video_mask=video_mask,
+                    view_ids=view_ids,
                 )
             except Exception as e:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")
@@ -920,7 +998,7 @@ class LinearProbingRunner:
                 # Handle binary classification
                 if self.config.head_task[head] == MetricTask.BINARY_CLASSIFICATION:
                     preds: np.ndarray = preds_tensor.squeeze().detach().cpu().float().numpy()
-                    targets: np.ndarray = targets_tensor.squeeze().detach().cpu().int().numpy() if targets_tensor is not None else None
+                    targets: np.ndarray = targets_tensor.squeeze().detach().cpu().float().numpy() if targets_tensor is not None else None
                     predictions_dict[f'{head}_pred'] = preds
                     predictions_dict[f'{head}_true'] = targets
                     
@@ -935,7 +1013,7 @@ class LinearProbingRunner:
                 elif self.config.head_task[head] == MetricTask.MULTICLASS_CLASSIFICATION:                        
                     # For multi-class, get both raw probabilities and predicted class
                     pred_labels: np.ndarray = preds_tensor.squeeze().detach().cpu().float().numpy()
-                    target_labels: np.ndarray = targets_tensor.squeeze().detach().cpu().int().numpy() if targets_tensor is not None else None
+                    target_labels: np.ndarray = targets_tensor.squeeze().detach().cpu().float().numpy() if targets_tensor is not None else None
                     
                     # Create index_to_label mapping
                     index_to_label = {v: k for k, v in self.config.labels_map[head].items()}
@@ -1130,8 +1208,9 @@ class LinearProbingRunner:
                                 f"should have logits of shape [B, 1], but got {logits.shape}"
                             )
                         preds: torch.Tensor = torch.sigmoid(logits.float())
-                        targets: torch.Tensor = targets.long()
-                        
+                        # Keep as float to preserve NaN for masking; convert to long after filtering
+                        targets: torch.Tensor = targets.float()
+
                     elif self.config.head_task[head_name] == MetricTask.MULTICLASS_CLASSIFICATION:
                         if logits.ndim != 2 or logits.shape[1] < 2:  # Expected shape: [B, C] with C > 1
                             raise ValueError(
@@ -1139,8 +1218,9 @@ class LinearProbingRunner:
                                 f"should have logits of shape [B, C] where C > 1 (Nb of classes), but got {logits.shape}"
                             )
                         preds: torch.Tensor = torch.softmax(logits.float(), dim=1)
-                        targets: torch.Tensor = targets.long()
-                        
+                        # Keep as float to preserve NaN for masking; convert to long after filtering
+                        targets: torch.Tensor = targets.float()
+
                     elif self.config.head_task[head_name] == MetricTask.REGRESSION:
                         preds: torch.Tensor = logits
                         targets: torch.Tensor = targets.float()
@@ -1269,7 +1349,21 @@ class LinearProbingRunner:
             # Gather accumulated predictions and targets for each head
             preds = torch.cat(accumulated_preds[head], dim=0)
             targets = torch.cat(accumulated_targets[head], dim=0)
-            
+
+            # Filter out NaN targets (missing data)
+            valid_mask = ~torch.isnan(targets)
+            n_valid = valid_mask.sum().item()
+            if n_valid < 2:
+                # Need at least 2 samples for meaningful metrics
+                continue
+            if not valid_mask.all():
+                preds = preds[valid_mask]
+                targets = targets[valid_mask]
+
+            # Convert targets to long for classification after NaN filtering
+            if self.config.head_task[head] in (MetricTask.BINARY_CLASSIFICATION, MetricTask.MULTICLASS_CLASSIFICATION):
+                targets = targets.long()
+
             if self.config.head_task[head] == MetricTask.BINARY_CLASSIFICATION:
                 # Compute classification metrics WITH CI
                 head_metrics = compute_binary_classification_metrics(
@@ -1299,17 +1393,23 @@ class LinearProbingRunner:
                     compute_ci=compute_ci
                 )
             elif self.config.head_task[head] == MetricTask.REGRESSION:
+                # Check if this regression head should also compute AUC
+                regression_auc_heads = getattr(self.config, 'regression_auc_heads', None) or {}
+                auc_threshold = regression_auc_heads.get(head, None)
+
                 # Compute regression metrics WITH CI
                 head_metrics = compute_regression_metrics(
                     preds=preds,
                     targets=targets,
                     head_name=head,
-                    mode=mode, 
+                    mode=mode,
                     wandb_wrapper=self.wandb_wrapper,
                     is_ref_device=self.config.is_ref_device,
                     confidence_level=getattr(self.config, 'ci_confidence_level', 0.95),
                     n_bootstrap=getattr(self.config, 'ci_n_bootstrap', 1000),
-                    compute_ci=compute_ci
+                    compute_ci=compute_ci,
+                    auc_threshold=auc_threshold,
+                    labels_map=getattr(self.config, 'labels_map', None),
                 )
             else:
                 raise ValueError(

@@ -41,7 +41,7 @@ class ContrastiveLoss(nn.Module):
         # overflow/underflow issues when AMP is enabled. This has negligible
         # memory overhead because the tensors involved are only of size [B, D]
         # and [B, B].
-        with autocast('cuda', enabled=False):
+        with autocast(video_features.device.type, enabled=False):
             # Normalize embeddings in fp32 for numerical stability.
             video_features_fp32 = F.normalize(video_features.float(), dim=1)
             text_features_fp32 = F.normalize(text_features.float(), dim=1)
@@ -129,7 +129,7 @@ class ContrastiveLossDDP(nn.Module):
         Returns:
             torch.Tensor: Scalar loss value
         """        
-        with autocast('cuda', enabled=False):
+        with autocast(video_features.device.type, enabled=False):
             # 1) Gather features from all GPUs.
             video_features_all = gather_all(video_features)
             text_features_all  = gather_all(text_features)
@@ -157,7 +157,6 @@ class ContrastiveLossDDP(nn.Module):
 
         return loss
 
-@LossRegistry.register(LossType.SIGLIP)
 class SiglipLoss(nn.Module):
     """
     SIGLIP (Simple Gated Language-Image Pre-training) loss implementation.
@@ -238,7 +237,7 @@ class SiglipLossDDP(nn.Module):
         Returns:
             torch.Tensor: Scalar loss value
         """        
-        with autocast('cuda', enabled=False):
+        with autocast(video_features.device.type, enabled=False):
             # 1) Gather features from all GPUs using fp16 to cut communication volume.
             video_features_half = gather_all(video_features.half())
             text_features_half  = gather_all(text_features.half())
@@ -545,11 +544,28 @@ class MultiHeadLoss(nn.Module):
         losses: dict[str, torch.Tensor] = {}
 
         for head_name in self.head_structure.keys():
+            target = targets[head_name]
+            output = outputs[head_name]
+
+            # Mask out NaN targets (missing data)
+            valid_mask = ~torch.isnan(target)
+            if valid_mask.sum() == 0:
+                continue
+
+            if not valid_mask.all():
+                target = target[valid_mask]
+                output = output[valid_mask]
+
             # Compute loss using the appropriate loss function
-            head_loss: torch.Tensor = self.loss_fns[head_name](outputs[head_name], targets[head_name])
+            head_loss: torch.Tensor = self.loss_fns[head_name](output, target)
 
             # Apply head-specific weight
             losses[head_name] = head_loss
             losses['main'] = losses.get('main', 0.0) + self.head_weights[head_name] * head_loss
+
+        # If no heads had valid targets, set main loss to 0
+        if 'main' not in losses:
+            device = next(iter(outputs.values())).device
+            losses['main'] = torch.tensor(0.0, device=device, requires_grad=True)
 
         return losses

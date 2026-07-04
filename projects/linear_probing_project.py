@@ -50,6 +50,7 @@ class VideoMILWrapper(torch.nn.Module):
         self,
         x: torch.Tensor,
         video_indices: Optional[torch.Tensor] = None,
+        video_mask: Optional[torch.Tensor] = None,
         view_ids: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """Wrapper forward pass.
@@ -62,6 +63,8 @@ class VideoMILWrapper(torch.nn.Module):
         ----
         x:  Input videos tensor.
         video_indices:  Optional mapping from videos to batch items.
+        video_mask: Optional ``[B, N]`` boolean tensor where ``True`` marks
+            a real video and ``False`` marks a padded/skipped slot.
         view_ids:  Optional ``[B, N]`` long tensor of per-video view class IDs
             (EchoJEPA-style angle embeddings).  Forwarded to the MIL model.
         """
@@ -70,6 +73,14 @@ class VideoMILWrapper(torch.nn.Module):
         # 1) Run the backbone / encoder
         # ------------------------------------------------------------------
         embeddings: torch.Tensor = self.video_encoder(x)
+        index_mask: Optional[torch.Tensor] = None
+        if video_indices is not None and x.dim() == 5:
+            embeddings, index_mask, view_ids = self._regroup_flat_embeddings(
+                embeddings=embeddings,
+                video_indices=video_indices,
+                video_mask=video_mask,
+                view_ids=view_ids,
+            )
 
         # ------------------------------------------------------------------
         # 2) Reshape so that the MIL module always sees *either*:
@@ -103,15 +114,216 @@ class VideoMILWrapper(torch.nn.Module):
         else:
             B, N, _ = embeddings.shape  # type: ignore[misc]
 
-        # Build a simple boolean mask that marks every video as valid.  In the
-        # future we could incorporate ``video_indices`` to create selective
-        # masks, e.g. when some videos are padded.
-        attention_mask = torch.ones((B, N), dtype=torch.bool, device=embeddings.device)
+        if video_mask is not None:
+            attention_mask = self._coerce_video_mask(
+                video_mask=video_mask,
+                batch_size=B,
+                num_instances=N,
+                device=embeddings.device,
+            )
+            if index_mask is not None:
+                attention_mask = attention_mask & self._coerce_video_mask(
+                    video_mask=index_mask,
+                    batch_size=B,
+                    num_instances=N,
+                    device=embeddings.device,
+                )
+        elif index_mask is not None:
+            attention_mask = self._coerce_video_mask(
+                video_mask=index_mask,
+                batch_size=B,
+                num_instances=N,
+                device=embeddings.device,
+            )
+        elif x.dim() == 6:  # multi-video input [B, N, F, H, W, C]
+            with torch.no_grad():
+                inferred_mask = x.reshape(x.shape[0], x.shape[1], -1).abs().amax(dim=-1) > 0
+            attention_mask = self._coerce_video_mask(
+                video_mask=inferred_mask,
+                batch_size=B,
+                num_instances=N,
+                device=embeddings.device,
+            )
+        else:
+            attention_mask = torch.ones((B, N), dtype=torch.bool, device=embeddings.device)
+
+        view_ids = self._coerce_view_ids(
+            view_ids=view_ids,
+            batch_size=B,
+            num_instances=N,
+            device=embeddings.device,
+        )
 
         # ------------------------------------------------------------------
         # 4) Forward through the MIL head(s)
         # ------------------------------------------------------------------
         return self.mil_model(embeddings, mask=attention_mask, view_ids=view_ids)
+
+    @staticmethod
+    def _coerce_video_mask(
+        video_mask: torch.Tensor,
+        batch_size: int,
+        num_instances: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """Align a dataloader video mask with the tensor shape seen by MIL."""
+        attention_mask = video_mask.to(device=device, dtype=torch.bool)
+        expected_shape = (batch_size, num_instances)
+        if tuple(attention_mask.shape) == expected_shape:
+            return attention_mask
+
+        if (
+            attention_mask.ndim == 2
+            and attention_mask.shape[0] == batch_size
+            and num_instances == 1
+        ):
+            return attention_mask.any(dim=1, keepdim=True)
+
+        raise ValueError(
+            f"video_mask shape {tuple(attention_mask.shape)} does not match "
+            f"MIL instance shape {expected_shape}"
+        )
+
+    def _regroup_flat_embeddings(
+        self,
+        embeddings: torch.Tensor,
+        video_indices: torch.Tensor,
+        video_mask: Optional[torch.Tensor] = None,
+        view_ids: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        """Group flat per-video encoder outputs into [B, N, ...] MIL layout."""
+        if video_indices.ndim != 1:
+            raise ValueError(
+                f"video_indices must be a 1D tensor, got shape {tuple(video_indices.shape)}"
+            )
+        if embeddings.shape[0] != video_indices.numel():
+            raise ValueError(
+                f"video_indices length {video_indices.numel()} does not match "
+                f"flat embedding batch size {embeddings.shape[0]}"
+            )
+        if video_indices.numel() == 0:
+            raise ValueError("video_indices cannot be empty for flat multi-video inputs")
+
+        video_indices = video_indices.to(device=embeddings.device, dtype=torch.long)
+        if video_mask is not None:
+            if video_mask.ndim != 2:
+                raise ValueError(
+                    f"video_mask must be 2D when grouping flat embeddings, got {tuple(video_mask.shape)}"
+                )
+            batch_size, num_instances = video_mask.shape
+        else:
+            batch_size = int(video_indices.max().item()) + 1
+            num_instances = self.num_videos
+
+        slot_indices = self._slot_indices_for_flat_videos(
+            video_indices=video_indices,
+            batch_size=batch_size,
+            num_instances=num_instances,
+        )
+
+        grouped = embeddings.new_zeros((batch_size, num_instances, *embeddings.shape[1:]))
+        grouped[video_indices, slot_indices] = embeddings
+
+        index_mask = torch.zeros(
+            (batch_size, num_instances),
+            dtype=torch.bool,
+            device=embeddings.device,
+        )
+        index_mask[video_indices, slot_indices] = True
+
+        grouped_view_ids = self._regroup_flat_view_ids(
+            view_ids=view_ids,
+            video_indices=video_indices,
+            slot_indices=slot_indices,
+            batch_size=batch_size,
+            num_instances=num_instances,
+            device=embeddings.device,
+        )
+        return grouped, index_mask, grouped_view_ids
+
+    def _regroup_flat_view_ids(
+        self,
+        view_ids: Optional[torch.Tensor],
+        video_indices: torch.Tensor,
+        slot_indices: torch.Tensor,
+        batch_size: int,
+        num_instances: int,
+        device: torch.device,
+    ) -> Optional[torch.Tensor]:
+        """Group flat per-video view IDs into [B, N], preserving shaped inputs."""
+        if view_ids is None:
+            return None
+
+        view_ids = view_ids.to(device=device, dtype=torch.long)
+        if view_ids.ndim == 2:
+            return view_ids
+        if view_ids.ndim != 1:
+            raise ValueError(f"view_ids must be 1D or 2D, got shape {tuple(view_ids.shape)}")
+        if view_ids.numel() != video_indices.numel():
+            raise ValueError(
+                f"view_ids length {view_ids.numel()} does not match "
+                f"flat video count {video_indices.numel()}"
+            )
+
+        pad_id = int(getattr(self.mil_model, "view_pad_id", 0))
+        grouped_view_ids = torch.full(
+            (batch_size, num_instances),
+            pad_id,
+            dtype=torch.long,
+            device=device,
+        )
+        grouped_view_ids[video_indices, slot_indices] = view_ids
+        return grouped_view_ids
+
+    @staticmethod
+    def _coerce_view_ids(
+        view_ids: Optional[torch.Tensor],
+        batch_size: int,
+        num_instances: int,
+        device: torch.device,
+    ) -> Optional[torch.Tensor]:
+        """Align optional per-video view IDs with the MIL instance layout."""
+        if view_ids is None:
+            return None
+
+        view_ids = view_ids.to(device=device, dtype=torch.long)
+        expected_shape = (batch_size, num_instances)
+        if tuple(view_ids.shape) == expected_shape:
+            return view_ids
+
+        if view_ids.ndim == 2 and view_ids.shape[0] == batch_size and num_instances == 1:
+            # The encoder has already collapsed multiple videos into one
+            # embedding, so per-video view IDs no longer have a valid axis.
+            return None
+
+        raise ValueError(
+            f"view_ids shape {tuple(view_ids.shape)} does not match "
+            f"MIL instance shape {expected_shape}"
+        )
+
+    @staticmethod
+    def _slot_indices_for_flat_videos(
+        video_indices: torch.Tensor,
+        batch_size: int,
+        num_instances: int,
+    ) -> torch.Tensor:
+        """Assign each flat video to its per-study slot by encounter order."""
+        counts = torch.zeros(batch_size, dtype=torch.long, device=video_indices.device)
+        slot_indices = torch.empty_like(video_indices)
+        for flat_idx, batch_idx in enumerate(video_indices.tolist()):
+            if batch_idx < 0 or batch_idx >= batch_size:
+                raise ValueError(
+                    f"video_indices contains batch index {batch_idx}, "
+                    f"outside expected range [0, {batch_size})"
+                )
+            slot_idx = int(counts[batch_idx].item())
+            if slot_idx >= num_instances:
+                raise ValueError(
+                    f"Sample {batch_idx} has more than {num_instances} videos in flat batch"
+                )
+            slot_indices[flat_idx] = slot_idx
+            counts[batch_idx] += 1
+        return slot_indices
 
 @ProjectRegistry.register("DeepCORO_video_linear_probing")
 @ProjectRegistry.register("DeepCORO_video_linear_probing_cardio_syntax")
@@ -123,9 +335,26 @@ class LinearProbingProject(BaseProject):
     ):
         super().__init__(config, wandb_wrapper)
 
+    def _disable_encoder_aggregation_for_mil(self) -> None:
+        """Linear probing must preserve per-instance encoder outputs for MIL."""
+        if not getattr(self.config, "aggregate_videos_tokens", False):
+            return
+
+        if self.config.is_ref_device:
+            print(
+                "[WARNING] aggregate_videos_tokens=True detected but "
+                "should be False for linear-probing. This is only used for CLIP. "
+                "Overriding to False so that the VideoEncoder preserves "
+                "per-instance tokens. This override is logged to wandb."
+            )
+        self.config.aggregate_videos_tokens = False
+        if self.wandb_wrapper.is_initialized():
+            self.wandb_wrapper.log({"config/aggregate_videos_tokens_override": True})
+
     def _setup_training_objects(
         self
     )->dict[str, Any]:
+        self._disable_encoder_aggregation_for_mil()
                 
         # Calculate dataset statistics
         mean, std = calculate_dataset_statistics_ddp(self.config)        
@@ -217,13 +446,6 @@ class LinearProbingProject(BaseProject):
         )
         mil_model = mil_model.to(self.config.device).float()
 
-        # Distribute MIL model
-        mil_model = DistributedUtils.DDP(
-            mil_model,
-            device_ids=[self.config.device],
-            find_unused_parameters=True
-        )
-
         # Wrap both models
         linear_probing = VideoMILWrapper(video_encoder, mil_model, self.config.num_videos)
                 
@@ -243,7 +465,7 @@ class LinearProbingProject(BaseProject):
         # Add head parameters
         for head_name in self.config.head_structure:
             param_groups.append({
-                'params': mil_model.module.heads[head_name].parameters(),
+                'params': mil_model.heads[head_name].parameters(),
                 'lr': self.config.head_lr[head_name],
                 'name': head_name,
                 'weight_decay': self.config.head_weight_decay[head_name]
@@ -253,9 +475,9 @@ class LinearProbingProject(BaseProject):
         if "attention" in self.config.pooling_mode and self.config.train_pooling_params:
             # Combine all attention-specific parameters (V, U, w) into one group
             attention_params = itertools.chain(
-                mil_model.module.attention_V.parameters(),
-                mil_model.module.attention_U.parameters(),
-                mil_model.module.attention_w.parameters(),
+                mil_model.attention_V.parameters(),
+                mil_model.attention_U.parameters(),
+                mil_model.attention_w.parameters(),
             )
             param_groups.append({
                 'params': attention_params,
@@ -266,20 +488,20 @@ class LinearProbingProject(BaseProject):
 
         # Add CLS token parameters if applicable
         if "cls_token" in self.config.pooling_mode and self.config.train_pooling_params:
-            cls_params = [mil_model.module.cls_token]
-            if hasattr(mil_model.module, 'cls_attention_within'):
+            cls_params = [mil_model.cls_token]
+            if hasattr(mil_model, 'cls_attention_within'):
                 cls_params_iter = itertools.chain(
                     cls_params,
-                    mil_model.module.cls_attention_within.parameters(),
-                    mil_model.module.cls_attention_across.parameters(),
-                    mil_model.module.cls_norm_within.parameters(),
-                    mil_model.module.cls_norm_across.parameters(),
+                    mil_model.cls_attention_within.parameters(),
+                    mil_model.cls_attention_across.parameters(),
+                    mil_model.cls_norm_within.parameters(),
+                    mil_model.cls_norm_across.parameters(),
                 )
             else:
                 cls_params_iter = itertools.chain(
                     cls_params,
-                    mil_model.module.cls_attention.parameters(),
-                    mil_model.module.cls_norm.parameters(),
+                    mil_model.cls_attention.parameters(),
+                    mil_model.cls_norm.parameters(),
                 )
             param_groups.append({
                 'params': cls_params_iter,
@@ -292,11 +514,11 @@ class LinearProbingProject(BaseProject):
             print("NOTE: train_pooling_params=False — attention/cls_token params are FROZEN (old behaviour)")
 
         # Add view embedding parameters if applicable
-        if num_view_classes > 0 and hasattr(mil_model.module, 'view_embedding'):
+        if num_view_classes > 0 and hasattr(mil_model, 'view_embedding'):
             ve_lr = self.config.view_embedding_lr if self.config.view_embedding_lr is not None else self.config.attention_lr
             ve_wd = self.config.view_embedding_weight_decay if self.config.view_embedding_weight_decay is not None else self.config.attention_weight_decay
             param_groups.append({
-                'params': mil_model.module.view_embedding.parameters(),
+                'params': mil_model.view_embedding.parameters(),
                 'lr': ve_lr,
                 'name': 'view_embedding',
                 'weight_decay': ve_wd,
@@ -333,25 +555,13 @@ class LinearProbingProject(BaseProject):
             )
         )
 
-        # --------------------------------------------------------------
-        # Linear-probing *must* receive per-video (or per-patch) tokens so
-        # that the downstream MIL module can do its own aggregation.  If the
-        # YAML accidentally sets ``aggregate_videos_tokens=True`` we disable
-        # it and emit a warning instead of failing later with shape errors.
-        # --------------------------------------------------------------
-        if getattr(self.config, "aggregate_videos_tokens", False):
-            if self.config.is_ref_device:
-                print(
-                    "[WARNING] aggregate_videos_tokens=True detected but "
-                    "should be False for linear-probing. This is only used for CLIP. Overriding to "
-                    "False so that the VideoEncoder preserves per-instance "
-                    "tokens. This override is logged to wandb."
-                )
-            # Mutate in-place so every subsequent consumer (e.g. VideoEncoder)
-            # sees the corrected value.
-            self.config.aggregate_videos_tokens = False
-            if self.wandb_wrapper.is_initialized():
-                self.wandb_wrapper.log({"config/aggregate_videos_tokens_override": True})
+        # Distribute the full model, not just the MIL head. When the video
+        # encoder is partially trainable, its gradients must be synchronized too.
+        linear_probing = DistributedUtils.DDP(
+            linear_probing,
+            device_ids=[self.config.device],
+            find_unused_parameters=True
+        )
 
         return {
             "train_loader": train_loader,
@@ -366,6 +576,8 @@ class LinearProbingProject(BaseProject):
             
     def _setup_validation_objects(self) -> dict[str, Any]:
         """Setup objects for model validation/evaluation."""
+        self._disable_encoder_aggregation_for_mil()
+
         # Calculate dataset statistics
         mean, std = calculate_dataset_statistics_ddp(self.config)
 
@@ -491,7 +703,20 @@ class LinearProbingProject(BaseProject):
 
         # Train the model
         if self.config.run_mode == RunMode.TRAIN:
-            runner.train(start_epoch=0, end_epoch=self.config.epochs)
+            start_epoch = 0
+            resume_path = getattr(self.config, "resume_checkpoint_path", None)
+            if resume_path:
+                ck = self._load_and_fix_checkpoint(resume_path)
+                runner.linear_probing.load_state_dict(ck["linear_probing"])
+                if ck.get("optimizer") is not None and runner.optimizer is not None:
+                    runner.optimizer.load_state_dict(ck["optimizer"])
+                if ck.get("scheduler") is not None and getattr(runner, "lr_scheduler", None) is not None:
+                    runner.lr_scheduler.load_state_dict(ck["scheduler"])
+                if ck.get("scaler") is not None and getattr(runner, "scaler", None) is not None:
+                    runner.scaler.load_state_dict(ck["scaler"])
+                start_epoch = int(ck.get("epoch", -1)) + 1
+                print(f"[RESUME] loaded {resume_path}; resuming at epoch {start_epoch}", flush=True)
+            runner.train(start_epoch=start_epoch, end_epoch=self.config.epochs)
         elif self.config.run_mode == RunMode.TEST:
             runner.test()
         elif self.config.run_mode == RunMode.VALIDATE:
@@ -528,17 +753,48 @@ class LinearProbingProject(BaseProject):
             if key.startswith("video_encoder."):
                 new_key = f"module.{key}"
                 fixed_state_dict[new_key] = value
-            
+
             # Fix mil_model keys: remove extra "module." and add top-level "module."
             elif key.startswith("mil_model.module."):
                 # Remove the middle "module." and add top-level "module."
-                inner_key = key.replace("mil_model.module.", "mil_model.")
+                inner_key = key.replace("mil_model.module.", "mil_model.", 1)
                 new_key = f"module.{inner_key}"
                 fixed_state_dict[new_key] = value
-            
+
+            # Current checkpoints save the unwrapped VideoMILWrapper state_dict,
+            # but validation/resume loads into DDP(VideoMILWrapper).
+            elif key.startswith("mil_model."):
+                fixed_state_dict[f"module.{key}"] = value
+
             # Handle any other keys normally
             else:
                 fixed_state_dict[key] = value
+
+        # Fix old cls_attention -> new cls_attention_within/across split
+        keys_to_add = {}
+        keys_to_remove = []
+        for key in list(fixed_state_dict.keys()):
+            # Map old single cls_attention to both within and across
+            if ".cls_attention." in key and ".cls_attention_within." not in key and ".cls_attention_across." not in key:
+                within_key = key.replace(".cls_attention.", ".cls_attention_within.")
+                across_key = key.replace(".cls_attention.", ".cls_attention_across.")
+                keys_to_add[within_key] = fixed_state_dict[key]
+                keys_to_add[across_key] = fixed_state_dict[key].clone()
+                keys_to_remove.append(key)
+            # Map old single cls_norm to both within and across
+            elif ".cls_norm." in key and ".cls_norm_within." not in key and ".cls_norm_across." not in key:
+                within_key = key.replace(".cls_norm.", ".cls_norm_within.")
+                across_key = key.replace(".cls_norm.", ".cls_norm_across.")
+                keys_to_add[within_key] = fixed_state_dict[key]
+                keys_to_add[across_key] = fixed_state_dict[key].clone()
+                keys_to_remove.append(key)
+            # Drop old pre_agg_norm (removed from new architecture)
+            elif ".pre_agg_norm." in key:
+                keys_to_remove.append(key)
+
+        for k in keys_to_remove:
+            del fixed_state_dict[k]
+        fixed_state_dict.update(keys_to_add)
         
         checkpoint["linear_probing"] = fixed_state_dict
         return checkpoint

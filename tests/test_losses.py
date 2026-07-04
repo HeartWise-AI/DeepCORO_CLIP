@@ -9,6 +9,7 @@ from utils.loss.losses import (
     SiglipLoss, SiglipLossDDP, 
     InfoNCELoss
 )
+from utils.loss.contrastive import SigLIPLoss
 from utils.loss.multi_positive_infonce import MultiPositiveInfoNCELoss
 from utils.registry import LossRegistry
 
@@ -265,7 +266,7 @@ def test_loss_registry_integration():
     siglip_ddp_loss = LossRegistry.create(LossType.SIGLIP_DDP)
     
     # Check correct types
-    assert isinstance(siglip_loss, SiglipLoss)
+    assert isinstance(siglip_loss, SigLIPLoss)
     assert isinstance(siglip_ddp_loss, SiglipLossDDP)
     
     # Create InfoNCE loss with SIGLIP
@@ -280,7 +281,7 @@ def test_loss_registry_integration():
     text_features = torch.randn(batch_size, embedding_dim)
     
     # Make sure losses work when created through registry
-    loss1 = siglip_loss(video_features, text_features)
+    loss1 = siglip_loss(video_features, text_features, torch.log(torch.tensor(0.1)))
     loss2 = info_nce(video_features, text_features)
     
     assert loss1.ndim == 0

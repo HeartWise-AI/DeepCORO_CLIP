@@ -34,6 +34,7 @@ from utils.wandb_logger import (
 from utils.loss.typing import Loss
 from utils.loss.weighted_siglip import WeightedSigLIPLoss
 from utils.wandb_wrapper import WandbWrapper
+from utils.retrieval_inference import resolve_inference_device, run_retrieval_metadata_inference
 from models.video_encoder import VideoEncoder
 from models.text_encoder import TextEncoder
 from dataloaders.video_clip_dataset import VideoClipDataset
@@ -376,10 +377,23 @@ class VideoContrastiveLearningRunner:
                     world_size=self.world_size,
                     device_ids=self.device
                 )
-                
+
+                # Empty-epoch guard: num_batches is recorded inside _run_epoch
+                # and returned via the metrics dict (do NOT reference a raw
+                # batch_count here -- it is scoped to _run_epoch).
+                train_num_batches = train_metrics.get("train/num_batches", 0.0)
+                val_num_batches = val_metrics.get("val/num_batches", 0.0)
+                if train_num_batches == 0 or val_num_batches == 0:
+                    raise RuntimeError(
+                        f"Empty epoch detected at epoch {epoch + 1}: "
+                        f"train/num_batches={train_num_batches}, "
+                        f"val/num_batches={val_num_batches}. "
+                        "No batches contributed to the epoch."
+                    )
+
                 # If it's an epoch-based scheduler (like StepLR, CosineAnnealingLR, etc.),
                 # call lr_scheduler.step() after each epoch
-                if self.lr_scheduler and (not self.scheduler_per_iteration) and batch_count > 0:
+                if self.lr_scheduler and (not self.scheduler_per_iteration) and train_num_batches > 0:
                     self.lr_scheduler.step()
 
                 # Update best model
@@ -995,8 +1009,48 @@ class VideoContrastiveLearningRunner:
             retrieval_metrics.update(recall_metrics)
             retrieval_metrics.update(mrr_score_dict) # Update with dict
             retrieval_metrics.update(ndcg_scores_dict) # Update with dict
-            retrieval_metrics["MAP"] = map_score 
+            retrieval_metrics["MAP"] = map_score
             retrieval_metrics["MedianRank_V2T"] = median_rank_score
+
+            # Additive multi-positive recall (RecallAny@K): a hit if ANY true
+            # positive text for the video appears in the top-K. This runs only
+            # on rank 0 where the global NxM similarity matrix and the
+            # per-video ground-truth index sets are already assembled, so it
+            # adds no extra DDP coordination. It is logged ALONGSIDE the
+            # existing Recall@K (which is left untouched).
+            try:
+                from utils.retrieval_metrics import (
+                    compute_multi_positive_recall_at_k,
+                )
+
+                num_videos = similarity_matrix.size(0)
+                num_texts = similarity_matrix.size(1)
+                multi_pos_mask = torch.zeros(
+                    (num_videos, num_texts),
+                    dtype=torch.float,
+                    device=similarity_matrix.device,
+                )
+                for row_idx, idx_set in enumerate(ground_truth_index_sets):
+                    for col_idx in idx_set:
+                        if 0 <= col_idx < num_texts:
+                            multi_pos_mask[row_idx, col_idx] = 1.0
+                recall_any_metrics = compute_multi_positive_recall_at_k(
+                    similarity_matrix,
+                    multi_pos_mask,
+                    self.config.recall_k,
+                )
+                for k_name, k_val in recall_any_metrics.items():
+                    suffix = k_name.split("@")[-1] if "@" in k_name else k_name
+                    retrieval_metrics[f"RecallAny@{suffix}"] = float(k_val)
+            except ImportError:
+                if self.config.is_ref_device:
+                    print(
+                        "[DEBUG] compute_multi_positive_recall_at_k unavailable; "
+                        "skipping RecallAny@K (existing Recall@K path unaffected)."
+                    )
+            except Exception as exc:  # noqa: BLE001 - never fail the run on an additive metric
+                if self.config.is_ref_device:
+                    print(f"[WARN] RecallAny@K computation failed: {exc}")
             
             # Save unique texts and their indices
             df_texts: pd.DataFrame = pd.DataFrame({
@@ -1046,6 +1100,10 @@ class VideoContrastiveLearningRunner:
 
         epoch_metrics.update(retrieval_metrics)
 
+        # Record how many batches contributed to this epoch so callers can
+        # detect empty epochs without referencing the local batch_count.
+        epoch_metrics["num_batches"] = float(batch_count)
+
         # 4) reduce final epoch metrics across ranks
         gathered_metrics: dict[str, float] = {}
         for k, v in epoch_metrics.items():
@@ -1053,14 +1111,40 @@ class VideoContrastiveLearningRunner:
 
         return gathered_metrics
 
+    # Retrieval metrics are computed on rank 0 from already-gathered global
+    # features; non-zero ranks only insert zero placeholders. Averaging them
+    # via all_reduce would dilute rank-0's true value (halved with 2 GPUs,
+    # quartered with 4), so these must bypass DDP reduction entirely.
+    RETRIEVAL_PREFIXES = (
+        "Recall@",
+        "RecallAny@",
+        "MRR",
+        "MRR_V2T",
+        "MAP",
+        "MedianRank",
+        "NDCG@",
+    )
+
+    def _is_retrieval_metric(self, name: str) -> bool:
+        """Returns True if the metric name is a rank-0-only retrieval metric."""
+        return any(name.startswith(prefix) for prefix in self.RETRIEVAL_PREFIXES)
+
     def _maybe_reduce_metric(self, name: str, val: float) -> float:
         """
         Optionally reduces (averages) a metric value across all ranks in DDP.
 
-        :param name: Metric name (unused here, but can be helpful for debug).
+        Retrieval-prefixed metrics (Recall@K, MRR, MRR_V2T, MAP, MedianRank,
+        NDCG@K) are computed only on rank 0 from globally-gathered features, so
+        they are returned unreduced (rank 0's value). Only non-retrieval metrics
+        get all_reduce AVG, and only when world_size > 1.
+
+        :param name: Metric name; controls whether all_reduce is applied.
         :param val: Metric value on current rank.
-        :return: Mean metric value across all ranks, if DDP is initialized. Otherwise, returns val.
+        :return: Mean metric value across all ranks for non-retrieval metrics
+            (if DDP is initialized); otherwise the unreduced rank-local value.
         """
+        if self._is_retrieval_metric(name):
+            return val
         if self.config.world_size > 1:
             t = torch.tensor([val], dtype=torch.float, device=self.device)
             DistributedUtils.dist.all_reduce(t, op=DistributedUtils.dist.ReduceOp.AVG)
@@ -1096,6 +1180,16 @@ class VideoContrastiveLearningRunner:
         checkpoint = {
             **model_dict,
             **metrics,
+            # Persist the RAW log-temperature (plus its exp for readability) so
+            # resume restores the exact effective temperature. Restoring the
+            # logged ``train/temperature`` (== exp(log_temp)) into ``log_temp``
+            # would corrupt the effective temperature T -> exp(T).
+            "log_temp": self.log_temp.detach().cpu()
+            if self.log_temp is not None
+            else None,
+            "temperature": self.log_temp.detach().exp().cpu()
+            if self.log_temp is not None
+            else None,
             "best_val_loss": self.best_val_loss,
             "best_epoch": self.best_epoch,
             "highest_alignment_score": self.highest_alignment_score,
@@ -1160,7 +1254,7 @@ class VideoContrastiveLearningRunner:
             return
 
         print(f"[Full Load] Loading checkpoint from: {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location=device)
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
 
         video_encoder = training_setup["video_encoder"]
         text_encoder = training_setup["text_encoder"]
@@ -1197,10 +1291,10 @@ class VideoContrastiveLearningRunner:
 
         positive_mask = batch.get("positive_mask")
         if positive_mask is not None:
-            step_inputs["positive_mask"] = positive_mask.to(self.device)
+            step_inputs["positive_mask"] = positive_mask.to(self.device).float()
         positive_weights = batch.get("positive_weights")
         if positive_weights is not None:
-            step_inputs["positive_weights"] = positive_weights.to(self.device)
+            step_inputs["positive_weights"] = positive_weights.to(self.device).float()
 
         if "text_ids" in batch:
             step_inputs["text_ids"] = batch["text_ids"]
@@ -1219,12 +1313,17 @@ class VideoContrastiveLearningRunner:
         text_ids: Optional[List[str]] = None,
         text_metadata: Optional[List[Dict[str, Any]]] = None,
         debug_sample_info: Optional[List[Dict[str, Any]]] = None,
+        **_: Any,
     ) -> tuple[dict, dict]:
         if self.step % self.config.gradient_accumulation_steps == 0:
             self.optimizer.zero_grad(set_to_none=True)
 
-        amp_enabled: bool = self.scaler is not None
-        autocast_ctx: torch.amp.autocast = torch.amp.autocast(device_type="cuda", enabled=amp_enabled)
+        amp_device_type = resolve_inference_device(self.device).type
+        amp_enabled: bool = self.scaler is not None and amp_device_type == "cuda"
+        autocast_ctx: torch.amp.autocast = torch.amp.autocast(
+            device_type=amp_device_type,
+            enabled=amp_enabled,
+        )
 
         with autocast_ctx:
             video_emb = self.video_encoder(videos)
@@ -1254,6 +1353,12 @@ class VideoContrastiveLearningRunner:
         alignment_prob_tensor: Optional[torch.Tensor] = None
         alignment_cosine_tensor: Optional[torch.Tensor] = None
         if positive_mask is not None and text_emb is not None:
+            expected_shape = (video_emb.size(0), text_emb.size(0))
+            if tuple(positive_mask.shape) != expected_shape:
+                raise ValueError(
+                    f"positive_mask shape {tuple(positive_mask.shape)} does not "
+                    f"match (video_emb, text_emb) = {expected_shape}"
+                )
             targets = positive_mask
             video_norm = F.normalize(video_emb, dim=1)
             text_norm = F.normalize(text_emb, dim=1)
@@ -1546,6 +1651,7 @@ class VideoContrastiveLearningRunner:
         text_ids: Optional[List[str]] = None,
         text_metadata: Optional[List[Dict[str, Any]]] = None,
         debug_sample_info: Optional[List[Dict[str, Any]]] = None,
+        **_: Any,
     ) -> tuple[dict, dict]:
         """
         Performs a single validation step (forward pass + metric computation).
@@ -1558,8 +1664,12 @@ class VideoContrastiveLearningRunner:
         alignment_logprob_tensor: Optional[torch.Tensor] = None
         alignment_prob_tensor: Optional[torch.Tensor] = None
         alignment_cosine_tensor: Optional[torch.Tensor] = None
+        amp_device_type = resolve_inference_device(self.device).type
+        amp_enabled = amp_device_type == "cuda" and bool(
+            getattr(self.config, "use_amp", self.scaler is not None)
+        )
         with torch.no_grad():
-            with torch.amp.autocast("cuda"):
+            with torch.amp.autocast(device_type=amp_device_type, enabled=amp_enabled):
                 video_features = self.video_encoder(videos)
                 if input_ids is not None and attention_mask is not None:
                     text_features = self.text_encoder(input_ids, attention_mask)
@@ -1583,6 +1693,12 @@ class VideoContrastiveLearningRunner:
 
             logits_matrix = None
             if positive_mask is not None and text_features is not None:
+                expected_shape = (video_features.size(0), text_features.size(0))
+                if tuple(positive_mask.shape) != expected_shape:
+                    raise ValueError(
+                        f"positive_mask shape {tuple(positive_mask.shape)} does not "
+                        f"match (video_features, text_features) = {expected_shape}"
+                    )
                 targets = positive_mask
                 video_norm = F.normalize(video_features, dim=1)
                 text_norm = F.normalize(text_features, dim=1)
@@ -1722,105 +1838,16 @@ class VideoContrastiveLearningRunner:
         )
 
     def validate(self):
-        """
-        Optional method for a dedicated validation-only routine.
-        Currently unimplemented.
-        """
-        raise NotImplementedError("Validation is not implemented for this runner")
+        """Run a dedicated validation epoch."""
+        return self._run_epoch(mode=RunMode.VALIDATE, epoch=0)
 
     def inference(self):
-        """
-        Method for a dedicated inference.
-        """
-        # Load text embeddings tensor
-        text_embeddings: torch.Tensor = torch.load(self.config.text_embeddings_path, weights_only=False, map_location=torch.device(self.device))
-        # Load metadata
-        metadata: pd.DataFrame = pd.read_parquet(self.config.metadata_path)
-        
-        # Create a list to store all averaged metadata
-        all_averaged_metadata = []
-        
-        # Get the dataset object to access get_video_paths and groupby_column
-        # Assuming val_loader has a dataset attribute which is an instance of VideoClipDataset
-        dataset = self.val_loader.dataset
-        groupby_col_name = self.config.groupby_column if hasattr(self.config, 'groupby_column') and self.config.groupby_column else "study_id"
-
-        for batch in tqdm(
-            self.val_loader, 
-            desc=f"[GPU {self.device}] Running inference", 
-            disable=not self.config.is_ref_device
-        ):
-            with torch.no_grad():
-                with torch.amp.autocast("cuda"):
-                    video_embeddings = self.video_encoder(batch["videos"]).float()
-                    
-            similarity_matrix = torch.matmul(video_embeddings, text_embeddings.t())
-            _, topk_indices = torch.topk(similarity_matrix, k=self.config.topk, dim=1)
-            
-            # Compute the average of the topk metadata rows for each video embedding
-            topk_indices_np = topk_indices.cpu().numpy()  # shape: [N, topk]
-
-            # Get SIDs from batch (in multi-video mode, 'paths' contains SIDs)
-            # In single-video mode, 'paths' would contain actual file paths.
-            # The logic here assumes 'paths' from the batch correctly gives the identifier needed.
-            identifiers_from_batch = batch["paths"]
-            
-            for idx, top_k_meta_indices in enumerate(topk_indices_np):
-                current_identifier = identifiers_from_batch[idx]
-                
-                # Get the top-k metadata rows
-                topk_metadata = metadata.iloc[top_k_meta_indices]
-                
-                averaged_row = {}
-                
-                # If in multi-video mode, add groupby column and all its video filenames
-                print(f"Dataset multi_video_mode status: {getattr(dataset, 'multi_video_mode', False)}")
-                if getattr(dataset, 'multi_video_mode', False):
-                    actual_video_filenames = dataset.get_video_paths(current_identifier) # current_identifier is SID
-                    video_filenames_str = ";".join(actual_video_filenames)
-                    averaged_row[groupby_col_name] = current_identifier
-                    averaged_row['video_filenames'] = video_filenames_str
-                else: # Single video mode
-                    averaged_row['video_name'] = current_identifier # current_identifier is filename
-
-                for column in metadata.columns:
-                    if pd.api.types.is_numeric_dtype(metadata[column]):
-                        # For numeric columns, compute mean
-                        averaged_row[column] = topk_metadata[column].mean()
-                    elif pd.api.types.is_string_dtype(metadata[column]):
-                        # For string columns, get most frequent value
-                        # Ensure there's at least one mode, otherwise, handle appropriately
-                        modes = topk_metadata[column].mode()
-                        averaged_row[column] = None if modes.empty else modes.iloc[0]
-                    else:
-                        # If not numeric or string, try to get the first value or handle as error
-                        # This part might need adjustment based on expected non-numeric/non-string data
-                        try:
-                            averaged_row[column] = topk_metadata[column].iloc[0] 
-                        except IndexError:
-                             averaged_row[column] = None # Or some other placeholder
-                        # For strictness: raise ValueError(f"Unsupported data type for averaging/aggregation: {metadata[column].dtype} in column {column}")
-                
-                all_averaged_metadata.append(averaged_row)
-        
-        # Convert list of averaged metadata to DataFrame
-        averaged_metadata_df = pd.DataFrame(all_averaged_metadata)
-        
-        # Reorder columns to have identifier and filenames first
-        if getattr(dataset, 'multi_video_mode', False):
-            cols_prefix = [groupby_col_name, 'video_filenames']
-        else:
-            cols_prefix = ['video_name']
-        
-        remaining_cols = [col for col in averaged_metadata_df.columns if col not in cols_prefix]
-        ordered_cols = cols_prefix + remaining_cols
-        averaged_metadata_df = averaged_metadata_df[ordered_cols]
-        
-        # Create output directory if it doesn't exist
-        os.makedirs(self.output_dir, exist_ok=True)
-        
-        # Save to CSV
-        output_path = os.path.join(self.output_dir, "averaged_metadata.csv")
-        averaged_metadata_df.to_csv(output_path, index=False)
-        print(f"Saved averaged metadata to: {output_path}")        
-        print("Inference completed")
+        """Run retrieval-style metadata inference with the video encoder."""
+        return run_retrieval_metadata_inference(
+            video_encoder=self.video_encoder,
+            val_loader=self.val_loader,
+            config=self.config,
+            device_id=self.device,
+            world_size=self.world_size,
+            output_dir=self.output_dir,
+        )

@@ -314,7 +314,7 @@ class SiglipPairwiseFeatureLoss(nn.Module):
         Returns:
             Scalar loss value
         """
-        with autocast("cuda", enabled=False):
+        with autocast(video_features.device.type, enabled=False):
             # Gather features in DDP mode
             if dist.is_initialized():
                 video_features = _gather_all(video_features.contiguous())

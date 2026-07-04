@@ -95,8 +95,9 @@ def compute_recall_at_k_streaming(
         del video_chunk, best_scores, best_indices
         torch.cuda.empty_cache()
     
-    # Convert to percentages
-    recall_metrics = {f"Recall@{k}": (recalls[k] / n_videos) * 100 for k in k_values}
+    # Recall@K as a fraction in [0, 1] (consistent with utils/retrieval_metrics.py;
+    # percentage formatting is the reporting layer's responsibility).
+    recall_metrics = {f"Recall@{k}": (recalls[k] / n_videos) for k in k_values}
     
     return recall_metrics
 

@@ -197,8 +197,8 @@ Input CSV guidance:
 
 - `DICOMPath` is required by `scripts/external_validation.py`
 - for the full downstream DeepCORO validation step, the CSV must also contain the target columns expected by `config/linear_probing/stenosis/docker_base_config.yaml`
-- use [scripts/preprocess_dataset_template.csv](/home/jdelfrate/DeepCORO_CLIP/scripts/preprocess_dataset_template.csv) as the input template for a custom dataset
-- use [scripts/prepare_input_for_preprocess.py](/home/jdelfrate/DeepCORO_CLIP/scripts/prepare_input_for_preprocess.py) to normalize a custom CSV into the expected format
+- use [scripts/preprocess_dataset_template.csv](scripts/preprocess_dataset_template.csv) as the input template for a custom dataset
+- use [scripts/prepare_input_for_preprocess.py](scripts/prepare_input_for_preprocess.py) to normalize a custom CSV into the expected format
 
 The container must be able to see the files referenced in `DICOMPath`. If your CSV contains absolute host paths, mount that host path into the container at the exact same container path.
 

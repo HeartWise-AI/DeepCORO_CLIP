@@ -1,0 +1,209 @@
+# DeepCORO-CLIP MACE transfer-learning model — Docker external validation
+#
+# Checkpoint: heartwise/deepcoro_clip_mace  ->  11zt0zl5_20250723-162407/models/best_model_epoch_18.pt
+#   (downloaded to weights/deepcoro_clip_mace/ by utils/download_pretrained_weights.py)
+# Encoder init: DeepCORO-CLIP single-video encoder (8av1xygm). The full fine-tuned
+#   encoder + MIL + heads are restored from inference_model_path; the encoder path is only
+#   needed to build the module before the state dict is loaded.
+# Normalization: dataset_mean/dataset_std are the TRAINING-set statistics of run 11zt0zl5
+#   and must not be recomputed on the external cohort.
+# Inputs: 16 frames, stride 1, 224x224, up to num_videos=3 videos per StudyInstanceUID
+#   (the same study-level MIL protocol as the stenosis model, but with num_videos=3).
+# Outputs: one sigmoid probability per head (see class_mapping.json on the Hub).
+# Provenance: see README "MACE transfer-learning model" — this is the fine-tuned MACE
+#   checkpoint available for release; the exact checkpoint behind manuscript Table 4
+#   (run m3wanj4z) could not be recovered, its config ships alongside on the Hub.
+# Usage: DEEPCORO_BASE_CONFIG=config/linear_probing/mace/docker_base_config_mace.yaml python scripts/external_validation.py
+#   (data_filename / run_mode / base_checkpoint_path are overridden by the script at runtime).
+pipeline_project: DeepCORO_video_linear_probing
+base_checkpoint_path: results/outputs
+run_mode: inference
+epochs: 1
+seed: 42
+device: 0
+world_size: 1
+is_ref_device: true
+tag: mace_11zt0zl5_docker
+name: deepcoro_clip_mace_external_validation
+project: DeepCORO-MACE
+entity: heartwise
+use_wandb: false
+scheduler_name: cosine_with_hard_restarts_with_warmup
+lr_step_period: 8
+factor: 0.42390760344095
+optimizer: RAdam
+use_amp: true
+gradient_accumulation_steps: 1
+num_warmup_percent: 0.12910970808808597
+num_hard_restarts_cycles: 3
+warm_restart_tmult: 2.0
+data_filename: tmp/df_preprocessed_filtered.csv
+dataset_mean:
+- 107.3622055053711
+- 107.3622055053711
+- 107.3622055053711
+dataset_std:
+- 34.67802429199219
+- 34.67802429199219
+- 34.67802429199219
+num_workers: 8
+batch_size: 4
+multi_video: true
+groupby_column: StudyInstanceUID
+num_videos: 3
+shuffle_videos: false
+datapoint_loc_label: FileName
+target_label:
+- complete_occlusion_coronary_disease_binary
+- mace_cv_death_binary
+- mace_non_fatal_mi_binary
+- mace_non_fatal_stroke_binary
+- mace_urgent_revascularization_binary
+- mace_heart_failure_hosp_binary
+- mace_life_threatening_arrhythmia_binary
+- mace_cardiogenic_shock_binary
+- mace_binary
+rand_augment: false
+resize: 224
+frames: 16
+stride: 1
+model_name: mvit
+aggregator_depth: 1
+num_heads: 16
+video_freeze_ratio: 0.9654072781946612
+dropout: 0.24672149086631012
+pretrained: true
+video_encoder_checkpoint_path: pretrained_models/DeepCORO_CLIP_ENCODER/single_video/8av1xygm_20250605-083820_best_single_video/checkpoint.pt
+video_encoder_lr: 6.552849383435183e-05
+video_encoder_weight_decay: 1.8446173265072346e-07
+pooling_mode: cls_token
+attention_hidden: 256
+dropout_attention: 0.20766862431013644
+use_cls_token: true
+num_attention_heads: 16
+separate_video_attention: true
+normalization_strategy: pre_norm
+aggregate_videos_tokens: false
+per_video_pool: false
+attention_lr: 0.0015
+attention_weight_decay: 5.0e-05
+attention_within_lr: 0.004915358263591133
+attention_across_lr: 0.002049831296352698
+attention_within_weight_decay: 7.310837117673492e-05
+attention_across_weight_decay: 5.2776721600988467e-05
+train_pooling_params: false
+num_view_classes: 0
+view_column: null
+view_labels_map: null
+inference_model_path: weights/deepcoro_clip_mace/11zt0zl5_20250723-162407/models/best_model_epoch_18.pt
+output_dir: outputs/
+ci_confidence_level: 0.95
+ci_n_bootstrap: 1000
+head_linear_probing:
+  complete_occlusion_coronary_disease_binary: cls_token_linear_probing
+  mace_cv_death_binary: cls_token_linear_probing
+  mace_non_fatal_mi_binary: cls_token_linear_probing
+  mace_non_fatal_stroke_binary: cls_token_linear_probing
+  mace_urgent_revascularization_binary: cls_token_linear_probing
+  mace_heart_failure_hosp_binary: cls_token_linear_probing
+  mace_life_threatening_arrhythmia_binary: cls_token_linear_probing
+  mace_cardiogenic_shock_binary: cls_token_linear_probing
+  mace_binary: cls_token_linear_probing
+head_structure:
+  complete_occlusion_coronary_disease_binary: 1
+  mace_cv_death_binary: 1
+  mace_non_fatal_mi_binary: 1
+  mace_non_fatal_stroke_binary: 1
+  mace_urgent_revascularization_binary: 1
+  mace_heart_failure_hosp_binary: 1
+  mace_life_threatening_arrhythmia_binary: 1
+  mace_cardiogenic_shock_binary: 1
+  mace_binary: 1
+head_task:
+  complete_occlusion_coronary_disease_binary: binary_classification
+  mace_cv_death_binary: binary_classification
+  mace_non_fatal_mi_binary: binary_classification
+  mace_non_fatal_stroke_binary: binary_classification
+  mace_urgent_revascularization_binary: binary_classification
+  mace_heart_failure_hosp_binary: binary_classification
+  mace_life_threatening_arrhythmia_binary: binary_classification
+  mace_cardiogenic_shock_binary: binary_classification
+  mace_binary: binary_classification
+loss_structure:
+  complete_occlusion_coronary_disease_binary: bce_logit
+  mace_cv_death_binary: bce_logit
+  mace_non_fatal_mi_binary: bce_logit
+  mace_non_fatal_stroke_binary: bce_logit
+  mace_urgent_revascularization_binary: bce_logit
+  mace_heart_failure_hosp_binary: bce_logit
+  mace_life_threatening_arrhythmia_binary: bce_logit
+  mace_cardiogenic_shock_binary: bce_logit
+  mace_binary: bce_logit
+head_weights:
+  complete_occlusion_coronary_disease_binary: 1.0
+  mace_cv_death_binary: 1.0
+  mace_non_fatal_mi_binary: 1.0
+  mace_non_fatal_stroke_binary: 1.0
+  mace_urgent_revascularization_binary: 1.0
+  mace_heart_failure_hosp_binary: 1.0
+  mace_life_threatening_arrhythmia_binary: 1.0
+  mace_cardiogenic_shock_binary: 1.0
+  mace_binary: 1.0
+head_dropout:
+  complete_occlusion_coronary_disease_binary: 0.2
+  mace_cv_death_binary: 0.2
+  mace_non_fatal_mi_binary: 0.2
+  mace_non_fatal_stroke_binary: 0.2
+  mace_urgent_revascularization_binary: 0.2
+  mace_heart_failure_hosp_binary: 0.2
+  mace_life_threatening_arrhythmia_binary: 0.2
+  mace_cardiogenic_shock_binary: 0.2
+  mace_binary: 0.2
+head_lr:
+  complete_occlusion_coronary_disease_binary: 3.182197737878731e-06
+  mace_cv_death_binary: 4.184583745472929e-06
+  mace_non_fatal_mi_binary: 6.803771420422422e-06
+  mace_non_fatal_stroke_binary: 3.901575334827912e-06
+  mace_urgent_revascularization_binary: 3.767983904408664e-06
+  mace_heart_failure_hosp_binary: 4.0226899755656394e-07
+  mace_life_threatening_arrhythmia_binary: 8.52197245952198e-06
+  mace_cardiogenic_shock_binary: 9.204858766997067e-06
+  mace_binary: 9.194859670843504e-06
+head_weight_decay:
+  complete_occlusion_coronary_disease_binary: 6.503117908420825e-06
+  mace_cv_death_binary: 4.791768261800753e-07
+  mace_non_fatal_mi_binary: 8.887023247899955e-06
+  mace_non_fatal_stroke_binary: 7.32779511585364e-06
+  mace_urgent_revascularization_binary: 5.585321763126232e-06
+  mace_heart_failure_hosp_binary: 4.909821570510221e-06
+  mace_life_threatening_arrhythmia_binary: 8.076210065691133e-06
+  mace_cardiogenic_shock_binary: 1.6040493657668232e-06
+  mace_binary: 7.379406672691365e-06
+labels_map:
+  complete_occlusion_coronary_disease_binary:
+    negative: 0
+    positive: 1
+  mace_cv_death_binary:
+    negative: 0
+    positive: 1
+  mace_non_fatal_mi_binary:
+    negative: 0
+    positive: 1
+  mace_non_fatal_stroke_binary:
+    negative: 0
+    positive: 1
+  mace_urgent_revascularization_binary:
+    negative: 0
+    positive: 1
+  mace_heart_failure_hosp_binary:
+    negative: 0
+    positive: 1
+  mace_life_threatening_arrhythmia_binary:
+    negative: 0
+    positive: 1
+  mace_cardiogenic_shock_binary:
+    negative: 0
+    positive: 1
+  mace_binary:
+    negative: 0
+    positive: 1

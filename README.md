@@ -106,6 +106,10 @@ The project uses configuration files located in the `config/` directory:
    - Loss function settings
    - Backbone freezing options
 
+3. **MACE transfer learning** (`config/linear_probing/MACE/`, `config/linear_probing/mace/docker_base_config_mace.yaml`, `config/inference/mace_external_validation_inference.yaml`):
+   - Training sweeps/base configs for one-year MACE heads
+   - Docker and standalone inference configs for the released `heartwise/deepcoro_clip_mace` checkpoint
+
 ### Sweep Configurations
 
 1. **CLIP Training** (`config/clip/sweep_config_*.yaml`, `config/clip/sweep_siglip_output_dataset_*.yaml`):
@@ -185,6 +189,41 @@ Process validation data from input CSV (rows where **Split == 'inference'**)
 bash scripts/runner.sh --use_wandb false --base_config config/linear_probing/stenosis/base_config_stenosis_2vue.yaml --run_mode inference --selected_gpus 1,2,3
 ```
 
+### 3. MACE transfer learning (one-year outcome prediction)
+
+The fine-tuned MACE model from the paper's transfer-learning experiments is released on the
+Hugging Face Hub as [`heartwise/deepcoro_clip_mace`](https://huggingface.co/heartwise/deepcoro_clip_mace)
+(gated, request access). It restores the full DeepCORO-CLIP encoder + multi-instance pooling +
+9 binary heads (urgent revascularization, non-fatal MI, CV death, complete coronary occlusion,
+composite MACE and four secondary components) and takes up to **3 videos per study**.
+
+| | |
+|---|---|
+| Checkpoint | `11zt0zl5_20250723-162407/models/best_model_epoch_18.pt` (downloaded to `weights/deepcoro_clip_mace/` by `utils/download_pretrained_weights.py`) |
+| Standalone config | [`config/inference/mace_external_validation_inference.yaml`](config/inference/mace_external_validation_inference.yaml) |
+| Docker config | [`config/linear_probing/mace/docker_base_config_mace.yaml`](config/linear_probing/mace/docker_base_config_mace.yaml) |
+| Training configs | [`config/linear_probing/MACE/`](config/linear_probing/MACE/) |
+
+Run inference on an `α`-separated CSV (one row per video: `FileName`, `StudyInstanceUID`, `Split == 'inference'`;
+label columns optional):
+
+``` bash
+bash scripts/runner.sh --use_wandb false --base_config config/inference/mace_external_validation_inference.yaml --run_mode inference --selected_gpus 0
+```
+
+Or from DICOMs with the Docker pipeline below, by pointing the DeepCORO stage at the MACE config:
+
+``` bash
+docker run ... -e DEEPCORO_BASE_CONFIG=config/linear_probing/mace/docker_base_config_mace.yaml deepcoro_clip-docker python scripts/external_validation.py
+```
+
+The model card lists head-by-head AUROC on the 350-study manuscript test cohort
+(urgent revascularization 0.82, non-fatal MI 0.78, complete coronary occlusion 0.81,
+composite 0.78, all with 95% CIs) together with the provenance caveat: this checkpoint is not the
+exact run behind manuscript Table 4, whose weights could not be recovered; that run's training and
+inference configs ship alongside on the Hub. `dataset_mean`/`dataset_std` in the configs are the
+training-set statistics and must not be recomputed on the external cohort.
+
 ## 🐳 Docker Setup
 Optionally, you can build a Docker container to validate and run the inference pipeline. The current Docker workflow is centered on `scripts/external_validation.py`, which expects a regular comma-separated CSV input and will internally:
 
@@ -204,7 +243,7 @@ The container must be able to see the files referenced in `DICOMPath`. If your C
 
 ### Build Docker Image
 
-Model weights (VasoVision and DeepCORO-CLIP) are downloaded at build time using a Docker BuildKit secret. Place your `api_key.json` (containing `HUGGING_FACE_API_KEY`) in the project root, then build:
+Model weights (VasoVision, DeepCORO-CLIP stenosis and DeepCORO-CLIP MACE) are downloaded at build time using a Docker BuildKit secret. Place your `api_key.json` (containing `HUGGING_FACE_API_KEY`) in the project root, then build:
 
 ``` bash
 DOCKER_BUILDKIT=1 docker build \

@@ -17,11 +17,19 @@ def download_pretrained_weights(
     print(f"✓ Successfully downloaded model to: {result_dir}")
 
 
+PRETRAINED_REPOS = {
+    # repo_id -> local folder under <project_root>/weights
+    "heartwise/deepcoro_clip_stenosis": "deepcoro_clip_generic",   # stenosis / CTO / calcification / thrombus (zcb8cu0l)
+    "heartwise/deepcoro_clip_mace": "deepcoro_clip_mace",          # 1-year MACE transfer-learning heads (11zt0zl5)
+}
+
+
 if __name__ == "__main__":
     hugging_face_api_key = read_api_key("api_key.json")["HUGGING_FACE_API_KEY"]
     project_root = Path(__file__).resolve().parent.parent
-    download_pretrained_weights(
-        repo_id="heartwise/deepcoro_clip_stenosis", 
-        local_dir=str(project_root / "weights" / "deepcoro_clip_generic"),
-        hugging_face_api_key=hugging_face_api_key
-    )
+    for repo_id, local_name in PRETRAINED_REPOS.items():
+        download_pretrained_weights(
+            repo_id=repo_id,
+            local_dir=str(project_root / "weights" / local_name),
+            hugging_face_api_key=hugging_face_api_key,
+        )

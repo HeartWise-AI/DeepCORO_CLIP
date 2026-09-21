@@ -243,13 +243,31 @@ The container must be able to see the files referenced in `DICOMPath`. If your C
 
 ### Build Docker Image
 
-Model weights (VasoVision, DeepCORO-CLIP stenosis and DeepCORO-CLIP MACE) are downloaded at build time using a Docker BuildKit secret. Place your `api_key.json` (containing `HUGGING_FACE_API_KEY`) in the project root, then build:
+VasoVision and the selected DeepCORO-CLIP model weights are downloaded at build time using a Docker BuildKit secret. Place your `api_key.json` (containing `HUGGING_FACE_API_KEY`) in the project root, then build. Stenosis is the default so existing builds do not require access to the gated MACE repository:
 
 ``` bash
 DOCKER_BUILDKIT=1 docker build \
   --secret id=api_key,src=api_key.json \
   -t deepcoro_clip-docker .
 ```
+
+Select MACE instead, or package both models into the image, with `DEEPCORO_MODELS`:
+
+``` bash
+# MACE only
+DOCKER_BUILDKIT=1 docker build \
+  --build-arg DEEPCORO_MODELS=mace \
+  --secret id=api_key,src=api_key.json \
+  -t deepcoro_clip-mace .
+
+# Stenosis and MACE
+DOCKER_BUILDKIT=1 docker build \
+  --build-arg DEEPCORO_MODELS=stenosis,mace \
+  --secret id=api_key,src=api_key.json \
+  -t deepcoro_clip-all-models .
+```
+
+Supported model selectors are `stenosis` and `mace`. The build fails with a model-specific access error when the Hugging Face token cannot access a requested gated repository.
 
 The API key is only used during the build and is **not** persisted in the final image.
 

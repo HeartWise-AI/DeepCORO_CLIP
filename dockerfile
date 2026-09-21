@@ -39,9 +39,10 @@ ENV PATH="/opt/venv/bin:$PATH"
 ENV PYTHONPATH="/opt/Orion:$PYTHONPATH"
 
 # Download model weights at build time (secret is mounted only during RUN, not persisted in image)
+ARG DEEPCORO_MODELS=stenosis
 RUN --mount=type=secret,id=api_key,target=/workspace/api_key.json \
     python utils/download_vasovision.py
 RUN --mount=type=secret,id=api_key,target=/workspace/utils/api_key.json \
-    cd utils && python download_pretrained_weights.py
+    cd utils && python download_pretrained_weights.py --models "${DEEPCORO_MODELS}"
 
 CMD ["/bin/bash"]

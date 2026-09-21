@@ -251,9 +251,15 @@ DOCKER_BUILDKIT=1 docker build \
   -t deepcoro_clip-docker .
 ```
 
-Select MACE instead, or package both models into the image, with `DEEPCORO_MODELS`:
+Select stenosis, MACE, or package both models into the image with `DEEPCORO_MODELS`:
 
 ``` bash
+# Stenosis only
+DOCKER_BUILDKIT=1 docker build \
+  --build-arg DEEPCORO_MODELS=stenosis \
+  --secret id=api_key,src=api_key.json \
+  -t deepcoro_clip-stenosis .
+
 # MACE only
 DOCKER_BUILDKIT=1 docker build \
   --build-arg DEEPCORO_MODELS=mace \

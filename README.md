@@ -106,7 +106,7 @@ The project uses configuration files located in the `config/` directory:
    - Loss function settings
    - Backbone freezing options
 
-3. **MACE transfer learning** (`config/linear_probing/MACE/`, `config/linear_probing/mace/docker_base_config_mace.yaml`, `config/inference/mace_external_validation_inference.yaml`):
+3. **MACE transfer learning** (`config/linear_probing/MACE/`, `config/linear_probing/MACE/docker_base_config_mace.yaml`, `config/inference/mace_external_validation_inference.yaml`):
    - Training sweeps/base configs for one-year MACE heads
    - Docker and standalone inference configs for the released `heartwise/deepcoro_clip_mace` checkpoint
 
@@ -201,7 +201,7 @@ composite MACE and four secondary components) and takes up to **3 videos per stu
 |---|---|
 | Checkpoint | `11zt0zl5_20250723-162407/models/best_model_epoch_18.pt` (downloaded to `weights/deepcoro_clip_mace/` by `utils/download_pretrained_weights.py`) |
 | Standalone config | [`config/inference/mace_external_validation_inference.yaml`](config/inference/mace_external_validation_inference.yaml) |
-| Docker config | [`config/linear_probing/mace/docker_base_config_mace.yaml`](config/linear_probing/mace/docker_base_config_mace.yaml) |
+| Docker config | [`config/linear_probing/MACE/docker_base_config_mace.yaml`](config/linear_probing/MACE/docker_base_config_mace.yaml) |
 | Training configs | [`config/linear_probing/MACE/`](config/linear_probing/MACE/) |
 
 Run inference on an `α`-separated CSV (one row per video: `FileName`, `StudyInstanceUID`, `Split == 'inference'`;
@@ -214,7 +214,7 @@ bash scripts/runner.sh --use_wandb false --base_config config/inference/mace_ext
 Or from DICOMs with the Docker pipeline below, by pointing the DeepCORO stage at the MACE config:
 
 ``` bash
-docker run ... -e DEEPCORO_BASE_CONFIG=config/linear_probing/mace/docker_base_config_mace.yaml deepcoro_clip-docker python scripts/external_validation.py
+docker run ... -e DEEPCORO_BASE_CONFIG=config/linear_probing/MACE/docker_base_config_mace.yaml deepcoro_clip-docker python scripts/external_validation.py
 ```
 
 The model card lists head-by-head AUROC on the 350-study manuscript test cohort

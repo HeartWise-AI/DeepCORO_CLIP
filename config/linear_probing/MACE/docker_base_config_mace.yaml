@@ -13,7 +13,7 @@
 # Provenance: see README "MACE transfer-learning model" — this is the fine-tuned MACE
 #   checkpoint available for release; the exact checkpoint behind manuscript Table 4
 #   (run m3wanj4z) could not be recovered, its config ships alongside on the Hub.
-# Usage: DEEPCORO_BASE_CONFIG=config/linear_probing/mace/docker_base_config_mace.yaml python scripts/external_validation.py
+# Usage: DEEPCORO_BASE_CONFIG=config/linear_probing/MACE/docker_base_config_mace.yaml python scripts/external_validation.py
 #   (data_filename / run_mode / base_checkpoint_path are overridden by the script at runtime).
 pipeline_project: DeepCORO_video_linear_probing
 base_checkpoint_path: results/outputs

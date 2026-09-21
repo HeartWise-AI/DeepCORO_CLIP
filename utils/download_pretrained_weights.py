@@ -79,10 +79,10 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     )
     parser.add_argument(
         "--models",
-        default="stenosis",
+        required=True,
         help=(
             "Comma-separated models to download. Supported values: "
-            "stenosis, mace (default: stenosis)."
+            "stenosis, mace."
         ),
     )
     args = parser.parse_args(argv)

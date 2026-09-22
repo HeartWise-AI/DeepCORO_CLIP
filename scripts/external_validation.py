@@ -892,12 +892,6 @@ def main(args: dict):
         )
         
            
-        # Initialize deepcoro_clip
-        deepcoro_clip_hugging_face_model_name: str = MODEL_MAPPING['deepcoro_clip']['hugging_face_model_name']
-        args['model_path'] = get_model_path(model=deepcoro_clip_hugging_face_model_name)
-        
-        print(f"model_path: {args['model_path']}")
-                        
         # Run bash command to run deepcoro_clip inference
         bash_command = (
             "bash scripts/runner.sh "

@@ -1,4 +1,9 @@
-FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+FROM pytorch/pytorch:2.14.0-cuda13.0-cudnn9-runtime
+# torch 2.14.0+cu130 matches the lockfile (uv.lock) and requires NVIDIA driver
+# >=580 (CUDA 13.0's minimum) and a Turing-or-newer GPU (compute capability
+# >=7.5); CUDA 13 dropped offline compilation for Maxwell/Pascal/Volta.
+# If you deploy this image to older GPUs/drivers, pin the base image and the
+# torch/torchvision install below back to a CUDA 12.4 build instead.
 
 RUN apt update && apt upgrade -y && apt install -y git wget libgl1-mesa-glx libglib2.0-0
 
@@ -23,12 +28,12 @@ COPY utils/ utils/
 
 RUN pip install uv
 RUN uv venv --system-site-packages /opt/venv
+# uv.lock pins torch 2.14.0+cu130 / torchvision 0.29.0+cu130, matching this
+# image's CUDA 13.0 base, so no separate torch pin/reinstall is needed here
+# (previously this step reinstalled an older cu124 build over whatever uv
+# sync resolved; that override is gone now that the lockfile and base image
+# agree on CUDA 13).
 RUN uv sync --python /opt/venv/bin/python
-
-# Pin torch to a CUDA 12.4 build compatible with the host driver stack.
-RUN uv pip install --python /opt/venv/bin/python \
-    --index-url https://download.pytorch.org/whl/cu124 \
-    torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1
 
 RUN uv pip install --python /opt/venv/bin/python -e /opt/HeartWise_StatPlots
 RUN uv pip install --python /opt/venv/bin/python -e /opt/Orion

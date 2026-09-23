@@ -44,18 +44,34 @@ class DistributedUtils:
 
         # Use gloo backend when CUDA is not available, otherwise NCCL.
         backend = 'gloo'
+        device_id = None
 
         if torch.cuda.is_available():
             torch.cuda.set_device(local_rank)
             backend = 'nccl'
+            device_id = torch.device(f"cuda:{local_rank}")
             print(f"Using CUDA device {local_rank} for global rank {rank}")
 
         # Initialise the process group using the resolved rank information.
+        # Passing device_id binds this rank's ProcessGroupNCCL to its GPU up
+        # front (recommended since torch>=2.6). Without it, NCCL prints a
+        # warning that it is guessing the rank-to-GPU mapping and that this
+        # "can cause a hang if rank to GPU mapping is heterogeneous" (seen on
+        # both torch 2.5.1 and 2.14, worded slightly differently each time);
+        # passing device_id removes the guesswork and silences the warning.
+        # It is also a prerequisite for any future opt-in to NCCL's in-place
+        # process-group reconfiguration (torch 2.14 exposes
+        # ProcessGroupNCCL.supports_reconfigure at the C++ level, but it is
+        # False by default here and there is no public Python hook to trigger
+        # reconfiguration without an external elastic supervisor such as
+        # torchft, which this project does not use, so rank failures still
+        # fall back to torchrun's default restart).
         DistributedUtils.dist.init_process_group(
             backend=backend,
             init_method='env://',
             world_size=world_size,
-            rank=rank
+            rank=rank,
+            device_id=device_id
         )
         
         

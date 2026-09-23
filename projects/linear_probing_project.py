@@ -678,10 +678,16 @@ class LinearProbingProject(BaseProject):
         return self._setup_validation_objects() # Diff. is self.config.run_mode
 
     def run(self):
-        
-        if self.config.is_ref_device:
-            self._setup_project()
-        
+
+        # All ranks must enter: _setup_project() internally gates its own
+        # rank-0-only work (output-dir naming, config backup) behind
+        # is_ref_device, and then broadcasts the run id and output_dir to
+        # every rank. Calling it on rank 0 only means non-ref ranks never
+        # issue the matching broadcasts, which desynchronizes the NCCL
+        # process group's collective ordering for every op after it -
+        # surfacing later as an unexplained multi-GPU training hang.
+        self._setup_project()
+
         runner_args = {
             "config": self.config,
             "wandb_wrapper": self.wandb_wrapper

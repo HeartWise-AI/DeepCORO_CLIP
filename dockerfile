@@ -2,8 +2,14 @@ FROM pytorch/pytorch:2.14.0-cuda13.0-cudnn9-runtime
 # torch 2.14.0+cu130 matches the lockfile (uv.lock) and requires NVIDIA driver
 # >=580 (CUDA 13.0's minimum) and a Turing-or-newer GPU (compute capability
 # >=7.5); CUDA 13 dropped offline compilation for Maxwell/Pascal/Volta.
-# If you deploy this image to older GPUs/drivers, pin the base image and the
-# torch/torchvision install below back to a CUDA 12.4 build instead.
+#
+# To deploy on older GPUs/drivers instead: change the FROM line above to
+#   pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+# and add this RUN after `uv sync` below (it re-pins over the lockfile's
+# CUDA 13 build, same as this Dockerfile did before this change):
+#   RUN uv pip install --python /opt/venv/bin/python \
+#       --index-url https://download.pytorch.org/whl/cu124 \
+#       torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1
 
 RUN apt update && apt upgrade -y && apt install -y git wget libgl1-mesa-glx libglib2.0-0
 

@@ -8,6 +8,7 @@ from torch.optim.lr_scheduler import LRScheduler
 
 from models.text_encoder import TextEncoder
 from models.video_encoder import VideoEncoder
+from models.echojepa_backbone import echojepa_kwargs_from_config
 from models.captioning_decoder import CaptioningDecoder
 from models.masked_video_modeling import MaskedVideoModeling
 from projects.base_project import BaseProject
@@ -102,6 +103,7 @@ class MultitaskPretrainingProject(BaseProject):
             rope_temporal_scale=getattr(self.config, 'rope_temporal_scale', 1.0),
             rope_normalize_mode=getattr(self.config, 'rope_normalize_mode', 'separate'),
             multi_video_cls_aggregation=getattr(self.config, 'multi_video_cls_aggregation', 'mean'),
+            echojepa_kwargs=echojepa_kwargs_from_config(self.config, self.config.frames, self.config.resize),
         )
         video_encoder = video_encoder.to(self.config.device).float()
 

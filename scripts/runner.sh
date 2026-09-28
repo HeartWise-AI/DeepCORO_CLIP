@@ -129,12 +129,16 @@ fi
 
 # Environment variables for better DDP performance (mirrors scripts/run_sweep.sh)
 export MASTER_PORT=29505
-export NCCL_P2P_LEVEL=NVL
-export NCCL_ALGO=Tree
-export NCCL_MIN_NCHANNELS=4
-export NCCL_SHM_DISABLE=0
-export NCCL_NET_GDR_LEVEL=PHB
-export NCCL_DEBUG=WARNING
+# NCCL tuning is opt-in: forcing NCCL_ALGO=Tree / NCCL_P2P_LEVEL=NVL breaks on hosts
+# whose NCCL has no Tree implementation for Broadcast (RTX PRO 5000 Blackwell, NCCL in
+# the torch 2.14 NGC image: "No algorithm/protocol available for function Broadcast").
+# Set them in the environment before calling this script if you want them.
+[ -n "${NCCL_P2P_LEVEL:-}" ] && export NCCL_P2P_LEVEL
+[ -n "${NCCL_ALGO:-}" ] && export NCCL_ALGO
+export NCCL_MIN_NCHANNELS=${NCCL_MIN_NCHANNELS:-4}
+export NCCL_SHM_DISABLE=${NCCL_SHM_DISABLE:-0}
+export NCCL_NET_GDR_LEVEL=${NCCL_NET_GDR_LEVEL:-PHB}
+export NCCL_DEBUG=${NCCL_DEBUG:-WARN}
 export CUDA_VISIBLE_DEVICES=$SELECTED_GPUS
 export OMP_NUM_THREADS=1
 

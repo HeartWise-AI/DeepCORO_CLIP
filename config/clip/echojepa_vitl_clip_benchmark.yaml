@@ -15,7 +15,7 @@
 # =============================================================================
 pipeline_project: DeepCORO_clip
 base_checkpoint_path: outputs
-run_mode: train
+run_mode: !!str train
 epochs: 1
 num_workers: 14           # per rank; 4 ranks x 14 = 56 decode workers on 64 cores
 persistent_workers: true
@@ -94,7 +94,7 @@ tag: echojepa_vitl_coro_clip_benchmark
 name: echojepa_vitl_clip_benchmark
 project: DeepCORO_Clip_EchoJEPA_benchmark
 entity: mhi_ai
-use_wandb: false
+use_wandb: !!bool false
 
 # ---- Inference (unused in train) --------------------------------------------
 topk: 5

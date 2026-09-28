@@ -8,6 +8,7 @@ import itertools
 
 from runners.typing import Runner
 from models.video_encoder import VideoEncoder
+from models.echojepa_backbone import echojepa_kwargs_from_config
 from models.multi_instance_linear_probing import MultiInstanceLinearProbing
 from projects.base_project import BaseProject
 from utils.registry import (
@@ -418,6 +419,7 @@ class LinearProbingProject(BaseProject):
             aggregator_depth=self.config.aggregator_depth,
             aggregate_videos_tokens=self.config.aggregate_videos_tokens,
             per_video_pool=self.config.per_video_pool,
+            echojepa_kwargs=echojepa_kwargs_from_config(self.config, self.config.frames, self.config.resize),
         )        
         
         # Get embedding dimension from encoder

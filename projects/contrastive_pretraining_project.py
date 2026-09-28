@@ -9,6 +9,7 @@ from torch.optim.lr_scheduler import LRScheduler
 
 from models.text_encoder import TextEncoder
 from models.video_encoder import VideoEncoder
+from models.echojepa_backbone import echojepa_kwargs_from_config
 from projects.base_project import BaseProject
 from runners.typing import Runner
 from utils.loss.typing import Loss
@@ -138,6 +139,7 @@ class ContrastivePretrainingProject(BaseProject):
             rope_base=getattr(self.config, 'rope_base', 10000.0),
             rope_temporal_scale=getattr(self.config, 'rope_temporal_scale', 1.0),
             rope_normalize_mode=getattr(self.config, 'rope_normalize_mode', 'separate'),
+            echojepa_kwargs=echojepa_kwargs_from_config(self.config, self.config.frames, self.config.resize),
         )
         video_encoder = video_encoder.to(self.config.device).float()
 
@@ -320,6 +322,7 @@ class ContrastivePretrainingProject(BaseProject):
             rope_base=getattr(self.config, 'rope_base', 10000.0),
             rope_temporal_scale=getattr(self.config, 'rope_temporal_scale', 1.0),
             rope_normalize_mode=getattr(self.config, 'rope_normalize_mode', 'separate'),
+            echojepa_kwargs=echojepa_kwargs_from_config(self.config, self.config.frames, self.config.resize),
         )        
         video_encoder = video_encoder.to(self.config.device).float()
         

@@ -169,6 +169,23 @@ class ClipConfig(HeartWiseConfig):
 
     early_stop_patience: int = 0
 
+    # Pre-computed dataset statistics (optional). When set, the stats pass over
+    # the first training batch is skipped (see utils/video_project.py).
+    dataset_mean: Optional[List[float]] = None
+    dataset_std: Optional[List[float]] = None
+
+    # EchoJEPA backbone (model_name: echojepa). See models/echojepa_backbone.py.
+    echojepa_repo: Optional[str] = None            # EchoJEPA checkout (default: $ECHOJEPA_ROOT or /volume/EchoJEPA)
+    echojepa_checkpoint: Optional[str] = None      # EchoJEPA pretraining checkpoint.pt (None = random init)
+    echojepa_checkpoint_key: str = "target_encoder"
+    echojepa_arch: str = "vit_large"               # vit_base | vit_large | vit_huge | vit_giant
+    echojepa_patch_size: int = 16
+    echojepa_tubelet_size: int = 2
+    echojepa_use_rope: bool = True
+    echojepa_uniform_power: bool = True
+    echojepa_dtype: str = "bfloat16"               # backbone autocast: bfloat16 | float16 | float32
+    echojepa_activation_checkpointing: bool = False
+
     def __post_init__(self):
         # Set default values for list fields
         if self.recall_k is None:

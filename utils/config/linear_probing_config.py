@@ -116,3 +116,17 @@ class LinearProbingConfig(HeartWiseConfig):
 
     # Optional full-checkpoint resume for TRAIN mode (model+optimizer+scheduler+scaler+epoch)
     resume_checkpoint_path: Optional[str] = None
+
+    # EchoJEPA backbone (model_name: echojepa). See models/echojepa_backbone.py.
+    # Leave echojepa_checkpoint None when video_encoder_checkpoint_path already
+    # holds the (CLIP-trained) encoder weights: they are loaded right after.
+    echojepa_repo: Optional[str] = None
+    echojepa_checkpoint: Optional[str] = None
+    echojepa_checkpoint_key: str = "target_encoder"
+    echojepa_arch: str = "vit_large"
+    echojepa_patch_size: int = 16
+    echojepa_tubelet_size: int = 2
+    echojepa_use_rope: bool = True
+    echojepa_uniform_power: bool = True
+    echojepa_dtype: str = "bfloat16"
+    echojepa_activation_checkpointing: bool = False

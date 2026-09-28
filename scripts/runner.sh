@@ -94,11 +94,20 @@ echo -e "${BLUE}========================================${NC}"
 
 # Setup run_mode in base config
 echo -e "${GREEN}Setting run_mode in $CONFIG_PATH to $RUN_MODE${NC}"
-yq eval -i ".run_mode = \"$RUN_MODE\"" "$CONFIG_PATH"
+if yq --version 2>&1 | grep -q mikefarah; then
+    yq eval -i ".run_mode = \"$RUN_MODE\"" "$CONFIG_PATH"
+else
+    # Python jq-wrapper "yq" has no `eval -i`; use the tag-preserving helper instead.
+    python scripts/set_yaml_key.py "$CONFIG_PATH" run_mode "!!str $RUN_MODE"
+fi
 
 # Setup use_wandb in base config
 echo -e "${GREEN}Setting use_wandb in $CONFIG_PATH to $USE_WANDB${NC}"
-yq eval -i ".use_wandb = $USE_WANDB" "$CONFIG_PATH"
+if yq --version 2>&1 | grep -q mikefarah; then
+    yq eval -i ".use_wandb = $USE_WANDB" "$CONFIG_PATH"
+else
+    python scripts/set_yaml_key.py "$CONFIG_PATH" use_wandb "!!bool $USE_WANDB"
+fi
 
 echo -e "${BLUE}========================================\n${NC}"
 

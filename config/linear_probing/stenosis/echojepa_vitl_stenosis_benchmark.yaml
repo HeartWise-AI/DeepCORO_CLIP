@@ -90,7 +90,7 @@ attention_within_weight_decay: !!float 0.00006304012341593597
 attention_across_weight_decay: !!float 0.00000681087681405496
 head_lr: !!float 3e-4
 head_weight_decay: !!float 1e-5
-video_encoder_checkpoint_path: !!str outputs/DeepCORO_clip/DeepCORO_Clip_EchoJEPA_benchmark/20260928-202145_no_wandb/checkpoints/best_model_epoch_0.pt
+video_encoder_checkpoint_path: !!str outputs/DeepCORO_clip/DeepCORO_Clip_EchoJEPA_benchmark/26x4vqml_20260929-005617/checkpoints/best_model_epoch_0.pt
 aggregate_videos_tokens: !!bool false
 per_video_pool: !!bool false
 output_dir: !!str outputs/

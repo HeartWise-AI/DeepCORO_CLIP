@@ -75,6 +75,20 @@ Reading: 108 clips/s is ~90% of the backbone ceiling. The multi-video loader han
 each worker 10 clips per sample, so the per-step Python and dispatch overhead is
 spread over 4x more clips than in Stage 1, and the decode path keeps up.
 
+## W&B rerun (2026-09-29, `logs/echojepa_benchmark_20260929-005606`)
+
+Both stages were rerun with W&B logging on (entity `mhi_ai`), same configs:
+
+| Stage | W&B run | wall | throughput (4 GPUs) | steady-state util | peak mem |
+|---|---|---|---|---|---|
+| CLIP contrastive | [DeepCORO_Clip_EchoJEPA_benchmark/26x4vqml](https://wandb.ai/mhi_ai/DeepCORO_Clip_EchoJEPA_benchmark/runs/26x4vqml) | 41 min | train ~86 clips/s (1214 steps / 22.7 min), val ~60 clips/s | 88 to 92% | 44.4 GiB |
+| Stenosis linear probe | [DeepCORO_stenosis_EchoJEPA_benchmark/tjoxb3r3](https://wandb.ai/mhi_ai/DeepCORO_stenosis_EchoJEPA_benchmark/runs/tjoxb3r3) | 50 min | train ~105 clips/s (2832 steps / 35.9 min), val ~146 clips/s | 90 to 93% | 38.7 GiB |
+
+CLIP val loss 3.45 after one epoch (same as the first run); probe val main loss 45.0.
+The CLIP stage ran almost twice as fast as the day before (86 vs 46 clips/s) with no code
+change: the .avi files were still in the page cache from the previous run, which confirms
+that Stage 1 is bound by video decode/I/O, not by the GPUs.
+
 ## Fixes made along the way (all on branch `feature/echojepa-backbone`)
 
 - `scripts/runner.sh` forced `NCCL_ALGO=Tree` and `NCCL_P2P_LEVEL=NVL`; this NCCL has

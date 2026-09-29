@@ -19,7 +19,7 @@ tag: !!str echojepa_vitl_stenosis_benchmark
 name: !!str echojepa_vitl_stenosis_benchmark
 project: !!str DeepCORO_stenosis_EchoJEPA_benchmark
 entity: !!str mhi_ai
-use_wandb: !!bool false
+use_wandb: !!bool true
 # Training parameters
 scheduler_name: !!str cosine_with_warmup
 num_warmup_percent: !!float 0.06918984863633086

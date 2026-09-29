@@ -6,7 +6,7 @@
 # Text backbone  : PubMedBERT (DeepCORO_CLIP default).
 # Data           : MHI angiography videos + reports (single-video mode, Split column).
 #
-# BENCHMARK SETTINGS (not a recipe for a converged model):
+# BENCHMARK SETTINGS (not a recipe for a converged model; W&B logging ON, entity mhi_ai):
 #   epochs 1, no W&B, rand_augment off (keeps the CPU decode path off the critical
 #   path so the GPUs are the bottleneck), batch 24 per GPU = the largest batch that
 #   fits a 48 GB GPU without activation checkpointing (probe: 36.3 GiB @ 24, OOM @ 32;
@@ -94,7 +94,7 @@ tag: echojepa_vitl_coro_clip_benchmark
 name: echojepa_vitl_clip_benchmark
 project: DeepCORO_Clip_EchoJEPA_benchmark
 entity: mhi_ai
-use_wandb: !!bool false
+use_wandb: !!bool true
 
 # ---- Inference (unused in train) --------------------------------------------
 topk: 5

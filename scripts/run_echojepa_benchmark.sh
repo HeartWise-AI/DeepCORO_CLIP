@@ -57,7 +57,7 @@ if [ -z "$CLIP_CKPT" ]; then
     echo "=============== Stage 1: CLIP pretraining ($CLIP_CONFIG) ==============="
     stage_marker clip_start
     bash scripts/runner.sh --selected_gpus "$SELECTED_GPUS" --base_config "$CLIP_CONFIG" \
-        --run_mode train --use_wandb false 2>&1 | tee "$LOG_DIR/clip.log"
+        --run_mode train --use_wandb true 2>&1 | tee "$LOG_DIR/clip.log"
     CLIP_STATUS=${PIPESTATUS[0]}
     stage_marker clip_end
     if [ "$CLIP_STATUS" -ne 0 ]; then
@@ -80,7 +80,7 @@ if [ "$SKIP_LP" = "false" ]; then
     python scripts/set_yaml_key.py "$LP_CONFIG" video_encoder_checkpoint_path "!!str $CLIP_CKPT"
     stage_marker lp_start
     bash scripts/runner.sh --selected_gpus "$SELECTED_GPUS" --base_config "$LP_CONFIG" \
-        --run_mode train --use_wandb false 2>&1 | tee "$LOG_DIR/lp.log"
+        --run_mode train --use_wandb true 2>&1 | tee "$LOG_DIR/lp.log"
     LP_STATUS=${PIPESTATUS[0]}
     stage_marker lp_end
     if [ "$LP_STATUS" -ne 0 ]; then

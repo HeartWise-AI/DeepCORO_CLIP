@@ -32,6 +32,16 @@ classification IDs independently of display labels. See `labelbox_sync.json`
 for the verified import job and status. The remapped human export preserves
 the distinction between existing human answers and model-assisted predictions.
 
+The corrected Labelbox import `abbe9488-2887-01ed-7684-c3b111e43ecd` finished at
+100%: 12,610 successful annotations across exactly 5,322 queue cines, zero
+failures. This includes 5,322 imaging answers, 5,322 coronary-system answers,
+983 vessel answers and 983 acquisition-phase answers. Returned per-annotation
+statuses were checked against the full review queue; existing answered human
+cines were excluded. The initial name-based import failed validation and was
+replaced by the verified schema-ID import. Suggestions remain subject to human
+review. Results and upload verification are on the
+[Notion Models page](https://www.notion.so/4020855e87b6814a97a1fbed03b76965).
+
 ```bash
 python projects/ivus_oct_localization/train_labelbox.py --config config/ivus_oct_coronary_system.json
 python projects/ivus_oct_localization/labelbox/sync_classifier.py --config config/ivus_oct_coronary_system.json --upload

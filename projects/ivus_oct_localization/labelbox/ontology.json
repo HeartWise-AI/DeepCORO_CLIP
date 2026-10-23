@@ -1,0 +1,156 @@
+{
+  "name": "deepcoro-ivus-oct",
+  "media_type": "Video",
+  "instructions": "Watch the whole cine. Q1: is an intravascular imaging catheter inside a coronary artery? OCT = thin catheter with a short radiopaque lens marker, usually imaged during a continuous contrast flush that clears the vessel while the marker pulls back. IVUS = thicker catheter with a visible transducer segment, usually filmed under plain fluoroscopy (no contrast) during pullback. A guidewire, balloon or stent delivery system alone is 'Other device only'. Q2-Q4 only if Q1 is OCT, IVUS or uncertain: vessel where the imaging catheter sits, and whether the pullback/flush is visible. Record coronary_system for imaging catheters and other devices (wire/balloon/stent). Left coronary may include LAD and LCX together; do not infer left-main traversal. Original detailed vessel answers are retained.",
+  "classifications": [
+    {
+      "name": "intravascular_imaging",
+      "instructions": "Intravascular imaging catheter in a coronary in this cine?",
+      "type": "radio",
+      "scope": "global",
+      "required": true,
+      "options": [
+        {
+          "label": "OCT",
+          "value": "oct"
+        },
+        {
+          "label": "IVUS",
+          "value": "ivus"
+        },
+        {
+          "label": "Imaging catheter, type uncertain",
+          "value": "imaging_uncertain"
+        },
+        {
+          "label": "Other device only (wire / balloon / stent)",
+          "value": "other_device"
+        },
+        {
+          "label": "None",
+          "value": "none"
+        },
+        {
+          "label": "Not interpretable",
+          "value": "not_interpretable"
+        }
+      ]
+    },
+    {
+      "name": "vessel",
+      "instructions": "Vessel containing catheter or other device. Select Left coronary if LAD vs LCX is unclear or wires occupy both; retain a specific vessel when known.",
+      "type": "radio",
+      "scope": "global",
+      "required": false,
+      "options": [
+        {
+          "label": "Left main only",
+          "value": "lm"
+        },
+        {
+          "label": "LAD",
+          "value": "lad"
+        },
+        {
+          "label": "Diagonal",
+          "value": "diagonal"
+        },
+        {
+          "label": "LCX",
+          "value": "lcx"
+        },
+        {
+          "label": "OM / Ramus",
+          "value": "om_ramus"
+        },
+        {
+          "label": "RCA",
+          "value": "rca"
+        },
+        {
+          "label": "PDA / PLV",
+          "value": "pda_plv"
+        },
+        {
+          "label": "Graft (SVG / LIMA)",
+          "value": "graft"
+        },
+        {
+          "label": "Uncertain",
+          "value": "uncertain"
+        },
+        {
+          "label": "Left coronary (LCA; LAD/LCX unclear or both)",
+          "value": "left_coronary"
+        }
+      ]
+    },
+    {
+      "name": "coronary_system",
+      "instructions": "Coronary system containing catheter or other device, including wire/balloon/stent cines. Left coronary is not synonymous with left main. Keep uncertain and graft separate.",
+      "type": "radio",
+      "scope": "global",
+      "required": false,
+      "options": [
+        {
+          "value": "left_coronary",
+          "label": "Left coronary (LCA)"
+        },
+        {
+          "value": "right_coronary",
+          "label": "Right coronary (RCA)"
+        },
+        {
+          "value": "graft",
+          "label": "Graft (SVG / LIMA)"
+        },
+        {
+          "value": "uncertain",
+          "label": "Uncertain"
+        }
+      ]
+    },
+    {
+      "name": "left_main_traversed",
+      "instructions": "Does the imaging catheter pass through the left main (LM-to-LAD/LCX pullback)?",
+      "type": "radio",
+      "scope": "global",
+      "required": false,
+      "options": [
+        {
+          "label": "Yes",
+          "value": "yes"
+        },
+        {
+          "label": "No",
+          "value": "no"
+        },
+        {
+          "label": "N/A (right system / graft)",
+          "value": "na"
+        }
+      ]
+    },
+    {
+      "name": "acquisition_phase",
+      "instructions": "What does the cine show?",
+      "type": "radio",
+      "scope": "global",
+      "required": false,
+      "options": [
+        {
+          "label": "Catheter in position, no pullback/flush",
+          "value": "positioning"
+        },
+        {
+          "label": "Pullback and/or imaging flush visible",
+          "value": "pullback"
+        },
+        {
+          "label": "Uncertain",
+          "value": "uncertain"
+        }
+      ]
+    }
+  ]
+}

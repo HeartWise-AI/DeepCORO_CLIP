@@ -97,8 +97,8 @@ def main():
     imaging = labels.intravascular_imaging.isin(['oct', 'ivus', 'imaging_uncertain'])
     labels['imaging_catheter'] = labels.intravascular_imaging.map(
         {'oct': 'yes', 'ivus': 'yes', 'none': 'no', 'other_device': 'no'}).fillna('')
-    tasks = ['imaging_catheter', 'intravascular_imaging', 'vessel',
-             'left_main_traversed', 'acquisition_phase']
+    tasks = cfg.get('tasks', ['imaging_catheter', 'intravascular_imaging', 'vessel',
+                             'left_main_traversed', 'acquisition_phase'])
     import wandb
     run = wandb.init(entity=cfg['wandb_entity'], project=cfg['wandb_project'], name=cfg['name'],
                      config=cfg, mode='offline' if args.offline else 'online',
@@ -166,11 +166,11 @@ def main():
              'manifest_sha256': sha256(cfg['manifest']), 'embedding_sources': sources,
              'n_labels': len(labels), 'n_manifest': len(manifest), 'n_valid_embeddings': int(valid.sum()),
              'n_remaining': int((~predictions.human_label_exists).sum()),
-             'encoder': cfg['encoder_checkpoint'], 'source_export_date': '2026-10-19',
+             'encoder': cfg['encoder_checkpoint'], 'source_export_date': cfg.get('source_export_date', '2026-10-19'),
              'limitations': ['Labels have not been marked reviewed in Labelbox.',
                              'Only one IVUS label; IVUS subtype unsupported.',
                              'Candidate-enriched cohort; performance does not estimate screening population performance.',
-                             'Model predictions require human review; current Labelbox export/upload pending credentials.']}
+                             'Model predictions require human review; inspect labelbox_sync.json for upload status.']}
     (out / 'audit.json').write_text(json.dumps(audit, indent=2))
     (out / 'metrics.json').write_text(json.dumps(all_metrics, indent=2))
     artifact = wandb.Artifact(cfg['name'], type='model', metadata={'encoder': cfg['encoder_checkpoint']})

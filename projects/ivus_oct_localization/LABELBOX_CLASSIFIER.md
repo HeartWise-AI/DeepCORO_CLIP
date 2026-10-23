@@ -1,5 +1,44 @@
 # Labelbox classifier, October 2026
 
+## Coronary-system update
+
+Nidal's October 11 email in “Projet ivus OCT” proposed a Left coronary answer
+when LAD versus LCX is unclear or wires occupy both branches. Robert agreed on
+October 12. The live ontology now includes a `left_coronary` vessel choice and
+an additional `coronary_system` question for imaging and other-device cines.
+All original question/option IDs and human branch answers are preserved.
+
+The deterministic remap sends LM/LAD/diagonal/LCX/OM-ramus to left coronary,
+RCA to right coronary, graft to graft, and PDA/PLV or uncertain to uncertain.
+Missing answers stay missing. PDA/PLV is not assigned right without dominance
+or branch-origin evidence. Left coronary does not imply left-main traversal.
+The remapped export contains 270 left, 65 right, 214 uncertain, 3 graft and
+260 missing answers; original vessel and source label IDs remain available.
+
+The versioned classifier uses vessel answers from all device cines for the
+coronary-system head. Three classes are supported (left, right, uncertain);
+graft has insufficient support. Validation accuracy: 68.7% (n=99, including
+one unsupported graft). Test accuracy: 74.6% (n=67), macro F1 0.777.
+Left-coronary test precision/recall: 88.9%/64.9% (37 examples).
+Right-coronary test precision/recall: 81.8%/100% (9 examples).
+These are review suggestions, not calibrated or clinically validated outputs.
+
+Config: `config/ivus_oct_coronary_system.json`.
+[Updated W&B run](https://wandb.ai/mhi_ai/deepcoro-ivus-oct/runs/aq8ifkrp).
+NAS: `/media/data1/models/DeepCoro_CLIP/ivus_oct_coronary_system_20261023/`.
+The current live human answers match the saved October 19 export exactly.
+The live-export importer supports the SDK's stream metadata response and resolves
+classification IDs independently of display labels. See `labelbox_sync.json`
+for the verified import job and status. The remapped human export preserves
+the distinction between existing human answers and model-assisted predictions.
+
+```bash
+python projects/ivus_oct_localization/train_labelbox.py --config config/ivus_oct_coronary_system.json
+python projects/ivus_oct_localization/labelbox/sync_classifier.py --config config/ivus_oct_coronary_system.json --upload
+```
+
+The original model and its historical evaluation follow.
+
 Run from the repository root:
 
 ```bash

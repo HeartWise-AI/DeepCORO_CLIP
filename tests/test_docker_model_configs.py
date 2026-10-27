@@ -5,8 +5,13 @@ from pathlib import Path
 
 import yaml
 
-from scripts import external_validation as ev
 from utils import download_pretrained_weights as downloader
+
+try:  # external_validation imports Docker-only packages (heartwise_statplots, Orion)
+    from scripts import external_validation as ev
+except ImportError as error:  # pragma: no cover - depends on the environment
+    ev = None
+    EV_IMPORT_ERROR = str(error)
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIGS = {
@@ -24,11 +29,13 @@ class TestDockerModelConfigs(unittest.TestCase):
                 self.assertTrue(config["inference_model_path"].startswith(f"weights/{local_name}/"))
                 self.assertEqual(config["data_filename"], "tmp/df_preprocessed_filtered.csv")
 
+    @unittest.skipIf(ev is None, "scripts.external_validation needs the Docker-only dependencies")
     def test_main_structures_from_config(self) -> None:
         for model, (path, expected) in CONFIGS.items():
             with self.subTest(model=model):
                 self.assertEqual(ev.get_deepcoro_main_structures(ROOT / path), expected)
 
+    @unittest.skipIf(ev is None, "scripts.external_validation needs the Docker-only dependencies")
     def test_main_structures_default_and_validation(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_path = Path(temp_dir) / "config.yaml"

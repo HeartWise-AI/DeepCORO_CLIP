@@ -124,6 +124,27 @@ def get_deepcoro_target_labels(config_path: Optional[Path] = None) -> list[str]:
     return list(config.get("target_label", []))
 
 
+DEFAULT_MAIN_STRUCTURES = ["Left Coronary", "Right Coronary"]
+
+
+def get_deepcoro_main_structures(config_path: Optional[Path] = None) -> list[str]:
+    """
+    VasoVision main structures the DeepCORO model reads, from the optional
+    `vasovision_main_structures` key of the base config (default: Left and Right
+    Coronary). CathEF, for example, is trained on Left Coronary videos only.
+    """
+    config_path = config_path or resolve_deepcoro_base_config_path()
+    with config_path.open() as config_file:
+        config = yaml.safe_load(config_file)
+    structures = config.get("vasovision_main_structures") or DEFAULT_MAIN_STRUCTURES
+    unknown = sorted(set(structures) - set(DEFAULT_MAIN_STRUCTURES))
+    if unknown:
+        raise ValueError(
+            f"vasovision_main_structures in {config_path} must be a subset of {DEFAULT_MAIN_STRUCTURES}, got {unknown}"
+        )
+    return list(structures)
+
+
 def should_fill_missing_deepcoro_targets() -> bool:
     requested_mode = os.environ.get("DEEPCORO_RUN_MODE", "inference").strip().lower()
     return requested_mode in {"val", "auto"}
@@ -873,6 +894,17 @@ def main(args: dict):
             ]
             if df_preprocessed.empty:
                 raise RuntimeError("No rows remain after VasoVision filtering and diagnostic-status selection")
+
+            # Keep only the coronary systems this model reads (after status assignment, so a PCI
+            # in either artery still marks later videos of the other artery as post-PCI)
+            main_structures = get_deepcoro_main_structures()
+            structure_ids = [
+                vaso_vision_orion_config['labels_map']['main_structure'][name] for name in main_structures
+            ]
+            df_preprocessed = df_preprocessed[df_preprocessed['main_structure'].astype(int).isin(structure_ids)]
+            logger.info("DeepCORO input restricted to %s: %d videos", main_structures, len(df_preprocessed))
+            if df_preprocessed.empty:
+                raise RuntimeError(f"No diagnostic {' / '.join(main_structures)} videos remain after VasoVision filtering")
 
         deepcoro_base_config_path = resolve_deepcoro_base_config_path()
         deepcoro_run_mode = resolve_deepcoro_run_mode(

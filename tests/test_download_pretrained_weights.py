@@ -39,6 +39,8 @@ class TestDownloadPretrainedWeights(unittest.TestCase):
             ("stenosis,mace", ["stenosis", "mace"]),
             (" mace , stenosis ", ["mace", "stenosis"]),
             ("mace,mace", ["mace"]),
+            ("CathEF", ["cathef"]),
+            ("stenosis,cathef,deeprv", ["stenosis", "cathef", "deeprv"]),
         ]
 
         for selection, expected in cases:
@@ -69,9 +71,19 @@ class TestDownloadPretrainedWeights(unittest.TestCase):
                     local_dir=str(project_root / "weights" / "deepcoro_clip_mace"),
                     hugging_face_api_key="test-token",
                 ),
+                "cathef": call(
+                    repo_id="heartwise/CathEF_CLIP",
+                    local_dir=str(project_root / "weights" / "CathEF_CLIP"),
+                    hugging_face_api_key="test-token",
+                ),
+                "deeprv": call(
+                    repo_id="heartwise/DeepRV_CLIP",
+                    local_dir=str(project_root / "weights" / "DeepRV_CLIP"),
+                    hugging_face_api_key="test-token",
+                ),
             }
 
-            for model_names in [["stenosis"], ["mace"], ["stenosis", "mace"]]:
+            for model_names in [["stenosis"], ["mace"], ["stenosis", "mace"], ["cathef"], ["cathef", "deeprv"]]:
                 with self.subTest(model_names=model_names):
                     mock_download.reset_mock()
                     downloader.download_selected_models(

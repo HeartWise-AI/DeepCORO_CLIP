@@ -31,6 +31,14 @@ PRETRAINED_MODELS = {
         "heartwise/deepcoro_clip_mace",
         "deepcoro_clip_mace",
     ),
+    "cathef": (
+        "heartwise/CathEF_CLIP",
+        "CathEF_CLIP",
+    ),
+    "deeprv": (
+        "heartwise/DeepRV_CLIP",
+        "DeepRV_CLIP",
+    ),
 }
 
 
@@ -82,7 +90,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         required=True,
         help=(
             "Comma-separated models to download. Supported values: "
-            "stenosis, mace."
+            "stenosis, mace, cathef, deeprv."
         ),
     )
     args = parser.parse_args(argv)

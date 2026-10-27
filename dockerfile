@@ -52,7 +52,7 @@ ENV PYTHONPATH="/opt/Orion:$PYTHONPATH"
 # Download model weights at build time (secret is mounted only during RUN, not persisted in image)
 ARG DEEPCORO_MODELS
 RUN test -n "${DEEPCORO_MODELS}" || \
-    (echo "DEEPCORO_MODELS is required: use stenosis, mace, or stenosis,mace" >&2; exit 2)
+    (echo "DEEPCORO_MODELS is required: comma-separated stenosis, mace, cathef, deeprv (e.g. stenosis,cathef)" >&2; exit 2)
 RUN --mount=type=secret,id=api_key,target=/workspace/api_key.json \
     python utils/download_vasovision.py
 RUN --mount=type=secret,id=api_key,target=/workspace/utils/api_key.json \

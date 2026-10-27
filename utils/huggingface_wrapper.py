@@ -30,7 +30,7 @@ class HuggingFaceWrapper:
         self.hugging_face_api_key = hugging_face_api_key
         self.api = HfApi()
 
-    def get_model(self, repo_id, local_dir):           
+    def get_model(self, repo_id, local_dir, revision=None):
         # Download repo from HuggingFace
         print(f"Checking if {repo_id} already exists in {local_dir}")
         if os.path.exists(local_dir):
@@ -44,7 +44,8 @@ class HuggingFaceWrapper:
             repo_id=repo_id, 
             local_dir=local_dir, 
             repo_type="model", 
-            token=self.hugging_face_api_key
+            token=self.hugging_face_api_key,
+            revision=revision,
         )
         
         print(f"{repo_id} downloaded to {local_dir}")

@@ -263,9 +263,24 @@ DOCKER_BUILDKIT=1 docker build \
   --build-arg DEEPCORO_MODELS=stenosis,mace \
   --secret id=api_key,src=api_key.json \
   -t deepcoro_clip-all-models .
+
+# CathEF (LVEF) and DeepRV, e.g. for VENTRIC-AI external validation
+DOCKER_BUILDKIT=1 docker build \
+  --build-arg DEEPCORO_MODELS=stenosis,cathef,deeprv \
+  --secret id=api_key,src=api_key.json \
+  -t deepcoro_clip-ventricai .
 ```
 
-Supported model selectors are `stenosis` and `mace`. The build fails if `DEEPCORO_MODELS` is missing or invalid, or with a model-specific access error when the Hugging Face token cannot access a requested gated repository.
+Supported model selectors:
+
+| Selector | Hugging Face repo (private) | Downloaded to | Docker config (`DEEPCORO_BASE_CONFIG`) | Videos read |
+|---|---|---|---|---|
+| `stenosis` | `heartwise/deepcoro_clip_stenosis` | `weights/deepcoro_clip_generic/` | `config/linear_probing/stenosis/docker_base_config.yaml` | Left + Right Coronary |
+| `mace` | `heartwise/deepcoro_clip_mace` | `weights/deepcoro_clip_mace/` | `config/linear_probing/MACE/docker_base_config_mace.yaml` | Left + Right Coronary |
+| `cathef` | `heartwise/CathEF_CLIP` | `weights/CathEF_CLIP/` | `config/linear_probing/CathEF/docker_base_config_cathef.yaml` | Left Coronary only |
+| `deeprv` | `heartwise/DeepRV_CLIP` | `weights/DeepRV_CLIP/` | `config/linear_probing/DeepRV/docker_base_config_deeprv.yaml` | Left + Right Coronary |
+
+Each config's `vasovision_main_structures` key sets which coronary systems reach the model, after the diagnostic-phase selection (default: Left + Right Coronary). Run one model per container call, e.g. `-e DEEPCORO_BASE_CONFIG=config/linear_probing/CathEF/docker_base_config_cathef.yaml`. The build fails if `DEEPCORO_MODELS` is missing or invalid, or with a model-specific access error when the Hugging Face token cannot access a requested gated repository.
 
 The API key is only used during the build and is **not** persisted in the final image.
 

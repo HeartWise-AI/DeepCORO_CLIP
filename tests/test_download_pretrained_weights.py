@@ -27,6 +27,7 @@ class TestDownloadPretrainedWeights(unittest.TestCase):
         mock_wrapper_class.return_value.get_model.assert_called_once_with(
             "heartwise/test-model",
             "/models/local",
+            revision=None,
         )
         mock_print.assert_called_once_with(
             "✓ Successfully downloaded model to: /models/downloaded"
@@ -39,6 +40,8 @@ class TestDownloadPretrainedWeights(unittest.TestCase):
             ("stenosis,mace", ["stenosis", "mace"]),
             (" mace , stenosis ", ["mace", "stenosis"]),
             ("mace,mace", ["mace"]),
+            ("CathEF", ["cathef"]),
+            ("stenosis,cathef,deeprv", ["stenosis", "cathef", "deeprv"]),
         ]
 
         for selection, expected in cases:
@@ -51,10 +54,12 @@ class TestDownloadPretrainedWeights(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     downloader.parse_model_selection(selection)
 
+    @patch.object(downloader, "verify_checksums")
     @patch.object(downloader, "download_pretrained_weights")
     def test_download_selected_models_downloads_requested_model_sets(
         self,
         mock_download,
+        _mock_verify,
     ) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             project_root = Path(temp_dir)
@@ -63,15 +68,29 @@ class TestDownloadPretrainedWeights(unittest.TestCase):
                     repo_id="heartwise/deepcoro_clip_stenosis",
                     local_dir=str(project_root / "weights" / "deepcoro_clip_generic"),
                     hugging_face_api_key="test-token",
+                    revision=None,
                 ),
                 "mace": call(
                     repo_id="heartwise/deepcoro_clip_mace",
                     local_dir=str(project_root / "weights" / "deepcoro_clip_mace"),
                     hugging_face_api_key="test-token",
+                    revision=None,
+                ),
+                "cathef": call(
+                    repo_id="heartwise/CathEF_CLIP",
+                    local_dir=str(project_root / "weights" / "CathEF_CLIP"),
+                    hugging_face_api_key="test-token",
+                    revision=downloader.PINNED_MODELS["cathef"]["revision"],
+                ),
+                "deeprv": call(
+                    repo_id="heartwise/DeepRV_CLIP",
+                    local_dir=str(project_root / "weights" / "DeepRV_CLIP"),
+                    hugging_face_api_key="test-token",
+                    revision=downloader.PINNED_MODELS["deeprv"]["revision"],
                 ),
             }
 
-            for model_names in [["stenosis"], ["mace"], ["stenosis", "mace"]]:
+            for model_names in [["stenosis"], ["mace"], ["stenosis", "mace"], ["cathef"], ["cathef", "deeprv"]]:
                 with self.subTest(model_names=model_names):
                     mock_download.reset_mock()
                     downloader.download_selected_models(
@@ -163,6 +182,7 @@ class TestDownloadPretrainedWeights(unittest.TestCase):
         wrapper_class.return_value.get_model.assert_called_once_with(
             "heartwise/test-model",
             "/models/local",
+            revision=None,
         )
         read_api_key.assert_called_once_with("api_key.json")
         mock_download.assert_called_once_with(
@@ -170,6 +190,34 @@ class TestDownloadPretrainedWeights(unittest.TestCase):
             "standalone-token",
             Path(downloader.__file__).resolve().parent.parent,
         )
+
+class TestPinnedModels(unittest.TestCase):
+    def test_pinned_models_are_full_commits_and_digests(self) -> None:
+        for name, pinned in downloader.PINNED_MODELS.items():
+            with self.subTest(model=name):
+                self.assertIn(name, downloader.PRETRAINED_MODELS)
+                self.assertRegex(pinned["revision"], r"^[0-9a-f]{40}$")
+                for digest in pinned["sha256"].values():
+                    self.assertRegex(digest, r"^[0-9a-f]{64}$")
+
+    def test_verify_checksums(self) -> None:
+        import hashlib
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "model.pt"
+            path.write_bytes(b"weights")
+            good = hashlib.sha256(b"weights").hexdigest()
+            downloader.verify_checksums(Path(temp_dir), {"model.pt": good})
+            with self.assertRaisesRegex(RuntimeError, "Checksum mismatch"):
+                downloader.verify_checksums(Path(temp_dir), {"model.pt": "0" * 64})
+            with self.assertRaisesRegex(RuntimeError, "missing"):
+                downloader.verify_checksums(Path(temp_dir), {"other.pt": good})
+
+    @patch.object(downloader, "download_pretrained_weights")
+    def test_pinned_model_fails_on_checksum_mismatch(self, _mock_download) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaisesRegex(RuntimeError, "missing"):
+                downloader.download_selected_models(["cathef"], "test-token", Path(temp_dir))
 
 
 if __name__ == "__main__":

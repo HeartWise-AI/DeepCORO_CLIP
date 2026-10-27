@@ -28,7 +28,7 @@ def load_text_embeddings(path: str, device: torch.device) -> torch.Tensor:
     if not path:
         raise ValueError("config.text_embeddings_path is required for inference")
 
-    loaded = torch.load(path, map_location=device, weights_only=False)
+    loaded = torch.load(path, map_location=device, weights_only=True)
     if isinstance(loaded, dict):
         for key in ("text_embeddings", "embeddings", "features"):
             if key in loaded:
@@ -42,7 +42,10 @@ def load_text_embeddings(path: str, device: torch.device) -> torch.Tensor:
         )
     if loaded.ndim != 2:
         raise ValueError(f"text embeddings must be 2D [M, D], got {tuple(loaded.shape)}")
-    return loaded.to(device=device, dtype=torch.float32)
+    loaded = loaded.to(device=device, dtype=torch.float32)
+    if not torch.isfinite(loaded).all():
+        raise ValueError("text embeddings contain non-finite values")
+    return loaded
 
 
 def extract_video_embeddings(video_outputs: Any, video_mask: Any = None) -> torch.Tensor:
@@ -71,7 +74,7 @@ def extract_video_embeddings(video_outputs: Any, video_mask: Any = None) -> torc
                 m = m.unsqueeze(-1)
                 video_outputs = (video_outputs * m).sum(dim=1) / m.sum(dim=1).clamp(min=1.0)
             else:
-                video_outputs = video_outputs.mean(dim=1)
+                raise ValueError("video mask shape must match embeddings [B, N]")
         else:
             video_outputs = video_outputs.mean(dim=1)
     if video_outputs.ndim != 2:
@@ -101,6 +104,8 @@ def build_inference_rows(
             row["video_name"] = identifier
 
         for column in metadata.columns:
+            if column in row:
+                continue
             values = topk_metadata[column]
             if pd.api.types.is_numeric_dtype(values):
                 row[column] = values.mean()
@@ -181,7 +186,9 @@ def run_retrieval_metadata_inference(
     if metadata.empty:
         raise ValueError(f"metadata_path has no rows: {config.metadata_path}")
 
-    candidate_count = min(text_embeddings.shape[0], len(metadata))
+    if text_embeddings.shape[0] != len(metadata):
+        raise ValueError("text embeddings and metadata must have the same number of rows")
+    candidate_count = len(metadata)
     if candidate_count == 0:
         raise ValueError("No text embeddings or metadata rows available for inference")
     text_embeddings = text_embeddings[:candidate_count]
@@ -208,7 +215,7 @@ def run_retrieval_metadata_inference(
         if videos is None:
             continue
 
-        with torch.no_grad():
+        with torch.inference_mode():
             vids = videos.to(device).float()
             # Padded clips are exact-zero; build a per-clip validity mask for masked
             # averaging of multi-video [B, N, ...] inputs.
@@ -219,9 +226,15 @@ def run_retrieval_metadata_inference(
                 video_outputs = video_encoder(vids)
             video_embeddings = extract_video_embeddings(video_outputs, video_mask).to(device=device, dtype=torch.float32)
 
+        if video_embeddings.shape[1] != text_embeddings.shape[1]:
+            raise ValueError("video and text embedding dimensions must match")
+        if not torch.isfinite(video_embeddings).all():
+            raise ValueError("video embeddings contain non-finite values")
         similarity_matrix = torch.matmul(video_embeddings, text_embeddings.t())
         _, topk_indices = torch.topk(similarity_matrix, k=topk, dim=1)
         identifiers = _coerce_identifiers(batch.get("paths", batch.get("sids")))
+        if len(identifiers) != len(video_embeddings):
+            raise ValueError("each video embedding requires one path or study identifier")
         inference_rows.extend(
             build_inference_rows(
                 topk_indices=topk_indices.cpu(),

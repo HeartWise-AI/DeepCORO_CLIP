@@ -1,5 +1,6 @@
 import argparse
 import hashlib
+import os
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -142,7 +143,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     else:
         from files_handler import read_api_key
 
-    hugging_face_api_key = read_api_key("api_key.json")["HUGGING_FACE_API_KEY"]
+    try:
+        hugging_face_api_key = read_api_key("api_key.json").get("HUGGING_FACE_API_KEY")
+    except FileNotFoundError:
+        # The Hub SDK also honors HF_TOKEN and the saved hf auth login.
+        hugging_face_api_key = os.environ.get("HUGGING_FACE_API_KEY")
     project_root = Path(__file__).resolve().parent.parent
     download_selected_models(model_names, hugging_face_api_key, project_root)
 

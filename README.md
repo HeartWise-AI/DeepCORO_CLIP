@@ -34,6 +34,41 @@ DeepCORO_CLIP is a multi-view foundation model for coronary angiography video-te
   token per video, or a single token per study with two simple flags
   (`aggregate` and `per_video_pool`) in the `VideoEncoder`.
 
+## Hugging Face inference weights
+
+The download helper uses the Hub SDK cache metadata to resume interrupted
+transfers, including when the destination directory already exists. Online
+downloads verify all selected files against Hub metadata and record a completion
+manifest; offline reuse checks the recorded files and sizes. Official
+stenosis and MACE model downloads default to verified commit revisions in
+`utils/huggingface_wrapper.py`; pass `revision=` to `get_model` or `--revision`
+to the CLI to select another release. Authentication uses the existing API key
+file when present, or `HF_TOKEN` / the SDK login when it is absent.
+
+```bash
+python -m utils.download_pretrained_weights --models stenosis
+# Direct snapshot workflow: populate this location before offline reuse.
+python -m utils.huggingface_wrapper heartwise/deepcoro_clip_stenosis \
+  --local-dir ./pretrained_models
+python -m utils.huggingface_wrapper heartwise/deepcoro_clip_stenosis \
+  --local-dir ./pretrained_models --offline
+```
+
+For offline use, pre-download with the same helper, local directory and revision
+before adding `--offline`. `HuggingFaceWrapper.get_model` also supports
+`cache_dir`, `allow_patterns`, and `local_files_only`. Published repositories:
+[stenosis](https://huggingface.co/heartwise/deepcoro_clip_stenosis) and
+[MACE](https://huggingface.co/heartwise/deepcoro_clip_mace).
+
+`HuggingFaceWrapper.upload_model(repo_id, local_dir)` uploads an explicitly
+selected model folder in one commit and returns the SDK commit result. New
+repositories default to private; upload failures propagate to the caller.
+
+Retrieval inference requires one metadata row per text embedding and one input
+identifier per video embedding. Invalid alignment or non-finite embeddings now
+raise errors before predictions are written; input identities are preserved
+when training metadata contains a column with the same name.
+
 ## 🛠️ Environment Setup
 
 ### Prerequisites

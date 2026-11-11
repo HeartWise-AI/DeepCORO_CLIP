@@ -1,0 +1,539 @@
+{
+  "checkpoint": "zcb8cu0l_20260213-033432/best_model_epoch_11.pt",
+  "checkpoint_sha256": "4eac7676bc24930466d84f04f813fcbc1b9e70b056232cad603f18c84d008267",
+  "hf_repo": "heartwise/deepcoro_clip_generic",
+  "rule": "positive when the sigmoid probability ({head}_pred) is strictly greater than the threshold",
+  "selection": "ROC point with the highest geometric mean of sensitivity and specificity (utils/metrics.py compute_best_threshold), internal MHI data",
+  "label_definitions": {
+    "stenosis": "visual percent diameter stenosis of the segment from the angiography report (0-100)",
+    "stenosis_binary": "report stenosis >= 70 percent; left main >= 50 percent",
+    "calcif_binary": "moderate or severe calcification, or calcified nodule, in the report; none or mild is negative",
+    "cto": "chronic total occlusion of the segment in the report",
+    "thrombus": "thrombus in the segment in the report"
+  },
+  "not_derived_note": "threshold 0.5 with derived=false is a placeholder for an output with too few positive cases; that output is not supported",
+  "thresholds": {
+    "prox_rca_stenosis_binary": {
+      "segment": "prox_rca",
+      "segment_name": "Proximal RCA",
+      "output": "stenosis_binary",
+      "threshold": 0.1079,
+      "derived": true,
+      "label_cutoff_percent": 70
+    },
+    "mid_rca_stenosis_binary": {
+      "segment": "mid_rca",
+      "segment_name": "Mid RCA",
+      "output": "stenosis_binary",
+      "threshold": 0.1284,
+      "derived": true,
+      "label_cutoff_percent": 70
+    },
+    "dist_rca_stenosis_binary": {
+      "segment": "dist_rca",
+      "segment_name": "Distal RCA",
+      "output": "stenosis_binary",
+      "threshold": 0.0327,
+      "derived": true,
+      "label_cutoff_percent": 70
+    },
+    "pda_stenosis_binary": {
+      "segment": "pda",
+      "segment_name": "Posterior descending artery",
+      "output": "stenosis_binary",
+      "threshold": 0.0299,
+      "derived": true,
+      "label_cutoff_percent": 70
+    },
+    "posterolateral_stenosis_binary": {
+      "segment": "posterolateral",
+      "segment_name": "Posterolateral branch",
+      "output": "stenosis_binary",
+      "threshold": 0.0209,
+      "derived": true,
+      "label_cutoff_percent": 70
+    },
+    "left_main_stenosis_binary": {
+      "segment": "left_main",
+      "segment_name": "Left main",
+      "output": "stenosis_binary",
+      "threshold": 0.0546,
+      "derived": true,
+      "label_cutoff_percent": 50
+    },
+    "prox_lad_stenosis_binary": {
+      "segment": "prox_lad",
+      "segment_name": "Proximal LAD",
+      "output": "stenosis_binary",
+      "threshold": 0.1145,
+      "derived": true,
+      "label_cutoff_percent": 70
+    },
+    "mid_lad_stenosis_binary": {
+      "segment": "mid_lad",
+      "segment_name": "Mid LAD",
+      "output": "stenosis_binary",
+      "threshold": 0.1754,
+      "derived": true,
+      "label_cutoff_percent": 70
+    },
+    "dist_lad_stenosis_binary": {
+      "segment": "dist_lad",
+      "segment_name": "Distal LAD",
+      "output": "stenosis_binary",
+      "threshold": 0.0373,
+      "derived": true,
+      "label_cutoff_percent": 70
+    },
+    "D1_stenosis_binary": {
+      "segment": "D1",
+      "segment_name": "First diagonal",
+      "output": "stenosis_binary",
+      "threshold": 0.1308,
+      "derived": true,
+      "label_cutoff_percent": 70
+    },
+    "D2_stenosis_binary": {
+      "segment": "D2",
+      "segment_name": "Second diagonal",
+      "output": "stenosis_binary",
+      "threshold": 0.0568,
+      "derived": true,
+      "label_cutoff_percent": 70
+    },
+    "prox_lcx_stenosis_binary": {
+      "segment": "prox_lcx",
+      "segment_name": "Proximal LCx",
+      "output": "stenosis_binary",
+      "threshold": 0.083,
+      "derived": true,
+      "label_cutoff_percent": 70
+    },
+    "mid_lcx_stenosis_binary": {
+      "segment": "mid_lcx",
+      "segment_name": "Mid LCx",
+      "output": "stenosis_binary",
+      "threshold": 0.0597,
+      "derived": true,
+      "label_cutoff_percent": 70
+    },
+    "dist_lcx_stenosis_binary": {
+      "segment": "dist_lcx",
+      "segment_name": "Distal LCx",
+      "output": "stenosis_binary",
+      "threshold": 0.0105,
+      "derived": true,
+      "label_cutoff_percent": 70
+    },
+    "om1_stenosis_binary": {
+      "segment": "om1",
+      "segment_name": "First obtuse marginal",
+      "output": "stenosis_binary",
+      "threshold": 0.0723,
+      "derived": true,
+      "label_cutoff_percent": 70
+    },
+    "om2_stenosis_binary": {
+      "segment": "om2",
+      "segment_name": "Second obtuse marginal",
+      "output": "stenosis_binary",
+      "threshold": 0.0767,
+      "derived": true,
+      "label_cutoff_percent": 70
+    },
+    "bx_stenosis_binary": {
+      "segment": "bx",
+      "segment_name": "Ramus",
+      "output": "stenosis_binary",
+      "threshold": 0.0299,
+      "derived": true,
+      "label_cutoff_percent": 70
+    },
+    "lvp_stenosis_binary": {
+      "segment": "lvp",
+      "segment_name": "Posterior left ventricular branch (LVP)",
+      "output": "stenosis_binary",
+      "threshold": 0.0014,
+      "derived": true,
+      "label_cutoff_percent": 70
+    },
+    "prox_rca_calcif_binary": {
+      "segment": "prox_rca",
+      "segment_name": "Proximal RCA",
+      "output": "calcif_binary",
+      "threshold": 0.0376,
+      "derived": true
+    },
+    "mid_rca_calcif_binary": {
+      "segment": "mid_rca",
+      "segment_name": "Mid RCA",
+      "output": "calcif_binary",
+      "threshold": 0.0302,
+      "derived": true
+    },
+    "dist_rca_calcif_binary": {
+      "segment": "dist_rca",
+      "segment_name": "Distal RCA",
+      "output": "calcif_binary",
+      "threshold": 0.0171,
+      "derived": true
+    },
+    "pda_calcif_binary": {
+      "segment": "pda",
+      "segment_name": "Posterior descending artery",
+      "output": "calcif_binary",
+      "threshold": 0.0066,
+      "derived": true
+    },
+    "posterolateral_calcif_binary": {
+      "segment": "posterolateral",
+      "segment_name": "Posterolateral branch",
+      "output": "calcif_binary",
+      "threshold": 0.0012,
+      "derived": true
+    },
+    "left_main_calcif_binary": {
+      "segment": "left_main",
+      "segment_name": "Left main",
+      "output": "calcif_binary",
+      "threshold": 0.023,
+      "derived": true
+    },
+    "prox_lad_calcif_binary": {
+      "segment": "prox_lad",
+      "segment_name": "Proximal LAD",
+      "output": "calcif_binary",
+      "threshold": 0.0729,
+      "derived": true
+    },
+    "mid_lad_calcif_binary": {
+      "segment": "mid_lad",
+      "segment_name": "Mid LAD",
+      "output": "calcif_binary",
+      "threshold": 0.0894,
+      "derived": true
+    },
+    "dist_lad_calcif_binary": {
+      "segment": "dist_lad",
+      "segment_name": "Distal LAD",
+      "output": "calcif_binary",
+      "threshold": 0.0026,
+      "derived": true
+    },
+    "D1_calcif_binary": {
+      "segment": "D1",
+      "segment_name": "First diagonal",
+      "output": "calcif_binary",
+      "threshold": 0.0206,
+      "derived": true
+    },
+    "D2_calcif_binary": {
+      "segment": "D2",
+      "segment_name": "Second diagonal",
+      "output": "calcif_binary",
+      "threshold": 0.0065,
+      "derived": true
+    },
+    "prox_lcx_calcif_binary": {
+      "segment": "prox_lcx",
+      "segment_name": "Proximal LCx",
+      "output": "calcif_binary",
+      "threshold": 0.0207,
+      "derived": true
+    },
+    "mid_lcx_calcif_binary": {
+      "segment": "mid_lcx",
+      "segment_name": "Mid LCx",
+      "output": "calcif_binary",
+      "threshold": 0.0062,
+      "derived": true
+    },
+    "dist_lcx_calcif_binary": {
+      "segment": "dist_lcx",
+      "segment_name": "Distal LCx",
+      "output": "calcif_binary",
+      "threshold": 0.005,
+      "derived": true
+    },
+    "om1_calcif_binary": {
+      "segment": "om1",
+      "segment_name": "First obtuse marginal",
+      "output": "calcif_binary",
+      "threshold": 0.0104,
+      "derived": true
+    },
+    "om2_calcif_binary": {
+      "segment": "om2",
+      "segment_name": "Second obtuse marginal",
+      "output": "calcif_binary",
+      "threshold": 0.0091,
+      "derived": true
+    },
+    "bx_calcif_binary": {
+      "segment": "bx",
+      "segment_name": "Ramus",
+      "output": "calcif_binary",
+      "threshold": 0.0029,
+      "derived": true
+    },
+    "lvp_calcif_binary": {
+      "segment": "lvp",
+      "segment_name": "Posterior left ventricular branch (LVP)",
+      "output": "calcif_binary",
+      "threshold": 0.5,
+      "derived": false
+    },
+    "prox_rca_cto": {
+      "segment": "prox_rca",
+      "segment_name": "Proximal RCA",
+      "output": "cto",
+      "threshold": 0.0134,
+      "derived": true
+    },
+    "mid_rca_cto": {
+      "segment": "mid_rca",
+      "segment_name": "Mid RCA",
+      "output": "cto",
+      "threshold": 0.0225,
+      "derived": true
+    },
+    "dist_rca_cto": {
+      "segment": "dist_rca",
+      "segment_name": "Distal RCA",
+      "output": "cto",
+      "threshold": 0.0043,
+      "derived": true
+    },
+    "pda_cto": {
+      "segment": "pda",
+      "segment_name": "Posterior descending artery",
+      "output": "cto",
+      "threshold": 0.0031,
+      "derived": true
+    },
+    "posterolateral_cto": {
+      "segment": "posterolateral",
+      "segment_name": "Posterolateral branch",
+      "output": "cto",
+      "threshold": 0.0034,
+      "derived": true
+    },
+    "left_main_cto": {
+      "segment": "left_main",
+      "segment_name": "Left main",
+      "output": "cto",
+      "threshold": 0.5,
+      "derived": false
+    },
+    "prox_lad_cto": {
+      "segment": "prox_lad",
+      "segment_name": "Proximal LAD",
+      "output": "cto",
+      "threshold": 0.0043,
+      "derived": true
+    },
+    "mid_lad_cto": {
+      "segment": "mid_lad",
+      "segment_name": "Mid LAD",
+      "output": "cto",
+      "threshold": 0.0159,
+      "derived": true
+    },
+    "dist_lad_cto": {
+      "segment": "dist_lad",
+      "segment_name": "Distal LAD",
+      "output": "cto",
+      "threshold": 0.0017,
+      "derived": true
+    },
+    "D1_cto": {
+      "segment": "D1",
+      "segment_name": "First diagonal",
+      "output": "cto",
+      "threshold": 0.003,
+      "derived": true
+    },
+    "D2_cto": {
+      "segment": "D2",
+      "segment_name": "Second diagonal",
+      "output": "cto",
+      "threshold": 0.0009,
+      "derived": true
+    },
+    "prox_lcx_cto": {
+      "segment": "prox_lcx",
+      "segment_name": "Proximal LCx",
+      "output": "cto",
+      "threshold": 0.0083,
+      "derived": true
+    },
+    "mid_lcx_cto": {
+      "segment": "mid_lcx",
+      "segment_name": "Mid LCx",
+      "output": "cto",
+      "threshold": 0.0112,
+      "derived": true
+    },
+    "dist_lcx_cto": {
+      "segment": "dist_lcx",
+      "segment_name": "Distal LCx",
+      "output": "cto",
+      "threshold": 0.0011,
+      "derived": true
+    },
+    "om1_cto": {
+      "segment": "om1",
+      "segment_name": "First obtuse marginal",
+      "output": "cto",
+      "threshold": 0.0019,
+      "derived": true
+    },
+    "om2_cto": {
+      "segment": "om2",
+      "segment_name": "Second obtuse marginal",
+      "output": "cto",
+      "threshold": 0.0086,
+      "derived": true
+    },
+    "bx_cto": {
+      "segment": "bx",
+      "segment_name": "Ramus",
+      "output": "cto",
+      "threshold": 0.0012,
+      "derived": true
+    },
+    "lvp_cto": {
+      "segment": "lvp",
+      "segment_name": "Posterior left ventricular branch (LVP)",
+      "output": "cto",
+      "threshold": 0.5,
+      "derived": false
+    },
+    "prox_rca_thrombus": {
+      "segment": "prox_rca",
+      "segment_name": "Proximal RCA",
+      "output": "thrombus",
+      "threshold": 0.0109,
+      "derived": true
+    },
+    "mid_rca_thrombus": {
+      "segment": "mid_rca",
+      "segment_name": "Mid RCA",
+      "output": "thrombus",
+      "threshold": 0.0126,
+      "derived": true
+    },
+    "dist_rca_thrombus": {
+      "segment": "dist_rca",
+      "segment_name": "Distal RCA",
+      "output": "thrombus",
+      "threshold": 0.0058,
+      "derived": true
+    },
+    "pda_thrombus": {
+      "segment": "pda",
+      "segment_name": "Posterior descending artery",
+      "output": "thrombus",
+      "threshold": 0.5,
+      "derived": false
+    },
+    "posterolateral_thrombus": {
+      "segment": "posterolateral",
+      "segment_name": "Posterolateral branch",
+      "output": "thrombus",
+      "threshold": 0.0017,
+      "derived": true
+    },
+    "left_main_thrombus": {
+      "segment": "left_main",
+      "segment_name": "Left main",
+      "output": "thrombus",
+      "threshold": 0.5,
+      "derived": false
+    },
+    "prox_lad_thrombus": {
+      "segment": "prox_lad",
+      "segment_name": "Proximal LAD",
+      "output": "thrombus",
+      "threshold": 0.0086,
+      "derived": true
+    },
+    "mid_lad_thrombus": {
+      "segment": "mid_lad",
+      "segment_name": "Mid LAD",
+      "output": "thrombus",
+      "threshold": 0.0038,
+      "derived": true
+    },
+    "dist_lad_thrombus": {
+      "segment": "dist_lad",
+      "segment_name": "Distal LAD",
+      "output": "thrombus",
+      "threshold": 0.5,
+      "derived": false
+    },
+    "D1_thrombus": {
+      "segment": "D1",
+      "segment_name": "First diagonal",
+      "output": "thrombus",
+      "threshold": 0.5,
+      "derived": false
+    },
+    "D2_thrombus": {
+      "segment": "D2",
+      "segment_name": "Second diagonal",
+      "output": "thrombus",
+      "threshold": 0.5,
+      "derived": false
+    },
+    "prox_lcx_thrombus": {
+      "segment": "prox_lcx",
+      "segment_name": "Proximal LCx",
+      "output": "thrombus",
+      "threshold": 0.0003,
+      "derived": true
+    },
+    "mid_lcx_thrombus": {
+      "segment": "mid_lcx",
+      "segment_name": "Mid LCx",
+      "output": "thrombus",
+      "threshold": 0.0028,
+      "derived": true
+    },
+    "dist_lcx_thrombus": {
+      "segment": "dist_lcx",
+      "segment_name": "Distal LCx",
+      "output": "thrombus",
+      "threshold": 0.5,
+      "derived": false
+    },
+    "om1_thrombus": {
+      "segment": "om1",
+      "segment_name": "First obtuse marginal",
+      "output": "thrombus",
+      "threshold": 0.5,
+      "derived": false
+    },
+    "om2_thrombus": {
+      "segment": "om2",
+      "segment_name": "Second obtuse marginal",
+      "output": "thrombus",
+      "threshold": 0.5,
+      "derived": false
+    },
+    "bx_thrombus": {
+      "segment": "bx",
+      "segment_name": "Ramus",
+      "output": "thrombus",
+      "threshold": 0.5,
+      "derived": false
+    },
+    "lvp_thrombus": {
+      "segment": "lvp",
+      "segment_name": "Posterior left ventricular branch (LVP)",
+      "output": "thrombus",
+      "threshold": 0.5,
+      "derived": false
+    }
+  }
+}

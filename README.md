@@ -69,6 +69,15 @@ identifier per video embedding. Invalid alignment or non-finite embeddings now
 raise errors before predictions are written; input identities are preserved
 when training metadata contains a column with the same name.
 
+## Output labels and decision thresholds
+
+The stenosis checkpoint returns, for each of 18 coronary segments, a percent stenosis estimate and probabilities of
+significant stenosis, calcification, chronic total occlusion and thrombus. Significant stenosis means a report
+stenosis of 70% or more (50% or more for the left main). The probabilities are not calibrated: use the per-output
+thresholds, not 0.5. Definitions, thresholds and the sensitivity and specificity at each threshold are in
+[docs/output_labels_and_thresholds.md](docs/output_labels_and_thresholds.md); the thresholds are also in
+[`config/inference/zcb8cu0l_thresholds.json`](config/inference/zcb8cu0l_thresholds.json).
+
 ## 🛠️ Environment Setup
 
 ### Prerequisites

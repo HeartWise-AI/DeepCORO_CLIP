@@ -64,6 +64,10 @@ class LinearProbingConfig(HeartWiseConfig):
     # Label mappings - Used for confusion matrix
     labels_map: Dict[str, Dict[str, str]]
 
+    # Frame sampling: "uniform" (default) or "peak" (contrast-peak window, utils/contrast_peak.py)
+    frame_sampling: str = "uniform"
+    peak_stride: int = 2  # stride of the peak window; 2 = peak_s2 used by DeepCORO-JEPA v9-v14
+
     # Multi-Instance Learning parameters
     multi_video: bool = False # Whether to load multiple videos per sample
     groupby_column: str = "StudyInstanceUID" # Column to group videos by

@@ -82,6 +82,10 @@ class ClipConfig(HeartWiseConfig):
 
     # ===== FIELDS WITH DEFAULTS (OPTIONAL) =====
 
+    # Frame sampling: "uniform" (default) or "peak" (contrast-peak window, utils/contrast_peak.py)
+    frame_sampling: str = "uniform"
+    peak_stride: int = 2  # stride of the peak window; 2 = peak_s2 used by DeepCORO-JEPA v9-v14
+
     # Training parameter defaults
     persistent_workers: bool = False  # Keep DataLoader workers alive
     prefetch_factor: int = 2  # Number of batches to prefetch

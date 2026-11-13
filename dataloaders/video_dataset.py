@@ -43,6 +43,8 @@ class VideoDataset(torch.utils.data.Dataset):
         num_videos: int = 1,
         shuffle_videos: bool = True,
         view_column: Optional[str] = None,
+        frame_sampling: str = "uniform",
+        peak_stride: int = 2,
         **kwargs,
     ):
         self.filename: str = data_filename
@@ -69,6 +71,8 @@ class VideoDataset(torch.utils.data.Dataset):
         self.normalize: bool = normalize
         self.rand_augment: bool = rand_augment
         self.stride: int = stride
+        self.frame_sampling: str = frame_sampling  # "uniform" (default) or "peak"
+        self.peak_stride: int = peak_stride
         
         # Define X3D model specific parameters (requirements)
         self.x3d_default_params = {
@@ -346,6 +350,8 @@ class VideoDataset(torch.utils.data.Dataset):
                         rand_augment=self.rand_augment,
                         backbone=self.backbone,
                         stride=self.stride,
+                        frame_sampling=self.frame_sampling,
+                        peak_stride=self.peak_stride,
                     )
                     loaded_video_numpy_arrays.append(video_np)
                     processed_fnames.append(video_fname)
@@ -437,6 +443,8 @@ class VideoDataset(torch.utils.data.Dataset):
                     rand_augment=self.rand_augment,
                     backbone=self.backbone,
                     stride=self.stride,
+                    frame_sampling=self.frame_sampling,
+                    peak_stride=self.peak_stride,
                 )
             except Exception as e:
                 raise RuntimeError(f"Failed to load video {video_fname}: {str(e)}") from e
@@ -582,6 +590,8 @@ def get_distributed_video_dataloader(
         num_videos=num_videos if num_videos is not None else getattr(config, 'num_videos', 1),
         shuffle_videos=shuffle_videos if shuffle_videos is not None else getattr(config, 'shuffle_videos', True),
         view_column=view_column,
+        frame_sampling=getattr(config, 'frame_sampling', 'uniform'),
+        peak_stride=getattr(config, 'peak_stride', 2),
     )
 
     # Create a sampler for distributed training

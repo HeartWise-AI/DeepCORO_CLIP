@@ -113,6 +113,16 @@ class TestContrastPeakSampler(unittest.TestCase):
             np.rint(np.linspace(0, 19, 16)).astype(np.int64),
         )
 
+    def test_smoothing_matches_training_and_keeps_length(self):
+        rng = np.random.default_rng(0)
+        for n in (5, 31, 90):
+            x = rng.random(n)
+            np.testing.assert_array_equal(
+                cp.smooth_scores(x), np.convolve(x, np.ones(5) / 5, mode="same")
+            )
+        self.assertEqual(len(cp.smooth_scores(np.ones(3))), 3)
+        self.assertEqual(cp.peak_frame([0, 0, 0, 10]), 1)
+
     def test_load_video_peak_window(self):
         for n, peak in [(70, 50), (60, 57), (24, 5)]:
             frames = bolus_frames(n, peak)

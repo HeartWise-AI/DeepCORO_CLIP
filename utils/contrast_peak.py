@@ -47,8 +47,16 @@ def dye_scores(frames: Iterable[np.ndarray]) -> np.ndarray:
 
 
 def smooth_scores(scores: Sequence[float], width: int = SMOOTH) -> np.ndarray:
-    """Box-filter smoothing with the same length as the input (zero padded at both ends)."""
-    return np.convolve(np.asarray(scores, dtype=np.float64), np.ones(width) / width, mode="same")
+    """Box-filter smoothing with the same length as the input (zero padded at both ends).
+
+    Equals ``np.convolve(scores, ones(width) / width, mode="same")`` (the training code) for
+    videos of at least ``width`` frames; shorter videos are cropped to their own length,
+    where ``mode="same"`` would return ``width`` values and shift the indices.
+    """
+    s = np.asarray(scores, dtype=np.float64)
+    full = np.convolve(s, np.ones(width) / width, mode="full")
+    lo = (width - 1) // 2
+    return full[lo : lo + len(s)]
 
 
 def peak_frame(scores: Sequence[float], width: int = SMOOTH) -> int:

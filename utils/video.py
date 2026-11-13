@@ -5,6 +5,8 @@ import numpy as np
 
 import torchvision.transforms as v2
 
+from utils import contrast_peak
+
 from pathlib import Path
 from typing import (
     Any,
@@ -150,11 +152,27 @@ def load_video(
     stride: int = 1,
     open_timeout_ms: Optional[int] = None,
     read_timeout_ms: Optional[int] = None,
+    frame_sampling: str = "uniform",
+    peak_stride: int = 2,
 ) -> np.ndarray:
     """
     Load and process a video with optional resizing, normalization, and augmentations.
     Returns tensor in format [F, H, W, C].
+
+    frame_sampling:
+        "uniform" (default, unchanged behaviour): read every `actual_stride`-th frame
+            (random stride in 1..stride) and keep `n_frames` spread over them.
+        "peak": contrast-peak sampler (peak_s2 of DeepCORO-JEPA v9-v14, see
+            utils/contrast_peak.py): `n_frames` frames at `peak_stride` centred on the
+            smoothed dye-score peak of the full-rate video; videos shorter than
+            peak_stride * n_frames get n_frames spread uniformly. `stride` is ignored.
     """
+    if frame_sampling not in ("uniform", "peak"):
+        raise ValueError(
+            f"frame_sampling must be 'uniform' or 'peak', got {frame_sampling!r}"
+        )
+    peak = frame_sampling == "peak"
+    peak_count = 16 if backbone.lower() == "mvit" else n_frames
 
     # Model-specific parameters
     x3d_params = {
@@ -179,6 +197,11 @@ def load_video(
         # Pre-validate .npy dimensions to prevent crashes
         if video.ndim < 3 or video.ndim > 4:
             raise ValueError(f"Invalid .npy file: Expected 3D or 4D array, got {video.ndim}D: {video_path}")
+        if peak:
+            scores = contrast_peak.dye_scores(
+                contrast_peak.gray_for_dye_score(f, bgr=False) for f in video
+            )
+            video = video[contrast_peak.peak_indices(scores, peak_count, peak_stride)]
     else:
         cap = create_video_capture(
             video_path,
@@ -189,15 +212,19 @@ def load_video(
             raise ValueError(f"Failed to open video file within timeout: {video_path}")
 
         # Randomly choose stride between 1 and specified stride
-        actual_stride = np.random.randint(1, stride + 1) if stride > 1 else 1
+        actual_stride = np.random.randint(1, stride + 1) if stride > 1 and not peak else 1
 
         frames = []
+        scores = []
         frame_count = 0
         try:
             while True:
                 ret, frame = cap.read()
                 if not ret:
                     break
+                if peak:
+                    gray = contrast_peak.gray_for_dye_score(frame)
+                    scores.append(contrast_peak.dye_score(gray))
                 if frame_count % actual_stride == 0:
                     if frame.ndim == 3:
                         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -209,6 +236,9 @@ def load_video(
         if not frames:
             raise ValueError(f"No frames could be read from video within timeout: {video_path}")
 
+        if peak:
+            keep = contrast_peak.peak_indices(scores, peak_count, peak_stride)
+            frames = [frames[i] for i in keep]
         video = np.stack(frames, axis=0)
     
     video = video.astype(np.float32)

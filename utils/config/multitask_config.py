@@ -104,6 +104,10 @@ class MultitaskConfig(HeartWiseConfig):
     mvm_lr: float
     mvm_weight_decay: float
 
+    # Frame sampling: "uniform" (default) or "peak" (contrast-peak window, utils/contrast_peak.py)
+    frame_sampling: str = "uniform"
+    peak_stride: int = 2  # stride of the peak window; 2 = peak_s2 used by DeepCORO-JEPA v9-v14
+
     # Multi-video regularization defaults
     min_clip_views: int = 1
     max_clip_views: Optional[int] = None

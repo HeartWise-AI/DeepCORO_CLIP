@@ -48,6 +48,8 @@ class VideoClipDataset(torch.utils.data.Dataset):
         num_videos: int = 4,
         shuffle_videos: bool = False,
         seed: Optional[int] = None,
+        frame_sampling: str = "uniform",
+        peak_stride: int = 2,
         **kwargs,
     ):
         self.folder = pathlib.Path(root)
@@ -61,6 +63,8 @@ class VideoClipDataset(torch.utils.data.Dataset):
         self.std = format_mean_std(std)
         self.normalize = normalize
         self.stride = stride
+        self.frame_sampling = frame_sampling  # "uniform" (default) or "peak"
+        self.peak_stride = peak_stride
         self.groupby_column = groupby_column
         self.num_videos = num_videos
         self.shuffle_videos = shuffle_videos
@@ -620,6 +624,8 @@ class VideoClipDataset(torch.utils.data.Dataset):
                         rand_augment=self.rand_augment,
                         backbone=self.backbone,
                         stride=self.stride,
+                        frame_sampling=self.frame_sampling,
+                        peak_stride=self.peak_stride,
                     )
                     if np.isnan(arr).any():
                         print(f"Warning: NaN frames detected in {vp}; replacing with zeros")
@@ -661,6 +667,8 @@ class VideoClipDataset(torch.utils.data.Dataset):
                     rand_augment=self.rand_augment,
                     backbone=self.backbone,
                     stride=self.stride,
+                    frame_sampling=self.frame_sampling,
+                    peak_stride=self.peak_stride,
                 )
                 if np.isnan(video).any():
                     print(f"Warning: NaN frames detected in {video_fname}; replacing with zeros")
@@ -998,6 +1006,8 @@ def get_distributed_video_clip_dataloader(
         num_videos=getattr(config, 'num_videos', 4),
         shuffle_videos=False if is_validation else getattr(config, 'shuffle_videos', False),  # NEVER shuffle videos in validation
         seed=getattr(config, 'seed', None),
+        frame_sampling=getattr(config, 'frame_sampling', 'uniform'),
+        peak_stride=getattr(config, 'peak_stride', 2),
         multi_video=getattr(config, 'multi_video', False),
         video_transforms=None if is_validation else getattr(config, 'video_transforms', None),  # No transforms for validation
         resize=getattr(config, 'resize', 224),

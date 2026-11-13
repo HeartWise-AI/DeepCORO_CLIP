@@ -74,6 +74,13 @@ class ClipParser(BaseParser):
         clip_data_group.add_argument('--datapoint_loc_label', type=str, help="Column name for the video file path or identifier.")
         clip_data_group.add_argument('--frames', type=int, help="Number of frames to sample per video.")
         clip_data_group.add_argument('--stride', type=int, help="Stride between sampled frames.")
+        clip_data_group.add_argument(
+            '--frame_sampling', type=str, choices=["uniform", "peak"],
+            help="uniform (default) or peak: frames at --peak_stride around the dye peak.",
+        )
+        clip_data_group.add_argument(
+            '--peak_stride', type=int, help="Stride of the contrast-peak window (default 2).",
+        )
         clip_data_group.add_argument('--multi_video', type=str2bool, help="Whether to load multiple videos per sample.")
         clip_data_group.add_argument('--num_videos', type=int, help="Number of videos per sample if multi_video is True.")
         clip_data_group.add_argument('--groupby_column', type=str, help="Column to group data by (e.g., patient ID).")
@@ -183,6 +190,13 @@ class LinearProbingParser(BaseParser):
         lp_data_group.add_argument('--resize', type=int, help="Resize dimension for input frames.")
         lp_data_group.add_argument('--frames', type=int, help="Number of frames to sample per video.")
         lp_data_group.add_argument('--stride', type=int, help="Stride between sampled frames.")
+        lp_data_group.add_argument(
+            '--frame_sampling', type=str, choices=["uniform", "peak"],
+            help="uniform (default) or peak: frames at --peak_stride around the dye peak.",
+        )
+        lp_data_group.add_argument(
+            '--peak_stride', type=int, help="Stride of the contrast-peak window (default 2).",
+        )
         
         # ------------------------------------------------------------------
         # Multi-Instance / Multi-Video parameters (MIL)
@@ -333,6 +347,13 @@ class MultitaskParser(BaseParser):
         data_group.add_argument('--datapoint_loc_label', type=str, help="Column name for the video file path.")
         data_group.add_argument('--frames', type=int, help="Number of frames to sample per video.")
         data_group.add_argument('--stride', type=int, help="Stride between sampled frames.")
+        data_group.add_argument(
+            '--frame_sampling', type=str, choices=["uniform", "peak"],
+            help="uniform (default) or peak: frames at --peak_stride around the dye peak.",
+        )
+        data_group.add_argument(
+            '--peak_stride', type=int, help="Stride of the contrast-peak window (default 2).",
+        )
         data_group.add_argument('--multi_video', type=str2bool, help="Whether to load multiple videos per sample.")
         data_group.add_argument('--num_videos', type=int, help="Number of videos per sample if multi_video is True.")
         data_group.add_argument('--groupby_column', type=str, help="Column to group data by.")

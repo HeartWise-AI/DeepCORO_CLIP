@@ -154,6 +154,17 @@ The project uses configuration files located in the `config/` directory:
    - Training sweeps/base configs for one-year MACE heads
    - Docker and standalone inference configs for the released `heartwise/deepcoro_clip_mace` checkpoint
 
+### Frame sampling
+
+By default each video is sampled uniformly (`frames` frames spread over the clip, with the random `stride`). Set
+
+```yaml
+frame_sampling: peak   # default: uniform
+peak_stride: 2         # default: 2
+```
+
+(or `--frame_sampling peak`) to take `frames` frames at `peak_stride` centred on the contrast peak: the frame with the highest smoothed per-frame dye score (`utils/contrast_peak.py`). With `frames: 16` and `peak_stride: 2` this is the `peak_s2` sampler DeepCORO-JEPA v9-v14 were trained with (identical frame indices); videos shorter than `peak_stride * frames` fall back to uniform sampling. Useful for cines with long lead-ins, where a fixed early window misses the opacified frames. The per-video peak can be precomputed into a parquet with `scripts/contrast_peak_frames.py` in DeepCORO_Pre_Processing.
+
 ### Sweep Configurations
 
 1. **CLIP Training** (`config/clip/sweep_config_*.yaml`, `config/clip/sweep_siglip_output_dataset_*.yaml`):

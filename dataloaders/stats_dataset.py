@@ -23,12 +23,16 @@ class StatsDataset(torch.utils.data.Dataset):
         stride=1,
         backbone="default",
         max_samples=128,
+        frame_sampling="uniform",
+        peak_stride=2,
     ):
         self.filename = data_filename
         self.datapoint_loc_label = datapoint_loc_label
         self.split = split
         self.num_frames = 16 if backbone.lower() == "mvit" else num_frames
         self.stride = stride
+        self.frame_sampling = frame_sampling
+        self.peak_stride = peak_stride
         self.backbone = backbone
         self.max_samples = max_samples
 
@@ -95,6 +99,8 @@ class StatsDataset(torch.utils.data.Dataset):
                 normalize=False,
                 backbone=self.backbone,
                 stride=self.stride,
+                frame_sampling=self.frame_sampling,
+                peak_stride=self.peak_stride,
             )
             return video, None, video_fname
         except Exception as e:
@@ -144,6 +150,8 @@ def get_stats_dataloader(config: HeartWiseConfig):
         backbone=config.model_name,
         stride=config.stride,
         max_samples=stats_max_samples,
+        frame_sampling=getattr(config, 'frame_sampling', 'uniform'),
+        peak_stride=getattr(config, 'peak_stride', 2),
     )
 
     prefetch_factor = getattr(config, 'stats_prefetch_factor', None)

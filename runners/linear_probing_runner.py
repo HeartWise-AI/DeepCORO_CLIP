@@ -20,6 +20,7 @@ from utils.metrics import (
     compute_multiclass_classification_metrics
 )
 from utils.loss.typing import Loss
+from utils.loss.losses import MultiHeadLoss
 from utils.ddp import DistributedUtils
 from utils.registry import RunnerRegistry
 from utils.enums import RunMode, MetricTask
@@ -55,7 +56,8 @@ class LinearProbingRunner:
         scaler: Optional[GradScaler] = None,
         optimizer: Optional[Optimizer] = None,
         train_loader: Optional[DataLoader] = None,
-        lr_scheduler: Optional[LRScheduler] = None
+        lr_scheduler: Optional[LRScheduler] = None,
+        test_loader: Optional[DataLoader] = None,
     ):
         """
         Initialize the runner with provided configurations, data loaders, and modules.
@@ -64,6 +66,7 @@ class LinearProbingRunner:
         :param wandb_wrapper: WandbWrapper instance.
         :param train_loader: DataLoader for training dataset.
         :param val_loader: DataLoader for validation dataset.
+        :param test_loader: DataLoader for the test split (used by ``test()``).
         :param linear_probing: LinearProbing model.
         :param optimizer: optimizer instance.
         :param scaler: GradScaler for automatic mixed precision.
@@ -77,6 +80,7 @@ class LinearProbingRunner:
         self.device: int = config.device
         self.train_loader: DataLoader = train_loader
         self.val_loader: DataLoader = val_loader
+        self.test_loader: Optional[DataLoader] = test_loader
         self.linear_probing = linear_probing  # VideoMILWrapper
         self.optimizer: Optimizer = optimizer
         self.scaler: GradScaler = scaler
@@ -406,6 +410,13 @@ class LinearProbingRunner:
             processed_batch=processed_batch
         )
 
+    def _denormalize_outputs(self, outputs: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """Map z-scored regression outputs back to target units (no-op when not configured)."""
+        loss_type = getattr(self.loss_fn, "loss_type", None)
+        if isinstance(loss_type, MultiHeadLoss):
+            return loss_type.denormalize_outputs(outputs)
+        return outputs
+
     def _optimizer_parameters_with_grad(self) -> list[torch.nn.Parameter]:
         if self.optimizer is None:
             return []
@@ -535,7 +546,7 @@ class LinearProbingRunner:
 
         # Convert losses to scalar values
         scalar_losses = {k: v.item() for k, v in losses.items()}
-        scalar_outputs = {k: v.detach() for k, v in outputs_dict.items()}
+        scalar_outputs = self._denormalize_outputs({k: v.detach() for k, v in outputs_dict.items()})
 
         return {
             "losses": scalar_losses,
@@ -597,7 +608,7 @@ class LinearProbingRunner:
 
         # Convert losses to scalar values
         scalar_losses = {k: v.item() for k, v in losses.items()}
-        scalar_outputs = {k: v.detach() for k, v in outputs_dict.items()}
+        scalar_outputs = self._denormalize_outputs({k: v.detach() for k, v in outputs_dict.items()})
                 
         return {
             "losses": scalar_losses,
@@ -636,7 +647,7 @@ class LinearProbingRunner:
         )
 
         # Convert losses to scalar values
-        scalar_outputs = {k: v.detach() for k, v in outputs_dict.items()}
+        scalar_outputs = self._denormalize_outputs({k: v.detach() for k, v in outputs_dict.items()})
                 
         return {
             "logits": scalar_outputs
@@ -649,8 +660,12 @@ class LinearProbingRunner:
         Returns:
             Dictionary containing computed metrics for all heads with CIs
         """
+        self._evaluate(loader=self.val_loader, mode=self.config.run_mode, desc="Validation")
+
+    def _evaluate(self, loader: DataLoader, mode: str, desc: str) -> None:
+        """Score ``loader`` (no gradient), save its predictions and log its metrics under ``mode``."""
         # Set model to evaluation mode
-        assert len(self.val_loader) > 0, "Validation loader is empty"
+        assert len(loader) > 0, f"{desc} loader is empty"
         
         self.linear_probing.train(False)
         
@@ -674,11 +689,11 @@ class LinearProbingRunner:
         gathered_metrics: Dict[str, float] = {}
         
         # Set up progress bar
-        tqdm_desc: str = f"[GPU {self.device}] Running Validation"
+        tqdm_desc: str = f"[GPU {self.device}] Running {desc}"
         if self.config.is_ref_device:
-            data_iter: tqdm = tqdm(self.val_loader, desc=tqdm_desc, total=len(self.val_loader))
+            data_iter: tqdm = tqdm(loader, desc=tqdm_desc, total=len(loader))
         else:
-            data_iter = self.val_loader
+            data_iter = loader
         
         step_fn: Callable[..., StepFnResults] = self._val_step
         
@@ -730,7 +745,7 @@ class LinearProbingRunner:
             print(f"[DEBUG] rank={self.device} => "
                   f"{'Computing metrics with CI - This might take a while...' if compute_ci else 'Computing metrics without CI'}")
             self._compute_heads_metrics(
-                mode=self.config.run_mode,
+                mode=mode,
                 accumulated_preds=accumulated_preds,
                 accumulated_targets=accumulated_targets,
                 validation_metrics=validation_metrics,
@@ -741,7 +756,7 @@ class LinearProbingRunner:
         # Save predictions if on reference device
         if self.config.is_ref_device:
             self._save_predictions(
-                mode=self.config.run_mode,
+                mode=mode,
                 accumulated_names=accumulated_names,
                 accumulated_preds=accumulated_preds,
                 accumulated_targets=accumulated_targets,
@@ -772,7 +787,18 @@ class LinearProbingRunner:
         """
         Run test on the test dataset and return metrics with confidence intervals.
         """
-        self.validate()
+        if self.test_loader is None:
+            raise RuntimeError(
+                "LinearProbingRunner.test() needs a test-split loader (test_loader); none was "
+                "provided. Refusing to report validation metrics as test metrics."
+            )
+        split = getattr(getattr(self.test_loader, "dataset", None), "split", RunMode.TEST)
+        if str(split) != str(RunMode.TEST):
+            raise RuntimeError(
+                f"LinearProbingRunner.test() was given a loader on split {str(split)!r}, not "
+                f"{str(RunMode.TEST)!r}."
+            )
+        self._evaluate(loader=self.test_loader, mode=str(RunMode.TEST), desc="Test")
     
 
     def _setup_embedding_capture(self):
@@ -928,6 +954,10 @@ class LinearProbingRunner:
             "epoch": epoch,
             "scaler": self.scaler.state_dict() if self.scaler else None,
         }
+        # Train-split z-scoring statistics, needed to de-normalize outputs at eval time.
+        target_normalization = getattr(getattr(self.loss_fn, "loss_type", None), "target_normalization", None)
+        if isinstance(target_normalization, dict) and target_normalization:
+            checkpoint["target_normalization"] = target_normalization
         
         # Save regular checkpoint for current epoch
         checkpoint_path: str = os.path.join(checkpoint_dir, f'checkpoint_epoch_{epoch}.pt')

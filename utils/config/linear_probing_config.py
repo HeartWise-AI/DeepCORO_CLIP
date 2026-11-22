@@ -120,3 +120,14 @@ class LinearProbingConfig(HeartWiseConfig):
 
     # Optional full-checkpoint resume for TRAIN mode (model+optimizer+scheduler+scaler+epoch)
     resume_checkpoint_path: Optional[str] = None
+
+    # Class weighting (default off). "auto" (every bce_logit/ce head) or {head: "auto" | value}:
+    # a binary (bce_logit) head's value is its BCE pos_weight, a multiclass (ce) head's a list of
+    # per-class weights. "auto" = inverse prevalence on the train split, capped at class_weight_cap.
+    class_weights: Optional[Any] = None
+    class_weight_cap: float = 10.0
+
+    # z-score regression targets with train-split mean/std (default off): True (every regression
+    # head) or a list of head names. Outputs are de-normalized before metrics/predictions, and the
+    # statistics are stored in the checkpoint for val/test/inference runs.
+    normalize_regression_targets: Any = False

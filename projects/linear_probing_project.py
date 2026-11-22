@@ -18,6 +18,7 @@ from utils.registry import (
 )
 
 from utils.loss.typing import Loss
+from utils.loss.target_stats import resolve_class_weights, resolve_target_normalization
 from utils.ddp import DistributedUtils
 from utils.enums import RunMode, LossType
 from utils.schedulers import get_scheduler
@@ -546,14 +547,8 @@ class LinearProbingProject(BaseProject):
         print(f"Using AMP: {self.config.use_amp}")
         scaler = GradScaler('cuda') if self.config.use_amp else None
         
-        # Create loss function
-        loss_fn = Loss(
-            loss_type=LossRegistry.get(LossType.MULTI_HEAD)(
-                head_structure=self.config.head_structure,
-                loss_structure=self.config.loss_structure,
-                head_weights=self.config.head_weights,
-            )
-        )
+        # Create loss function (class weights / target z-scoring from the train split, if configured)
+        loss_fn = self._build_loss_fn(train_loader=train_loader)
 
         # Distribute the full model, not just the MIL head. When the video
         # encoder is partially trainable, its gradients must be synchronized too.
@@ -655,14 +650,15 @@ class LinearProbingProject(BaseProject):
         # Set to eval mode
         linear_probing.eval()
                 
-        # Create loss function
-        loss_fn = Loss(
-            loss_type=LossRegistry.get(LossType.MULTI_HEAD)(
-                head_structure=self.config.head_structure,
-                loss_structure=self.config.loss_structure,
-                head_weights=self.config.head_weights,
+        # Create loss function. A model trained on z-scored regression targets stores the
+        # train-split statistics in its checkpoint; they are needed to de-normalize its outputs.
+        target_normalization = checkpoint.get("target_normalization") or {}
+        if getattr(self.config, "normalize_regression_targets", False) and not target_normalization:
+            raise ValueError(
+                "normalize_regression_targets is set but the checkpoint has no "
+                "'target_normalization' statistics; cannot de-normalize the outputs."
             )
-        )                
+        loss_fn = self._build_loss_fn(target_normalization=target_normalization)
                 
         return {
             "loss_fn": loss_fn,
@@ -671,8 +667,56 @@ class LinearProbingProject(BaseProject):
             "output_dir": self.config.output_dir if self.config.is_ref_device else None,
         }
 
+    def _build_loss_fn(
+        self,
+        train_loader: Optional[DataLoader] = None,
+        target_normalization: Optional[dict] = None,
+    ) -> Loss:
+        """Multi-head loss; with ``train_loader``, resolves class weights and target z-scoring
+        (when configured) from the train split. Unconfigured, this is the plain multi-head loss."""
+        class_weights = getattr(self.config, "class_weights", None)
+        normalize = getattr(self.config, "normalize_regression_targets", False)
+        pos_weights, ce_weights = {}, {}
+        if train_loader is not None and (class_weights is not None or normalize):
+            outcomes = train_loader.dataset.outcomes
+            labels_map = getattr(self.config, "labels_map", None)
+            pos_weights, ce_weights = resolve_class_weights(
+                class_weights=class_weights,
+                head_structure=self.config.head_structure,
+                loss_structure=self.config.loss_structure,
+                train_outcomes=outcomes,
+                labels_map=labels_map,
+                cap=getattr(self.config, "class_weight_cap", 10.0),
+            )
+            target_normalization = resolve_target_normalization(
+                normalize=normalize,
+                head_task=self.config.head_task,
+                train_outcomes=outcomes,
+                labels_map=labels_map,
+            )
+            if self.config.is_ref_device:
+                for head, weight in {**pos_weights, **ce_weights}.items():
+                    print(f"[class_weights] {head}: {weight.tolist()}")
+                for head, stats in target_normalization.items():
+                    print(f"[normalize_regression_targets] {head}: mean={stats['mean']:.4f} std={stats['std']:.4f}")
+        return Loss(
+            loss_type=LossRegistry.get(LossType.MULTI_HEAD)(
+                head_structure=self.config.head_structure,
+                loss_structure=self.config.loss_structure,
+                head_weights=self.config.head_weights,
+                loss_weights=ce_weights or None,
+                pos_weights=pos_weights or None,
+                target_normalization=target_normalization or None,
+            )
+        )
+
     def _setup_test_objects(self) -> dict[str, Any]:
-        return self._setup_validation_objects() # Diff. is self.config.run_mode
+        # Same objects as validation, built on the test split (run_mode == "test"), but handed
+        # to the runner as its test loader so that runner.test() scores the test split.
+        objects = self._setup_validation_objects()
+        objects["test_loader"] = objects.pop("val_loader")
+        objects["val_loader"] = None
+        return objects
 
     def _setup_inference_objects(self) -> dict[str, Any]:
         return self._setup_validation_objects() # Diff. is self.config.run_mode

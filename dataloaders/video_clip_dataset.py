@@ -110,6 +110,7 @@ class VideoClipDataset(torch.utils.data.Dataset):
 
         self.video_transforms = kwargs.pop("video_transforms", None)
         self.rand_augment = kwargs.pop("rand_augment", False)
+        self.random_stride = kwargs.pop("random_stride", True)  # False for deterministic eval clips
         self.resize = kwargs.pop("resize", 224)
         self.max_length = kwargs.pop("max_length", 250)
 
@@ -626,6 +627,7 @@ class VideoClipDataset(torch.utils.data.Dataset):
                         stride=self.stride,
                         frame_sampling=self.frame_sampling,
                         peak_stride=self.peak_stride,
+                        random_stride=self.random_stride,
                     )
                     if np.isnan(arr).any():
                         print(f"Warning: NaN frames detected in {vp}; replacing with zeros")
@@ -669,6 +671,7 @@ class VideoClipDataset(torch.utils.data.Dataset):
                     stride=self.stride,
                     frame_sampling=self.frame_sampling,
                     peak_stride=self.peak_stride,
+                    random_stride=self.random_stride,
                 )
                 if np.isnan(video).any():
                     print(f"Warning: NaN frames detected in {video_fname}; replacing with zeros")
@@ -1002,6 +1005,7 @@ def get_distributed_video_clip_dataloader(
         std=std,
         rand_augment=False if is_validation else getattr(config, 'rand_augment', False),  # NEVER augment validation
         stride=getattr(config, 'stride', 1),
+        random_stride=not is_validation,  # Fixed stride for validation (deterministic clips)
         groupby_column=getattr(config, 'groupby_column', None),
         num_videos=getattr(config, 'num_videos', 4),
         shuffle_videos=False if is_validation else getattr(config, 'shuffle_videos', False),  # NEVER shuffle videos in validation

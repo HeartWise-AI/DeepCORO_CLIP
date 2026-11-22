@@ -385,11 +385,18 @@ class RMSELoss(nn.Module):
 
 @LossRegistry.register(LossType.BCE_LOGIT)
 class BCEWithLogitsLoss(nn.Module):
-    def __init__(self, weight=None):
+    def __init__(self, weight=None, pos_weight=None):
+        """
+        Args:
+            weight: Optional per-element rescaling weight (PyTorch ``weight``); this does
+                NOT rebalance classes.
+            pos_weight: Optional weight of the positive class (PyTorch ``pos_weight``),
+                e.g. negatives / positives on the train split, for rare findings.
+        """
         super().__init__()
-        if weight is not None and isinstance(weight, torch.Tensor):
-            weight = weight.to(weight.device)
-        self.criterion: nn.BCEWithLogitsLoss = nn.BCEWithLogitsLoss(weight=weight)
+        if pos_weight is not None and not isinstance(pos_weight, torch.Tensor):
+            pos_weight = torch.as_tensor(pos_weight, dtype=torch.float32).reshape(-1)
+        self.criterion: nn.BCEWithLogitsLoss = nn.BCEWithLogitsLoss(weight=weight, pos_weight=pos_weight)
 
     def forward(
         self, 
@@ -404,6 +411,13 @@ class BCEWithLogitsLoss(nn.Module):
         # Convert targets to float type
         targets: torch.Tensor = targets.float()
 
+        # Keep the (buffer) weights on the outputs' device: MultiHeadLoss stores its
+        # per-head criteria in a plain dict, so `.to(device)` never reaches them.
+        for name in ("weight", "pos_weight"):
+            value = getattr(self.criterion, name)
+            if value is not None and value.device != outputs.device:
+                setattr(self.criterion, name, value.to(outputs.device))
+
         return self.criterion(outputs, targets)
 
 
@@ -411,6 +425,8 @@ class BCEWithLogitsLoss(nn.Module):
 class CrossEntropyLoss(nn.Module):
     def __init__(self, weight=None):
         super().__init__()
+        if weight is not None and not isinstance(weight, torch.Tensor):
+            weight = torch.as_tensor(weight, dtype=torch.float32)
         self.criterion: nn.CrossEntropyLoss = nn.CrossEntropyLoss(weight=weight)
 
     def forward(
@@ -420,6 +436,8 @@ class CrossEntropyLoss(nn.Module):
     ) -> torch.Tensor:
         outputs: torch.Tensor = outputs.squeeze()
         targets: torch.Tensor = targets.squeeze().long()
+        if self.criterion.weight is not None and self.criterion.weight.device != outputs.device:
+            self.criterion.weight = self.criterion.weight.to(outputs.device)
         return self.criterion(outputs, targets)
 
 
@@ -484,6 +502,8 @@ class MultiHeadLoss(nn.Module):
         gamma: float = 2.0,
         head_weights: dict[str, float] = None,
         loss_weights: dict[str, torch.Tensor] = None,
+        pos_weights: dict[str, torch.Tensor] = None,
+        target_normalization: dict[str, dict[str, float]] = None,
     ):
         """
         Initialize Multi-Head Loss with support for both standard and focal loss.
@@ -495,11 +515,19 @@ class MultiHeadLoss(nn.Module):
             gamma (float): Focusing parameter for focal loss (used only for focal losses)
             head_weights (dict): Optional weights for each head in the final loss computation
             loss_weights (dict): Optional dictionary mapping head names to loss weights tensor
+                (BCE: per-element ``weight``; CE: per-class ``weight``)
+            pos_weights (dict): Optional dictionary mapping binary (BCE) head names to their
+                ``pos_weight`` (weight of the positive class)
+            target_normalization (dict): Optional {head: {"mean": m, "std": s}} for regression
+                heads trained on z-scored targets. The loss compares the head output to
+                ``(target - m) / s``; use ``denormalize_outputs`` to map outputs back.
         """
         super().__init__()
         self.head_structure: dict[str, int] = head_structure
         self.head_weights: dict[str, float] = head_weights or {head: 1.0 for head in head_structure.keys()}
         self.loss_weights: dict[str, torch.Tensor] = loss_weights or {}
+        self.pos_weights: dict[str, torch.Tensor] = pos_weights or {}
+        self.target_normalization: dict[str, dict[str, float]] = target_normalization or {}
 
         # Initialize loss functions for each head
         if loss_structure is None:
@@ -508,7 +536,9 @@ class MultiHeadLoss(nn.Module):
             for head, num_classes in head_structure.items():
                 weight = self.loss_weights.get(head, None)
                 if num_classes == 1:
-                    self.loss_fns[head] = LossRegistry.create("bce_logit", weight=weight)
+                    self.loss_fns[head] = LossRegistry.create(
+                        "bce_logit", weight=weight, pos_weight=self.pos_weights.get(head)
+                    )
                 else:
                     self.loss_fns[head] = LossRegistry.create("ce", weight=weight)
         else:
@@ -523,7 +553,19 @@ class MultiHeadLoss(nn.Module):
                     kwargs["gamma"] = gamma
                 elif loss_name in [LossType.BCE_LOGIT, LossType.CE]:
                     kwargs["weight"] = self.loss_weights.get(head)
+                if loss_name == LossType.BCE_LOGIT:
+                    kwargs["pos_weight"] = self.pos_weights.get(head)
                 self.loss_fns[head] = LossRegistry.get(loss_name)(**kwargs)
+
+    def denormalize_outputs(self, outputs: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        """Map z-scored regression head outputs back to target units (for metrics/predictions)."""
+        if not self.target_normalization:
+            return outputs
+        denormalized = dict(outputs)
+        for head, stats in self.target_normalization.items():
+            if head in denormalized:
+                denormalized[head] = denormalized[head] * stats["std"] + stats["mean"]
+        return denormalized
 
     def forward(
         self, 
@@ -555,6 +597,11 @@ class MultiHeadLoss(nn.Module):
             if not valid_mask.all():
                 target = target[valid_mask]
                 output = output[valid_mask]
+
+            # z-score regression targets (the head predicts in normalized units)
+            stats = self.target_normalization.get(head_name)
+            if stats is not None:
+                target = (target - stats["mean"]) / stats["std"]
 
             # Compute loss using the appropriate loss function
             head_loss: torch.Tensor = self.loss_fns[head_name](output, target)

@@ -154,6 +154,7 @@ def load_video(
     read_timeout_ms: Optional[int] = None,
     frame_sampling: str = "uniform",
     peak_stride: int = 2,
+    random_stride: bool = True,
 ) -> np.ndarray:
     """
     Load and process a video with optional resizing, normalization, and augmentations.
@@ -166,6 +167,10 @@ def load_video(
             utils/contrast_peak.py): `n_frames` frames at `peak_stride` centred on the
             smoothed dye-score peak of the full-rate video; videos shorter than
             peak_stride * n_frames get n_frames spread uniformly. `stride` is ignored.
+
+    random_stride:
+        True (default, training): the stride is drawn uniformly from 1..stride per call.
+        False (evaluation): the stride is fixed to `stride`, so the clip is deterministic.
     """
     if frame_sampling not in ("uniform", "peak"):
         raise ValueError(
@@ -211,8 +216,12 @@ def load_video(
         if cap is None or not cap.isOpened():
             raise ValueError(f"Failed to open video file within timeout: {video_path}")
 
-        # Randomly choose stride between 1 and specified stride
-        actual_stride = np.random.randint(1, stride + 1) if stride > 1 and not peak else 1
+        # Training: randomly choose stride between 1 and specified stride.
+        # Evaluation (random_stride=False): use the specified stride deterministically.
+        if stride > 1 and not peak:
+            actual_stride = np.random.randint(1, stride + 1) if random_stride else stride
+        else:
+            actual_stride = 1
 
         frames = []
         scores = []

@@ -45,6 +45,7 @@ class VideoDataset(torch.utils.data.Dataset):
         view_column: Optional[str] = None,
         frame_sampling: str = "uniform",
         peak_stride: int = 2,
+        random_stride: bool = True,
         **kwargs,
     ):
         self.filename: str = data_filename
@@ -73,6 +74,7 @@ class VideoDataset(torch.utils.data.Dataset):
         self.stride: int = stride
         self.frame_sampling: str = frame_sampling  # "uniform" (default) or "peak"
         self.peak_stride: int = peak_stride
+        self.random_stride: bool = random_stride  # False for deterministic eval clips
         
         # Define X3D model specific parameters (requirements)
         self.x3d_default_params = {
@@ -352,6 +354,7 @@ class VideoDataset(torch.utils.data.Dataset):
                         stride=self.stride,
                         frame_sampling=self.frame_sampling,
                         peak_stride=self.peak_stride,
+                        random_stride=self.random_stride,
                     )
                     loaded_video_numpy_arrays.append(video_np)
                     processed_fnames.append(video_fname)
@@ -445,6 +448,7 @@ class VideoDataset(torch.utils.data.Dataset):
                     stride=self.stride,
                     frame_sampling=self.frame_sampling,
                     peak_stride=self.peak_stride,
+                    random_stride=self.random_stride,
                 )
             except Exception as e:
                 raise RuntimeError(f"Failed to load video {video_fname}: {str(e)}") from e
@@ -572,6 +576,13 @@ def get_distributed_video_dataloader(
     view_labels_map: Optional[dict] = None,
     num_view_classes: int = 12,
 ) -> DataLoader:
+    # Augmentation (RandAugment, random stride, within-study video shuffling) is
+    # for the train split only; val/test/inference clips must be deterministic so
+    # that validation metrics and checkpoint selection are reproducible.
+    is_train = str(split) == str(RunMode.TRAIN)
+    if shuffle_videos is None:
+        shuffle_videos = getattr(config, 'shuffle_videos', True)
+
     # Create the video dataset with multi-video parameters
     video_dataset = VideoDataset(
         data_filename=config.data_filename,
@@ -582,13 +593,14 @@ def get_distributed_video_dataloader(
         backbone=config.model_name,
         mean=mean,
         std=std,
-        rand_augment=config.rand_augment,
+        rand_augment=config.rand_augment if is_train else False,
         stride=config.stride,
+        random_stride=is_train,
         resize=config.resize,
         multi_video=multi_video if multi_video is not None else getattr(config, 'multi_video', False),
         groupby_column=groupby_column if groupby_column is not None else getattr(config, 'groupby_column', 'StudyInstanceUID'),
         num_videos=num_videos if num_videos is not None else getattr(config, 'num_videos', 1),
-        shuffle_videos=shuffle_videos if shuffle_videos is not None else getattr(config, 'shuffle_videos', True),
+        shuffle_videos=shuffle_videos if is_train else False,
         view_column=view_column,
         frame_sampling=getattr(config, 'frame_sampling', 'uniform'),
         peak_stride=getattr(config, 'peak_stride', 2),

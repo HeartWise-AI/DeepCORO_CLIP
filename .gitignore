@@ -76,3 +76,6 @@ RESTORE.json
 .claude/*.local.md
 .pyoverlay/
 
+
+# IVUS/OCT localization: cohort CSVs, embeddings, checkpoints and logs stay local (patient-level data)
+projects/ivus_oct_localization/data/

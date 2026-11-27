@@ -103,7 +103,7 @@ class MultitaskPretrainingProject(BaseProject):
             rope_temporal_scale=getattr(self.config, 'rope_temporal_scale', 1.0),
             rope_normalize_mode=getattr(self.config, 'rope_normalize_mode', 'separate'),
             multi_video_cls_aggregation=getattr(self.config, 'multi_video_cls_aggregation', 'mean'),
-            echojepa_kwargs=echojepa_kwargs_from_config(self.config, self.config.frames, self.config.resize),
+            echojepa_kwargs=echojepa_kwargs_from_config(self.config),
         )
         video_encoder = video_encoder.to(self.config.device).float()
 

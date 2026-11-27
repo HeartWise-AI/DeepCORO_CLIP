@@ -169,7 +169,9 @@ class EchoJEPABackbone(nn.Module):
         return self.forward_features(x).mean(dim=1)
 
 
-def echojepa_kwargs_from_config(config: Any, num_frames: int, resize: int) -> Optional[Dict[str, Any]]:
+def echojepa_kwargs_from_config(
+    config: Any, num_frames: Optional[int] = None, resize: Optional[int] = None
+) -> Optional[Dict[str, Any]]:
     """Collect the ``echojepa_*`` config fields into ``EchoJEPABackbone`` kwargs.
 
     Returns ``None`` unless ``config.model_name == "echojepa"`` so the other
@@ -177,6 +179,9 @@ def echojepa_kwargs_from_config(config: Any, num_frames: int, resize: int) -> Op
     """
     if getattr(config, "model_name", None) != "echojepa":
         return None
+    # Read frames/resize only for EchoJEPA: other configs (and test stubs) may not define them.
+    num_frames = getattr(config, "frames") if num_frames is None else num_frames
+    resize = getattr(config, "resize") if resize is None else resize
     dtype = str(getattr(config, "echojepa_dtype", "bfloat16") or "float32").lower()
     return {
         "checkpoint_path": getattr(config, "echojepa_checkpoint", None),

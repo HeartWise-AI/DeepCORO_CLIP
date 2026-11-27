@@ -420,7 +420,7 @@ class LinearProbingProject(BaseProject):
             aggregator_depth=self.config.aggregator_depth,
             aggregate_videos_tokens=self.config.aggregate_videos_tokens,
             per_video_pool=self.config.per_video_pool,
-            echojepa_kwargs=echojepa_kwargs_from_config(self.config, self.config.frames, self.config.resize),
+            echojepa_kwargs=echojepa_kwargs_from_config(self.config),
         )        
         
         # Get embedding dimension from encoder

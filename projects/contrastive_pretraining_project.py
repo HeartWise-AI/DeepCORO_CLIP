@@ -139,7 +139,7 @@ class ContrastivePretrainingProject(BaseProject):
             rope_base=getattr(self.config, 'rope_base', 10000.0),
             rope_temporal_scale=getattr(self.config, 'rope_temporal_scale', 1.0),
             rope_normalize_mode=getattr(self.config, 'rope_normalize_mode', 'separate'),
-            echojepa_kwargs=echojepa_kwargs_from_config(self.config, self.config.frames, self.config.resize),
+            echojepa_kwargs=echojepa_kwargs_from_config(self.config),
         )
         video_encoder = video_encoder.to(self.config.device).float()
 
@@ -322,7 +322,7 @@ class ContrastivePretrainingProject(BaseProject):
             rope_base=getattr(self.config, 'rope_base', 10000.0),
             rope_temporal_scale=getattr(self.config, 'rope_temporal_scale', 1.0),
             rope_normalize_mode=getattr(self.config, 'rope_normalize_mode', 'separate'),
-            echojepa_kwargs=echojepa_kwargs_from_config(self.config, self.config.frames, self.config.resize),
+            echojepa_kwargs=echojepa_kwargs_from_config(self.config),
         )        
         video_encoder = video_encoder.to(self.config.device).float()
         

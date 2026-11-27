@@ -165,6 +165,23 @@ peak_stride: 2         # default: 2
 
 (or `--frame_sampling peak`) to take `frames` frames at `peak_stride` centred on the contrast peak: the frame with the highest smoothed per-frame dye score (`utils/contrast_peak.py`). With `frames: 16` and `peak_stride: 2` this is the `peak_s2` sampler DeepCORO-JEPA v9-v14 were trained with (identical frame indices); videos shorter than `peak_stride * frames` fall back to uniform sampling. Useful for cines with long lead-ins, where a fixed early window misses the opacified frames. The per-video peak can be precomputed into a parquet with `scripts/contrast_peak_frames.py` in DeepCORO_Pre_Processing.
 
+### Study-level inputs (blood pressure, heart rate)
+
+Linear probing can take study-level numbers next to the videos, for example baseline aortic pressure and heart rate for FFR / iFR:
+
+```yaml
+tabular_input_columns: [SYSTAO, DIASTAO, MEANAO, HEARTRATE]   # default: none (image only)
+tabular_missing_indicator: true                               # default: true
+```
+
+- The columns are read from `data_filename`. With `multi_video`, a study uses the first non-missing value across its rows.
+- Values are z-scored with train-split mean and std, which are saved in the model checkpoint and reused for val, test and inference.
+- A missing value becomes 0, plus a 0/1 missing flag per column, so studies without vitals are kept. Values are clipped to ±10 SD.
+- The result is concatenated to the pooled video features before the heads. Without `tabular_input_columns` the model is unchanged.
+- Use measurements taken before the pressure-wire reading (baseline). Pa or Pd recorded during the FFR / iFR measurement give the label away (FFR = Pd / Pa).
+
+Example: [`config/linear_probing/DeepIFR/lad_ifr/lad_ifr_cls_token_bp_hr.yaml`](config/linear_probing/DeepIFR/lad_ifr/lad_ifr_cls_token_bp_hr.yaml), the LAD iFR setup of W&B run `yi7ynczr` ([`lad_ifr_cls_token_yi7ynczr.yaml`](config/linear_probing/DeepIFR/lad_ifr/lad_ifr_cls_token_yi7ynczr.yaml)) plus these four inputs.
+
 ### Sweep Configurations
 
 1. **CLIP Training** (`config/clip/sweep_config_*.yaml`, `config/clip/sweep_siglip_output_dataset_*.yaml`):

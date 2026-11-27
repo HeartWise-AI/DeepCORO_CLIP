@@ -114,6 +114,8 @@ class MultiInstanceLinearProbing(nn.Module):
         normalization_strategy: str = "post_norm",
         num_view_classes: int = 0,
         head_output_scale: Dict[str, float] | None = None,
+        tabular_dim: int = 0,
+        tabular_missing_indicator: bool = True,
     ) -> None:
         super().__init__()
 
@@ -196,6 +198,19 @@ class MultiInstanceLinearProbing(nn.Module):
         head_input_dim = embedding_dim
         if "+" in self.pooling_mode:
             head_input_dim = 2 * embedding_dim  # Concatenated features
+
+        # Optional study-level scalar inputs (e.g. blood pressure, heart rate),
+        # concatenated to the pooled video features before the heads. Values are
+        # z-scored with train-split statistics held in buffers (saved with the
+        # model); missing values become 0 and, by default, get a 0/1 missing flag.
+        if tabular_dim < 0:
+            raise ValueError("tabular_dim must be >= 0")
+        self.tabular_dim = int(tabular_dim)
+        self.tabular_missing_indicator = bool(tabular_missing_indicator)
+        if self.tabular_dim > 0:
+            self.register_buffer("tabular_mean", torch.zeros(self.tabular_dim))
+            self.register_buffer("tabular_std", torch.ones(self.tabular_dim))
+            head_input_dim += self.tabular_dim * (2 if self.tabular_missing_indicator else 1)
             
         self.heads = nn.ModuleDict(
             {
@@ -212,6 +227,7 @@ class MultiInstanceLinearProbing(nn.Module):
     def forward(
         self, x: torch.Tensor, mask: torch.Tensor | None = None,
         view_ids: torch.Tensor | None = None,
+        tabular: torch.Tensor | None = None,
     ) -> Dict[str, torch.Tensor]:
         """Forward pass.
 
@@ -273,6 +289,8 @@ class MultiInstanceLinearProbing(nn.Module):
             x = x + view_emb
 
         pooled = self._pool_instances(x, mask)  # [B, D]
+        if self.tabular_dim > 0:
+            pooled = torch.cat([pooled, self._tabular_features(tabular, pooled)], dim=-1)
         return {
             name: head(pooled) * self.head_output_scale[name]
             if name in self.head_output_scale else head(pooled)
@@ -547,6 +565,37 @@ class MultiInstanceLinearProbing(nn.Module):
         weights = self.attn_dropout(weights)
 
         return self._zero_empty_samples((weights * video_emb).sum(dim=1), mask)
+
+    def set_tabular_normalization(self, mean, std) -> None:
+        """Store train-split mean/std of the tabular inputs (std <= 0 or NaN -> 1)."""
+        if self.tabular_dim == 0:
+            raise ValueError("Model has no tabular inputs (tabular_dim=0)")
+        mean_t = torch.as_tensor(mean, dtype=torch.float32).reshape(-1)
+        std_t = torch.as_tensor(std, dtype=torch.float32).reshape(-1)
+        if mean_t.numel() != self.tabular_dim or std_t.numel() != self.tabular_dim:
+            raise ValueError(f"Expected {self.tabular_dim} tabular statistics")
+        mean_t = torch.nan_to_num(mean_t, nan=0.0)
+        std_t = torch.where(torch.isfinite(std_t) & (std_t > 0), std_t, torch.ones_like(std_t))
+        self.tabular_mean.copy_(mean_t.to(self.tabular_mean.device))
+        self.tabular_std.copy_(std_t.to(self.tabular_std.device))
+
+    def _tabular_features(self, tabular: torch.Tensor | None, pooled: torch.Tensor) -> torch.Tensor:
+        """[B, k] raw values (NaN = missing) -> [B, k] or [B, 2k] head inputs."""
+        if tabular is None:
+            raise ValueError(
+                f"This model expects {self.tabular_dim} tabular inputs "
+                "(tabular_input_columns) but none were passed"
+            )
+        tabular = tabular.to(device=pooled.device, dtype=torch.float32)
+        if tabular.ndim != 2 or tabular.shape != (pooled.shape[0], self.tabular_dim):
+            raise ValueError(
+                f"tabular must be [B={pooled.shape[0]}, {self.tabular_dim}], got {tuple(tabular.shape)}"
+            )
+        missing = ~torch.isfinite(tabular)
+        z = (tabular - self.tabular_mean) / self.tabular_std
+        z = torch.where(missing, torch.zeros_like(z), z).clamp(-10.0, 10.0)
+        features = [z, missing.float()] if self.tabular_missing_indicator else [z]
+        return torch.cat(features, dim=-1).to(pooled.dtype)
 
     def _reset_parameters(self):
         """Initialize all parameters (Xavier for Linear layers)."""

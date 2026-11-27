@@ -20,6 +20,10 @@ from utils.ddp import DistributedUtils
 from utils.video import load_video, format_mean_std, create_video_capture
 from utils.config.heartwise_config import HeartWiseConfig
 
+# Key under which VideoDataset passes tabular inputs to custom_collate_fn (never a target)
+TABULAR_KEY = "__tabular__"
+
+
 class VideoDataset(torch.utils.data.Dataset):
     """Single or multi-video dataset class for video-text pairs.""" 
 
@@ -46,9 +50,14 @@ class VideoDataset(torch.utils.data.Dataset):
         frame_sampling: str = "uniform",
         peak_stride: int = 2,
         random_stride: bool = True,
+        tabular_columns: Optional[List[str]] = None,
         **kwargs,
     ):
         self.filename: str = data_filename
+        # Optional study-level scalar inputs (e.g. SYSTAO, DIASTAO, MEANAO, HEARTRATE).
+        # One float list per item, NaN = missing; read with the rows kept by load_data.
+        self.tabular_columns: Optional[List[str]] = list(tabular_columns) if tabular_columns else None
+        self.tabular: Optional[List[List[float]]] = None
         self.split: str = split
         self.datapoint_loc_label: str = datapoint_loc_label
         self.debug_mode: bool = debug_mode
@@ -110,6 +119,14 @@ class VideoDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.valid_indices)
 
+    def _with_tabular(self, outcome: Optional[dict], actual_idx: int) -> Optional[dict]:
+        """Attach this item's tabular inputs to its outcome dict (split out again in collate)."""
+        if self.tabular is None:
+            return outcome
+        outcome = dict(outcome) if outcome is not None else {}
+        outcome[TABULAR_KEY] = list(self.tabular[actual_idx])
+        return outcome
+
     def load_data(
         self,
         split: Union[str, RunMode],
@@ -155,6 +172,20 @@ class VideoDataset(torch.utils.data.Dataset):
                 except KeyError:
                     raise ValueError(f"Target label '{label}' not found in data columns")
 
+        tab_cols = self.tabular_columns
+        if tab_cols:
+            missing_cols = [c for c in tab_cols if c not in data.columns]
+            if missing_cols:
+                raise ValueError(f"tabular_input_columns not found in data columns: {missing_cols}")
+            self.tabular = []
+
+        def _tab_value(value) -> float:
+            try:
+                value = float(value)
+            except (TypeError, ValueError):
+                return float('nan')
+            return value if np.isfinite(value) else float('nan')
+
         # Check if view_column exists in data
         has_view_column = (
             self.view_column is not None
@@ -173,6 +204,7 @@ class VideoDataset(torch.utils.data.Dataset):
                 group_videos = []
                 group_views = [] if has_view_column else None
                 group_outcome = None
+                group_tab = [float('nan')] * len(tab_cols) if tab_cols else None
                 skip_group = True
 
                 for row_id, row in group.iterrows():
@@ -195,6 +227,11 @@ class VideoDataset(torch.utils.data.Dataset):
                             value = row[label]
                             if not pd.isna(value) and pd.isna(group_outcome[label]):
                                 group_outcome[label] = value
+                    if tab_cols:
+                        # First finite value per column across the study's kept rows
+                        for j, col in enumerate(tab_cols):
+                            if np.isnan(group_tab[j]):
+                                group_tab[j] = _tab_value(row[col])
                     skip_group = False
                     group_videos.append(file_path)
                     if has_view_column:
@@ -206,6 +243,8 @@ class VideoDataset(torch.utils.data.Dataset):
 
                 group_fnames.append(group_videos)
                 group_outcomes.append(group_outcome)
+                if tab_cols:
+                    self.tabular.append(group_tab)
                 if has_view_column:
                     group_view_classes.append(group_views)
 
@@ -242,12 +281,16 @@ class VideoDataset(torch.utils.data.Dataset):
 
                     outcomes.append(row_outcomes)
                     fnames.append(file_name)
+                    if tab_cols:
+                        self.tabular.append([_tab_value(row[c]) for c in tab_cols])
                     if has_view_column:
                         view_classes.append(view_class)
 
                 else:
                     # Inference mode or no target labels
                     fnames.append(file_name)
+                    if tab_cols:
+                        self.tabular.append([_tab_value(row[c]) for c in tab_cols])
                     if has_view_column:
                         view_classes.append(view_class)
 
@@ -310,7 +353,7 @@ class VideoDataset(torch.utils.data.Dataset):
 
         if self.multi_video:
             group_fnames_in_item = self.fnames[actual_idx] # List of all video paths for this item's group
-            outcome_for_item = self.outcomes[actual_idx]
+            outcome_for_item = self._with_tabular(self.outcomes[actual_idx], actual_idx)
             group_views_in_item = (
                 self.view_classes[actual_idx] if self.view_classes is not None else None
             )
@@ -453,14 +496,15 @@ class VideoDataset(torch.utils.data.Dataset):
             except Exception as e:
                 raise RuntimeError(f"Failed to load video {video_fname}: {str(e)}") from e
 
+            outcome = self._with_tabular(self.outcomes[actual_idx], actual_idx)
             if self.view_classes is not None:
                 return (
                     video,
-                    self.outcomes[actual_idx],
+                    outcome,
                     video_fname,
                     [self.view_classes[actual_idx]],
                 )
-            return video, self.outcomes[actual_idx], video_fname
+            return video, outcome, video_fname
     
 def custom_collate_fn(
     batch: list[tuple],
@@ -500,6 +544,15 @@ def custom_collate_fn(
         )
     else:
         video_mask = torch.ones((B, N), dtype=torch.bool)
+
+    # Split optional study-level tabular inputs out of the per-sample outcome dicts
+    tabular_rows = [t.get(TABULAR_KEY) if t is not None else None for t in targets]
+    tabular_tensor = None
+    if any(r is not None for r in tabular_rows):
+        if any(r is None for r in tabular_rows):
+            raise ValueError("Some samples in the batch have tabular inputs and some do not")
+        tabular_tensor = torch.tensor(tabular_rows, dtype=torch.float32)  # [B, k], NaN = missing
+        targets = tuple({k: v for k, v in t.items() if k != TABULAR_KEY} for t in targets)
 
     # Convert targets to tensor
     temp_targets_dict: dict = defaultdict(list)
@@ -556,6 +609,8 @@ def custom_collate_fn(
     }
     if view_ids_tensor is not None:
         result["view_ids"] = view_ids_tensor
+    if tabular_tensor is not None:
+        result["tabular"] = tabular_tensor
     return result
 
 def get_distributed_video_dataloader(
@@ -604,6 +659,7 @@ def get_distributed_video_dataloader(
         view_column=view_column,
         frame_sampling=getattr(config, 'frame_sampling', 'uniform'),
         peak_stride=getattr(config, 'peak_stride', 2),
+        tabular_columns=getattr(config, 'tabular_input_columns', None),
     )
 
     # Create a sampler for distributed training

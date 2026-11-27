@@ -118,6 +118,14 @@ class LinearProbingConfig(HeartWiseConfig):
     # regression_target_scale: head_name -> lambda. The head predicts y/lambda
     # internally (loss computed in scaled space); outputs are rescaled to the
     # original units, so metrics and predictions are unchanged.
+    # Optional study-level scalar inputs concatenated to the pooled video features before the
+    # heads, e.g. ["SYSTAO", "DIASTAO", "MEANAO", "HEARTRATE"] (data_filename columns; for
+    # multi_video the first non-missing value across the study's rows). z-scored with
+    # train-split statistics stored in the checkpoint; missing -> 0 plus a 0/1 missing flag
+    # per column when tabular_missing_indicator is true. None/empty = image-only (default).
+    tabular_input_columns: Optional[List[str]] = None
+    tabular_missing_indicator: bool = True
+
     regression_target_scale: Optional[Dict[str, float]] = None
     # sample_weighting: head_name -> score column used for binning. Each sample
     # is weighted by the inverse count of training samples in its

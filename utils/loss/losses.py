@@ -504,6 +504,10 @@ class MultiHeadLoss(nn.Module):
         loss_weights: dict[str, torch.Tensor] = None,
         pos_weights: dict[str, torch.Tensor] = None,
         target_normalization: dict[str, dict[str, float]] = None,
+        target_scale: dict[str, float] = None,
+        sample_weight_source: dict[str, str] = None,
+        sample_weight_tables: dict[str, torch.Tensor] = None,
+        sample_weight_bin_width: float = 1.0,
     ):
         """
         Initialize Multi-Head Loss with support for both standard and focal loss.
@@ -521,13 +525,30 @@ class MultiHeadLoss(nn.Module):
             target_normalization (dict): Optional {head: {"mean": m, "std": s}} for regression
                 heads trained on z-scored targets. The loss compares the head output to
                 ``(target - m) / s``; use ``denormalize_outputs`` to map outputs back.
+            target_scale (dict): Optional head -> lambda; regression loss is computed
+                on (output / lambda, target / lambda)
+            sample_weight_source (dict): Optional head -> score column whose value
+                selects the per-sample weight from sample_weight_tables
+            sample_weight_tables (dict): score column -> 1D tensor of weights indexed
+                by floor(score / sample_weight_bin_width)
+            sample_weight_bin_width (float): bin width used to index the tables
         """
         super().__init__()
+        self.loss_structure: dict[str, str] = dict(loss_structure or {})
+        self.target_scale: dict[str, float] = dict(target_scale or {})
+        self.sample_weight_source: dict[str, str] = dict(sample_weight_source or {})
+        self.sample_weight_tables: dict[str, torch.Tensor] = dict(sample_weight_tables or {})
+        self.sample_weight_bin_width: float = sample_weight_bin_width
         self.head_structure: dict[str, int] = head_structure
         self.head_weights: dict[str, float] = head_weights or {head: 1.0 for head in head_structure.keys()}
         self.loss_weights: dict[str, torch.Tensor] = loss_weights or {}
         self.pos_weights: dict[str, torch.Tensor] = pos_weights or {}
         self.target_normalization: dict[str, dict[str, float]] = target_normalization or {}
+        both = sorted(set(self.target_normalization) & set(self.target_scale))
+        if both:
+            raise ValueError(
+                f"Heads {both} set both normalize_regression_targets and regression_target_scale; use one."
+            )
 
         # Initialize loss functions for each head
         if loss_structure is None:
@@ -594,6 +615,8 @@ class MultiHeadLoss(nn.Module):
             if valid_mask.sum() == 0:
                 continue
 
+            sample_weights = self._sample_weights(head_name, targets, valid_mask)
+
             if not valid_mask.all():
                 target = target[valid_mask]
                 output = output[valid_mask]
@@ -602,9 +625,17 @@ class MultiHeadLoss(nn.Module):
             stats = self.target_normalization.get(head_name)
             if stats is not None:
                 target = (target - stats["mean"]) / stats["std"]
+            scale = self.target_scale.get(head_name)
+            if scale is not None:
+                output = output / scale
+                target = target / scale
 
             # Compute loss using the appropriate loss function
-            head_loss: torch.Tensor = self.loss_fns[head_name](output, target)
+            if sample_weights is None:
+                head_loss: torch.Tensor = self.loss_fns[head_name](output, target)
+            else:
+                per_sample = self._per_sample_loss(head_name, output, target)
+                head_loss = (sample_weights * per_sample).mean()
 
             # Apply head-specific weight
             losses[head_name] = head_loss
@@ -616,3 +647,56 @@ class MultiHeadLoss(nn.Module):
             losses['main'] = torch.tensor(0.0, device=device, requires_grad=True)
 
         return losses
+
+    def _sample_weights(
+        self,
+        head_name: str,
+        targets: dict[str, torch.Tensor],
+        valid_mask: torch.Tensor,
+    ) -> torch.Tensor | None:
+        """Inverse-frequency weights for the valid samples of ``head_name``."""
+        source = self.sample_weight_source.get(head_name)
+        if source is None:
+            return None
+        table = self.sample_weight_tables[source]
+        score = targets[source].float().view(-1)[valid_mask.view(-1)]
+        table = table.to(score.device)
+        bins = torch.nan_to_num(score, nan=0.0).div(self.sample_weight_bin_width).floor().long()
+        weights = table[bins.clamp(0, table.numel() - 1)]
+        # Samples whose source score is missing keep weight 1.
+        return torch.where(torch.isnan(score), torch.ones_like(weights), weights)
+
+    def _per_sample_loss(
+        self,
+        head_name: str,
+        output: torch.Tensor,
+        target: torch.Tensor,
+    ) -> torch.Tensor:
+        """Unreduced loss for ``head_name`` (used when sample weights are set)."""
+        loss_name = self.loss_structure.get(head_name)
+        output = output.float()
+        target = target.float()
+        if loss_name == LossType.MSE:
+            return (output.view(-1) - target.view(-1)) ** 2
+        if loss_name == LossType.HUBER:
+            return F.huber_loss(
+                output.view(-1), target.view(-1),
+                delta=self.loss_fns[head_name].delta, reduction="none",
+            )
+        if loss_name == LossType.MAE:
+            return (output.view(-1) - target.view(-1)).abs()
+        if loss_name == LossType.CE:
+            weight = self.loss_weights.get(head_name)
+            return F.cross_entropy(
+                output.view(target.numel(), -1), target.view(-1).long(),
+                weight=None if weight is None else weight.to(output.device), reduction="none",
+            )
+        if loss_name == LossType.BCE_LOGIT:
+            if output.dim() > 1 and output.size(1) == 2:
+                output = output[:, 1]
+            pos_weight = self.pos_weights.get(head_name)
+            return F.binary_cross_entropy_with_logits(
+                output.reshape(-1), target.view(-1),
+                pos_weight=None if pos_weight is None else pos_weight.to(output.device), reduction="none",
+            )
+        raise ValueError(f"Sample weighting is not supported for loss '{loss_name}' (head '{head_name}')")

@@ -113,6 +113,7 @@ class MultiInstanceLinearProbing(nn.Module):
         separate_video_attention: bool = True,
         normalization_strategy: str = "post_norm",
         num_view_classes: int = 0,
+        head_output_scale: Dict[str, float] | None = None,
     ) -> None:
         super().__init__()
 
@@ -137,6 +138,9 @@ class MultiInstanceLinearProbing(nn.Module):
         self.separate_video_attention = separate_video_attention
         self.normalization_strategy = normalization_strategy
         self.num_view_classes = num_view_classes
+        # Fixed per-head output multiplier: the head learns y/scale, the model
+        # returns values in the original target units.
+        self.head_output_scale: Dict[str, float] = dict(head_output_scale or {})
 
         # Initialize view embedding (EchoJEPA-style angle embeddings)
         if num_view_classes > 0:
@@ -269,7 +273,11 @@ class MultiInstanceLinearProbing(nn.Module):
             x = x + view_emb
 
         pooled = self._pool_instances(x, mask)  # [B, D]
-        return {name: head(pooled) for name, head in self.heads.items()}
+        return {
+            name: head(pooled) * self.head_output_scale[name]
+            if name in self.head_output_scale else head(pooled)
+            for name, head in self.heads.items()
+        }
 
     # ------------------------------------------------------------------
     # Internal helpers

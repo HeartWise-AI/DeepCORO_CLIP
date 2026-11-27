@@ -114,6 +114,21 @@ class LinearProbingConfig(HeartWiseConfig):
     # Maps head_name -> binarization threshold (e.g., {"left_main_stenosis": 50.0, "prox_rca_stenosis": 70.0})
     regression_auc_heads: Optional[Dict[str, float]] = None
 
+    # SynSeq-style (arXiv 2609.27696) loss options for zero-inflated scores.
+    # regression_target_scale: head_name -> lambda. The head predicts y/lambda
+    # internally (loss computed in scaled space); outputs are rescaled to the
+    # original units, so metrics and predictions are unchanged.
+    regression_target_scale: Optional[Dict[str, float]] = None
+    # sample_weighting: head_name -> score column used for binning. Each sample
+    # is weighted by the inverse count of training samples in its
+    # floor(score / sample_weight_bin_width) bin (normalised to mean 1 on train).
+    sample_weighting: Optional[Dict[str, str]] = None
+    sample_weight_bin_width: float = 1.0
+    # Weight = count^-power (1.0 = SynSeq's plain inverse frequency; 0.5 = sqrt
+    # smoothing), optionally capped at sample_weight_max after mean-1 normalisation.
+    sample_weight_power: float = 1.0
+    sample_weight_max: Optional[float] = None
+
     # Pre-computed dataset statistics (optional - if None, will be calculated)
     dataset_mean: List[float] = None  # Pre-computed mean for normalization
     dataset_std: List[float] = None  # Pre-computed std for normalization

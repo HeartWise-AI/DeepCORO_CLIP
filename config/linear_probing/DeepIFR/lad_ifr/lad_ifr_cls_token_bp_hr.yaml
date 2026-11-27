@@ -1,0 +1,75 @@
+# Same as lad_ifr_cls_token_yi7ynczr.yaml plus baseline (pre-angiography) aortic pressure and heart rate
+# as study-level inputs (tabular_input_columns). Not trained yet: no result for this config.
+# Add the four columns to data_filename (mmHg and beats/min; for multi_video the first non-missing value
+# across the study's rows is used). Values are z-scored with train-split statistics saved in the
+# checkpoint; a missing value becomes 0 plus a missing flag, so studies without vitals are kept.
+# Use baseline values only: never Pa / Pd recorded during the pressure-wire measurement (FFR = Pd / Pa).
+pipeline_project: DeepCORO_video_linear_probing
+base_checkpoint_path: outputs
+run_mode: train
+epochs: 25
+seed: 42
+name: DeepCORO_video_linear_probing_lad_ifr_cls_token_bp_hr
+project: DeepCORO_video_linear_probing_deepIFR_cls_token
+entity: mhi_ai
+use_wandb: true
+scheduler_name: cosine_with_warmup
+num_warmup_percent: 0.13333069856619428
+optimizer: AdamW
+use_amp: true
+gradient_accumulation_steps: 1
+lr_step_period: 8
+factor: 0.29393613884621633
+num_hard_restarts_cycles: 3
+warm_restart_tmult: 2
+data_filename: data/df_lad_diagnostic_20172024_alpha.csv
+num_workers: 8
+batch_size: 8
+multi_video: true
+groupby_column: StudyInstanceUID
+num_videos: 4
+shuffle_videos: true
+datapoint_loc_label: FileName
+target_label: [lad_ifr, lad_ifr_cat]
+rand_augment: true
+resize: 224
+frames: 16
+stride: 1
+tabular_input_columns: [SYSTAO, DIASTAO, MEANAO, HEARTRATE]
+tabular_missing_indicator: true
+model_name: mvit
+aggregator_depth: 1  # not logged by the 2025 run; DeepIFR base config value
+num_heads: 16  # idem
+pretrained: true
+video_freeze_ratio: 0.8287579394432055
+dropout: 0.22328693890110612
+video_encoder_checkpoint_path: outputs/DeepCORO_clip/dev_deep_coro_clip_single_video/8av1xygm_20250605-083820_best_single_video/checkpoints/checkpoint.pt
+video_encoder_lr: 1.5415005720956322e-05
+video_encoder_weight_decay: 3.370498413730231e-06
+pooling_mode: cls_token
+use_cls_token: true
+separate_video_attention: false
+num_attention_heads: 12
+normalization_strategy: post_norm
+attention_hidden: 128
+dropout_attention: 0.1633132295235549
+aggregate_videos_tokens: false
+per_video_pool: false
+attention_lr: 0.0001
+attention_weight_decay: 5.0e-05
+attention_within_lr: 0.004670152119478082
+attention_within_weight_decay: 5.074344864738813e-05
+attention_across_lr: 0.0005121352267874508
+attention_across_weight_decay: 5.805760554668963e-05
+head_structure: {lad_ifr: 1, lad_ifr_cat: 1}
+loss_structure: {lad_ifr: mae, lad_ifr_cat: bce_logit}
+head_task: {lad_ifr: regression, lad_ifr_cat: binary_classification}
+labels_map:
+  lad_ifr_cat: {Abnormal: 0, Normal: 1}
+head_weights: {lad_ifr: 1, lad_ifr_cat: 1}
+head_lr: {lad_ifr: 6.603458713098429e-05, lad_ifr_cat: 5.752342587097786e-05}
+head_weight_decay: {lad_ifr: 2.30339978605584e-06, lad_ifr_cat: 3.6863873202524736e-06}
+head_dropout: {lad_ifr: 0.2, lad_ifr_cat: 0.2}
+head_linear_probing: {lad_ifr: cls_token_linear_probing_regression, lad_ifr_cat: cls_token_linear_probing}
+output_dir: outputs/
+tag: lad_ifr_cls_token_bp_hr

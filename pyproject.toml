@@ -7,7 +7,7 @@ name = "deepcoro_clip"
 version = "0.1.0"
 description = "Deep learning model for angiogram video interpretation using contrastive learning"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "MIT"
 authors = [
     { name = "Robert Avram", email = "robert.avram.md@gmail.com" }
@@ -24,7 +24,7 @@ dependencies = [
     "pandas>=2.0.0",
     "pyyaml>=6.0.0",
     "tqdm>=4.65.0",
-    "pillow>=12.1.1",
+    "pillow>=13.0.0",
     "proglog==0.1.10",
     "setuptools==84.1.0",
     "decorator>=4.0.2",

@@ -1,0 +1,19 @@
+{
+  "name": "deepcoro-ivus-oct-labelbox-20261019",
+  "project_id": "cmupncdik0diw07xm0v6m05f2",
+  "labels": "/media/data1/datasets/DeepCoro/labelbox_ivus_oct/exports/labels_2026-10-19.csv",
+  "export": "/media/data1/datasets/DeepCoro/labelbox_ivus_oct/exports/export_2026-10-19.ndjson",
+  "manifest": "/media/data1/datasets/DeepCoro/labelbox_ivus_oct/manifest.csv",
+  "cohort": "projects/ivus_oct_localization/data/cohort_studies.csv",
+  "embedding_globs": ["projects/ivus_oct_localization/data/emb/emb_*.npz", "projects/ivus_oct_localization/data/emb_extra/emb_*.npz"],
+  "encoder_checkpoint": "/media/data1/models/DeepCoro_CLIP/8av1xygm_20250605-083820_best_single_video/checkpoints/best_model_epoch_7.pt",
+  "features": "concatenated mean and max patch tokens, frozen DeepCORO-CLIP mViT; 1024 dimensions",
+  "output": "/media/data1/models/DeepCoro_CLIP/ivus_oct_labelbox_20261019",
+  "split": "existing cohort patient-disjoint train/val/test",
+  "C_grid": [0.001, 0.01, 0.1, 1.0],
+  "selection": "validation macro F1; test evaluated after selection",
+  "min_train_per_class": 5,
+  "seed": 42,
+  "wandb_entity": "mhi_ai",
+  "wandb_project": "deepcoro-ivus-oct"
+}

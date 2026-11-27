@@ -389,13 +389,18 @@ class LinearProbingRunner:
         if video_indices is not None:
             video_indices = video_indices.to(self.config.device, dtype=torch.long)
 
-        return {
+        processed = {
             "batch_video": batch_video,
             "batch_targets": batch_targets,
             "video_indices": video_indices,
             "video_mask": video_mask,
             "view_ids": view_ids,
         }
+        # Optional study-level scalar inputs (tabular_input_columns), [B, k] float, NaN = missing
+        tabular = batch.get('tabular', None)
+        if tabular is not None:
+            processed["tabular"] = tabular.to(self.config.device, dtype=torch.float32)
+        return processed
     
     def _run_batch(
         self,
@@ -458,6 +463,7 @@ class LinearProbingRunner:
         video_indices: torch.Tensor = None,
         video_mask: torch.Tensor = None,
         view_ids: torch.Tensor = None,
+        tabular: torch.Tensor = None,
     ) -> StepFnResults:
         # Clear gradients only if this is the first step in accumulation
         if self.step % self.config.gradient_accumulation_steps == 0:
@@ -481,6 +487,7 @@ class LinearProbingRunner:
                     video_indices=video_indices,
                     video_mask=video_mask,
                     view_ids=view_ids,
+                    **({"tabular": tabular} if tabular is not None else {}),
                 )
             except Exception as e:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")
@@ -561,6 +568,7 @@ class LinearProbingRunner:
         video_indices: torch.Tensor = None,
         video_mask: torch.Tensor = None,
         view_ids: torch.Tensor = None,
+        tabular: torch.Tensor = None,
     ) -> StepFnResults:
         # Forward pass with autocast for mixed precision
         with torch.no_grad():
@@ -574,6 +582,7 @@ class LinearProbingRunner:
                     video_indices=video_indices,
                     video_mask=video_mask,
                     view_ids=view_ids,
+                    **({"tabular": tabular} if tabular is not None else {}),
                 )
             except Exception as e:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")
@@ -623,6 +632,7 @@ class LinearProbingRunner:
         video_indices: torch.Tensor = None,
         video_mask: torch.Tensor = None,
         view_ids: torch.Tensor = None,
+        tabular: torch.Tensor = None,
     ) -> StepFnResults:
         # Forward pass with autocast for mixed precision
         with torch.no_grad():
@@ -636,6 +646,7 @@ class LinearProbingRunner:
                     video_indices=video_indices,
                     video_mask=video_mask,
                     view_ids=view_ids,
+                    **({"tabular": tabular} if tabular is not None else {}),
                 )
             except Exception as e:
                 raise Exception(f"[DEBUG] rank={self.device} => Error in linear_probing: {e} for batch with video shape {batch_video.shape}")

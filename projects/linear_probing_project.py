@@ -56,6 +56,7 @@ class VideoMILWrapper(torch.nn.Module):
         video_indices: Optional[torch.Tensor] = None,
         video_mask: Optional[torch.Tensor] = None,
         view_ids: Optional[torch.Tensor] = None,
+        tabular: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """Wrapper forward pass.
 
@@ -161,6 +162,8 @@ class VideoMILWrapper(torch.nn.Module):
         # ------------------------------------------------------------------
         # 4) Forward through the MIL head(s)
         # ------------------------------------------------------------------
+        if tabular is not None:
+            return self.mil_model(embeddings, mask=attention_mask, view_ids=view_ids, tabular=tabular)
         return self.mil_model(embeddings, mask=attention_mask, view_ids=view_ids)
 
     @staticmethod
@@ -355,6 +358,32 @@ class LinearProbingProject(BaseProject):
         if self.wandb_wrapper.is_initialized():
             self.wandb_wrapper.log({"config/aggregate_videos_tokens_override": True})
 
+    def _tabular_model_kwargs(self) -> dict[str, Any]:
+        """MIL kwargs for optional study-level inputs (tabular_input_columns)."""
+        columns = getattr(self.config, "tabular_input_columns", None) or []
+        if not columns:
+            return {}
+        return {
+            "tabular_dim": len(columns),
+            "tabular_missing_indicator": bool(getattr(self.config, "tabular_missing_indicator", True)),
+        }
+
+    def _fit_tabular_normalization(self, mil_model, train_loader: DataLoader) -> None:
+        """z-score statistics of the tabular inputs from the TRAIN split (stored as model buffers,
+        so validation, test and inference reuse them from the checkpoint)."""
+        columns = getattr(self.config, "tabular_input_columns", None) or []
+        if not columns:
+            return
+        values = np.asarray(train_loader.dataset.tabular, dtype=np.float64)  # [N, k], NaN = missing
+        mean = np.nanmean(np.where(np.isfinite(values), values, np.nan), axis=0)
+        std = np.nanstd(np.where(np.isfinite(values), values, np.nan), axis=0)
+        mil_model.set_tabular_normalization(mean, std)
+        if self.config.is_ref_device:
+            for j, col in enumerate(columns):
+                n = int(np.isfinite(values[:, j]).sum())
+                print(f"[tabular_input] {col}: {n}/{len(values)} train present, "
+                      f"mean={mil_model.tabular_mean[j].item():.3f} std={mil_model.tabular_std[j].item():.3f}")
+
     def _synseq_loss_kwargs(self) -> dict[str, Any]:
         """Target scaling and inverse-frequency sample weights (arXiv 2609.27696).
 
@@ -500,8 +529,10 @@ class LinearProbingProject(BaseProject):
             dropout=self.config.dropout_attention,
             num_view_classes=num_view_classes,
             head_output_scale=getattr(self.config, "regression_target_scale", None),
+            **self._tabular_model_kwargs(),
         )
         mil_model = mil_model.to(self.config.device).float()
+        self._fit_tabular_normalization(mil_model, train_loader)
 
         # Wrap both models
         linear_probing = VideoMILWrapper(video_encoder, mil_model, self.config.num_videos)
@@ -687,6 +718,7 @@ class LinearProbingProject(BaseProject):
             dropout=self.config.dropout_attention,
             num_view_classes=num_view_classes,
             head_output_scale=getattr(self.config, "regression_target_scale", None),
+            **self._tabular_model_kwargs(),
         )
         mil_model = mil_model.to(self.config.device)
 

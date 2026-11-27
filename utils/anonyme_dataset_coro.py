@@ -4,7 +4,7 @@ import numpy as np
 from tqdm import tqdm
 import logging
 from pathlib import Path
-import hashlib
+import secrets
 import json
 from datetime import datetime
 
@@ -228,33 +228,11 @@ def anonymize_with_tracking(df_original, mapping_filepath='reports/anonymization
             # Create value mappings for this column
             unique_values = df_original[col].dropna().unique()
             logger.info(f"  - Creating mappings for {len(unique_values)} unique values...")
+            column_mappings = anonymization_log['column_anonymization_details'][col]['value_mappings']
             
             for value in unique_values:
                 if pd.notna(value) and str(value).strip() != '':
-                    # Create anonymized value based on column type
-                    if col in ['StudyInstanceUID', 'SeriesInstanceUID', 'SOPInstanceUID']:
-                        anonymized_value = f"{col.split('_')[0]}_{hashlib.md5(str(value).encode()).hexdigest()[:16]}"
-                    elif col in ['Patient_ID', 'IDPATIENT']:
-                        anonymized_value = f"PATIENT_{hashlib.md5(str(value).encode()).hexdigest()[:16]}"
-                    elif col in ['CathReport_MRN']:
-                        anonymized_value = f"MRN_{hashlib.md5(str(value).encode()).hexdigest()[:16]}"
-                    elif col in ['PatientName']:
-                        anonymized_value = f"NAME_{hashlib.md5(str(value).encode()).hexdigest()[:16]}"
-                    elif col in ['InstitutionName', 'HOSPITAL']:
-                        anonymized_value = f"HOSP_{hashlib.md5(str(value).encode()).hexdigest()[:16]}"
-                    elif col in ['PatientBirthDate']:
-                        # Keep year only for birth dates
-                        try:
-                            date_obj = pd.to_datetime(value)
-                            anonymized_value = f"YEAR_{date_obj.year}"
-                        except:
-                            anonymized_value = f"DATE_{hashlib.md5(str(value).encode()).hexdigest()[:16]}"
-                    else:
-                        # Generic anonymization for other columns
-                        anonymized_value = f"{col.upper()}_{hashlib.md5(str(value).encode()).hexdigest()[:16]}"
-                    
-                    # Store the mapping
-                    anonymization_log['column_anonymization_details'][col]['value_mappings'][anonymized_value] = str(value)
+                    anonymized_value = anonymize_value(value, col, column_mappings)
                     anonymization_log['value_mappings'][f"{col}_{anonymized_value}"] = str(value)
             
             logger.info(f"  - Created {len(anonymization_log['column_anonymization_details'][col]['value_mappings'])} value mappings")
@@ -341,8 +319,19 @@ def anonymize_with_tracking(df_original, mapping_filepath='reports/anonymization
     
     return df_anon, anonymization_log
 
+def _random_pseudonym(prefix, value_mappings):
+    """Draw a surrogate token that carries no information about the original value."""
+    while True:
+        token = f"{prefix}_{secrets.token_hex(8)}"
+        if token not in value_mappings:
+            return token
+
 def anonymize_value(value, column_name, value_mappings):
-    """Anonymize a single value based on column type and existing mappings."""
+    """Anonymize a single value based on column type and existing mappings.
+
+    New pseudonyms are random and recorded in ``value_mappings``; the linkage
+    mapping is the only way back to the original value.
+    """
     
     if pd.isna(value) or str(value).strip() == '':
         return value
@@ -354,24 +343,27 @@ def anonymize_value(value, column_name, value_mappings):
     
     # Create new mapping if not found
     if column_name in ['StudyInstanceUID', 'SeriesInstanceUID', 'SOPInstanceUID']:
-        return f"{column_name.split('_')[0]}_{hashlib.md5(str(value).encode()).hexdigest()[:16]}"
+        anonymized_value = _random_pseudonym(column_name.split('_')[0], value_mappings)
     elif column_name in ['Patient_ID', 'IDPATIENT']:
-        return f"PATIENT_{hashlib.md5(str(value).encode()).hexdigest()[:16]}"
+        anonymized_value = _random_pseudonym("PATIENT", value_mappings)
     elif column_name in ['CathReport_MRN']:
-        return f"MRN_{hashlib.md5(str(value).encode()).hexdigest()[:16]}"
+        anonymized_value = _random_pseudonym("MRN", value_mappings)
     elif column_name in ['PatientName']:
-        return f"NAME_{hashlib.md5(str(value).encode()).hexdigest()[:16]}"
+        anonymized_value = _random_pseudonym("NAME", value_mappings)
     elif column_name in ['InstitutionName', 'HOSPITAL']:
-        return f"HOSP_{hashlib.md5(str(value).encode()).hexdigest()[:16]}"
+        anonymized_value = _random_pseudonym("HOSP", value_mappings)
     elif column_name in ['PatientBirthDate']:
         # Keep year only for birth dates
         try:
             date_obj = pd.to_datetime(value)
-            return f"YEAR_{date_obj.year}"
+            anonymized_value = f"YEAR_{date_obj.year}"
         except:
-            return f"DATE_{hashlib.md5(str(value).encode()).hexdigest()[:16]}"
+            anonymized_value = _random_pseudonym("DATE", value_mappings)
     else:
-        return f"{column_name.upper()}_{hashlib.md5(str(value).encode()).hexdigest()[:16]}"
+        anonymized_value = _random_pseudonym(column_name.upper(), value_mappings)
+    
+    value_mappings[anonymized_value] = str(value)
+    return anonymized_value
 
 def check_data_types(df, stage_name="dataset"):
     """Check and log data types for debugging."""

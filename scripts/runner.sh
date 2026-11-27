@@ -94,11 +94,20 @@ echo -e "${BLUE}========================================${NC}"
 
 # Setup run_mode in base config
 echo -e "${GREEN}Setting run_mode in $CONFIG_PATH to $RUN_MODE${NC}"
-yq eval -i ".run_mode = \"$RUN_MODE\"" "$CONFIG_PATH"
+if yq --version 2>&1 | grep -q mikefarah; then
+    yq eval -i ".run_mode = \"$RUN_MODE\"" "$CONFIG_PATH"
+else
+    # Python jq-wrapper "yq" has no `eval -i`; use the tag-preserving helper instead.
+    python scripts/set_yaml_key.py "$CONFIG_PATH" run_mode "!!str $RUN_MODE"
+fi
 
 # Setup use_wandb in base config
 echo -e "${GREEN}Setting use_wandb in $CONFIG_PATH to $USE_WANDB${NC}"
-yq eval -i ".use_wandb = $USE_WANDB" "$CONFIG_PATH"
+if yq --version 2>&1 | grep -q mikefarah; then
+    yq eval -i ".use_wandb = $USE_WANDB" "$CONFIG_PATH"
+else
+    python scripts/set_yaml_key.py "$CONFIG_PATH" use_wandb "!!bool $USE_WANDB"
+fi
 
 echo -e "${BLUE}========================================\n${NC}"
 
@@ -120,12 +129,16 @@ fi
 
 # Environment variables for better DDP performance (mirrors scripts/run_sweep.sh)
 export MASTER_PORT=29505
-export NCCL_P2P_LEVEL=NVL
-export NCCL_ALGO=Tree
-export NCCL_MIN_NCHANNELS=4
-export NCCL_SHM_DISABLE=0
-export NCCL_NET_GDR_LEVEL=PHB
-export NCCL_DEBUG=WARNING
+# NCCL tuning is opt-in: forcing NCCL_ALGO=Tree / NCCL_P2P_LEVEL=NVL breaks on hosts
+# whose NCCL has no Tree implementation for Broadcast (RTX PRO 5000 Blackwell, NCCL in
+# the torch 2.14 NGC image: "No algorithm/protocol available for function Broadcast").
+# Set them in the environment before calling this script if you want them.
+[ -n "${NCCL_P2P_LEVEL:-}" ] && export NCCL_P2P_LEVEL
+[ -n "${NCCL_ALGO:-}" ] && export NCCL_ALGO
+export NCCL_MIN_NCHANNELS=${NCCL_MIN_NCHANNELS:-4}
+export NCCL_SHM_DISABLE=${NCCL_SHM_DISABLE:-0}
+export NCCL_NET_GDR_LEVEL=${NCCL_NET_GDR_LEVEL:-PHB}
+export NCCL_DEBUG=${NCCL_DEBUG:-WARN}
 export CUDA_VISIBLE_DEVICES=$SELECTED_GPUS
 export OMP_NUM_THREADS=1
 

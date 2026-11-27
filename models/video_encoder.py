@@ -3,7 +3,7 @@
 import torch
 import torch.nn as nn
 import math
-from typing import Optional, Dict
+from typing import Optional, Dict, Any
 from torchvision.models.video import mvit_v2_s, r3d_18
 from torch.amp.autocast_mode import autocast
 
@@ -11,6 +11,7 @@ from utils.registry import ModelRegistry
 from models.video_aggregator import EnhancedVideoAggregator
 from models.attention_pool import AttentionPool, AttentionPoolWithCLS
 from models.rope_3d import Rope3D
+from models.echojepa_backbone import EchoJEPABackbone
 
 
 
@@ -41,11 +42,13 @@ class VideoEncoder(nn.Module):
         use_cls_token: bool = False,
         multi_video_cls_aggregation: str = "mean",  # "mean", "attention", or "first"
         encoder_path: Optional[str] = None,  # Path to pretrained encoder checkpoint
+        echojepa_kwargs: Optional[Dict[str, Any]] = None,  # EchoJEPABackbone kwargs (backbone == "echojepa")
     ):
         """Initialize the video encoder.
 
         Args:
-            backbone (str): Name of the backbone model to use ("mvit", "r3d", "x3d_s", or "x3d_m")
+            backbone (str): Name of the backbone model to use ("mvit", "mvit_rope", "r3d", "x3d_s", "x3d_m",
+                or "echojepa" -- an EchoJEPA / V-JEPA 2 video ViT, configured through ``echojepa_kwargs``)
             input_channels (int): Number of input channels (1 for grayscale, 3 for RGB)
             num_frames (int): Number of frames in the input video
             pretrained (bool): Whether to use pretrained weights
@@ -169,6 +172,28 @@ class VideoEncoder(nn.Module):
             self.model.blocks[5].proj = nn.Identity()
             self.model.blocks[5].activation = nn.Identity()
             
+        elif backbone == "echojepa":
+            # EchoJEPA / V-JEPA 2 video ViT (imported from an EchoJEPA checkout).
+            # Weights come from the EchoJEPA pretraining checkpoint given in
+            # echojepa_kwargs["checkpoint_path"]; the generic ``encoder_path``
+            # loader below is not used for this backbone.
+            ej_kwargs = dict(echojepa_kwargs or {})
+            autocast_dtype = str(ej_kwargs.pop("autocast_dtype", "bfloat16")).lower()
+            self._echojepa_autocast_dtype = {
+                "bfloat16": torch.bfloat16, "bf16": torch.bfloat16,
+                "float16": torch.float16, "fp16": torch.float16,
+            }.get(autocast_dtype, None)  # None -> run the backbone in fp32
+            ej_kwargs.setdefault("num_frames", num_frames)
+            self.model: nn.Module = EchoJEPABackbone(**ej_kwargs)
+            in_features = self.model.embed_dim
+            self._rope_modules = None  # EchoJEPA has its own RoPE inside the blocks
+            self.cls_token = None
+            print(
+                f"[VideoEncoder] EchoJEPA backbone {self.model.arch}: embed_dim={in_features}, "
+                f"frames={self.model.num_frames}, img={self.model.img_size}, "
+                f"backbone autocast={autocast_dtype}"
+            )
+
         else:
             raise ValueError(f"Unsupported backbone: {backbone}")
                 
@@ -191,8 +216,8 @@ class VideoEncoder(nn.Module):
             aggregator_depth=aggregator_depth
         )
 
-        # 3.5) Load encoder checkpoint if provided
-        if self.encoder_path:
+        # 3.5) Load encoder checkpoint if provided (EchoJEPA loads its own weights above)
+        if self.encoder_path and backbone != "echojepa":
             self._load_encoder_checkpoint()
 
         # 4) Freeze partial layers
@@ -257,7 +282,9 @@ class VideoEncoder(nn.Module):
             return x
 
         # Attach to the specific instance so it does not affect other MViT objects.
-        self.model.forward_features = MethodType(_forward_features_mvit, self.model)  # type: ignore[attr-defined]
+        # Only MViT needs this; EchoJEPA exposes its own forward_features.
+        if backbone in ("mvit", "mvit_rope"):
+            self.model.forward_features = MethodType(_forward_features_mvit, self.model)  # type: ignore[attr-defined]
         
         # If RoPE is enabled for MViT, monkey-patch attention blocks
         if backbone == "mvit" and self.use_rope and self._rope_modules is not None:
@@ -569,6 +596,14 @@ class VideoEncoder(nn.Module):
         # incurs only a modest memory overhead yet eliminates NaN/Inf issues
         # observed when training with AMP.
         # ------------------------------------------------------------------
+        if self.backbone == "echojepa":
+            # EchoJEPA is trained in bf16 with SDPA attention; running its 24
+            # blocks over ~1.5k tokens in fp32 would triple the memory and time.
+            ac_dtype = getattr(self, "_echojepa_autocast_dtype", None)
+            with autocast(x.device.type, enabled=ac_dtype is not None, dtype=ac_dtype or torch.float32):
+                feats = self.model.forward_features(x)
+            return feats.float()  # [B*N, L, F]
+
         with autocast(x.device.type, enabled=False):
             if self.backbone == "mvit" and hasattr(self.model, "forward_features"):
                 # TorchVision's Multi-Scale ViT exposes forward_features that

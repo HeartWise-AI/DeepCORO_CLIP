@@ -74,3 +74,5 @@ api_key.json
 # Dev tracking files
 RESTORE.json
 .claude/*.local.md
+.pyoverlay/
+

@@ -5,9 +5,12 @@ from torch.amp import GradScaler
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
 import itertools
+import numpy as np
+import pandas as pd
 
 from runners.typing import Runner
 from models.video_encoder import VideoEncoder
+from models.echojepa_backbone import echojepa_kwargs_from_config
 from models.multi_instance_linear_probing import MultiInstanceLinearProbing
 from projects.base_project import BaseProject
 from utils.registry import (
@@ -352,6 +355,57 @@ class LinearProbingProject(BaseProject):
         if self.wandb_wrapper.is_initialized():
             self.wandb_wrapper.log({"config/aggregate_videos_tokens_override": True})
 
+    def _synseq_loss_kwargs(self) -> dict[str, Any]:
+        """Target scaling and inverse-frequency sample weights (arXiv 2609.27696).
+
+        Weights are count^-sample_weight_power of TRAIN samples (one per study in multi-video
+        mode) sharing floor(score / bin_width), normalised to mean 1 on train.
+        """
+        target_scale = getattr(self.config, "regression_target_scale", None)
+        sample_weighting = getattr(self.config, "sample_weighting", None)
+        kwargs: dict[str, Any] = {"target_scale": target_scale}
+        if not sample_weighting:
+            return kwargs
+
+        bin_width = float(getattr(self.config, "sample_weight_bin_width", 1.0))
+        data = pd.read_csv(self.config.data_filename, sep="α", engine="python")
+        train = data[data["Split"] == str(RunMode.TRAIN)]
+        if self.config.multi_video:
+            train = train.groupby(self.config.groupby_column).first()
+
+        tables: dict[str, torch.Tensor] = {}
+        for source in sorted(set(sample_weighting.values())):
+            scores = train[source].dropna().to_numpy(dtype=float)
+            bins = np.floor(scores / bin_width).astype(int)
+            counts = np.bincount(bins)
+            power = float(getattr(self.config, "sample_weight_power", 1.0))
+            cap = getattr(self.config, "sample_weight_max", None)
+            weights = np.where(counts > 0, np.maximum(counts, 1) ** -power, 0.0)
+            weights = weights / weights[bins].mean()
+            if cap is not None:
+                weights = np.minimum(weights, float(cap))
+                weights = weights / weights[bins].mean()
+            # Unseen bins borrow the weight of the nearest populated bin below.
+            last = weights[0]
+            for i in range(len(weights)):
+                if counts[i] > 0:
+                    last = weights[i]
+                else:
+                    weights[i] = last
+            tables[source] = torch.tensor(weights, dtype=torch.float32)
+            print(
+                f"[sample_weighting] {source}: {len(scores)} train samples, "
+                f"{int((counts > 0).sum())} bins, weight range "
+                f"{weights.min():.3f}-{weights.max():.3f}"
+            )
+
+        kwargs.update(
+            sample_weight_source=sample_weighting,
+            sample_weight_tables=tables,
+            sample_weight_bin_width=bin_width,
+        )
+        return kwargs
+
     def _setup_training_objects(
         self
     )->dict[str, Any]:
@@ -419,6 +473,7 @@ class LinearProbingProject(BaseProject):
             aggregator_depth=self.config.aggregator_depth,
             aggregate_videos_tokens=self.config.aggregate_videos_tokens,
             per_video_pool=self.config.per_video_pool,
+            echojepa_kwargs=echojepa_kwargs_from_config(self.config),
         )        
         
         # Get embedding dimension from encoder
@@ -444,6 +499,7 @@ class LinearProbingProject(BaseProject):
             attention_hidden=self.config.attention_hidden,
             dropout=self.config.dropout_attention,
             num_view_classes=num_view_classes,
+            head_output_scale=getattr(self.config, "regression_target_scale", None),
         )
         mil_model = mil_model.to(self.config.device).float()
 
@@ -630,6 +686,7 @@ class LinearProbingProject(BaseProject):
             attention_hidden=self.config.attention_hidden,
             dropout=self.config.dropout_attention,
             num_view_classes=num_view_classes,
+            head_output_scale=getattr(self.config, "regression_target_scale", None),
         )
         mil_model = mil_model.to(self.config.device)
 
@@ -707,6 +764,7 @@ class LinearProbingProject(BaseProject):
                 loss_weights=ce_weights or None,
                 pos_weights=pos_weights or None,
                 target_normalization=target_normalization or None,
+                **self._synseq_loss_kwargs(),
             )
         )
 
